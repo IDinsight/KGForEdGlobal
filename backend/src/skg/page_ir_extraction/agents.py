@@ -131,7 +131,7 @@ def create_page_ir_extraction_agent(
             truncated_msg = str(e)[:500]
 
             logger.error(
-                f"Quality check failed on page {page_index + 1}, attempt {attempt}: {truncated_msg}"
+                f"Quality check failed on page {page_index + 1}, attempt {attempt + 1}: {truncated_msg}"
             )
 
             attempt_counter["value"] += 1
@@ -255,7 +255,7 @@ def create_page_ir_validation_agent(
 
                 logger.error(
                     f"Validation agent's corrected PageIR failed quality checks on "
-                    f"page {page_index + 1}, attempt {attempt}: {truncated_msg}"
+                    f"page {page_index + 1}, attempt {attempt + 1}: {truncated_msg}"
                 )
 
                 attempt_counter["value"] += 1

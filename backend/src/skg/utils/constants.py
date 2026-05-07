@@ -221,8 +221,7 @@ DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER: tuple[NodeRole, ...] = (
     NodeRole.SUBTOPIC,
 )
 
-# Primary-language map for common BCP-47 tags seen in primary-school curricula. We
-# still attempt to resolve unknown codes via `pycountry`.
+# Primary-language map for common BCP-47 tags seen in primary-school curricula.
 LANG_PRIMARY_CODE_TO_NAME: dict[str, str] = {
     "ar": "Arabic",
     "en": "English",

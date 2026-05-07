@@ -33,7 +33,7 @@ repos:
       language: system
       pass_filenames: false
 
-    # Formatters (auto-fix)
+    # Backend Formatters (auto-fix)
     - id: black
       name: black
       entry: uv run --project backend black
@@ -48,7 +48,7 @@ repos:
       types: [python]
       files: ^backend/(src|tests)/.*\.py$
 
-    # Linters
+    # Backend Linters
     - id: ruff
       name: ruff
       entry: uv run --project backend ruff check --fix --exit-non-zero-on-fix
@@ -77,3 +77,25 @@ repos:
       language: system
       types: [python]
       files: ^backend/(src|tests)/.*\.py$
+
+    # Frontend formatters/linters/type checks
+    - id: prettier
+      name: prettier
+      entry: pnpm --dir=frontend exec prettier --write "src/**/*.{js,ts,jsx,tsx,mjs,cjs}"
+      language: system
+      pass_filenames: false
+      files: ^frontend/src/.*\.(js|ts|jsx|tsx|mjs|cjs)$
+
+    - id: eslint
+      name: eslint
+      entry: pnpm --dir=frontend exec eslint --config eslint.config.mjs --fix --format stylish --no-error-on-unmatched-pattern "src/**/*.{js,ts,jsx,tsx,mjs,cjs}"
+      language: system
+      pass_filenames: false
+      files: ^frontend/src/.*\.(js|ts|jsx|tsx|mjs|cjs)$
+
+    - id: typecheck
+      name: tsc --noEmit
+      entry: pnpm --dir=frontend exec tsc --noEmit
+      language: system
+      pass_filenames: false
+      files: ^frontend/(src/.*\.(ts|tsx|mts|cts)|package\.json|pnpm-lock\.yaml|tsconfig\.json)$

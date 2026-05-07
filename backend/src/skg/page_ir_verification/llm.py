@@ -75,7 +75,7 @@ class VerificationUsageTracker:
         Returns
         -------
         dict[str, object]
-            Dictionary containing `agents` breakdown and `totals`.
+            Dictionary containing `agents` breakdown and totals.
         """
 
         verification_d = self.verification.to_dict()

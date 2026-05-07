@@ -1,15 +1,25 @@
-"""This module contains functionalities related to validating Learning Progressions KG
-information.
+"""This module contains validators and validator type aliases for Learning Components
+and Learning Progressions KG inference. These validators are reused by both the initial
+inference agents and the second-pass validation agents.
 """
 
 # Standard Library
-from typing import Any
+import re
+import unicodedata
+
+from typing import Any, Callable, TypeAlias
 from uuid import UUID
 
 # Package Library
 from skg.kgs.schemas import AtomicSkillsResponse, ProgressionEdgesResponse
 from skg.kgs.utils import canon_str_pair
 from skg.page_ir_extraction.validators import QualityError
+
+AtomicSkillsValidator: TypeAlias = Callable[[AtomicSkillsResponse], None]
+"""Callable signature for validating an AtomicSkillsResponse."""
+
+ProgressionEdgesValidator: TypeAlias = Callable[[ProgressionEdgesResponse], None]
+"""Callable signature for validating a ProgressionEdgesResponse."""
 
 
 def _check_common_edge_invariants(
@@ -58,6 +68,99 @@ def _check_common_edge_invariants(
             )
 
         seen.add(pair)
+
+
+def _normalize_quality_text(text: str) -> str:
+    """Normalize text for heuristic quality checks.
+
+    This intentionally performs more aggressive normalization than the runtime export
+    pipeline because it is only used for validator-side similarity and duplicate
+    heuristics.
+
+    Parameters
+    ----------
+    text
+        The text to normalize.
+
+    Returns
+    -------
+    str
+        A normalized version of the text suitable for quality heuristics.
+    """
+
+    s = unicodedata.normalize("NFKD", str(text or ""))
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = s.lower()
+    s = re.sub(r"[\u00ad\u200b\u200c\u200d\ufeff]+", "", s)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
+def _reject_progression_subtype_for_non_phase1_builds(
+    *, response: ProgressionEdgesResponse, task_label: str
+) -> None:
+    """Reject Phase-1-only progression_subtype values on non-Phase-1 buildsTowards.
+
+    `progression_subtype` is currently meaningful only for Phase 1 within-level
+    buildsTowards. Cross-level and cross-stage buildsTowards prompts describe
+    prerequisite relationships across levels/stages, so accepting subtype values there
+    would make the shared ProgressionEdge schema look more general than the current
+    export policy intends.
+
+    Parameters
+    ----------
+    response
+        The response containing the edges to validate.
+    task_label
+        A label for the task being validated, used in error messages to clarify which
+        validator is raising the error (e.g., "cross-level buildsTowards" or
+        "cross-stage buildsTowards").
+
+    Raises
+    ------
+    QualityError
+        If any edge in the response includes a non-null `progression_subtype` field.
+    """
+
+    for edge in response.edges:
+        if getattr(edge, "progression_subtype", None) is not None:
+            raise QualityError(
+                f"{task_label} edges must not include progression_subtype. "
+                f"This field is only valid for within_level_builds_towards."
+            )
+
+
+def _reject_progression_subtype_for_relates_to(
+    *, response: ProgressionEdgesResponse, task_label: str
+) -> None:
+    """Reject Phase-1-only progression_subtype values on relatesTo outputs.
+
+    `progression_subtype` is currently meaningful only for Phase 1 within-level
+    buildsTowards. relatesTo prompts describe associative connections, so accepting
+    subtype values there would blur relationship semantics and could leak prompt/schema
+    behavior across inference phases.
+
+    Parameters
+    ----------
+    response
+        The response containing the edges to validate.
+    task_label
+        A label for the task being validated, used in error messages to clarify which
+        validator is raising the error (e.g., "cross-level relatesTo" or "within-level
+        relatesTo").
+
+    Raises
+    ------
+    QualityError
+        If any edge in the response includes a non-null `progression_subtype` field.
+    """
+
+    for edge in response.edges:
+        if getattr(edge, "progression_subtype", None) is not None:
+            raise QualityError(
+                f"{task_label} edges must not include progression_subtype. "
+                f"This field is only valid for within_level_builds_towards."
+            )
 
 
 def _validate_batch_coverage(
@@ -118,43 +221,41 @@ def _validate_sfi_skills(
     Raises
     ------
     QualityError
-        If the skills list length is out of bounds or if any individual skill is invalid.
+        If the skills list length is out of bounds or if any individual skill is
+        invalid.
     """
 
     if len(skills) < int(min_per_sfi) or len(skills) > int(max_per_sfi):
         raise QualityError(
-            f"sfi_uuid {sfi_uuid} must have between {min_per_sfi} and {max_per_sfi} skills; got {len(skills)}."
+            f"sfi_uuid {sfi_uuid} must have between {min_per_sfi} and {max_per_sfi} skills; "
+            f"got {len(skills)}."
         )
 
     desc_seen: set[str] = set()
 
-    for sk in skills:
+    for skill in skills:
         _validate_single_skill(
             desc_seen=desc_seen,
             require_rationale=require_rationale,
             sfi_uuid=sfi_uuid,
-            sk=sk,
+            skill=skill,
         )
 
 
 def _validate_single_skill(
-    *,
-    desc_seen: set[str],
-    require_rationale: bool,
-    sfi_uuid: UUID,
-    sk: Any,
+    *, desc_seen: set[str], require_rationale: bool, sfi_uuid: UUID, skill: Any
 ) -> None:
     """Validate a single skill's properties and check for duplicates.
 
     Parameters
     ----------
     desc_seen
-        A set of normalized descriptions already seen for this SFI.
+        A set of validator-normalized descriptions already seen for this SFI.
     require_rationale
         Whether a non-empty rationale is required.
     sfi_uuid
         The UUID of the SFI this skill belongs to.
-    sk
+    skill
         The skill object to validate.
 
     Raises
@@ -163,13 +264,17 @@ def _validate_single_skill(
         If the skill description or rationale violates quality rules.
     """
 
-    desc = (sk.description or "").strip()
-    rat = (sk.rationale or "").strip() if sk.rationale is not None else ""
+    description = (skill.description or "").strip()
+    rationale = (skill.rationale or "").strip() if skill.rationale is not None else ""
 
-    if not desc:
+    if not description:
         raise QualityError(f"sfi_uuid {sfi_uuid} has a skill with empty description.")
 
-    norm_desc = " ".join(desc.split()).lower()
+    # Use the stronger validator-side normalizer so duplicate detection is robust to
+    # accent, punctuation, and minor formatting differences.
+    norm_desc = _normalize_quality_text(description)
+    norm_desc = re.sub(r"[^\w]+", " ", norm_desc, flags=re.UNICODE)
+    norm_desc = re.sub(r"\s+", " ", norm_desc).strip()
 
     if norm_desc in desc_seen:
         raise QualityError(
@@ -178,7 +283,7 @@ def _validate_single_skill(
 
     desc_seen.add(norm_desc)
 
-    if require_rationale and not rat:
+    if require_rationale and not rationale:
         raise QualityError(
             f"sfi_uuid {sfi_uuid} has a skill missing required rationale."
         )
@@ -193,6 +298,11 @@ def validate_atomic_skills(
     require_rationale: bool,
 ) -> None:
     """Validate AtomicSkillsResponse for a given batch of SFIs.
+
+    In addition to structural checks, this validator applies lightweight response-level
+    quality checks such as non-empty skill descriptions, duplicate normalized skill
+    descriptions within an SFI, and rationale presence when required. It does not
+    validate semantic grounding against the source text.
 
     Parameters
     ----------
@@ -212,15 +322,17 @@ def validate_atomic_skills(
     Raises
     ------
     QualityError
-        If any validation rule is violated, such as unknown SFI UUIDs, duplicate skill
-        labels, missing descriptions, or rationale requirements.
+        If any validation rule is violated, such as unknown SFI UUIDs, duplicate
+        `sfi_uuid` entries, out-of-bounds skill counts, duplicate normalized skill
+        descriptions within an SFI, missing descriptions, or missing required
+        rationales.
     """
 
     if not parsed.items:
         raise QualityError("AtomicSkillsResponse.items is empty.")
 
-    seen: set[UUID] = set()
     returned: set[UUID] = set()
+    seen: set[UUID] = set()
 
     for item in parsed.items:
         sfi_uuid = item.sfi_uuid
@@ -228,7 +340,8 @@ def validate_atomic_skills(
 
         if sfi_uuid not in allowed_sfi_uuids:
             raise QualityError(
-                f"Unknown sfi_uuid in atomic skills output: {sfi_uuid}. Use only provided UUIDs."
+                f"Unknown sfi_uuid in atomic skills output: {sfi_uuid}. "
+                f"Use only provided UUIDs."
             )
 
         if sfi_uuid in seen:
@@ -249,70 +362,113 @@ def validate_atomic_skills(
     )
 
 
-def validate_cross_grade_builds_towards(
-    response: ProgressionEdgesResponse, allowed_lo: set[str], allowed_hi: set[str]
+def validate_cross_level_builds_towards(
+    response: ProgressionEdgesResponse,
+    allowed_lo: set[str],
+    allowed_hi: set[str],
+    min_confidence: float,
 ) -> None:
-    """Validate cross-grade buildsTowards.
+    """Validate cross-level buildsTowards.
 
     Parameters
     ----------
     response
         The response containing the buildsTowards edges to validate.
     allowed_lo
-        The set of allowed source SFI UUIDs (must be in LOWER grade list).
+        The set of allowed source SFI UUIDs (must be in LOWER level list).
     allowed_hi
-        The set of allowed target SFI UUIDs (must be in UPPER grade list).
+        The set of allowed target SFI UUIDs (must be in UPPER level list).
+    min_confidence
+        Minimum confidence threshold; edges below this value must be omitted.
 
     Raises
     ------
     QualityError
-        If any edge violates validation rules (unknown UUIDs, self-edges, etc).
+        If any edge violates validation rules (unknown UUIDs, self-edges, low
+        confidence, unexpected Phase-1-only subtype values, etc).
     """
 
+    overlap = allowed_lo & allowed_hi
+
+    if overlap:
+        raise QualityError(
+            f"Cross-level buildsTowards lower and upper allowed UUID sets must be "
+            f"disjoint. Overlap examples: {sorted(overlap)[:5]}"
+        )
+
     _check_common_edge_invariants(directed=True, response=response)
+    _reject_progression_subtype_for_non_phase1_builds(
+        response=response, task_label="cross-level buildsTowards"
+    )
 
     for e in response.edges:
         if e.source_sfi_uuid not in allowed_lo:
             raise QualityError(
-                "Cross-grade buildsTowards source must be in LOWER grade list."
+                "Cross-level buildsTowards source must be in LOWER level list."
             )
         if e.target_sfi_uuid not in allowed_hi:
             raise QualityError(
-                "Cross-grade buildsTowards target must be in UPPER grade list."
+                "Cross-level buildsTowards target must be in UPPER level list."
             )
         if e.source_sfi_uuid == e.target_sfi_uuid:
             raise QualityError("Self-edge is not allowed.")
 
+        confidence = float(e.confidence)
 
-def validate_cross_grade_relates_to(
+        if confidence < min_confidence:
+            raise QualityError(
+                f"Cross-level buildsTowards edge confidence {confidence:.3f} "
+                f"is below the configured minimum {min_confidence:.3f}. "
+                f"Omit this edge or return it with justified confidence at or above "
+                f"the threshold."
+            )
+
+
+def validate_cross_level_relates_to(
     response: ProgressionEdgesResponse,
     allowed_lo: set[str],
     allowed_hi: set[str],
     forbidden_pairs: set[tuple[str, str]],
+    min_confidence: float,
 ) -> None:
-    """Validate cross-grade relatesTo edges. Ensures edges connect items between
-    adjacent grades and do not duplicate existing buildsTowards relationships.
+    """Validate cross-level relatesTo edges. Ensures edges connect items between
+    adjacent levels and do not duplicate existing buildsTowards relationships.
 
     Parameters
     ----------
     response
         The response containing the relatesTo edges to validate.
     allowed_lo
-        The set of allowed SFI UUIDs for the lower grade.
+        The set of allowed SFI UUIDs for the lower level.
     allowed_hi
-        The set of allowed SFI UUIDs for the upper grade.
+        The set of allowed SFI UUIDs for the upper level.
     forbidden_pairs
         The set of undirected (uuid_a, uuid_b) pairs that are not allowed (e.g.,
         because they already have a buildsTowards relationship). Pairs are
         canonicalized by sorting the two UUID strings.
+    min_confidence
+        Minimum confidence threshold; edges below this value must be omitted.
 
     Raises
     ------
     QualityError
-        If edges are self-referential, fail to cross grades, or are forbidden.
+        If any edge violates validation rules such as unknown UUIDs, self-edges,
+        failing to connect one item from each level, duplicating buildsTowards
+        relationships, or falling below the confidence threshold.
     """
 
+    overlap = allowed_lo & allowed_hi
+
+    if overlap:
+        raise QualityError(
+            f"Cross-level relatesTo allowed UUID sets must be disjoint. "
+            f"Overlap examples: {sorted(overlap)[:5]}"
+        )
+
     _check_common_edge_invariants(directed=False, response=response)
+    _reject_progression_subtype_for_relates_to(
+        response=response, task_label="cross-level relatesTo"
+    )
 
     for e in response.edges:
         if e.source_sfi_uuid == e.target_sfi_uuid:
@@ -326,8 +482,8 @@ def validate_cross_grade_relates_to(
         # Valid scenarios: (Src in Low AND Tgt in High) OR (Src in High AND Tgt in Low)
         if not ((in_lo_src and in_hi_tgt) or (in_hi_src and in_lo_tgt)):
             raise QualityError(
-                "Cross-grade relatesTo must connect one lower-grade and one "
-                "upper-grade item."
+                "Cross-level relatesTo must connect one lower-level and one "
+                "upper-level item."
             )
 
         # Treat forbidden_pairs as undirected (canonicalized pairs).
@@ -336,13 +492,20 @@ def validate_cross_grade_relates_to(
         if pair in forbidden_pairs:
             raise QualityError("Edge is in forbidden_pairs (already buildsTowards).")
 
+        if float(e.confidence) < min_confidence:
+            raise QualityError(
+                f"Cross-level relatesTo edge confidence {float(e.confidence):.3f} "
+                f"is below the configured minimum {min_confidence:.3f}."
+            )
 
-def validate_within_grade_builds_towards(
+
+def validate_within_level_builds_towards(
     response: ProgressionEdgesResponse,
     allowed_uuids: set[str],
+    min_confidence: float,
     uuid_positions: dict[str, int],
 ) -> None:
-    """Validate within-grade buildsTowards edges against constraints.
+    """Validate within-level buildsTowards edges against constraints.
 
     Parameters
     ----------
@@ -350,6 +513,9 @@ def validate_within_grade_builds_towards(
         The response containing the buildsTowards edges to validate.
     allowed_uuids
         The set of allowed SFI UUIDs (must be in the provided list).
+    min_confidence
+        Minimum confidence threshold. Any edge below this value is rejected so the
+        retry/validation agent can correct or omit it before candidate creation.
     uuid_positions
         A mapping of SFI UUIDs to their positions in the original list (for ordering
         checks in buildsTowards).
@@ -357,13 +523,23 @@ def validate_within_grade_builds_towards(
     Raises
     ------
     QualityError
-        If edges reference unknown UUIDs, are self-referential, or violate
-        list ordering.
+        If edges reference unknown UUIDs, omit the required Phase-1 progression
+        subtype, are self-referential, violate list ordering, or fall below the
+        configured minimum confidence threshold.
     """
 
     _check_common_edge_invariants(directed=True, response=response)
+    allowed_subtypes = {"developmental_prerequisite", "recurring_practice"}
 
     for e in response.edges:
+        progression_subtype = getattr(e, "progression_subtype", None)
+
+        if progression_subtype not in allowed_subtypes:
+            raise QualityError(
+                "within_level_builds_towards edges must include progression_subtype "
+                "as 'developmental_prerequisite' or 'recurring_practice'."
+            )
+
         if (
             e.source_sfi_uuid not in allowed_uuids
             or e.target_sfi_uuid not in allowed_uuids
@@ -373,38 +549,59 @@ def validate_within_grade_builds_towards(
         if e.source_sfi_uuid == e.target_sfi_uuid:
             raise QualityError("Self-edge is not allowed.")
 
-        # Ensure the source appears before the target in the original list
+        if float(e.confidence) < min_confidence:
+            raise QualityError(
+                f"Within-level buildsTowards edge confidence {float(e.confidence):.3f} "
+                f"is below the configured minimum {min_confidence:.3f}. Omit this edge or "
+                f"return it with a justified confidence at or above the threshold."
+            )
+
+        # Ensure the source appears before the target in the original list.
         if uuid_positions[e.source_sfi_uuid] >= uuid_positions[e.target_sfi_uuid]:
             raise QualityError(
-                "Within-grade buildsTowards must follow the provided order."
+                "Within-level buildsTowards must follow the provided order."
             )
 
 
-def validate_within_grade_relates_to(
+def validate_within_level_relates_to(
     response: ProgressionEdgesResponse,
     allowed_uuids_a: set[str],
     allowed_uuids_b: set[str],
+    min_confidence: float,
 ) -> None:
-    """Validate within-grade relatesTo edges. Ensures edges connect items across the
-    two distinct threads provided.
+    """Validate within-level relatesTo edges between two disjoint item groups.
 
     Parameters
     ----------
     response
         The response containing the relatesTo edges to validate.
     allowed_uuids_a
-        The set of allowed SFI UUIDs for thread A.
+        The set of allowed SFI UUIDs for group/thread A.
     allowed_uuids_b
-        The set of allowed SFI UUIDs for thread B.
+        The set of allowed SFI UUIDs for group/thread B.
+    min_confidence
+        Minimum confidence threshold; edges below this value must be omitted.
 
     Raises
     ------
     QualityError
-        If edges refer to unknown items, are self-referential, or fail to
-        bridge the two different threads.
+        If the allowed UUID sets overlap, if edges refer to unknown items, if an edge
+        is self-referential, if an edge fails to bridge the two distinct groups, or if
+        an edge falls below the configured minimum confidence threshold.
     """
 
+    overlap = allowed_uuids_a & allowed_uuids_b
+
+    if overlap:
+        raise QualityError(
+            f"Within-level relatesTo allowed UUID sets must be disjoint. "
+            f"Overlap examples: {sorted(overlap)[:5]}"
+        )
+
     _check_common_edge_invariants(directed=False, response=response)
+    _reject_progression_subtype_for_relates_to(
+        response=response, task_label="within-level relatesTo"
+    )
 
     all_allowed = allowed_uuids_a | allowed_uuids_b
 
@@ -417,11 +614,19 @@ def validate_within_grade_relates_to(
         # each thread" which obscures the real problem.
         if e.source_sfi_uuid not in all_allowed:
             raise QualityError(
-                f"Source UUID {e.source_sfi_uuid} not found in either thread."
+                f"Source UUID {e.source_sfi_uuid} not found in either group."
             )
         if e.target_sfi_uuid not in all_allowed:
             raise QualityError(
-                f"Target UUID {e.target_sfi_uuid} not found in either thread."
+                f"Target UUID {e.target_sfi_uuid} not found in either group."
+            )
+
+        if float(e.confidence) < min_confidence:
+            raise QualityError(
+                f"Within-level relatesTo edge confidence {float(e.confidence):.3f} "
+                f"is below the configured minimum {min_confidence:.3f}. Omit this "
+                f"edge or return it with a justified confidence at or above the "
+                f"threshold."
             )
 
         # Check membership.
@@ -434,5 +639,5 @@ def validate_within_grade_relates_to(
         # A).
         if not ((src_in_a and tgt_in_b) or (src_in_b and tgt_in_a)):
             raise QualityError(
-                "Within-grade relatesTo must connect one item from each thread."
+                "Within-level relatesTo must connect one item from each group."
             )

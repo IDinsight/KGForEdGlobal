@@ -157,24 +157,24 @@ class ExportContext:
         """
 
         return {
-            "academic_subject_default": self.kg_config.academic_subject_default,
-            "adoption_status": self.kg_config.adoption_status,
-            "attribution_statement": self.kg_config.attribution_statement,
-            "author": self.kg_config.author,
-            "case_uri_base": self.kg_config.case_uri_base,
+            "academic_subject_default": self.kg_config.as_academic_subject_default,
+            "adoption_status": self.kg_config.as_adoption_status,
+            "attribution_statement": self.kg_config.as_attribution_statement,
+            "author": self.kg_config.as_author,
+            "case_uri_base": self.kg_config.as_case_uri_base,
             "doc_key": self.doc_key,
-            "export_dialect": self.kg_config.export_dialect,
+            "export_dialect": self.kg_config.as_export_dialect,
             "in_language": (
-                self.kg_config.language_default
-                if self.kg_config.export_in_language_policy == "default"
+                "en"
+                if self.kg_config.as_description_text_policy == "prefer_text_en"
                 else self._infer_language_from_nodes()
-                or self.kg_config.language_default
+                or self.kg_config.as_language_default
             ),
-            "jurisdiction": self.kg_config.jurisdiction_default,
-            "license": self.kg_config.license,
+            "jurisdiction": self.kg_config.as_jurisdiction_default,
+            "license": self.kg_config.as_license,
             "namespace_uuid": str(self.kg_config.namespace_uuid),
             "pdf_name": self.pdf_name,
-            "provider": self.kg_config.provider,
+            "provider": self.kg_config.as_provider,
         }
 
     def should_drop_segment(self, decision: dict[str, Any]) -> bool:
@@ -191,18 +191,18 @@ class ExportContext:
             True if the segment should be dropped, False otherwise.
         """
 
-        policies = set(self.kg_config.non_standard_segment_drop_policy or [])
+        policies = set(self.kg_config.as_non_standard_segment_drop_policy or [])
 
         if "by_decision_type" in policies:
             dt = decision.get("decision_type")
 
-            if dt in {t.value for t in self.kg_config.non_standard_decision_types}:
+            if dt in {t.value for t in self.kg_config.as_non_standard_decision_types}:
                 return True
 
         if "by_columns_signature" in policies:
             sig = decision.get("columns_signature")
 
-            if sig and sig in (self.kg_config.non_standard_columns_signature or set()):
+            if sig and sig in self.kg_config.as_non_standard_columns_signature:
                 return True
 
         return False
@@ -243,7 +243,7 @@ def _compute_base_piece(node: dict[str, Any]) -> str:
 
     role = str(node.get("role") or "")
     code = normalize_ws(str(node.get("local_code") or ""))
-    text_source = str(node.get("normalized_text") or node_display_text(node=node))
+    text_source = node["normalized_text"]
 
     if role in {item.value for item in StatementRole}:
         return f"{role}:{code}:{stable_text_hash(s=text_source)}"
@@ -282,37 +282,6 @@ def _detect_sibling_collisions(ctx: ExportContext) -> set[tuple[str, str]]:
                 seen[base] = cid
 
     return needs
-
-
-def _pick_text(*, prefer_text_en: bool, unit: dict[str, Any] | None) -> str:
-    """Retrieve text from a title/body TextUnit dict.
-
-    Canonical nodes store title/body as a dict like:
-    {"language": "...", "text": "...", "text_en": "..."}.
-
-    Parameters
-    ----------
-    prefer_text_en
-        If True, prefer "text_en" over "text" when both are present.
-    unit
-        The title/body unit dict (or None).
-
-    Returns
-    -------
-    str
-        The extracted text, or empty string if none found.
-    """
-
-    if not isinstance(unit, dict):
-        return ""
-
-    if prefer_text_en:
-        t = (unit.get("text_en") or "").strip()
-
-        if t:
-            return t
-
-    return (unit.get("text") or unit.get("text_en") or "").strip()
 
 
 def _validate_decision_references(ctx: ExportContext) -> None:
@@ -467,7 +436,7 @@ def _verify_columns_signature(
     """
 
     if "by_columns_signature" not in set(
-        ctx.kg_config.non_standard_segment_drop_policy or []
+        ctx.kg_config.as_non_standard_segment_drop_policy or []
     ):
         return
 
@@ -919,43 +888,6 @@ def merge_graph_bundles(
     }
 
 
-def node_display_text(*, node: dict[str, Any], prefer_text_en: bool = True) -> str:
-    """Determine display text for a node, preferring title over body, and falling back
-    to `normalized_text`, then `local_code` or `role` if no text found.
-
-    Parameters
-    ----------
-    node
-        The node dictionary to extract text from.
-    prefer_text_en
-        If True, prefer "text_en" over "text" when extracting from title/body.
-
-    Returns
-    -------
-    str
-        The display text for the node.
-    """
-
-    title = _pick_text(unit=node.get("title"), prefer_text_en=prefer_text_en)
-
-    if title:
-        return title
-
-    body = _pick_text(unit=node.get("body"), prefer_text_en=prefer_text_en)
-
-    if body:
-        return body
-
-    # Tertiary fallback: normalized_text (common on all canonical IR nodes).
-    nt = (node.get("normalized_text") or "").strip()
-
-    if nt:
-        return nt
-
-    # Last resort: code or role.
-    return (node.get("local_code") or node.get("role") or "").strip()
-
-
 def normalize_key_token(*, label: str, separator: str) -> str:
     """Normalize a label into a deterministic ASCII key token.
 
@@ -999,7 +931,7 @@ def normalize_key_token(*, label: str, separator: str) -> str:
 
 
 def normalize_ws(s: str) -> str:
-    """Normalize whitespace in a string by collapsing multiple spaces and trim.
+    """Normalize textual whitespace and remove invisible separator artifacts.
 
     Parameters
     ----------
@@ -1009,10 +941,22 @@ def normalize_ws(s: str) -> str:
     Returns
     -------
     str
-        The normalized string.
+        The normalized string with soft hyphens and zero-width characters removed,
+        repeated whitespace collapsed, and leading/trailing whitespace stripped.
     """
 
-    return re.sub(r"\s+", " ", (s or "")).strip()
+    text = str(s or "")
+
+    # Use explicit unicode escapes.
+    #   - \u00AD: Soft hyphen
+    #   - \u200B: Zero-width space
+    #   - \u200C: Zero-width non-joiner
+    #   - \u200D: Zero-width joiner
+    #   - \uFEFF: Byte Order Mark / Zero-width no-break space
+    text = re.sub(r"[\u00AD\u200B\u200C\u200D\uFEFF]+", "", text)
+
+    # Collapse remaining whitespace and strip edges.
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def persist_kg_run(
@@ -1041,8 +985,8 @@ def persist_kg_run(
     kg_run = RunCtx(
         extra=extra,
         models={
-            "learning_components": Settings.KG_MODEL,
-            "learning_progressions": Settings.KG_MODEL,
+            "learning_components": Settings.LLM_KG_MODEL,
+            "learning_progressions": Settings.LLM_KG_MODEL,
         },
         run_id=str(uuid.uuid4()),
         started_at=datetime.now(timezone.utc),
@@ -1052,6 +996,28 @@ def persist_kg_run(
     logger.info(f"Saving KG creation results to: {kg_dirs.root}")
 
     return kg_dirs, kg_run
+
+
+def canonicalize_stable_text(s: str) -> str:
+    """Canonicalize text using the same normalization policy as `stable_text_hash`.
+
+    This helper exists so callers that need deterministic text equivalence (for
+    example, de-duplication before hashing) can reuse the exact same canonicalization
+    path as `stable_text_hash()` rather than approximating it with ad hoc lowercasing.
+
+    Parameters
+    ----------
+    s
+        The input string to canonicalize.
+
+    Returns
+    -------
+    str
+        The canonicalized text after whitespace normalization, Unicode NFKC
+        normalization, and Unicode-aware case folding.
+    """
+
+    return unicodedata.normalize("NFKC", normalize_ws(s or "")).casefold()
 
 
 def stable_text_hash(*, n: int = 32, s: str) -> str:
@@ -1074,5 +1040,5 @@ def stable_text_hash(*, n: int = 32, s: str) -> str:
         The stable hash of the string.
     """
 
-    s = unicodedata.normalize("NFKC", normalize_ws(str(s or ""))).casefold()
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:n]
+    canonical = canonicalize_stable_text(s)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:n]

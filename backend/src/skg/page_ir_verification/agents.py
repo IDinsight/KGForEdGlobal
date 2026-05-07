@@ -104,7 +104,7 @@ def create_continuity_verification_agent(
             truncated_msg = str(e)[:500]
 
             logger.error(
-                f"Verification quality check failed, attempt {attempt}: "
+                f"Verification quality check failed, attempt {attempt + 1}: "
                 f"{truncated_msg}"
             )
 
@@ -201,7 +201,7 @@ def create_continuity_validation_agent(
                 truncated_msg = str(e)[:500]
                 logger.error(
                     f"Validation agent's corrected verdict failed quality checks, "
-                    f"attempt {attempt}: {truncated_msg}"
+                    f"attempt {attempt + 1}: {truncated_msg}"
                 )
                 attempt_counter["value"] += 1
                 raise ModelRetry(

@@ -26,13 +26,14 @@ from skg.kgs.schemas import (
     StandardsFramework,
     StandardsFrameworkItem,
 )
-from skg.kgs.utils import ExportContext, KGDirs, node_display_text, normalize_key_token
+from skg.kgs.utils import ExportContext, KGDirs, normalize_key_token
 from skg.regexes import ROMAN_RE
 from skg.schemas import CreateKGConfig
 from skg.utils.constants import NodeRole, StatementRole
 from skg.utils.general import open_json_type, write_to_json
 
 AUX_ROLES: set[str] = {StatementRole.DESCRIPTOR.value, StatementRole.GUIDANCE.value}
+HAS_CHILD = "hasChild"
 ROMAN_MAP = {
     "I": 1,
     "II": 2,
@@ -63,22 +64,24 @@ class AcademicStandardsExport:
     order: HierarchyOrderExport
     pruned_node_ids: set[str]  # Node IDs pruned as empty groupings
     relationships: list[Relationship]
-    reparent_stats: dict[str, Any]  # aux_reparented_count, orphan_aux_count, etc.
+    reparent_stats: dict[
+        str, Any
+    ]  # aux reparent/attachment counters, orphan counts, IDs, etc.
 
 
 def _append_unique_child(
-    *, export_children: dict[str, list[str]], parent_id: str, child_id: str
+    *, child_id: str, export_children: dict[str, list[str]], parent_id: str
 ) -> bool:
     """Append a child to an export parent only if not already present.
 
     Parameters
     ----------
+    child_id
+        The canonical node ID of the child to append.
     export_children
         The parent-to-children mapping being built for export.
     parent_id
         The canonical node ID of the parent.
-    child_id
-        The canonical node ID of the child to append.
 
     Returns
     -------
@@ -98,7 +101,7 @@ def _append_unique_child(
 def _attach_aux_statements_in_export_tree(
     *,
     attached_aux_node_ids: set[str],
-    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
+    aux_nodes_attached_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     ctx: ExportContext,
     emit_flag: dict[str, bool],
@@ -107,9 +110,9 @@ def _attach_aux_statements_in_export_tree(
 ) -> dict[str, Any]:
     """Attach aux statements to expectation metadata without reparenting.
 
-    This is an "attach-only" discovery pass used when the canonical IR keeps
-    descriptors/guidance as siblings (or children) of expectations, but the export
-    config requests attaching those aux statements into the owning expectation's
+    This is an "attach-only" discovery pass used when the current export tree still
+    contains descriptors/guidance as siblings (or children) of expectations, but the
+    export config requests attaching those aux statements into the owning expectation's
     metadata via `attach_to_expectation_metadata`.
 
     The pass:
@@ -121,16 +124,27 @@ def _attach_aux_statements_in_export_tree(
         sibling.
 
     The hierarchy (`export_children`) is not modified. Which aux nodes are ultimately
-    emitted as SFIs is controlled by `_process_attach_to_expectation` (based on which
-    aux nodes were successfully attached).
+    emitted as SFIs is controlled later by `_suppress_attached_to_expectation()` based
+    on which aux nodes were successfully attached.
+
+    This function answers the question: "Given the current export tree, can we discover
+    any *additional* aux nodes that should be attached into expectation metadata,
+    either because they are already children of an expectation or because they appear
+    after an expectation in sibling order?"
+
+    The returned stats distinguish between two concepts:
+
+    * **Payload attachment counts**: how many expectation-metadata payloads were added
+      during this pass (child-layout + sibling-layout).
+    * **Unique-node deltas**: how many *new* aux node IDs entered the tracked
+      `attached_aux_node_ids`/`orphan_aux_node_ids` sets during this pass.
 
     Parameters
     ----------
-    aux_attach_to_expectation
-        Mutable mapping collecting metadata attachments for expectation nodes.
     attached_aux_node_ids
-        Mutable set collecting canonical node IDs that were successfully attached to an
-        expectation's metadata.
+        Mutable set collecting canonical node IDs successfully attached.
+    aux_nodes_attached_to_expectation
+        Mutable mapping collecting metadata attachments for expectation nodes.
     config
         The CreateKGConfig for export.
     ctx
@@ -146,12 +160,15 @@ def _attach_aux_statements_in_export_tree(
     Returns
     -------
     dict[str, Any]
-        Stats about attachments performed in this pass.
+        Stats about new attachments/orphans discovered in this pass.
     """
+
+    attached_before = set(attached_aux_node_ids)
+    orphan_before = set(orphan_aux_node_ids)
 
     child_attached = _attach_child_layout_aux_nodes(
         attached_aux_node_ids=attached_aux_node_ids,
-        aux_attach_to_expectation=aux_attach_to_expectation,
+        aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
         config=config,
         ctx=ctx,
         emit_flag=emit_flag,
@@ -160,7 +177,7 @@ def _attach_aux_statements_in_export_tree(
 
     sibling_attached, sibling_orphans = _attach_sibling_layout_aux_nodes(
         attached_aux_node_ids=attached_aux_node_ids,
-        aux_attach_to_expectation=aux_attach_to_expectation,
+        aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
         config=config,
         ctx=ctx,
         emit_flag=emit_flag,
@@ -168,29 +185,80 @@ def _attach_aux_statements_in_export_tree(
         orphan_aux_node_ids=orphan_aux_node_ids,
     )
 
+    attached_after = set(attached_aux_node_ids)
+    orphan_after = set(orphan_aux_node_ids)
+
     return {
-        "attach_only_attached_count": child_attached + sibling_attached,
-        "attach_only_orphan_aux_count": sibling_orphans,
+        "attach_only_child_layout_payload_attachment_count": child_attached,
+        "attach_only_new_orphan_aux_node_count": len(orphan_after - orphan_before),
+        "attach_only_newly_attached_aux_node_count": len(
+            attached_after - attached_before
+        ),
+        "attach_only_payload_attachment_count": child_attached + sibling_attached,
+        "attach_only_sibling_layout_orphan_observation_count": sibling_orphans,
+        "attach_only_sibling_layout_payload_attachment_count": sibling_attached,
     }
 
 
 def _attach_child_layout_aux_nodes(
     *,
     attached_aux_node_ids: set[str],
-    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
+    aux_nodes_attached_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     ctx: ExportContext,
     emit_flag: dict[str, bool],
     export_children: dict[str, list[str]],
 ) -> int:
     """Processes child layout, attaching emitted guidance/descriptors to their parent
-    expectation.
+    expectation. This layout is basically "expectation already directly owns aux
+    children.".
+
+    Examples
+    --------
+    1. Expectation already owns guidance/descriptor as children
+        Suppose the export tree already contains:
+
+            export_children[E1] == [G1, D1]
+
+        where:
+
+            E1.role == "expectation"
+            G1.role == "guidance"
+            D1.role == "descriptor"
+
+        and both aux roles are configured with "attach_to_expectation_metadata".
+
+        This function does not modify `export_children`. Instead, it records payloads
+        for `G1` and `D1` under:
+
+            aux_nodes_attached_to_expectation[E1]
+
+        Result:
+            - E1 is now associated with aux metadata for G1 and D1
+            - G1 and D1 are added to `attached_aux_node_ids`
+            - The hierarchy remains unchanged at this stage
+
+    2. Senegal reading curriculum example
+        A common Senegal reading pattern is:
+
+            E1 = "Objectif spécifique"
+            G1 = "Contenus"
+            D1 = "Durée"
+
+        If the export tree already stores `Contenus` and `Durée` as direct children of
+        the `Objectif spécifique` expectation, this function attaches both as metadata
+        to that expectation.
+
+        Example:
+            E1: "Joxe ay santaane / Donner des consignes"
+            G1: guidance content
+            D1: "Ayu bés 22 / Semaine 22"
 
     Parameters
     ----------
     attached_aux_node_ids
         Mutable set collecting canonical node IDs successfully attached.
-    aux_attach_to_expectation
+    aux_nodes_attached_to_expectation
         Mutable mapping collecting metadata attachments for expectation nodes.
     config
         The CreateKGConfig for export.
@@ -207,21 +275,21 @@ def _attach_child_layout_aux_nodes(
         The number of auxiliary nodes successfully attached in this pass.
     """
 
-    prefer_en = config.description_text_policy == "prefer_text_en"
+    prefer_en = config.as_description_text_policy == "prefer_text_en"
     attached_count = 0
 
     for exp_id, node in ctx.nodes_by_id.items():
-        if not emit_flag.get(exp_id, False):
-            continue
-
-        if str(node.get("role") or "") != StatementRole.EXPECTATION.value:
+        if (
+            not emit_flag.get(exp_id, False)
+            or node["role"] != StatementRole.EXPECTATION.value
+        ):
             continue
 
         for child_id in export_children.get(exp_id, []):
-            if not emit_flag.get(child_id, False):
+            if not emit_flag[child_id]:
                 continue
 
-            child_role = str(ctx.nodes_by_id.get(child_id, {}).get("role") or "")
+            child_role = ctx.nodes_by_id[child_id]["role"]
 
             if child_role not in AUX_ROLES or not _is_attachable(
                 config=config, role=child_role
@@ -232,13 +300,13 @@ def _attach_child_layout_aux_nodes(
                 attached_aux_node_ids.add(child_id)
 
             if _is_already_attached(
-                aux_attach_to_expectation=aux_attach_to_expectation,
                 aux_node_id=child_id,
+                aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
                 expectation_id=exp_id,
             ):
                 continue
 
-            aux_attach_to_expectation[exp_id].append(
+            aux_nodes_attached_to_expectation[exp_id].append(
                 _build_aux_payload(aux_node_id=child_id, ctx=ctx, prefer_en=prefer_en)
             )
             attached_count += 1
@@ -249,7 +317,7 @@ def _attach_child_layout_aux_nodes(
 def _attach_sibling_layout_aux_nodes(
     *,
     attached_aux_node_ids: set[str],
-    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
+    aux_nodes_attached_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     ctx: ExportContext,
     emit_flag: dict[str, bool],
@@ -257,13 +325,65 @@ def _attach_sibling_layout_aux_nodes(
     orphan_aux_node_ids: set[str],
 ) -> tuple[int, int]:
     """Processes sibling layout, attaching auxiliary nodes to the most recent preceding
-    expectation.
+    expectation. This layout is basically "expectation and aux are siblings, and aux
+    belongs to the most recent preceding expectation.".
+
+    Examples
+    --------
+    1. Ordered sibling row under a grouping parent
+        Suppose a grouping parent has the following emitted children in order:
+
+            [E1, G1, D1, E2]
+
+        where:
+
+            E1.role == "expectation"
+            G1.role == "guidance"
+            D1.role == "descriptor"
+            E2.role == "expectation"
+
+        This function scans left to right and attaches `G1` and `D1` to the most recent
+        preceding expectation, which is `E1`.
+
+        Result:
+            aux_nodes_attached_to_expectation[E1] contains payloads for G1 and D1
+
+        `E2` becomes the new `last_expectation` for any later aux siblings.
+
+    2. Leading aux nodes become orphans
+        Suppose a parent has:
+
+            [G0, D0, E1]
+
+        where no expectation appears before `G0` and `D0`.
+
+        Because there is no preceding expectation to own them, the function does not
+        attach `G0` or `D0` to `E1`. Instead, it records them in `orphan_aux_node_ids`.
+
+        Result:
+            - `G0` and `D0` are marked orphan aux
+            - they are not attached to `E1`
+
+    3. Senegal reading curriculum example
+        A common Senegal planning row appears in sibling order as:
+
+            [Objectif spécifique, Contenus, Durée]
+
+        For example:
+
+            E1: "Joxe ay santaane / Donner des consignes"
+            G1: guidance content under "Contenus"
+            D1: "Ayu bés 22 / Semaine 22"
+
+        The function attaches `Contenus` and `Durée` to the expectation
+        "Joxe ay santaane / Donner des consignes" because it is the most recent
+        preceding expectation in sibling order.
 
     Parameters
     ----------
     attached_aux_node_ids
         Mutable set collecting canonical node IDs successfully attached.
-    aux_attach_to_expectation
+    aux_nodes_attached_to_expectation
         Mutable mapping collecting metadata attachments for expectation nodes.
     config
         The CreateKGConfig for export.
@@ -283,22 +403,23 @@ def _attach_sibling_layout_aux_nodes(
         A tuple of (attached_count, sibling_orphans_count) recorded during this pass.
     """
 
-    prefer_en = config.description_text_policy == "prefer_text_en"
+    prefer_en = config.as_description_text_policy == "prefer_text_en"
     total_attached = 0
     total_orphans = 0
 
     for parent_id, kids in export_children.items():
-        if parent_id == ctx.root_id:
-            parent_role = NodeRole.FRAMEWORK.value
-        else:
-            parent_role = str((ctx.nodes_by_id.get(parent_id) or {}).get("role") or "")
+        parent_role = (
+            NodeRole.FRAMEWORK.value
+            if parent_id == ctx.root_id
+            else ctx.nodes_by_id[parent_id]["role"]
+        )
 
         if parent_role in STATEMENT_ROLE_VALUES:
             continue
 
         attached, orphans = _process_sibling_group(
             attached_aux_node_ids=attached_aux_node_ids,
-            aux_attach_to_expectation=aux_attach_to_expectation,
+            aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
             config=config,
             ctx=ctx,
             emit_flag=emit_flag,
@@ -306,7 +427,6 @@ def _attach_sibling_layout_aux_nodes(
             orphan_aux_node_ids=orphan_aux_node_ids,
             prefer_en=prefer_en,
         )
-
         total_attached += attached
         total_orphans += orphans
 
@@ -319,12 +439,69 @@ def _build_academic_standards_graph_bundle(
     config: CreateKGConfig,
     ctx: ExportContext,
 ) -> dict[str, Any]:
-    """Build a single graph bundle JSON.
+    """Build a single graph-shaped JSON bundle from the already-exported academic
+    standards artifacts.
 
-    - Nodes: StandardsFramework + StandardsFrameworkItem
-    - Relationships: HAS_CHILD (from Relationships export)
-    - Ordering: add `order_index` on HAS_CHILD relationships based on
-        HierarchyOrderExport.order (parent -> ordered child ids).
+    This function does not re-run standards export logic. Instead, it converts the
+    typed `AcademicStandardsExport` outputs into a graph bundle with top-level metadata
+    plus `nodes` and `relationships` lists.
+
+    Behavior:
+
+    1. Builds an edge-order lookup from `HierarchyOrderExport.order`, where each
+        `(parent_uuid, child_uuid)` pair maps to its child position under that parent.
+    2. Emits one graph node for the StandardsFramework and one graph node for each
+        StandardsFrameworkItem, using `case_identifier_uuid` as the graph node ID.
+    3. Converts each exported `hasChild` Relationship into a graph edge using:
+        - `source_entity_value` as `start`
+        - `target_entity_value` as `end`
+        - the serialized Relationship record as `properties`
+    4. Adds `order_index` to each graph edge's properties based on the hierarchy-order
+        artifact so downstream graph consumers can recover sibling order directly from
+        the edge list.
+    5. Returns a single bundle dictionary with: `doc_key`, `export_dialect`,
+        `generated_at`, `graph_type`, `nodes`, and `relationships`.
+
+    Examples
+    --------
+    1. Framework and two first-level items
+        Suppose the exported order artifact contains:
+
+            framework_uuid -> [A, B]
+
+        Then the bundle contains:
+            - one StandardsFramework node with id = framework CASE UUID
+            - two StandardsFrameworkItem nodes with ids A and B
+            - two hasChild edges:
+                framework -> A  (order_index = 0)
+                framework -> B  (order_index = 1)
+
+    2. Senegal expectation with attached aux metadata
+        Suppose an expectation SFI "Joxe ay santaane / Donner des consignes" has
+        attached aux metadata for:
+
+            - guidance: "Contenus"
+            - descriptor: "Ayu bés 22 / Semaine 22"
+
+        and appears as a child of a Palier 3 grouping SFI.
+
+        Then the bundle contains:
+            - a node for the Palier 3 grouping
+            - a node for the expectation SFI whose properties include the attached aux
+                metadata
+            - a single hasChild edge from Palier 3 -> expectation
+            - no separate graph nodes or edges for the attached guidance/descriptor
+
+    3. Relationship ordering
+        Suppose parent P has ordered children [C1, C2, C3] in the hierarchy-order
+        export.
+
+        Then the bundle contains hasChild edges:
+            P -> C1 with properties.order_index = 0
+            P -> C2 with properties.order_index = 1
+            P -> C3 with properties.order_index = 2
+
+        This preserves sibling order directly on the edge records.
 
     Parameters
     ----------
@@ -339,6 +516,15 @@ def _build_academic_standards_graph_bundle(
     -------
     dict[str, Any]
         The graph bundle dictionary.
+
+    Raises
+    ------
+    ValueError
+        If any hasChild relationship in the export bundle is missing a corresponding
+        entry in `academic_standards.order.order` for its parent-child pair, which is
+        required to populate the edge's `order_index` property. This should never occur
+        if the export logic is correct, since every emitted relationship should have a
+        corresponding hierarchy order entry.
     """
 
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -350,8 +536,8 @@ def _build_academic_standards_graph_bundle(
         for idx, child_id in enumerate(child_ids):
             order_index_by_edge[(parent_id, child_id)] = idx
 
-    # Nodes: use case_identifier_uuid as the node key since relationships already key
-    # off case_identifier_uuid.
+    # Nodes: use `case_identifier_uuid` as the node key since relationships already key
+    # off `case_identifier_uuid`.
     fw = academic_standards.framework
     nodes: list[dict[str, Any]] = [
         {
@@ -375,17 +561,27 @@ def _build_academic_standards_graph_bundle(
     relationships: list[dict[str, Any]] = []
 
     for r in academic_standards.relationships:
-        start_id = r.source_entity_value  # Already case_identifier_uuid as string
-        end_id = r.target_entity_value  # Already case_identifier_uuid as string
-
+        start_id = r.source_entity_value  # Already `case_identifier_uuid` as string
+        end_id = r.target_entity_value  # Already `case_identifier_uuid` as string
         props = r.model_dump(mode="json")
-        props["order_index"] = order_index_by_edge.get((start_id, end_id))
+        order_index = order_index_by_edge.get((start_id, end_id))
 
-        assert r.relationship_type == "hasChild", (
-            f"Unexpected relationship type '{r.relationship_type}' "
-            f"in Academic Standards export bundle."
-        )
+        if r.relationship_type != HAS_CHILD:
+            raise ValueError(
+                f"Unexpected relationship type '{r.relationship_type}' "
+                f"in Academic Standards export bundle."
+            )
 
+        if order_index is None:
+            raise ValueError(
+                f"Missing hierarchy order entry for exported hasChild edge "
+                f"{start_id} -> {end_id}. Every Academic Standards relationship "
+                f"must have a corresponding entry in "
+                f"academic_standards.order.order so bundle edges never serialize "
+                f"with a null order_index."
+            )
+
+        props["order_index"] = order_index
         relationships.append(
             {
                 "id": str(r.identifier),
@@ -398,7 +594,7 @@ def _build_academic_standards_graph_bundle(
 
     return {
         "doc_key": ctx.doc_key,
-        "export_dialect": config.export_dialect,
+        "export_dialect": config.as_export_dialect,
         "generated_at": generated_at,
         "graph_type": "academic_standards",
         "nodes": nodes,
@@ -409,7 +605,7 @@ def _build_academic_standards_graph_bundle(
 def _build_aux_payload(
     *, aux_node_id: str, ctx: ExportContext, prefer_en: bool
 ) -> dict[str, Any]:
-    """Builds the metadata payload dictionary for an auxiliary node.
+    """Build the metadata payload dictionary for an auxiliary node.
 
     Parameters
     ----------
@@ -427,17 +623,16 @@ def _build_aux_payload(
     """
 
     node = ctx.nodes_by_id[aux_node_id]
-    role = str(node.get("role") or "")
-    bbox = node.get("bbox")
-
+    bbox = node["bbox"]
     payload: dict[str, Any] = {
-        "role": role,
-        "text": node_display_text(node=node, prefer_text_en=prefer_en),
+        "bbox": bbox,
         "canonical_node_id": aux_node_id,
         "page_indices": node.get("page_indices", []),
+        "role": node["role"],
         "source_decision_ids": node.get("source_decision_ids", []),
+        "source_label": node.get("source_label"),
         "source_segment_ids": node.get("source_segment_ids", []),
-        "bbox": bbox,
+        "text": _node_display_text(node=node, prefer_text_en=prefer_en),
     }
 
     if bbox is not None:
@@ -446,41 +641,17 @@ def _build_aux_payload(
     return payload
 
 
-def _build_export_order_index(
-    export_children: dict[str, list[str]],
-) -> dict[tuple[str, str], int]:
-    """Build export-time (parent, child) -> `order_index` from the finalized export
-    tree.
-
-    Parameters
-    ----------
-    export_children
-        Finalized export parent-to-children mapping after reparenting/hoisting/pruning.
-
-    Returns
-    -------
-    dict[tuple[str, str], int]
-        Mapping of canonical (parent_id, child_id) pairs to export-time order indices.
-    """
-
-    return {
-        (parent_id, child_id): idx
-        for parent_id, child_ids in export_children.items()
-        for idx, child_id in enumerate(child_ids)
-    }
-
-
 def _build_export_parent_by_child(
-    *, root_id: str, export_children: dict[str, list[str]]
+    *, export_children: dict[str, list[str]], root_id: str
 ) -> dict[str, str]:
     """Build an export-time parent lookup from the finalized export tree.
 
     Parameters
     ----------
-    root_id
-        The canonical node ID of the root (framework) node.
     export_children
         The finalized parent-to-children mapping for export.
+    root_id
+        The canonical node ID of the root (framework) node.
 
     Returns
     -------
@@ -503,13 +674,14 @@ def _build_export_parent_by_child(
 
             if prior_parent is not None and prior_parent != parent_id:
                 raise ValueError(
-                    "Export hierarchy integrity error: child node "
-                    f"{child_id!r} appears under multiple parents "
-                    f"({prior_parent!r}, {parent_id!r})."
+                    f"Export hierarchy integrity error: "
+                    f"child node {child_id} appears under multiple parents "
+                    f"({prior_parent}, {parent_id})."
                 )
 
             parent_by_child[child_id] = parent_id
 
+    # Remove the root from the `parent_by_child` mapping since it has no parent.
     parent_by_child.pop(root_id, None)
     return parent_by_child
 
@@ -529,17 +701,25 @@ def _build_initial_emit_flags(
     Returns
     -------
     tuple[dict[str, bool], dict[str, str]]
-        A tuple containing the emit_flag dictionary and drop_reasons dictionary.
+        A tuple of (emit_flag, drop_reasons) where:
+            - emit_flag is a mapping of canonical node ID to a boolean indicating
+                whether the node should be emitted based on export policies.
+            - drop_reasons is a mapping of canonical node ID to a string describing
+                the reason for dropping the node (only for nodes where emit_flag is
+                False).
     """
 
     emit_flag: dict[str, bool] = {}
     drop_reasons: dict[str, str] = {}
 
     for node_id in ctx.nodes_by_id:
+        # The root/framework node is always skipped and should not be subject to
+        # dropping rules since it has no parent and serves as the anchor for the entire
+        # export hierarchy.
         if node_id == ctx.root_id:
             continue
 
-        ok, reason = should_emit_node_with_reason(
+        ok, reason = _should_emit_node_with_reason(
             ctx=ctx, config=config, node_id=node_id
         )
         emit_flag[node_id] = ok
@@ -548,6 +728,126 @@ def _build_initial_emit_flags(
             drop_reasons[node_id] = reason
 
     return emit_flag, drop_reasons
+
+
+def _build_progression_context(
+    *,
+    config: CreateKGConfig,
+    ctx: ExportContext,
+    export_order_index: dict[tuple[str, str], int] | None,
+    export_parent_by_child: dict[str, str] | None,
+    node: dict[str, Any],
+    node_id: str,
+    prefer_text_en: bool,
+) -> dict[str, Any]:
+    """Build the progression context metadata for expectation nodes.
+
+    Parameters
+    ----------
+    config
+        The CreateKGConfig for export.
+    ctx
+        The ExportContext for the CanonicalIR.
+    export_order_index
+        Optional export-time (parent_id, child_id) -> order_index mapping.
+    export_parent_by_child
+        Optional mapping of canonical child node ID to parent node ID.
+    node
+        The canonical node dictionary.
+    node_id
+        The ID of the canonical node.
+    prefer_text_en
+        Whether to prefer English text.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary containing the computed progression context keys and ordinals.
+    """
+
+    grade_key = _first_ancestor_label_for_role(
+        ctx=ctx,
+        node_id=node_id,
+        parent_by_child=export_parent_by_child,
+        prefer_text_en=prefer_text_en,
+        role=NodeRole.GRADE_LEVEL.value,
+    )
+    stage_key = _first_ancestor_label_for_role(
+        ctx=ctx,
+        node_id=node_id,
+        parent_by_child=export_parent_by_child,
+        prefer_text_en=prefer_text_en,
+        role=NodeRole.STAGE.value,
+    )
+    role_allowlist = None
+
+    if config.as_grouping_role_policy == "whitelist":
+        # Use the grouping whitelist if present so `topic_path_key` is consistent
+        # across countries/configs.
+        role_allowlist = {r.value for r in config.as_grouping_roles_whitelist}
+
+        # But never allow grade/stage/week into the path key. If we left them in the
+        # topic path key, the same conceptual thread would split into separate keys
+        # like stage=ce1|strand=lecture|subtopic=grammaire vs.
+        # stage=ce2|strand=lecture|subtopic=grammaire, which defeats the point of a
+        # reusable cross-level thread key. The level signal is already preserved
+        # elsewhere, so excluding it from `topic_path_key` avoids double encoding and
+        # fragmentation.
+        role_allowlist -= {
+            NodeRole.GRADE_LEVEL.value,
+            NodeRole.STAGE.value,
+            NodeRole.WEEK.value,
+        }
+
+    topic_path_key, topic_path_parts = _compute_topic_path_key(
+        ctx=ctx,
+        node_id=node_id,
+        parent_by_child=export_parent_by_child,
+        prefer_text_en=prefer_text_en,
+        role_allowlist=role_allowlist,
+    )
+
+    parent_lookup = export_parent_by_child or ctx.parent_by_child
+    order_lookup = export_order_index or ctx.edge_order_index
+    parent_id = parent_lookup.get(node_id)
+
+    canonical_order_index_within_parent = (
+        ctx.edge_order_index.get((parent_id, node_id)) if parent_id else None
+    )
+    order_index_within_parent = (
+        order_lookup.get((parent_id, node_id)) if parent_id else None
+    )
+    canon_order_path = _walk_ancestors(
+        ctx=ctx, node_id=node_id, parent_by_child=parent_lookup
+    )
+
+    grade_low, grade_high = _parse_ordinal(grade_key) if grade_key else (None, None)
+    stage_low, stage_high = _parse_ordinal(stage_key) if stage_key else (None, None)
+    level_context = _resolve_effective_level_context(
+        config=config,
+        explicit_grade_high=grade_high,
+        explicit_grade_key=grade_key,
+        explicit_grade_low=grade_low,
+        explicit_stage_high=stage_high,
+        explicit_stage_key=stage_key,
+        explicit_stage_low=stage_low,
+        node_role=node["role"],
+    )
+    code_raw = node.get("local_code") or ""
+    code_features = _parse_code_features(
+        code=str(code_raw), grade_ordinal_low=level_context.get("grade_ordinal_low")
+    )
+
+    return {
+        "canon_order_path": canon_order_path,
+        "canonical_order_index_within_parent": canonical_order_index_within_parent,
+        "order_index_within_parent": order_index_within_parent,
+        "thread_key": _normalize_thread_key(topic_path_key=topic_path_key),
+        "topic_path_key": topic_path_key,
+        "topic_path_parts": topic_path_parts,  # For debugging
+        **level_context,
+        **code_features,
+    }
 
 
 def _build_relationships_and_order(
@@ -559,7 +859,84 @@ def _build_relationships_and_order(
     framework_uuid: UUID,
     sfi_by_node: dict[str, StandardsFrameworkItem],
 ) -> tuple[list[Relationship], dict[str, list[str]]]:
-    """Build hasChild relationships and hierarchy order map.
+    """Build "hasChild" relationships and hierarchy order map.
+
+    This function does three main things.
+        1. `_edge_metadata()` pulls provenance for a canonical edge from
+            `ctx.edge_metadata_by_pair` and packages it into relationship metadata:
+            canonical parent/child IDs, canonical order index, source decision IDs,
+            source segment IDs, and the export-time order index from
+            `export_order_index`. This is how the relationship keeps both the original
+            canonical edge trace and the final exported ordering trace.
+        2. It emits framework -> first-level SFI relationships. It looks at
+            `export_children[ctx.root_id]`, filters to children that actually exist in
+            `sfi_by_node`, deduplicates them while preserving order, writes that
+            ordered UUID list into `order_map[str(framework_uuid)]`, and emits one
+            hasChild relationship per child with source_entity="StandardsFramework".
+        3. It emits SFI -> SFI relationships for every surviving exported parent. For
+            each non-root parent in `export_children`, it skips the parent unless that
+            canonical parent itself became an SFI, filters/dedupes its emitted
+            children, records their UUID order in `order_map[str(parent_sfi_uuid)]`,
+            and emits one hasChild edge per child. Parents with no emitted children
+            simply do not get an `order_map` entry.
+
+    Examples
+    --------
+    1. Framework -> first-level items
+        Suppose the finalized export tree contains:
+
+            export_children[ROOT] = [A, B]
+
+        and both `A` and `B` were emitted as SFIs with UUIDs `UA` and `UB`.
+
+        Then the function produces:
+
+            order_map[str(framework_uuid)] == [str(UA), str(UB)]
+
+        and emits:
+
+            StandardsFramework(framework_uuid) -[:hasChild]-> StandardsFrameworkItem(UA)
+            StandardsFramework(framework_uuid) -[:hasChild]-> StandardsFrameworkItem(UB)
+
+    2. SFI -> SFI edges under a surviving grouping
+        Suppose a surviving exported parent `P` has finalized children:
+
+            export_children[P] = [E1, E2]
+
+        and all three nodes were emitted as SFIs with UUIDs `UP`, `UE1`, `UE2`.
+
+        Then the function produces:
+
+            order_map[str(UP)] == [str(UE1), str(UE2)]
+
+        and emits:
+
+            StandardsFrameworkItem(UP) -[:hasChild]-> StandardsFrameworkItem(UE1)
+            StandardsFrameworkItem(UP) -[:hasChild]-> StandardsFrameworkItem(UE2)
+
+    3. Attached aux nodes do not become hierarchy edges
+        Suppose a Senegal row originally contained:
+
+            E1(expectation), G1(guidance/"Contenus"), D1(descriptor/"Durée")
+
+        and earlier export steps attached `G1` and `D1` into
+        `E1.metadata["aux_statements"]` and suppressed them as standalone SFIs.
+
+        Then `_build_relationships_and_order()` emits a hasChild edge only for `E1`
+        within the hierarchy. It does not emit separate hierarchy edges for `G1` or
+        `D1`.
+
+    4. Duplicate child references are collapsed deterministically
+        Suppose earlier hoisting produced:
+
+            export_children[P] = [E1, E2, E1]
+
+        Then `_dedupe_preserve_order()` normalizes this to:
+
+            [E1, E2]
+
+        so the export does not produce duplicate hasChild edges or duplicate ordered
+        children.
 
     Parameters
     ----------
@@ -583,7 +960,7 @@ def _build_relationships_and_order(
         (relationships, order_map).
     """
 
-    def _edge_metadata(parent_id: str, child_id: str) -> dict[str, Any]:
+    def _edge_metadata(*, parent_id: str, child_id: str) -> dict[str, Any]:
         """Retrieve edge metadata for a given parent-child pair.
 
         Parameters
@@ -601,17 +978,17 @@ def _build_relationships_and_order(
 
         edge_md = ctx.edge_metadata_by_pair.get((parent_id, child_id), {})
         return {
-            "canonical_parent_id": parent_id,
-            "canonical_child_id": child_id,
             "canonical_order_index": edge_md.get(
                 "order_index", ctx.edge_order_index.get((parent_id, child_id))
             ),
+            "canonical_parent_id": parent_id,
+            "canonical_child_id": child_id,
             "canonical_edge_source_decision_ids": edge_md.get(
                 "source_decision_ids", []
             ),
             "canonical_edge_source_segment_ids": edge_md.get("source_segment_ids", []),
-            "export_parent_id": parent_id,
             "export_order_index": export_order_index.get((parent_id, child_id)),
+            "export_parent_id": parent_id,
         }
 
     relationships: list[Relationship] = []
@@ -632,7 +1009,9 @@ def _build_relationships_and_order(
                 config=config,
                 doc_key=ctx.doc_key,
                 parent_uuid=framework_uuid,
-                relationship_metadata=_edge_metadata(ctx.root_id, cid),
+                relationship_metadata=_edge_metadata(
+                    parent_id=ctx.root_id, child_id=cid
+                ),
                 source_entity="StandardsFramework",
             )
         )
@@ -661,67 +1040,138 @@ def _build_relationships_and_order(
                     config=config,
                     doc_key=ctx.doc_key,
                     parent_uuid=p_uuid,
-                    relationship_metadata=_edge_metadata(pid, cid),
+                    relationship_metadata=_edge_metadata(parent_id=pid, child_id=cid),
                 )
             )
 
     return relationships, order_map
 
 
-def _collect_grade_levels(
-    *, ctx: ExportContext, node_id: str, prefer_text_en: bool
+def _collect_effective_grade_levels(
+    *,
+    config: CreateKGConfig,
+    ctx: ExportContext,
+    node_id: str,
+    parent_by_child: dict[str, str] | None = None,
+    prefer_text_en: bool,
+    role: str,
 ) -> list[str]:
-    """Collect grade level tags by walking ancestors and capturing nodes whose role ==
-    grade_level.
+    """Collect SFI grade-level labels, applying a document default when needed.
+
+    The exporter first walks the finalized export ancestry to collect explicit grade
+    levels. If no explicit grade-level ancestors are found and the run config provides
+    `as_default_level_context` with `kind='grade_level'` for the node's role, the
+    configured label is returned as a single grade-level tag.
+
+    This is intentionally a property-level fallback. It does not synthesize a
+    `grade_level` grouping node or rewrite the `hasChild` hierarchy.
+
+    Examples
+    --------
+    1. Explicit grade ancestor
+        If an expectation sits under `grade_level('Grade 2')`, the function returns:
+
+            ["Grade 2"]
+
+        The config default is ignored because explicit hierarchy context exists.
+
+    2. Single-grade document default
+        If an expectation has no grade ancestor and the config contains:
+
+            as_default_level_context = {
+                "kind": "grade_level",
+                "label": "CE1",
+                "ordinal_low": 1,
+                "ordinal_high": 1,
+                "apply_to_roles": ["expectation"]
+            }
+
+        the function returns:
+
+            ["CE1"]
+
+    3. Stage-only default
+        If `as_default_level_context.kind == 'stage'`, the function returns the
+        explicit ancestry-derived grade levels only. Stage defaults are stored in
+        `metadata.progression_context` but do not populate the SFI `grade_level`
+        property.
 
     Parameters
     ----------
+    config
+        The KG export config, optionally including `as_default_level_context`.
     ctx
-        The ExportContext for the CanonicalIR, providing access to node properties and
-        hierarchy.
+        The ExportContext for the CanonicalIR.
     node_id
-        The ID of the canonical node for which to collect grade levels.
+        The canonical node ID for which to collect grade levels.
+    parent_by_child
+        Optional finalized export parent lookup. If omitted, canonical ancestry is used.
     prefer_text_en
-        If True, prefer "text_en" over "text" when extracting display text for grade
-        level nodes.
+        Whether to prefer English text when extracting ancestor labels.
+    role
+        Canonical node role for the SFI being emitted.
 
     Returns
     -------
     list[str]
-        A deduplicated list of grade level labels found in the node's ancestry, ordered
-        from the highest level (farthest ancestor) down to the lowest level (closest
-        ancestor). If no grade level nodes are encountered during the traversal, an
-        empty list is returned.
+        Explicit or default grade-level labels, deduplicated and ordered.
     """
 
-    cur: Optional[str] = node_id
+    ancestry = _walk_ancestors(
+        ctx=ctx, node_id=node_id, parent_by_child=parent_by_child
+    )
     output: list[str] = []
-    seen: set[str] = set()
 
-    while cur and cur != ctx.root_id and cur not in seen:
-        seen.add(cur)
-        node = ctx.nodes_by_id.get(cur) or {}
+    for aid in ancestry:
+        node = ctx.nodes_by_id.get(aid) or {}
 
-        if node.get("role") == "grade_level":
-            label = node_display_text(node=node, prefer_text_en=prefer_text_en)
+        if node.get("role") == NodeRole.GRADE_LEVEL.value:
+            label = node.get("normalized_text") or _node_display_text(
+                node=node, prefer_text_en=prefer_text_en
+            )
+            label = " ".join(str(label or "").split())
 
             if label:
                 output.append(label)
 
-        cur = ctx.parent_by_child.get(cur)
-
-    output.reverse()
-
     # De-dupe while preserving order.
-    deduped: list[str] = []
+    grade_levels: list[str] = []
     dset: set[str] = set()
 
     for g in output:
         if g not in dset:
-            deduped.append(g)
+            grade_levels.append(g)
             dset.add(g)
 
-    return deduped
+    # Return explicit grade levels if found.
+    if grade_levels:
+        default_context = config.as_default_level_context
+
+        if (
+            default_context is not None
+            and default_context.kind == NodeRole.GRADE_LEVEL.value
+            and not default_context.apply_when_missing_only
+            and role
+            in {default_role.value for default_role in default_context.apply_to_roles}
+        ):
+            return [default_context.label]
+
+        return grade_levels
+
+    # Fallback to document default.
+    default_context = config.as_default_level_context
+
+    if default_context is None or default_context.kind != NodeRole.GRADE_LEVEL.value:
+        return grade_levels
+
+    allowed_roles = {
+        default_role.value for default_role in default_context.apply_to_roles
+    }
+
+    if role not in allowed_roles:
+        return grade_levels
+
+    return [default_context.label]
 
 
 def _compute_export_children(
@@ -734,6 +1184,104 @@ def _compute_export_children(
     In `under_expectation` mode, expectation-anchored reparenting is applied for both
     grouping parents and the framework root so root-level sibling layouts behave the
     same as grouped sibling layouts.
+
+    Examples
+    --------
+    1. Sibling-layout row in a Senegal table
+        A common Senegal reading row has one expectation followed by guidance and
+        descriptor leaves. For example:
+
+            * expectation: Objectif spécifique
+            * guidance: Contenus
+            * descriptor: Durée
+
+        When these appear as ordered siblings under the same exported parent,
+        `_compute_export_children()` keeps the expectation in the parent’s child list,
+        then attaches the following guidance/descriptor to that expectation instead of
+        leaving them as sibling SFIs under the parent. For example:
+
+        Suppose a parent grouping has ordered emitted children:
+
+            [E1(expectation), G1(guidance), D1(descriptor), E2(expectation)]
+
+        In `under_expectation` mode, the exporter treats `G1` and `D1` as belonging to
+        the most recent preceding expectation (`E1`).
+
+        Result:
+            export_children[parent] == [E1, E2]
+            aux_attach_to_expectation[E1] contains payloads for G1 and D1
+
+        This matches table rows where "Objectif spécifique" is followed by
+        "Contenus" and "Durée".
+
+    2. Child-layout aux under an expectation
+        This function also supports the case where the canonical IR already stores
+        guidance/descriptor as direct children of an expectation. In that layout, when
+        `_compute_export_children()` encounters the expectation in sibling order, it
+         pulls its aux children from `ctx.children_by_parent[expectation]` and attaches
+         them to that expectation, instead of requiring them to appear as siblings. For
+         example:
+
+         Suppose a parent grouping has ordered emitted children:
+
+            [E1(expectation), E2(expectation)]
+
+        and the canonical IR already stores:
+
+            ctx.children_by_parent[E1] == [G1(guidance), D1(descriptor)]
+
+        When the exporter visits `E1`, it pulls `G1` and `D1` from the canonical
+        expectation subtree and attaches them to `E1` (either as metadata or as
+        export-time children, depending on config).
+
+        Result:
+            export_children[parent] still includes E1 only once
+            child-layout aux are consumed without needing sibling matching
+
+    3. Non-aux children stay in order
+        This function does NOT rewrite everything under a parent. It only intercepts
+        attachable aux statements. Other emitted children stay in the parent’s exported
+        order. For example:
+
+        Suppose a parent has ordered emitted children:
+
+            [W1(week), E1(expectation), G1(guidance), D1(descriptor), W2(week)]
+
+        The exporter preserves non-aux children in order and only re-homes attachable
+        aux statements.
+
+        Result:
+            export_children[parent] == [W1, E1, W2]
+            aux_attach_to_expectation[E1] contains G1 and D1
+
+    4. Aux before any expectation is not matched
+        If a guidance/descriptor node appears before any expectation sibling has been
+        seen, there is no `last_expectation` to attach it to. In that case the node is
+        left in `new_kids` rather than being silently attached to the wrong
+        expectation. For example:
+
+        Suppose a parent has ordered emitted children:
+
+            [G0(guidance), D0(descriptor), E1(expectation)]
+
+        Because no preceding expectation exists yet, `G0` and `D0` are not attached to
+        `E1`. They remain in the parent's exported child sequence at this stage.
+
+        Result:
+            export_children[parent] == [G0, D0, E1]
+
+        This avoids incorrectly assigning leading aux statements to a later expectation.
+
+    5. Senegal reading curriculum example
+        Under a `subtopic` such as "Róofoo-gi-baat / Grammaire", a row may contain:
+
+            - expectation: "Objectif spécifique"
+            - guidance: "Contenus"
+            - descriptor: "Durée"
+
+        The exporter keeps the expectation as the exported child under the subtopic and
+        attaches the "Contenus" and "Durée" leaves to that expectation, rather than
+        keeping all three as sibling StandardsFrameworkItems under the subtopic.
 
     Parameters
     ----------
@@ -749,42 +1297,49 @@ def _compute_export_children(
     tuple[
         dict[str, list[str]], DefaultDict[str, list[dict[str, Any]]], dict[str, Any]
     ]
-        (export_children, aux_attach_to_expectation, reparent_stats)--the
-        parent-to-children mapping, metadata attachments for expectation nodes, and a
-        dict with `aux_reparented_count` and `orphan_aux_count`.
+        A tuple containing:
+            export_children: The parent -> children mapping for the export tree.
+            aux_nodes_attached_to_expectation: Metadata payloads to attach to
+                expectations.
+            reparent_stats: Granular aux counters (sibling reparented vs. child-layout
+                attached) and orphan/attached aux node IDs.
     """
 
-    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]] = defaultdict(
-        list
+    attached_aux_node_ids: set[str] = set()
+    aux_nodes_attached_to_expectation: DefaultDict[str, list[dict[str, Any]]] = (
+        defaultdict(list)
     )
     export_children: dict[str, list[str]] = {}
-    reparented_count = 0
     orphan_aux_count = 0
     orphan_aux_node_ids: set[str] = set()
-    attached_aux_node_ids: set[str] = set()
+    sibling_aux_reparented_count = 0
+    child_layout_aux_attached_count = 0
 
     for parent_id, kids in ctx.children_by_parent.items():
-        if parent_id == ctx.root_id:
-            parent_role = NodeRole.FRAMEWORK.value
-        else:
-            parent_role = str(ctx.nodes_by_id[parent_id].get("role") or "")
+        parent_role = (
+            NodeRole.FRAMEWORK.value
+            if parent_id == ctx.root_id
+            else ctx.nodes_by_id[parent_id]["role"]
+        )
+        ordered_emitted_kids = [cid for cid in kids if emit_flag[cid]]
 
-        ordered_emitted_kids = [cid for cid in kids if emit_flag.get(cid, False)]
-
-        if config.aux_statement_parenting == "under_expectation" and (
+        if config.as_aux_statement_parenting == "under_expectation" and (
             parent_id == ctx.root_id
             or _is_grouping_role(config=config, role=parent_role)
         ):
-            # Count aux nodes before reparenting to detect orphans.
+            # Count only attachable aux nodes before re-parenting. Standalone aux
+            # configured as non-attachable are not failed attachments and therefore
+            # should not contribute to orphan/reparent statistics.
             aux_before = sum(
                 1
                 for cid in ordered_emitted_kids
-                if str(ctx.nodes_by_id[cid].get("role") or "") in AUX_ROLES
+                if ctx.nodes_by_id[cid]["role"] in AUX_ROLES
+                and _is_attachable(config=config, role=ctx.nodes_by_id[cid]["role"])
             )
 
-            new_kids, child_aux_consumed = _reparent_aux_under_expectations(
-                aux_attach_to_expectation=aux_attach_to_expectation,
+            new_kids, child_aux_consumed = _reparent_aux_nodes_under_expectations(
                 attached_aux_node_ids=attached_aux_node_ids,
+                aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
                 config=config,
                 ctx=ctx,
                 emit_flag=emit_flag,
@@ -792,19 +1347,55 @@ def _compute_export_children(
                 ordered_kids=ordered_emitted_kids,
             )
 
-            # Aux nodes that ended up in new_kids had no preceding expectation
-            # (orphans).
+            # Only attachable aux nodes that remain in `new_kids` lacked a preceding
+            # expectation and therefore count as true orphan attachments. Aux nodes
+            # configured to remain standalone SFIs are intentionally excluded.
             orphan_ids_in_batch = {
                 cid
                 for cid in new_kids
-                if str(ctx.nodes_by_id[cid].get("role") or "") in AUX_ROLES
+                if ctx.nodes_by_id[cid]["role"] in AUX_ROLES
+                and _is_attachable(config=config, role=ctx.nodes_by_id[cid]["role"])
             }
-            reparented_count += aux_before - len(orphan_ids_in_batch)
-            reparented_count += child_aux_consumed
+            sibling_aux_reparented_count += aux_before - len(orphan_ids_in_batch)
+            child_layout_aux_attached_count += child_aux_consumed
             orphan_aux_count += len(orphan_ids_in_batch)
             orphan_aux_node_ids.update(orphan_ids_in_batch)
         else:
             new_kids = ordered_emitted_kids
+
+            # If this parent is an expectation, avoid re-introducing attachable aux
+            # children that were already harvested and attached to this same
+            # expectation during an earlier grouping/root pass. Without this filter,
+            # child-layout guidance/descriptor nodes can leak back into the export
+            # tree here and then require later suppression passes to clean them up.
+            #
+            # NB: This only filters aux nodes that are both:
+            #   1. Attachable under the current config and
+            #   2. Already attached to this exact expectation
+            #
+            # Non-attachable aux nodes (e.g., when exported as standalone SFIs) are
+            # intentionally preserved as expectation children.
+            if (
+                config.as_aux_statement_parenting == "under_expectation"
+                and parent_id != ctx.root_id
+                and parent_role == StatementRole.EXPECTATION.value
+            ):
+                new_kids = [
+                    cid
+                    for cid in new_kids
+                    if not (
+                        ctx.nodes_by_id[cid]["role"] in AUX_ROLES
+                        and _is_attachable(
+                            config=config, role=ctx.nodes_by_id[cid]["role"]
+                        )
+                        and cid in attached_aux_node_ids
+                        and _is_already_attached(
+                            aux_node_id=cid,
+                            aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
+                            expectation_id=parent_id,
+                        )
+                    )
+                ]
 
         existing = export_children.get(parent_id, [])
         merged = list(new_kids)
@@ -817,15 +1408,45 @@ def _compute_export_children(
 
         export_children[parent_id] = merged
 
-    return (
-        export_children,
-        aux_attach_to_expectation,
-        {
-            "aux_reparented_count": reparented_count,
-            "orphan_aux_count": orphan_aux_count,
-            "orphan_aux_node_ids": sorted(orphan_aux_node_ids),
-            "attached_aux_node_ids": sorted(attached_aux_node_ids),
-        },
+    reparent_stats = {
+        "attached_aux_node_ids": sorted(attached_aux_node_ids),
+        "attached_aux_node_count": len(attached_aux_node_ids),
+        "child_layout_aux_attached_count": child_layout_aux_attached_count,
+        "orphan_aux_node_ids": sorted(orphan_aux_node_ids),
+        "orphan_aux_node_count": orphan_aux_count,
+        "sibling_aux_reparented_count": sibling_aux_reparented_count,
+    }
+    return export_children, aux_nodes_attached_to_expectation, reparent_stats
+
+
+def _compute_source_anchored_sfi_uuid(
+    *, config: CreateKGConfig, ctx: ExportContext, node_id: str
+) -> UUID:
+    """Compute a source-anchored deterministic SFI UUID for a canonical node.
+
+    SFI identity should track the canonical/source node rather than the node's final
+    export placement. Export-time hoisting, pruning, or reparenting may legitimately
+    change `hasChild` edges without changing the identity of the source-derived SFI
+    itself.
+
+    Parameters
+    ----------
+    config
+        The CreateKGConfig providing the UUID namespace.
+    ctx
+        The ExportContext providing the document key.
+    node_id
+        The canonical node ID being exported as an SFI.
+
+    Returns
+    -------
+    UUID
+        A deterministic UUIDv5 anchored to the canonical node identity.
+    """
+
+    return uuid5(
+        config.namespace_uuid,
+        f"lc:curriculum:{ctx.doc_key}:sfi:canonical_node:{node_id}",
     )
 
 
@@ -837,9 +1458,51 @@ def _compute_topic_path_key(
     prefer_text_en: bool,
     role_allowlist: set[str] | None = None,
 ) -> tuple[str | None, list[dict[str, Any]]]:
-    """Compute a deterministic topic_path_key for progression threading. If
+    """Compute a deterministic `topic_path_key` for progression threading. If
     role_allowlist is provided, only those roles contribute. Always excludes
-    grade/stage to allow matching across levels.
+    grade/stage/week to allow matching across levels.
+
+    Examples
+    --------
+    1. Senegal reading example with whitelisted grouping roles
+        Suppose an expectation sits under the following export ancestry:
+
+            stage:    "CE1"
+            strand:   "Lecture"
+            substage: "Palier 1"
+            subtopic: "Róofoo-gi-baat / Grammaire"
+
+        and `role_allowlist={"strand", "substage", "subtopic"}`.
+
+        Then `_compute_topic_path_key()` may return:
+
+            (
+                "strand=lecture|substage=palier_1|subtopic=roofoo_gi_baat_grammaire",
+                [
+                    {"role": "strand", "label": "Lecture", ...},
+                    {"role": "substage", "label": "Palier 1", ...},
+                    {"role": "subtopic", "label": "Róofoo-gi-baat / Grammaire", ...},
+                ],
+            )
+
+        Note that `stage` is excluded even though it exists in the ancestry.
+
+    2. Excluding structural roles
+        Suppose the ancestry contains:
+
+            framework -> section -> stage -> subtopic -> expectation
+
+        Even without a role allowlist, `framework`, `section`, and `stage` are excluded
+        by default. If `subtopic` has a usable label, the returned key contains only
+        the `subtopic=...` segment.
+
+    3. No valid path parts
+        Suppose all ancestors are excluded roles or have blank labels after
+        normalization.
+
+        Then the function returns:
+
+            (None, [])
 
     Parameters
     ----------
@@ -884,7 +1547,7 @@ def _compute_topic_path_key(
 
     for aid in ancestry:
         n = ctx.nodes_by_id.get(aid) or {}
-        r = str(n.get("role") or "")
+        r = n["role"]
 
         if not r:
             continue
@@ -895,7 +1558,7 @@ def _compute_topic_path_key(
         if role_allowlist is not None and r not in role_allowlist:
             continue
 
-        label = n.get("normalized_text") or node_display_text(
+        label = n.get("normalized_text") or _node_display_text(
             node=n, prefer_text_en=prefer_text_en
         )
         label = " ".join(str(label or "").split())
@@ -903,7 +1566,7 @@ def _compute_topic_path_key(
         if not label:
             continue
 
-        parts.append(f"{r}={normalize_key_token(label=label, separator="_")}")
+        parts.append(f"{r}={normalize_key_token(label=label, separator='_')}")
         debug.append({"role": r, "label": label, "canonical_node_id": aid})
 
     if not parts:
@@ -913,7 +1576,10 @@ def _compute_topic_path_key(
 
 
 def _dedupe_preserve_order(ids: list[str]) -> list[str]:
-    """Deduplicate a list while preserving the first occurrence order.
+    """Remove duplicate child IDs but keep the first occurrence, which is important
+    because earlier hoisting/merge steps can accidentally leave repeated canonical
+    child references in a parent’s child list. This function prevents duplicate
+    hasChild edges and duplicate child UUIDs in `order_map` without scrambling sequence.
 
     Parameters
     ----------
@@ -927,17 +1593,67 @@ def _dedupe_preserve_order(ids: list[str]) -> list[str]:
         their first occurrence.
     """
 
-    seen: set[str] = set()
     output: list[str] = []
+    seen: set[str] = set()
 
     for item in ids:
         if item in seen:
             continue
 
-        seen.add(item)
         output.append(item)
+        seen.add(item)
 
     return output
+
+
+def _depth(*, ctx: ExportContext, nid: str) -> int:
+    """Calculate depth of a node in the original hierarchy for sorting.
+
+    Parameters
+    ----------
+    ctx
+        The ExportContext providing access to the root ID and parent-child mappings.
+    nid
+        The node ID for which to calculate depth.
+
+    Returns
+    -------
+    int
+        The depth of the node in the original hierarchy, where root-level nodes have
+        depth 0, their children have depth 1, and so on.
+    """
+
+    cur: str | None = nid
+    d = 0
+    seen: set[str] = set()
+
+    while cur and cur != ctx.root_id and cur not in seen:
+        seen.add(cur)
+        d += 1
+        cur = ctx.parent_by_child.get(cur)
+
+    return d
+
+
+def _drop_reason(*parts: Any) -> str:
+    """Build a normalized drop-reason taxonomy string.
+
+    All drop reasons emitted by this module should use the same shape so policy
+    coverage and downstream reporting can group them reliably.
+
+    Parameters
+    ----------
+    parts
+        Ordered non-empty reason segments to append after the `drop` prefix.
+
+    Returns
+    -------
+    str
+        A normalized drop reason string like `drop:segment_decision:ignore`.
+    """
+
+    cleaned = [str(part).strip() for part in parts if str(part).strip()]
+    return ":".join(["drop", *cleaned])
 
 
 def _emit_framework(
@@ -973,16 +1689,18 @@ def _emit_framework(
         config.namespace_uuid, f"lc:curriculum:{ctx.doc_key}:framework"
     )
     metadata = ctx.get_framework_metadata()
-    prefer_en = config.description_text_policy == "prefer_text_en"
+    prefer_en = config.as_description_text_policy == "prefer_text_en"
     root_node = ctx.nodes_by_id.get(ctx.root_id, {})
-    name = node_display_text(node=root_node, prefer_text_en=prefer_en) or ctx.pdf_name
-
+    inferred_name = (
+        _node_display_text(node=root_node, prefer_text_en=prefer_en) or ctx.pdf_name
+    )
+    name = config.as_framework_name or inferred_name
     return StandardsFramework(
         academic_subject=metadata["academic_subject_default"],
         adoption_status=metadata["adoption_status"],
         attribution_statement=metadata["attribution_statement"],
         author=metadata["author"],
-        case_identifier_uri=f"{config.case_uri_base}{framework_id}",
+        case_identifier_uri=f"{config.as_case_uri_base}{framework_id}",
         case_identifier_uuid=framework_id,
         date_created=canonical_ir_created_at,
         date_modified=None,
@@ -998,7 +1716,7 @@ def _emit_framework(
             "provenance_context": provenance_context or {},
         },
         name=name,
-        provider=config.provider,
+        provider=config.as_provider,
     )
 
 
@@ -1012,6 +1730,11 @@ def _emit_has_child(
     source_entity: str = "StandardsFrameworkItem",
 ) -> Relationship:
     """Create a hasChild Relationship.
+
+    NB: The Relationship schema should validate that hasChild is either
+    StandardsFramework -> StandardsFrameworkItem or
+    StandardsFrameworkItem -> StandardsFrameworkItem, and that both endpoints are CASE
+    UUIDs.
 
     Parameters
     ----------
@@ -1035,20 +1758,19 @@ def _emit_has_child(
         The constructed hasChild Relationship.
     """
 
-    relationship_metadata = dict(relationship_metadata or {})
+    relationship_metadata = relationship_metadata or {}
     relationship_metadata.setdefault("source_kg", "academic_standards")
-
     return Relationship(
-        attribution_statement=config.attribution_statement,
-        author=config.author,
+        attribution_statement=config.as_attribution_statement,
+        author=config.as_author,
         identifier=uuid5(
             config.namespace_uuid,
             f"lc:curriculum:{doc_key}:rel:hasChild:{parent_uuid}:{child_uuid}",
         ),
-        license=config.license,
+        license=config.as_license,
         metadata=relationship_metadata,
-        provider=config.provider,
-        relationship_type="hasChild",
+        provider=config.as_provider,
+        relationship_type=HAS_CHILD,
         source_entity=source_entity,
         source_entity_key="case_identifier_uuid",
         source_entity_value=str(parent_uuid),
@@ -1071,6 +1793,52 @@ def _emit_sfi(
     node_id: str,
 ) -> StandardsFrameworkItem:
     """Emit a StandardsFrameworkItem for a given canonical node.
+
+    Examples
+    --------
+    1. Basic expectation emission with attached aux metadata
+        Suppose steps 3 - 5 has already attached guidance and descriptor rows to an
+        expectation from the Senegal reading curriculum:
+
+            expectation: "Joxe ay ndigal / Donner des ordres"
+            guidance:    "Toftalanteg kàddu yu gàtt ..."
+            descriptor:  "Ayu bés 20 / Semaine 20"
+
+        Calling `_emit_sfi()` on the expectation node produces one
+        `StandardsFrameworkItem` whose:
+
+            - `description` is the expectation text
+            - `normalized_statement_type` is "Standard"
+            - `metadata["aux_statements"]` contains payloads for the guidance and
+                descriptor nodes
+            - `metadata["progression_context"]` is populated
+
+        The guidance and descriptor are not emitted here as separate SFIs if they
+        were previously attached and suppressed.
+
+    2. Grouping node emission
+        Suppose the node is a grouping such as:
+
+            subtopic: "Róofoo-gi-baat / Grammaire"
+
+        Calling `_emit_sfi()` emits an SFI whose:
+
+            - `description` is the grouping label
+            - `normalized_statement_type` is "Standard Grouping"
+            - `metadata["progression_context"]` is absent because the node is not an
+                expectation
+
+    3. Orphan aux emission
+        Suppose a descriptor row could not be attached to any expectation earlier in
+        the export pipeline.
+
+        Calling `_emit_sfi(..., is_orphan_aux=True, ...)` on that node emits a
+        standalone SFI whose metadata includes:
+
+            metadata["orphan_aux"] = True
+
+        This preserves the aux statement for debugging/review instead of silently
+        dropping it.
 
     Parameters
     ----------
@@ -1110,42 +1878,18 @@ def _emit_sfi(
     """
 
     node = ctx.nodes_by_id[node_id]
-    prefer_en = config.description_text_policy == "prefer_text_en"
-
-    # Language policy:
-    # - default: Always use framework language
-    # - source: Prefer per-node language if present, else fall back to framework
-    sfi_in_language = str(fw_metadata.get("in_language") or "")
-
-    if config.export_in_language_policy == "source":
-        # Canonical IR stores language inside TextUnit dicts (title/body), not as a
-        # top-level field. Check title first, then body, skipping "und" (undetermined).
-        node_lang = next(
-            (
-                str(node[f]["language"]).strip()
-                for f in ("title", "body")
-                if isinstance(node.get(f), dict)
-                and node[f].get("language")
-                and str(node[f]["language"]).strip().lower() != "und"
-            ),
-            None,
-        )
-
-        if node_lang:
-            sfi_in_language = node_lang
-
-    path_key = ctx.compute_path_key(node_id)
-    sfi_id = uuid5(config.namespace_uuid, f"lc:curriculum:{ctx.doc_key}:sfi:{path_key}")
-
-    role = str(node.get("role") or "")
-    desc = node_display_text(node=node, prefer_text_en=prefer_en) or (
-        f"[{role or 'unknown'}:{node_id[:8]}]"
+    prefer_en = config.as_description_text_policy == "prefer_text_en"
+    desc, sfi_in_language = _resolve_description_and_language(
+        fw_metadata=fw_metadata, node=node, node_id=node_id, prefer_text_en=prefer_en
     )
+    sfi_id = _compute_source_anchored_sfi_uuid(config=config, ctx=ctx, node_id=node_id)
+    role = node["role"]
     bbox = node.get("bbox")
-
     metadata: dict[str, Any] = {
         "bbox": bbox,
         "canonical_node_id": node_id,
+        "canonical_path_key": ctx.compute_path_key(node_id),
+        "identity_basis": "canonical_node",
         "local_code": node.get("local_code"),
         "normalized_text": node.get("normalized_text"),
         "page_indices": node.get("page_indices", []),
@@ -1156,7 +1900,7 @@ def _emit_sfi(
     }
 
     # Make bbox interpretation self-describing by pointing to the framework-level bbox
-    # context. (framework.metadata.provenance_context.bbox) should include coord_space,
+    # context. `framework.metadata.provenance_context.bbox` should include coord_space,
     # dpi, page dims, etc.
     if bbox is not None:
         metadata["bbox_ref"] = "framework.metadata.provenance_context.bbox"
@@ -1167,106 +1911,53 @@ def _emit_sfi(
     if is_orphan_aux:
         metadata["orphan_aux"] = True
 
-    # Deterministic progression context keys (for Learning Progressions KG inference).
+    # Generate progression context keys for expectation nodes (used for Learning
+    # Progressions KG inference downstream).
     if role == StatementRole.EXPECTATION.value:
-        grade_key = _first_ancestor_label_for_role(
+        metadata["progression_context"] = _build_progression_context(
+            config=config,
             ctx=ctx,
+            export_order_index=export_order_index,
+            export_parent_by_child=export_parent_by_child,
+            node=node,
             node_id=node_id,
-            parent_by_child=export_parent_by_child,
             prefer_text_en=prefer_en,
-            role=NodeRole.GRADE_LEVEL.value,
-        )
-        stage_key = _first_ancestor_label_for_role(
-            ctx=ctx,
-            node_id=node_id,
-            parent_by_child=export_parent_by_child,
-            prefer_text_en=prefer_en,
-            role=NodeRole.STAGE.value,
         )
 
-        # Use the grouping whitelist if present so topic_path_key is consistent across
-        # countries/configs.
-        role_allowlist = None
-
-        if config.grouping_role_policy == "whitelist":
-            role_allowlist = {r.value for r in config.grouping_roles_whitelist}
-
-            # But never allow grade/stage into the path key.
-            role_allowlist -= {NodeRole.GRADE_LEVEL.value, NodeRole.STAGE.value}
-
-        topic_path_key, topic_path_parts = _compute_topic_path_key(
-            ctx=ctx,
-            node_id=node_id,
-            parent_by_child=export_parent_by_child,
-            prefer_text_en=prefer_en,
-            role_allowlist=role_allowlist,
-        )
-
-        parent_lookup = export_parent_by_child or ctx.parent_by_child
-        order_lookup = export_order_index or ctx.edge_order_index
-        parent_id = parent_lookup.get(node_id)
-        canonical_order_index_within_parent = (
-            ctx.edge_order_index.get((parent_id, node_id)) if parent_id else None
-        )
-        order_index_within_parent = (
-            order_lookup.get((parent_id, node_id)) if parent_id else None
-        )
-        canon_order_path = _walk_ancestors(
-            ctx=ctx, node_id=node_id, parent_by_child=parent_lookup
-        )
-
-        # Code retrieval (should work across countries/canonicalizers).
-        grade_low, grade_high = _parse_ordinal(grade_key) if grade_key else (None, None)
-        stage_low, stage_high = _parse_ordinal(stage_key) if stage_key else (None, None)
-        code_raw = node.get("local_code") or ""
-        code_features = _parse_code_features(
-            code=str(code_raw), grade_ordinal_low=grade_low
-        )
-
-        metadata["progression_context"] = {
-            "grade_key": grade_key,
-            "grade_ordinal_low": grade_low,
-            "grade_ordinal_high": grade_high,
-            "stage_key": stage_key,
-            "stage_ordinal_low": stage_low,
-            "stage_ordinal_high": stage_high,
-            "thread_key": _normalize_thread_key(topic_path_key=topic_path_key),
-            "topic_path_key": topic_path_key,
-            "topic_path_parts": topic_path_parts,  # For debugging
-            "canon_order_path": canon_order_path,
-            "canonical_order_index_within_parent": canonical_order_index_within_parent,
-            "order_index_within_parent": order_index_within_parent,
-            **code_features,
-        }
-
+    grade_levels = _collect_effective_grade_levels(
+        config=config,
+        ctx=ctx,
+        node_id=node_id,
+        parent_by_child=export_parent_by_child,
+        prefer_text_en=prefer_en,
+        role=role,
+    )
     return StandardsFrameworkItem(
         academic_subject=fw_metadata["academic_subject_default"],
-        attribution_statement=config.attribution_statement,
-        author=config.author,
-        case_identifier_uri=f"{config.case_uri_base}{sfi_id}",
+        attribution_statement=config.as_attribution_statement,
+        author=config.as_author,
+        case_identifier_uri=f"{config.as_case_uri_base}{sfi_id}",
         case_identifier_uuid=sfi_id,
         date_created=canonical_ir_created_at,
         date_modified=None,
         description=desc,
-        grade_level=_collect_grade_levels(
-            ctx=ctx, node_id=node_id, prefer_text_en=prefer_en
-        ),
+        grade_level=grade_levels,
         identifier=sfi_id,
         in_language=sfi_in_language,
         jurisdiction=fw_metadata["jurisdiction"],
-        license=config.license,
+        license=config.as_license,
         metadata=metadata,
         normalized_statement_type=_normalized_statement_type(config=config, role=role),
         notes=None,
-        provider=config.provider,
-        statement_code=node.get("local_code"),
+        provider=config.as_provider,
+        statement_code=node.get("local_code", None),
         statement_type=(node.get("source_label") or role or None),
     )
 
 
 def _emit_sfis(
     *,
-    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
+    aux_nodes_attached_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     canonical_created_at_iso: Optional[str],
     config: CreateKGConfig,
     ctx: ExportContext,
@@ -1279,7 +1970,7 @@ def _emit_sfis(
 
     Parameters
     ----------
-    aux_attach_to_expectation
+    aux_nodes_attached_to_expectation
         Metadata attachments for expectation nodes.
     canonical_created_at_iso
         The ISO-8601 creation datetime.
@@ -1311,12 +2002,12 @@ def _emit_sfis(
     sfi_by_node: dict[str, StandardsFrameworkItem] = {}
     _orphans = orphan_aux_node_ids or set()
 
-    for node_id, ok in emit_flag.items():
-        if not ok:
+    for node_id, should_emit in emit_flag.items():
+        if not should_emit:
             continue
 
         sfi_by_node[node_id] = _emit_sfi(
-            aux_attachments=aux_attach_to_expectation.get(node_id),
+            aux_attachments=aux_nodes_attached_to_expectation.get(node_id),
             canonical_ir_created_at=canonical_created_at_iso,
             config=config,
             ctx=ctx,
@@ -1330,6 +2021,46 @@ def _emit_sfis(
     return sfi_by_node
 
 
+def _find_surviving_ancestor_and_anchor(
+    ctx: ExportContext, dropped_pid: str, emit_flag: dict[str, bool]
+) -> tuple[str, str | None]:
+    """Find the nearest emitted ancestor for a dropped parent and the anchor child on
+    the dropped path used for ordering.
+
+    Parameters
+    ----------
+    ctx
+        The ExportContext for the CanonicalIR, providing access to node properties and
+        hierarchy.
+    dropped_pid
+        The dropped parent ID for which to find the surviving ancestor and anchor child.
+    emit_flag
+        Dictionary mapping node IDs to boolean emit flags indicating which nodes are
+        emitted.
+
+    Returns
+    -------
+    tuple[str, str | None]
+        A tuple of (surviving_ancestor_id, anchor_child_id). The surviving ancestor is
+        the closest emitted ancestor of the dropped parent. The anchor child is the
+        child of the surviving ancestor that is on the path to the dropped parent and
+        has canonical order metadata used for determining where to insert hoisted
+        children.
+    """
+
+    cur: str | None = ctx.parent_by_child.get(dropped_pid)
+    seen: set[str] = set()
+    anchor_child: str | None = dropped_pid
+
+    while cur and cur != ctx.root_id and not emit_flag.get(cur) and cur not in seen:
+        seen.add(cur)
+        anchor_child = cur
+        cur = ctx.parent_by_child.get(cur)
+
+    surviving = cur if cur and cur not in seen else ctx.root_id
+    return surviving, anchor_child
+
+
 def _first_ancestor_label_for_role(
     *,
     ctx: ExportContext,
@@ -1339,7 +2070,49 @@ def _first_ancestor_label_for_role(
     role: str,
 ) -> str | None:
     """Find the closest ancestor (including self) with a given role and return its
-    label.
+    label. This is how an expectation gets labeled with the nearest enclosing
+    stage-like wrapper, such as a palier/stage node (if one exists in the export
+    hierarchy).
+
+    Examples
+    --------
+    1. Closest stage ancestor
+        Suppose the export ancestry for an expectation is:
+
+            framework
+              -> stage("CE1")
+              -> substage("Palier 3")
+              -> subtopic("Róofoo-gi-baat / Grammaire")
+              -> expectation("Joxe ay ndigal / Donner des ordres")
+
+        Calling:
+
+            _first_ancestor_label_for_role(..., role="stage")
+
+        returns:
+
+            "ce1"  # or the node display text if `normalized_text` is unavailable
+
+    2. Includes self
+        Suppose `node_id` itself points to a node whose role is `"stage"`.
+
+        Calling:
+
+            _first_ancestor_label_for_role(..., role="stage")
+
+        returns that node's own label, because the search includes self before
+        walking upward.
+
+    3. No matching ancestor
+        Suppose a Senegal expectation has no `grade_level` node anywhere above it.
+
+        Calling:
+
+            _first_ancestor_label_for_role(..., role="grade_level")
+
+        returns:
+
+            None
 
     Parameters
     ----------
@@ -1371,11 +2144,11 @@ def _first_ancestor_label_for_role(
 
     while cur and cur != ctx.root_id and cur not in seen:
         seen.add(cur)
-        n = ctx.nodes_by_id.get(cur) or {}
+        node = ctx.nodes_by_id.get(cur) or {}
 
-        if n.get("role") == role:
-            label = n.get("normalized_text") or node_display_text(
-                node=n, prefer_text_en=prefer_text_en
+        if node["role"] == role:
+            label = node.get("normalized_text") or _node_display_text(
+                node=node, prefer_text_en=prefer_text_en
             )
             label = " ".join(str(label or "").split())
             return label or None
@@ -1393,12 +2166,72 @@ def _handle_empty_grouping_pruning(
     emit_flag: dict[str, bool],
     export_children: dict[str, list[str]],
 ) -> set[str]:
-    """Prune empty groupings strictly.
+    """Optionally prune empty grouping nodes after hoisting and record drop reasons.
 
-    This step assumes that `_reattach_children_of_dropped_nodes` has already been
+    This step assumes that `_reattach_children_of_dropped_nodes()` has already been
     called, so children of dropped mid-hierarchy nodes have been hoisted to their
-    nearest surviving ancestor. Pruning then only removes grouping nodes that are
-    genuinely empty (no emitted children after reattachment).
+    nearest surviving ancestor. Pruning then removes only grouping nodes that are still
+    genuinely empty in the **export** tree.
+
+    Nodes with `preserve_if_empty=True` are exempt from pruning even if they have zero
+    emitted children. This is useful for intentionally retained structural wrappers in
+    the canonical IR (e.g., a section heading that should survive as a visible export
+    node even when its descendants were filtered out).
+
+    Examples
+    --------
+    1. Simple empty grouping after aux suppression
+        Suppose earlier steps have already attached and suppressed aux nodes, leaving:
+
+            export_children = {
+                ROOT: [S1],
+                S1: [T1],
+                T1: [],
+            }
+
+        and:
+
+            emit_flag[S1] = True   # grouping (e.g., substage)
+            emit_flag[T1] = True   # grouping (e.g., subtopic)
+
+        Because `T1` is a grouping with zero emitted children, pruning removes it.
+        After `T1` is removed, `S1` may also become empty and will be pruned on the
+        next iteration if it then has no emitted children.
+
+        Result:
+            - empty grouping shells do not survive as standalone SFIs
+            - the final hierarchy contains only groupings that still organize emitted
+              descendants
+
+    2. Senegal reading curriculum example
+        In Senegal reading, a whitelisted grouping such as:
+
+            substage: "Palier 2 — Production d'écrits"
+
+        may contain several `subtopic` children such as:
+
+            subtopic: "Róofoo-gi-baat / Grammaire"
+
+        If one such `subtopic` loses all emitted descendants after earlier filtering,
+        attachment, and subtree suppression, this step removes that empty `subtopic`.
+        If the `substage` still contains other emitted expectations or non-empty
+        subtopics, it remains. If it becomes empty too, it is pruned on a later pass.
+
+    3. preserve_if_empty keeps an intentional wrapper
+        Suppose a canonical grouping node has:
+
+            preserve_if_empty = True
+
+        and it ends up with zero emitted children after earlier export-time cleanup.
+        This wrapper is kept in the export tree and is not added to `drop_reasons`,
+        because the canonical IR explicitly requested that it survive even when empty.
+
+    4. Why this runs after step 7
+        Suppose a dropped non-grouping parent was hoisted away in step 7 so that its
+        emitted children now sit directly under a surviving grouping parent. Only after
+        that hoisting is complete can pruning correctly decide whether the grouping is
+        truly empty. Running pruning earlier could remove a grouping before its rescued
+        children were reattached.
 
     Parameters
     ----------
@@ -1421,31 +2254,31 @@ def _handle_empty_grouping_pruning(
 
     pruned_node_ids: set[str] = set()
 
-    if config.prune_empty_groupings:
+    if config.as_prune_empty_groupings:
         pruned_node_ids = _prune_empty_groupings(
             config=config, ctx=ctx, emit_flag=emit_flag, export_children=export_children
         )
 
         for nid in pruned_node_ids:
-            drop_reasons[nid] = "dropped:pruned_empty_grouping"
+            drop_reasons[nid] = _drop_reason("pruned_empty_grouping")
 
     return pruned_node_ids
 
 
 def _is_already_attached(
     *,
-    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     aux_node_id: str,
+    aux_nodes_attached_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     expectation_id: str,
 ) -> bool:
     """Checks if an auxiliary node is already attached to an expectation.
 
     Parameters
     ----------
-    aux_attach_to_expectation
-        Mutable mapping collecting metadata attachments for expectation nodes.
     aux_node_id
         The canonical node ID of the auxiliary node.
+    aux_nodes_attached_to_expectation
+        Mutable mapping collecting metadata attachments for expectation nodes.
     expectation_id
         The ID of the expectation node.
 
@@ -1456,8 +2289,8 @@ def _is_already_attached(
     """
 
     return any(
-        p.get("canonical_node_id") == aux_node_id
-        for p in aux_attach_to_expectation.get(expectation_id, [])
+        p["canonical_node_id"] == aux_node_id
+        for p in aux_nodes_attached_to_expectation[expectation_id]
     )
 
 
@@ -1479,15 +2312,20 @@ def _is_attachable(*, config: CreateKGConfig, role: str) -> bool:
 
     return (
         role == StatementRole.GUIDANCE.value
-        and config.guidance_handling == "attach_to_expectation_metadata"
+        and config.as_guidance_handling == "attach_to_expectation_metadata"
     ) or (
         role == StatementRole.DESCRIPTOR.value
-        and config.descriptor_handling == "attach_to_expectation_metadata"
+        and config.as_descriptor_handling == "attach_to_expectation_metadata"
     )
 
 
 def _is_grouping_role(*, config: CreateKGConfig, role: str) -> bool:
-    """Determine if a role is a grouping role (not expectation/aux).
+    """Determine if a role should be treated as a grouping node in standards export.
+
+    Statement roles (expectation/descriptor/guidance) and the synthetic framework role
+    are never groupings. When `as_grouping_role_policy="loose"`, every other role is
+    treated as a grouping. When `as_grouping_role_policy="whitelist"`, only roles in
+    `as_grouping_roles_whitelist` count as groupings.
 
     Parameters
     ----------
@@ -1502,23 +2340,56 @@ def _is_grouping_role(*, config: CreateKGConfig, role: str) -> bool:
         True if the role is a grouping role, False otherwise.
     """
 
-    if role == NodeRole.FRAMEWORK.value:
+    if role == NodeRole.FRAMEWORK.value or role in STATEMENT_ROLE_VALUES:
         return False
 
-    if role in STATEMENT_ROLE_VALUES:
-        return False
-
-    if config.grouping_role_policy == "loose":
+    if config.as_grouping_role_policy == "loose":
         return True
 
-    allowed = {r.value for r in config.grouping_roles_whitelist}
-
+    allowed = {r.value for r in config.as_grouping_roles_whitelist}
     return role in allowed
+
+
+def _node_display_text(*, node: dict[str, Any], prefer_text_en: bool = True) -> str:
+    """Determine display text for a node, preferring title over body, and falling back
+    to `normalized_text`, then `local_code` or `role` if no text found.
+
+    Parameters
+    ----------
+    node
+        The node dictionary to extract text from.
+    prefer_text_en
+        If True, prefer "text_en" over "text" when extracting from title/body.
+
+    Returns
+    -------
+    str
+        The display text for the node.
+    """
+
+    title = _pick_text(unit=node.get("title"), prefer_text_en=prefer_text_en)
+
+    if title:
+        return title
+
+    body = _pick_text(unit=node.get("body"), prefer_text_en=prefer_text_en)
+
+    if body:
+        return body
+
+    # Tertiary fallback: normalized_text (common on all canonical IR nodes).
+    nt = (node.get("normalized_text") or "").strip()
+
+    if nt:
+        return nt
+
+    # Last resort: code or role.
+    return (node.get("local_code") or node.get("role") or "").strip()
 
 
 def _normalized_statement_type(*, config: CreateKGConfig, role: str) -> str:
     """Normalize a node role to a statement type for
-    StandardsFrameworkItem.statement_type.
+    StandardsFrameworkItem.normalized_statement_type.
 
     Parameters
     ----------
@@ -1549,8 +2420,8 @@ def _normalize_thread_key(topic_path_key: str | None) -> str | None:
     """Normalize a topic_path_key into a cross-level "thread" key.
 
     Many curricula number topics/subtopics in their labels (e.g., "1.1 Exploring My
-    World", "2.5 Weather"). topic_path_key intentionally *excludes* grade/stage roles
-    so that it can be used for threading, but those numeric prefixes may still be
+    World", "2.5 Weather"). topic_path_key intentionally *excludes* grade/stage/week
+    roles so that it can be used for threading, but those numeric prefixes may still be
     embedded in the keyified label itself (e.g., `topic=1_1_exploring_my_world`).
 
     This normalization strips leading numeric-underscore prefixes from each segment's
@@ -1561,6 +2432,26 @@ def _normalize_thread_key(topic_path_key: str | None) -> str | None:
     1. This is *not* country-specific; it targets a common numbering pattern.
     2. If a segment value becomes empty after stripping (rare), it falls back to the
       original value.
+
+    Examples
+    --------
+    1. Stripping numeric topic prefixes
+        _normalize_thread_key(
+            "topic=1_1_exploring_my_world|subtopic=2_5_weather"
+        ) == "topic=exploring_my_world|subtopic=weather"
+
+    2. Keeping non-numbered segments unchanged
+        _normalize_thread_key(
+            "strand=lecture|subtopic=roofoo_gi_baat_grammaire"
+        ) == "strand=lecture|subtopic=roofoo_gi_baat_grammaire"
+
+    3. Ignoring malformed segments
+        _normalize_thread_key(
+            "strand=lecture|badsegment|subtopic=1_2_grammar"
+        ) == "strand=lecture|subtopic=grammar"
+
+    4. Empty input
+        _normalize_thread_key(None) is None
 
     Parameters
     ----------
@@ -1597,8 +2488,42 @@ def _parse_code_features(*, code: str, grade_ordinal_low: int | None) -> dict[st
 
     Supports:
       - numeric codes with dots: 3.9.4.1
-      - mixed codes: M3-1a / ENG.P1.02
+      - mixed codes: M3-1a/ENG.P1.02
       - roman segments: VI.2.1
+
+    Examples
+    --------
+    1. Numeric dotted code
+        _parse_code_features(code="3.9.4.1", grade_ordinal_low=3) == {
+            "code": "3.9.4.1",
+            "code_segments": ["3", "9", "4", "1"],
+            "code_tuple": [3, 9, 4, 1],
+            "code_stem": "3.9.4",
+            "code_ordinal": "1",
+            "code_stem_without_grade": "9.4",
+        }
+
+    2. Mixed alphanumeric code
+        _parse_code_features(code="ENG.P1.02", grade_ordinal_low=None) == {
+            "code": "ENG.P1.02",
+            "code_segments": ["ENG", "P1", "02"],
+            "code_tuple": ["ENG", "P1", 2],
+            "code_stem": "ENG.P1",
+            "code_ordinal": "02",
+        }
+
+    3. Roman numeral prefix
+        _parse_code_features(code="VI.2.1", grade_ordinal_low=6) == {
+            "code": "VI.2.1",
+            "code_segments": ["VI", "2", "1"],
+            "code_tuple": [6, 2, 1],
+            "code_stem": "VI.2",
+            "code_ordinal": "1",
+            "code_stem_without_grade": "2",
+        }
+
+    4. Empty code
+        _parse_code_features(code="", grade_ordinal_low=None) == {}
 
     Parameters
     ----------
@@ -1642,6 +2567,7 @@ def _parse_code_features(*, code: str, grade_ordinal_low: int | None) -> dict[st
     # that prefix too.
     if grade_ordinal_low is not None and segs:
         first_val = _to_int_or_roman(segs[0])
+
         if (
             isinstance(first_val, int)
             and first_val == grade_ordinal_low
@@ -1658,6 +2584,23 @@ def _parse_ordinal(label: str) -> tuple[int | None, int | None]:
     Handles:
       - digits: "Grade 3" -> 3, "I–II" -> 1, "Std III-VI" -> 3
       - embedded roman numerals: "Std VI" -> 6, "Standard III–VI" -> 3
+
+    Examples
+    --------
+    1. Single numeric level
+        _parse_ordinal("Grade 3") == (3, 3)
+
+    2. Numeric range with dash
+        _parse_ordinal("Semaines 10-17") == (10, 17)
+
+    3. Roman numeral range
+        _parse_ordinal("Std III–VI") == (3, 6)
+
+    4. Embedded digit inside a label
+        _parse_ordinal("CE1") == (1, 1)
+
+    5. No ordinal information
+        _parse_ordinal("Communication écrite") == (None, None)
 
     Parameters
     ----------
@@ -1683,9 +2626,11 @@ def _parse_ordinal(label: str) -> tuple[int | None, int | None]:
     nums = [int(x) for x in re.findall(r"(\d+)", s_norm)]
 
     if nums:
-        if len(nums) >= 2:
-            return min(nums[0], nums[1]), max(nums[0], nums[1])
-        return nums[0], nums[0]
+        return (
+            (min(nums[0], nums[1]), max(nums[0], nums[1]))
+            if len(nums) >= 2
+            else (nums[0], nums[0])
+        )
 
     # Otherwise try roman numerals anywhere in the string.
     romans = [ROMAN_MAP.get(m.group(1).upper()) for m in ROMAN_RE.finditer(s_norm)]
@@ -1701,77 +2646,94 @@ def _parse_ordinal(label: str) -> tuple[int | None, int | None]:
     return None, None
 
 
-def _process_attach_to_expectation(
-    *,
-    config: CreateKGConfig,
-    ctx: ExportContext,
-    drop_reasons: dict[str, str],
-    emit_flag: dict[str, bool],
-    reparent_stats: dict[str, Any],
-) -> None:
-    """Modify emit flags and track stats for attach-to-expectation handling.
+def _pick_text(*, prefer_text_en: bool, unit: dict[str, Any] | None) -> str:
+    """Retrieve text from a title/body TextUnit dict.
 
-    If aux statements are "attach_to_expectation_metadata", they should NOT be counted
-    as emitted nodes for pruning.
-
-    Only aux statements that were successfully attached to an owning expectation are
-    suppressed; orphan aux statements remain emitted (and are tagged as orphan_aux).
+    This helper returns only the text portion of `_pick_text_with_lang()` and keeps
+    existing call sites concise when language provenance is not needed.
 
     Parameters
     ----------
-    config
-        The CreateKGConfig for export.
-    ctx
-        The ExportContext for the CanonicalIR.
-    drop_reasons
-        Dictionary mapping node IDs to reasons they were dropped. Mutated in-place.
-    emit_flag
-        Dictionary mapping node IDs to boolean emit flags. Mutated in-place.
-    reparent_stats
-        Dictionary containing reparenting statistics. Mutated in-place.
+    prefer_text_en
+        If True, prefer `text_en` over `text` when both are present.
+    unit
+        The title/body unit dict (or None).
+
+    Returns
+    -------
+    str
+        The extracted text, or empty string if none found.
     """
 
-    attach_to_exp_count = 0
+    text, _, _ = _pick_text_with_lang(prefer_text_en=prefer_text_en, unit=unit)
+    return text
 
-    # Only suppress aux nodes that were actually attached to an expectation's metadata.
-    # This avoids silently deleting "orphan" aux statements that had no owning
-    # expectation (those remain as SFIs and are tagged via orphan_aux metadata).
-    attached_aux_node_ids: set[str] = set(
-        reparent_stats.get("attached_aux_node_ids") or []
-    )
 
-    if (
-        config.guidance_handling == "attach_to_expectation_metadata"
-        or config.descriptor_handling == "attach_to_expectation_metadata"
-    ):
-        for nid in attached_aux_node_ids:
-            if not emit_flag.get(nid, False):
-                continue
+def _pick_text_with_lang(
+    *, prefer_text_en: bool, unit: dict[str, Any] | None
+) -> tuple[str, str | None, bool]:
+    """Retrieve text from a title/body TextUnit dict together with its language.
 
-            role = str(ctx.nodes_by_id[nid].get("role") or "")
+    Canonical nodes store title/body as a dict like:
+    {"language": "...", "text": "...", "text_en": "..."}.
 
-            if (
-                role == StatementRole.GUIDANCE.value
-                and config.guidance_handling == "attach_to_expectation_metadata"
-            ):
-                emit_flag[nid] = False
-                drop_reasons[nid] = "dropped:attach_to_expectation_metadata"
-                attach_to_exp_count += 1
-            elif (
-                role == StatementRole.DESCRIPTOR.value
-                and config.descriptor_handling == "attach_to_expectation_metadata"
-            ):
-                emit_flag[nid] = False
-                drop_reasons[nid] = "dropped:attach_to_expectation_metadata"
-                attach_to_exp_count += 1
+    Parameters
+    ----------
+    prefer_text_en
+        If True, prefer `text_en` over `text` when both are present.
+    unit
+        The title/body unit dict (or None).
 
-    reparent_stats["attach_to_expectation_count"] = attach_to_exp_count
+    Returns
+    -------
+    tuple[str, str | None, bool]
+        `(text, language, used_text_en)` where *language* is the language of the
+        selected text when it is known. English is reported only when English text was
+        actually selected.
+    """
+
+    if not isinstance(unit, dict):
+        return "", None, False
+
+    source_language = str(unit.get("language") or "").strip() or None
+    text_en = str(unit.get("text_en") or "").strip()
+    text = str(unit.get("text") or "").strip()
+
+    if prefer_text_en and text_en:
+        return text_en, "en", True
+
+    if text:
+        return text, source_language, False
+
+    if text_en:
+        return text_en, "en", True
+
+    return "", source_language, False
+
+
+def _preserve_if_empty(*, ctx: ExportContext, nid: str) -> bool:
+    """Return whether a canonical node requests empty-wrapper preservation.
+
+    Parameters
+    ----------
+    ctx
+        The ExportContext for the CanonicalIR, providing access to node properties.
+    nid
+        The canonical node ID.
+
+    Returns
+    -------
+    bool
+        True if the node carries `preserve_if_empty=True`, else False.
+    """
+
+    return bool((ctx.nodes_by_id.get(nid) or {}).get("preserve_if_empty", False))
 
 
 def _process_sibling_group(
     *,
     attached_aux_node_ids: set[str],
-    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
+    aux_nodes_attached_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     ctx: ExportContext,
     emit_flag: dict[str, bool],
@@ -1781,11 +2743,16 @@ def _process_sibling_group(
 ) -> tuple[int, int]:
     """Processes a single group of sibling nodes, attaching aux nodes to expectations.
 
+    Only aux nodes whose role is configured to attach are eligible to become tracked
+    "orphans" in this pass. Aux roles configured to remain standalone SFIs (e.g.,
+    `export_as_sfi_other`) are intentionally ignored by orphan bookkeeping because they
+    are not failed attachments.
+
     Parameters
     ----------
     attached_aux_node_ids
         Mutable set collecting canonical node IDs successfully attached.
-    aux_attach_to_expectation
+    aux_nodes_attached_to_expectation
         Mutable mapping collecting metadata attachments for expectation nodes.
     config
         The CreateKGConfig for export.
@@ -1807,14 +2774,14 @@ def _process_sibling_group(
     """
 
     attached_count = 0
-    orphan_count = 0
     last_expectation: Optional[str] = None
+    orphan_count = 0
 
     for cid in kids:
         if not emit_flag.get(cid, False):
             continue
 
-        role = str((ctx.nodes_by_id.get(cid) or {}).get("role") or "")
+        role = (ctx.nodes_by_id.get(cid) or {})["role"]
 
         if role == StatementRole.EXPECTATION.value:
             last_expectation = cid
@@ -1823,7 +2790,11 @@ def _process_sibling_group(
         if role not in AUX_ROLES:
             continue
 
-        # Guard: If no expectation precedes this aux node, it is an orphan.
+        # Only aux roles configured for attachment participate in orphan tracking.
+        if not _is_attachable(config=config, role=role):
+            continue
+
+        # Guard: If no expectation precedes this attachable aux node, it is an orphan.
         if not last_expectation:
             if cid not in orphan_aux_node_ids:
                 orphan_aux_node_ids.add(cid)
@@ -1831,23 +2802,18 @@ def _process_sibling_group(
 
             continue
 
-        # Guard: Check if the role is configured to be attachable.
-        if not _is_attachable(config=config, role=role):
-            continue
-
         if cid not in attached_aux_node_ids:
             attached_aux_node_ids.add(cid)
 
         # Guard: Skip if it's already attached to prevent duplicates.
         if _is_already_attached(
-            aux_attach_to_expectation=aux_attach_to_expectation,
             aux_node_id=cid,
+            aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
             expectation_id=last_expectation,
         ):
             continue
 
-        # If all guards pass, attach the payload.
-        aux_attach_to_expectation[last_expectation].append(
+        aux_nodes_attached_to_expectation[last_expectation].append(
             _build_aux_payload(aux_node_id=cid, ctx=ctx, prefer_en=prefer_en)
         )
         attached_count += 1
@@ -1862,8 +2828,99 @@ def _prune_empty_groupings(
     emit_flag: dict[str, bool],
     export_children: dict[str, list[str]],
 ) -> set[str]:
-    """Iteratively prune grouping nodes that have no emitted children. Mutates
-    emit_flag and export_children in place.
+    """Iteratively prune empty grouping nodes to a fixpoint.
+
+    Only grouping nodes are eligible. A grouping is pruned when all of the following
+    are true:
+
+    1. It is still emitted,
+    2. It has zero **emitted** children in the current export tree, and
+    3. Its canonical node does not request `preserve_if_empty=True`.
+
+    This function mutates both `emit_flag` and `export_children` in place. Parent-child
+    lists are cleaned immediately when a grouping is pruned, and then globally scrubbed
+    against the final emitted set at the end of pruning so no stale child references
+    survive in the final export tree.
+
+    Examples
+    --------
+    1. Single empty grouping
+        Suppose:
+
+            export_children = {
+                ROOT: [A],
+                A: [B],
+                B: [],
+            }
+
+        and:
+
+            emit_flag[A] = True   # grouping
+            emit_flag[B] = True   # grouping
+
+        `B` has no emitted children, so it is pruned first. If that leaves `A` with no
+        emitted children, `A` is pruned on the next iteration.
+
+        Final result:
+            export_children = {ROOT: []}
+            emit_flag[A] = False
+            emit_flag[B] = False
+
+    2. Cascading prune to a fixpoint
+        Suppose:
+
+            export_children = {
+                ROOT: [Stage1],
+                Stage1: [Subtopic1],
+                Subtopic1: [],
+            }
+
+        where both `Stage1` and `Subtopic1` are grouping roles and both are currently
+        emitted.
+
+        First iteration:
+            - `Subtopic1` is pruned because it has zero emitted children.
+
+        Second iteration:
+            - `Stage1` is now empty, so it is pruned too.
+
+        The loop continues until no new empty grouping nodes remain.
+
+    3. Senegal reading curriculum: keeping non-empty wrappers
+        Suppose a Senegal `subtopic` like:
+
+            "Róofoo-gi-baat / Grammaire"
+
+        still contains one emitted expectation after aux statements (`Contenus`,
+        `Durée`) were attached and suppressed.
+
+            export_children[subtopic_id] == [expectation_id]
+
+        Because that grouping still has at least one emitted child, it is **not**
+        pruned. This step only removes grouping wrappers that have become structurally
+        empty.
+
+    4. preserve_if_empty overrides empty pruning
+        Suppose a canonical grouping node has:
+
+            preserve_if_empty = True
+
+        and currently:
+
+            export_children[preserved_id] == []
+            emit_flag[preserved_id] = True
+
+        Even though it is empty, it is kept in the export tree because the canonical IR
+        explicitly requested preservation.
+
+    5. Stale references are scrubbed away
+        If a grouping is pruned after earlier hoisting changed export-time parentage,
+        this function removes that grouping from every remaining parent child-list
+        immediately. It then performs one final global scrub:
+
+            export_children[parent] = [c for c in kids if c in emitted]
+
+        so no non-emitted child references survive in the finalized export tree.
 
     Parameters
     ----------
@@ -1891,15 +2948,17 @@ def _prune_empty_groupings(
         to_prune: list[str] = []
 
         for nid in list(emitted):
-            role = str(ctx.nodes_by_id[nid].get("role") or "")
+            role = ctx.nodes_by_id[nid]["role"]
 
-            if _is_grouping_role(config=config, role=role):
-                live_children = [
-                    c for c in export_children.get(nid, []) if c in emitted
-                ]
+            if not _is_grouping_role(config=config, role=role) or _preserve_if_empty(
+                ctx=ctx, nid=nid
+            ):
+                continue
 
-                if len(live_children) == 0:
-                    to_prune.append(nid)
+            live_children = [c for c in export_children.get(nid, []) if c in emitted]
+
+            if len(live_children) == 0:
+                to_prune.append(nid)
 
         if to_prune:
             changed = True
@@ -1908,16 +2967,13 @@ def _prune_empty_groupings(
             for nid in to_prune:
                 emitted.discard(nid)
                 export_children.pop(nid, None)
-                pid = ctx.parent_by_child.get(nid)
-
-                if pid is not None and pid in export_children:
-                    export_children[pid] = [c for c in export_children[pid] if c != nid]
+                _remove_child_everywhere(child_id=nid, export_children=export_children)
 
     # Drop children that are no longer emitted.
     for pid, kids in list(export_children.items()):
         export_children[pid] = [c for c in kids if c in emitted]
 
-    # Reflect pruning back into emit_flag.
+    # Reflect pruning back into `emit_flag`.
     for nid in list(emit_flag.keys()):
         emit_flag[nid] = nid in emitted
 
@@ -1930,28 +2986,51 @@ def _reattach_children_of_dropped_nodes(
     emit_flag: dict[str, bool],
     export_children: dict[str, list[str]],
 ) -> dict[str, int]:
-    """Re-attach children of dropped (non-emitted) nodes to their nearest emitted
-    ancestor in the export hierarchy.
+    """Re-attach emitted children of dropped (non-emitted) parents to the nearest
+    surviving emitted ancestor in the export hierarchy.
 
-    When a mid-hierarchy grouping node is dropped (e.g., a `section` role not in the
-    grouping whitelist), `_compute_export_children` still creates an entry for it as a
-    parent in `export_children` (with its emitted children as values). However,
-    `_build_relationships_and_order` skips dropped parents (`pid not in sfi_by_node`),
-    leaving those children unreachable from the framework root.
+    When this function is called (step 7), `emit_flag` indicates whether each canonical
+    node will still be emitted and `export_children` contains the current export-time
+    parent -> child map. This function is not trying to rescue dropped children. It
+    only hoists children that are still emitted but are currently hanging under a
+    dropped parent.
 
-    This function detects such orphaned subtrees and hoists their children up to the
-    nearest surviving ancestor (or the root), preserving tree connectivity.
+    Why this is needed
+    ------------------
+    If a dropped mid-hierarchy parent remains in `export_children`, then
+    `_build_relationships_and_order()` later skips that parent because it has no
+    emitted SFI. Any emitted descendants still reachable only through that dropped
+    parent would otherwise become disconnected from the exported framework tree.
 
-    Ordering policy:
+    The function therefore collapses dropped structural parents out of the export tree
+    while preserving connectivity. For example:
 
-    1. Prefer the canonical order slot of the **closest dropped node on the path**
-       between the surviving ancestor and the dropped parent. This preserves relative
-       placement even when multiple dropped ancestors are collapsed.
-    2. If that anchor edge has no canonical order metadata, fall back to appending at
-       the end of the surviving ancestor's child list.
+        Root
+            - A (emitted)
+                - B (dropped)
+                    - X (emitted)
+                    - Y (emitted)
 
-    This **must** run after all `emit_flag` mutations and **before** empty-grouping
-    pruning, so that pruning operates on the corrected tree structure.
+    becomes:
+
+        Root
+            - A (emitted)
+                - X (emitted)
+                - Y (emitted)
+
+    Importantly, this function now also removes stale references to the dropped parent
+    from every remaining parent child-list immediately, rather than relying on later
+    pruning/filtering to clean those up.
+
+    Ordering policy
+    ---------------
+    1. Prefer the canonical order slot of the closest dropped node on the path between
+        the surviving ancestor and the dropped parent.
+    2. If that anchor edge has no canonical order metadata, fall back to the original
+        sibling position of the anchor child under the surviving ancestor.
+    3. If neither anchor-based ordering signal is available, append the hoisted
+        children at the end of the surviving ancestor's child list.
+    4. Process dropped parents deepest-first so nested dropped chains collapse safely.
 
     Parameters
     ----------
@@ -1961,102 +3040,76 @@ def _reattach_children_of_dropped_nodes(
     emit_flag
         Node-level emit flags (True if the node will be emitted as an SFI).
     export_children
-        Parent-to-children mapping (mutated in place). Entries for dropped parents are
-        removed, and their children are appended to the nearest surviving ancestor's
-        children list.
+        Parent-to-children mapping (mutated in place).
 
     Returns
     -------
     dict[str, int]
-        Statistics: `reattached_children_count` (number of children moved) and
-        `dropped_parents_resolved` (number of dropped parents whose children were
-        re-attached).
+        - `reattached_children_count`: number of children newly inserted under a
+            surviving ancestor.
+        - `dropped_parents_processed`: number of dropped parents examined that had at
+            least one emitted child eligible for hoisting.
+        - `dropped_parents_removed_from_parent_lists_count`: number of dropped parents
+            whose stale references were removed from at least one export parent child-list.
+        - `removed_dropped_parent_reference_list_count`: total number of export parent
+            child-lists modified while removing stale dropped-parent references.
+        - `reattach_original_sibling_fallback_count`: number of hoist operations that
+            used original sibling-position fallback because canonical edge ordering was
+            unavailable.
+        - `reattach_appended_without_anchor_order_count`: number of hoist operations
+            that had to append because no anchor-based ordering signal was available.
     """
 
-    # Identify non-root parents in export_children that are NOT emitted.
     dropped_parents = [
         pid
         for pid in list(export_children)
-        if pid != ctx.root_id and not emit_flag.get(pid)
+        if pid != ctx.root_id and not emit_flag.get(pid, False)
     ]
 
     if not dropped_parents:
-        return {"reattached_children_count": 0, "dropped_parents_resolved": 0}
+        return {
+            "dropped_parents_processed": 0,
+            "dropped_parents_removed_from_parent_lists_count": 0,
+            "reattach_appended_without_anchor_order_count": 0,
+            "reattach_original_sibling_fallback_count": 0,
+            "reattached_children_count": 0,
+            "removed_dropped_parent_reference_list_count": 0,
+        }
 
-    def _depth(nid: str) -> int:
-        """Calculate depth of a node in the original hierarchy for sorting purposes.
-
-        Parameters
-        ----------
-        nid
-            The node ID for which to calculate depth.
-
-        Returns
-        -------
-        int
-            The depth of the node in the original hierarchy, where root-level nodes
-            have depth 0, their children have depth 1, and so on. Nodes that are not
-            reachable from the root (due to cycles or missing parents) are treated as
-            depth 0.
-        """
-
-        d = 0
-        cur: str | None = nid
-        seen: set[str] = set()
-
-        while cur and cur != ctx.root_id and cur not in seen:
-            seen.add(cur)
-            d += 1
-            cur = ctx.parent_by_child.get(cur)
-
-        return d
-
-    def _find_surviving_ancestor_and_anchor(dropped_pid: str) -> tuple[str, str | None]:
-        """Find the nearest emitted ancestor and the canonical anchor child under it.
-
-        The anchor child is the closest dropped node on the path from the surviving
-        ancestor down toward `dropped_pid`. Using this anchor preserves relative order
-        even when multiple dropped ancestors are collapsed into one surviving parent.
-
-        Parameters
-        ----------
-        dropped_pid
-            The dropped parent ID for which to find the surviving ancestor and anchor
-            child.
-
-        Returns
-        -------
-        tuple[str, str | None]
-            A tuple of (surviving_ancestor_id, anchor_child_id). The surviving ancestor
-            is the nearest emitted ancestor of the dropped parent (or root if none).
-            The anchor child is the closest dropped node on the path from the surviving
-            ancestor down to the dropped parent, or None if no such anchor exists.
-        """
-
-        cur: str | None = ctx.parent_by_child.get(dropped_pid)
-        seen: set[str] = set()
-        anchor_child: str | None = dropped_pid
-
-        while cur and cur != ctx.root_id and not emit_flag.get(cur) and cur not in seen:
-            seen.add(cur)
-            anchor_child = cur
-            cur = ctx.parent_by_child.get(cur)
-
-        surviving = cur if cur and cur not in seen else ctx.root_id
-        return surviving, anchor_child
-
-    dropped_parents.sort(key=_depth, reverse=True)
-
+    dropped_parents.sort(key=lambda pid: _depth(ctx=ctx, nid=pid), reverse=True)
     reattached_count = 0
-    resolved_count = 0
+    processed_count = 0
+    cleaned_parent_count = 0
+    cleaned_reference_list_count = 0
+    original_sibling_fallback_count = 0
+    appended_without_anchor_order_count = 0
 
     for dropped_pid in dropped_parents:
-        orphaned_children = export_children.pop(dropped_pid, [])
+        # Remove stale references to the dropped parent everywhere first.
+        removed_reference_lists = _remove_child_everywhere(
+            child_id=dropped_pid, export_children=export_children
+        )
+        cleaned_reference_list_count += removed_reference_lists
+        cleaned_parent_count += int(removed_reference_lists > 0)
 
-        if not orphaned_children:
+        # Detach the dropped parent from the export tree entirely.
+        children_to_hoist = export_children.pop(dropped_pid, [])
+
+        if not children_to_hoist:
             continue
 
-        surviving, anchor_child = _find_surviving_ancestor_and_anchor(dropped_pid)
+        # Only hoist children that are still emitted.
+        emitted_children_to_hoist = [
+            cid for cid in children_to_hoist if emit_flag.get(cid, False)
+        ]
+
+        if not emitted_children_to_hoist:
+            continue
+
+        processed_count += 1
+        surviving, anchor_child = _find_surviving_ancestor_and_anchor(
+            ctx=ctx, dropped_pid=dropped_pid, emit_flag=emit_flag
+        )
         target_kids = export_children.setdefault(surviving, [])
         target_set = set(target_kids)
         canonical_order = (
@@ -2066,6 +3119,8 @@ def _reattach_children_of_dropped_nodes(
         )
         insert_at: int | None = None
 
+        # If canonical order exists, insert the hoisted children before the first
+        # existing target child whose canonical order is greater than the anchor order.
         if canonical_order is not None:
             insert_at = next(
                 (
@@ -2076,34 +3131,92 @@ def _reattach_children_of_dropped_nodes(
                 ),
                 None,
             )
+        # Fall back to the anchor child's original sibling position under the surviving
+        # ancestor when direct canonical edge order metadata is unavailable (e.g.,
+        # after deeper dropped-wrapper collapse).
+        elif anchor_child is not None:
+            original_order_by_child = {
+                cid: idx
+                for idx, cid in enumerate(ctx.children_by_parent.get(surviving, []))
+            }
+            anchor_position = original_order_by_child.get(anchor_child)
 
-        new_children = [c for c in orphaned_children if c not in target_set]
+            if anchor_position is not None:
+                insert_at = next(
+                    (
+                        i
+                        for i, cid in enumerate(target_kids)
+                        if original_order_by_child.get(cid, float("inf"))
+                        > anchor_position
+                    ),
+                    None,
+                )
+                original_sibling_fallback_count += 1
+
+        new_children = [c for c in emitted_children_to_hoist if c not in target_set]
 
         if insert_at is not None:
             target_kids[insert_at:insert_at] = new_children
         else:
             target_kids.extend(new_children)
+            appended_without_anchor_order_count += int(len(new_children) > 0)
 
         reattached_count += len(new_children)
-        resolved_count += 1
 
     return {
+        "dropped_parents_processed": processed_count,
+        "dropped_parents_removed_from_parent_lists_count": cleaned_parent_count,
+        "reattach_appended_without_anchor_order_count": appended_without_anchor_order_count,
+        "reattach_original_sibling_fallback_count": original_sibling_fallback_count,
         "reattached_children_count": reattached_count,
-        "dropped_parents_resolved": resolved_count,
+        "removed_dropped_parent_reference_list_count": cleaned_reference_list_count,
     }
 
 
-def _reparent_aux_under_expectations(
+def _remove_child_everywhere(
+    *, child_id: str, export_children: dict[str, list[str]]
+) -> int:
+    """Remove a child reference from every export parent list.
+
+    Parameters
+    ----------
+    child_id
+        The child node ID to remove from all parent child-lists.
+    export_children
+        Parent-to-children mapping (mutated in place).
+
+    Returns
+    -------
+    int
+        Number of parent child-lists that were modified.
+    """
+
+    cleaned = 0
+
+    for pid, kids in list(export_children.items()):
+        if child_id not in kids:
+            continue
+
+        new_kids = [c for c in kids if c != child_id]
+
+        if len(new_kids) != len(kids):
+            export_children[pid] = new_kids
+            cleaned += 1
+
+    return cleaned
+
+
+def _reparent_aux_nodes_under_expectations(
     *,
-    aux_attach_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     attached_aux_node_ids: set[str],
+    aux_nodes_attached_to_expectation: DefaultDict[str, list[dict[str, Any]]],
     config: CreateKGConfig,
     ctx: ExportContext,
     emit_flag: dict[str, bool],
     export_children: dict[str, list[str]],
     ordered_kids: list[str],
 ) -> tuple[list[str], int]:
-    """Re-parent aux statements under their owning expectation.
+    """Re-parent aux nodes under their owning expectation.
 
     Walks the ordered children of a grouping node, attaching aux nodes either to
     expectation metadata or as export-time children of the owning expectation.
@@ -2114,15 +3227,103 @@ def _reparent_aux_under_expectations(
         under a shared grouping parent. Aux nodes are matched to the immediately
         preceding expectation in sibling order.
     2. **Child layout**: guidance/descriptor nodes are direct children of their owning
-        expectation in the canonical IR tree.  These are discovered by inspecting
+        expectation in the canonical IR tree. These are discovered by inspecting
         `ctx.children_by_parent` for each expectation encountered.
 
     Both layouts may coexist within the same IR; the function handles them in a single
     pass.
 
+    Examples
+    --------
+    1. Sibling layout: attach aux nodes to the most recent preceding expectation
+        Suppose `ordered_kids` under a grouping parent are:
+
+            [E1(expectation), G1(guidance), D1(descriptor), E2(expectation)]
+
+        and the config requests:
+
+            as_guidance_handling = "attach_to_expectation_metadata"
+            as_descriptor_handling = "attach_to_expectation_metadata"
+
+        Then the function keeps only the expectations in `new_kids`:
+
+            new_kids == [E1, E2]
+
+        and records metadata attachments for E1:
+
+            aux_nodes_attached_to_expectation[E1] == [payload(G1), payload(D1)]
+
+        because `G1` and `D1` are matched to the most recent preceding expectation
+        in sibling order.
+
+    2. Child layout: get aux children already stored under an expectation
+        Suppose `ordered_kids` are:
+
+            [E1(expectation), E2(expectation)]
+
+        and the canonical IR already stores:
+
+            ctx.children_by_parent[E1] == [G1(guidance), D1(descriptor)]
+
+        When this function visits E1, it gets `G1` and `D1` from the canonical
+        expectation subtree and attaches them to E1.
+
+        Result:
+            new_kids == [E1, E2]
+            child_aux_consumed_count == 2
+
+        This avoids requiring those aux nodes to also appear as siblings.
+
+    3. Leading aux nodes remain in the parent output if no expectation has appeared yet
+        Suppose `ordered_kids` are:
+
+            [G0(guidance), D0(descriptor), E1(expectation)]
+
+        Because no preceding expectation exists when `G0` and `D0` are encountered,
+        they are not attached to E1. They remain in `new_kids`:
+
+            new_kids == [G0, D0, E1]
+
+        This prevents incorrectly assigning leading aux nodes to a later expectation.
+
+    4. Mixed layout in one pass
+        Suppose `ordered_kids` are:
+
+            [E1(expectation), G1(guidance), E2(expectation)]
+
+        and also:
+
+            ctx.children_by_parent[E2] == [D2(descriptor)]
+
+        Then the function handles both layouts together:
+
+            new_kids == [E1, E2]
+
+        with:
+            G1 attached to E1 by sibling order
+            D2 attached to E2 by child harvesting
+
+        This is why the function returns both:
+            - `new_kids` for the parent's filtered child list
+            - `child_aux_consumed_count` for aux nodes harvested from child layout
+
+    5. Senegal reading row example
+        In the Senegal reading curriculum, a row often contains:
+
+            - expectation: "Objectif spécifique"
+            - guidance: "Contenus"
+            - descriptor: "Durée"
+
+        When these appear in sibling order, the function keeps the expectation in the
+        exported child sequence and attaches the "Contenus" and "Durée" nodes to that
+        expectation, rather than keeping all three as sibling SFIs under the same
+        parent.
+
     Parameters
     ----------
-    aux_attach_to_expectation
+    attached_aux_node_ids
+        Mutable set collecting canonical node IDs successfully attached.
+    aux_nodes_attached_to_expectation
         Mutable mapping collecting metadata attachments for expectation nodes.
     config
         The CreateKGConfig for export.
@@ -2145,13 +3346,13 @@ def _reparent_aux_under_expectations(
         the canonical-IR children of expectations (child layout).
     """
 
+    child_aux_consumed: int = 0
     last_expectation: Optional[str] = None
     new_kids: list[str] = []
-    prefer_en = config.description_text_policy == "prefer_text_en"
-    child_aux_consumed: int = 0
+    prefer_en = config.as_description_text_policy == "prefer_text_en"
 
-    def _attach_aux(*, aux_node_id: str, target_expectation_id: str) -> bool:
-        """Process a single aux node: attach as metadata or as an export child.
+    def _attach_aux_node(*, aux_node_id: str, target_expectation_id: str) -> bool:
+        """Process a single aux node as either metadata or as an export child.
 
         Parameters
         ----------
@@ -2168,26 +3369,15 @@ def _reparent_aux_under_expectations(
             been attached under the same expectation.
         """
 
-        node = ctx.nodes_by_id[aux_node_id]
-        role = str(node.get("role") or "")
-
-        attach_to_metadata = (
-            role == StatementRole.GUIDANCE.value
-            and config.guidance_handling == "attach_to_expectation_metadata"
-        ) or (
-            role == StatementRole.DESCRIPTOR.value
-            and config.descriptor_handling == "attach_to_expectation_metadata"
-        )
-
-        if attach_to_metadata:
+        if _is_attachable(config=config, role=ctx.nodes_by_id[aux_node_id]["role"]):
             if _is_already_attached(
-                aux_attach_to_expectation=aux_attach_to_expectation,
                 aux_node_id=aux_node_id,
+                aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
                 expectation_id=target_expectation_id,
             ):
                 return False
 
-            aux_attach_to_expectation[target_expectation_id].append(
+            aux_nodes_attached_to_expectation[target_expectation_id].append(
                 _build_aux_payload(
                     aux_node_id=aux_node_id, ctx=ctx, prefer_en=prefer_en
                 )
@@ -2196,37 +3386,36 @@ def _reparent_aux_under_expectations(
             return True
 
         return _append_unique_child(
+            child_id=aux_node_id,
             export_children=export_children,
             parent_id=target_expectation_id,
-            child_id=aux_node_id,
         )
 
     for cid in ordered_kids:
-        node = ctx.nodes_by_id[cid]
-        role = str(node.get("role") or "")
+        role = ctx.nodes_by_id[cid]["role"]
 
         if role == StatementRole.EXPECTATION.value:
             last_expectation = cid
             new_kids.append(cid)
 
-            # Child layout: harvest aux nodes that are direct children of this
-            # expectation in the canonical IR.
+            # Child layout: get aux nodes that are direct children of this expectation
+            # in the canonical IR.
             for child_id in ctx.children_by_parent.get(cid, []):
-                if not emit_flag.get(child_id, False):
+                if not emit_flag[child_id]:
                     continue
 
-                child_role = str(ctx.nodes_by_id[child_id].get("role") or "")
+                child_role = ctx.nodes_by_id[child_id]["role"]
 
-                if child_role in AUX_ROLES and _attach_aux(
+                if child_role in AUX_ROLES and _attach_aux_node(
                     aux_node_id=child_id, target_expectation_id=cid
                 ):
                     child_aux_consumed += 1
 
             continue
 
-        # Sibling layout: aux following an expectation in sibling order.
+        # Sibling layout: aux node following an expectation in sibling order.
         if role in AUX_ROLES and last_expectation:
-            _attach_aux(aux_node_id=cid, target_expectation_id=last_expectation)
+            _attach_aux_node(aux_node_id=cid, target_expectation_id=last_expectation)
             continue
 
         new_kids.append(cid)
@@ -2234,17 +3423,470 @@ def _reparent_aux_under_expectations(
     return new_kids, child_aux_consumed
 
 
+def _resolve_description_and_language(
+    *,
+    fw_metadata: dict[str, Any],
+    node: dict[str, Any],
+    node_id: str,
+    prefer_text_en: bool,
+) -> tuple[str, str]:
+    """Resolve the primary description text and its language for the SFI.
+
+    Parameters
+    ----------
+    fw_metadata
+        Pre-computed framework metadata dict.
+    node
+        The canonical node dictionary.
+    node_id
+        The ID of the canonical node.
+    prefer_text_en
+        Whether to prefer English text.
+
+    Returns
+    -------
+    tuple[str, str]
+        A tuple containing the resolved description text and the SFI language code.
+    """
+
+    # `in_language` should follow the text actually emitted in `description`, not just
+    # the requested policy. `prefer_text_en` may still fall back to source text when no
+    # English translation is available.
+    sfi_in_language = fw_metadata.get("in_language") or ""
+    role = node["role"]
+
+    title_text, title_lang, title_used_text_en = _pick_text_with_lang(
+        prefer_text_en=prefer_text_en, unit=node.get("title")
+    )
+    body_text, body_lang, body_used_text_en = _pick_text_with_lang(
+        prefer_text_en=prefer_text_en, unit=node.get("body")
+    )
+
+    if title_text:
+        desc = title_text
+        desc_lang = title_lang
+        desc_used_text_en = title_used_text_en
+    elif body_text:
+        desc = body_text
+        desc_lang = body_lang
+        desc_used_text_en = body_used_text_en
+    else:
+        desc = _node_display_text(node=node, prefer_text_en=prefer_text_en) or (
+            f"[{role or 'unknown'}:{node_id[:8]}]"
+        )
+        desc_lang = None
+        desc_used_text_en = False
+
+    if desc_used_text_en:
+        sfi_in_language = "en"
+    else:
+        desc_lang_norm = (desc_lang or "").strip()
+
+        if desc_lang_norm and desc_lang_norm.lower() != "und":
+            sfi_in_language = desc_lang_norm
+        else:
+            # Canonical IR stores language inside TextUnit dicts (title/body), not as a
+            # top-level field. Check title first, then body, skipping "und"
+            # (undetermined).
+            node_lang = next(
+                (
+                    node[field]["language"].strip()
+                    for field in ("title", "body")
+                    if isinstance(node.get(field), dict)
+                    and node[field].get("language")
+                    and node[field]["language"].strip().lower() != "und"
+                ),
+                None,
+            )
+
+            if node_lang:
+                sfi_in_language = node_lang
+
+    return desc, sfi_in_language
+
+
+def _resolve_effective_level_context(
+    *,
+    config: CreateKGConfig,
+    explicit_grade_high: int | None,
+    explicit_grade_key: str | None,
+    explicit_grade_low: int | None,
+    explicit_stage_high: int | None,
+    explicit_stage_key: str | None,
+    explicit_stage_low: int | None,
+    node_role: str,
+) -> dict[str, Any]:
+    """Resolve grade/stage context for progression metadata.
+
+    Explicit grade and explicit stage context are handled independently. This matters
+    for single-grade PDFs that also contain a source-derived stage wrapper. For
+    example, Senegal CE1 reading expectations may sit under an explicit `stage`
+    ancestor such as "étape 2" while still lacking any explicit `grade_level` ancestor.
+    In that case, a configured `grade_level` default should fill the missing grade
+    fields without overwriting the explicit stage fields.
+
+    A document-level default from `config.as_default_level_context` is applied only
+    when the configured node role matches and either:
+
+    1. The default's own kind is missing or unusable in the exported ancestry, or
+    2. `apply_when_missing_only` is false.
+
+    In other words, a `grade_level` default checks for missing grade context only; it
+    does not get blocked by explicit stage context. Likewise, a `stage` default checks
+    for missing stage context only and does not get blocked by explicit grade
+    context.
+
+    Examples
+    --------
+    1. Explicit grade ancestor wins
+        If an expectation sits under a `grade_level` ancestor labelled `Grade 2`:
+
+            explicit_grade_key = "Grade 2"
+            explicit_grade_low = 2
+            explicit_grade_high = 2
+            explicit_stage_key = None
+            explicit_stage_low = None
+            explicit_stage_high = None
+
+        and the default is also `kind='grade_level'` with
+        `apply_when_missing_only=True`, the function preserves the explicit grade:
+
+            {
+                "grade_key": "Grade 2",
+                "grade_ordinal_low": 2,
+                "grade_ordinal_high": 2,
+                "stage_key": None,
+                "stage_ordinal_low": None,
+                "stage_ordinal_high": None,
+                "level_context_source": "ancestor"
+            }
+
+    2. Single-grade PDF default fills missing grade while preserving explicit stage
+        If an expectation has an explicit stage ancestor but no grade ancestor:
+
+            explicit_grade_key = None
+            explicit_grade_low = None
+            explicit_grade_high = None
+            explicit_stage_key = "étape 2"
+            explicit_stage_low = 2
+            explicit_stage_high = 2
+
+        and the config contains:
+
+            as_default_level_context = {
+                "kind": "grade_level",
+                "label": "CE1",
+                "ordinal_low": 1,
+                "ordinal_high": 1,
+                "source": "config: framework title says 2ème étape (CE1)",
+                "apply_to_roles": ["expectation"],
+                "apply_when_missing_only": True
+            }
+
+        then the function returns both the default grade and the explicit stage:
+
+            {
+                "grade_key": "CE1",
+                "grade_ordinal_low": 1,
+                "grade_ordinal_high": 1,
+                "stage_key": "étape 2",
+                "stage_ordinal_low": 2,
+                "stage_ordinal_high": 2,
+                "level_context_source": "ancestor+config_default",
+                "level_context_default_source": "config: framework title says 2ème étape (CE1)"
+            }
+
+    3. Stage-band default fills missing stage while preserving explicit grade
+        If an expectation has explicit grade context but no stage context and the
+        default is stage-based:
+
+            as_default_level_context = {
+                "kind": "stage",
+                "label": "Standard III–VI",
+                "ordinal_low": 3,
+                "ordinal_high": 6,
+                "source": "config: document scope",
+                "apply_to_roles": ["expectation"],
+                "apply_when_missing_only": True
+            }
+
+        then the function preserves the grade fields and fills only the stage fields.
+
+    4. Non-matching role does not receive the default
+        If the default applies only to `expectation` but `node_role` is
+        `guidance`, the function returns the explicit values unchanged and marks the
+        source as `missing` when no explicit context exists.
+
+    Parameters
+    ----------
+    config
+        The KG export config, optionally including `as_default_level_context`.
+    explicit_grade_high
+        Parsed high grade ordinal from an ancestor-derived grade label, if available.
+    explicit_grade_key
+        Ancestor-derived grade label, if available.
+    explicit_grade_low
+        Parsed low grade ordinal from an ancestor-derived grade label, if available.
+    explicit_stage_high
+        Parsed high stage ordinal from an ancestor-derived stage label, if available.
+    explicit_stage_key
+        Ancestor-derived stage label, if available.
+    explicit_stage_low
+        Parsed low stage ordinal from an ancestor-derived stage label, if available.
+    node_role
+        Canonical node role for the SFI being emitted.
+
+    Returns
+    -------
+    dict[str, Any]
+        Grade/stage fields plus provenance fields describing whether level context came
+        from the hierarchy, a config default, both, or remained missing.
+    """
+
+    has_explicit_grade_context = any(
+        value is not None
+        for value in (explicit_grade_high, explicit_grade_key, explicit_grade_low)
+    )
+    has_explicit_stage_context = any(
+        value is not None
+        for value in (explicit_stage_high, explicit_stage_key, explicit_stage_low)
+    )
+    has_explicit_context = has_explicit_grade_context or has_explicit_stage_context
+    has_usable_explicit_grade_context = (
+        explicit_grade_low is not None and explicit_grade_high is not None
+    )
+    has_usable_explicit_stage_context = (
+        explicit_stage_low is not None and explicit_stage_high is not None
+    )
+    level_context: dict[str, Any] = {
+        "grade_key": explicit_grade_key,
+        "grade_ordinal_high": explicit_grade_high,
+        "grade_ordinal_low": explicit_grade_low,
+        "level_context_source": "ancestor" if has_explicit_context else "missing",
+        "stage_key": explicit_stage_key,
+        "stage_ordinal_high": explicit_stage_high,
+        "stage_ordinal_low": explicit_stage_low,
+    }
+    default_context = config.as_default_level_context
+
+    if default_context is None:
+        return level_context
+
+    allowed_roles = {role.value for role in default_context.apply_to_roles}
+
+    if node_role not in allowed_roles:
+        return level_context
+
+    if default_context.kind == NodeRole.GRADE_LEVEL.value:
+        has_usable_matching_context = has_usable_explicit_grade_context
+        default_fields = {
+            "grade_key": default_context.label,
+            "grade_ordinal_high": default_context.ordinal_high,
+            "grade_ordinal_low": default_context.ordinal_low,
+        }
+    else:
+        has_usable_matching_context = has_usable_explicit_stage_context
+        default_fields = {
+            "stage_key": default_context.label,
+            "stage_ordinal_high": default_context.ordinal_high,
+            "stage_ordinal_low": default_context.ordinal_low,
+        }
+
+    if default_context.apply_when_missing_only and has_usable_matching_context:
+        return level_context
+
+    level_context.update(default_fields)
+    level_context["level_context_default_source"] = default_context.source
+    level_context["level_context_source"] = (
+        "ancestor+config_default" if has_explicit_context else "config_default"
+    )
+    return level_context
+
+
+def _should_emit_node_with_reason(
+    *, config: CreateKGConfig, ctx: ExportContext, node_id: str
+) -> tuple[bool, str]:
+    """Determine whether a canonical node should be emitted. If it should not be
+    emitted, then also include a drop reason.
+
+    NB: This function implements a conservative-drop behavior: a node is dropped if
+    **any** of its `source_decision_ids` maps to a droppable decision. This is a design
+    choice---not something set in stone. It is stricter than “drop only if the node is
+    entirely sourced from bad segments.” In mixed-provenance cases, this could overdrop
+    nodes.
+
+    Parameters
+    ----------
+    config
+        The CreateKGConfig for export, which may influence drop policies.
+    ctx
+        The ExportContext for the CanonicalIR, providing access to node properties and
+        decision/segment information for drop policies.
+    node_id
+        The ID of the canonical node to evaluate.
+
+    Returns
+    -------
+    tuple[bool, str]
+        (True, "emitted") if the node should be emitted, or (False, reason) where
+        reason is a human-readable string explaining why the node was dropped. In
+        whitelist mode, non-grouping nodes are only eligible for `export_as_sfi_other`
+        when they are leaf nodes.
+    """
+
+    node = ctx.nodes_by_id[node_id]
+    role = str(node.get("role") or "")
+
+    # Segment drop policy.
+    for source_decision_id in node["source_decision_ids"]:
+        decision = ctx.decisions_by_id[source_decision_id]
+
+        if decision and ctx.should_drop_segment(decision):
+            decision_type = decision["decision_type"]
+            col_sig = decision["columns_signature"]
+            return (
+                (False, _drop_reason("columns_signature", col_sig))
+                if col_sig
+                and col_sig in ctx.kg_config.as_non_standard_columns_signature
+                else (False, _drop_reason("segment_decision", decision_type))
+            )
+
+    # Role handling.
+    if role == StatementRole.GUIDANCE.value and config.as_guidance_handling == "drop":
+        return False, _drop_reason("guidance_handling", config.as_guidance_handling)
+
+    if (
+        role == StatementRole.DESCRIPTOR.value
+        and config.as_descriptor_handling == "drop"
+    ):
+        return False, _drop_reason("descriptor_handling", config.as_descriptor_handling)
+
+    # Strict grouping policy: if it's not a statement role, it must be an allowed
+    # grouping. Non-grouping nodes may only be emitted as `Other` when they are true
+    # leaves. Structural non-grouping nodes are dropped so their children can be
+    # hoisted to the nearest surviving ancestor by
+    # `_reattach_children_of_dropped_nodes`, rather than letting a semantic `Other`
+    # node function as a de facto grouping parent.
+    if (
+        config.as_grouping_role_policy == "whitelist"
+        and role != NodeRole.FRAMEWORK.value
+        and role not in STATEMENT_ROLE_VALUES
+        and not _is_grouping_role(config=config, role=role)
+    ):
+        if config.as_non_grouping_role_handling == "drop":
+            return (
+                False,
+                _drop_reason("non_grouping_role", config.as_non_grouping_role_handling),
+            )
+
+        has_canonical_children = len(ctx.children_by_parent.get(node_id, [])) > 0
+        return (
+            (False, _drop_reason("non_grouping_role", "structural_parent"))
+            if has_canonical_children
+            else (True, "emitted")
+        )
+
+    return True, "emitted"
+
+
 def _sort_order_map(
-    *, framework_uuid: Any, order_map: dict[str, list[str]]
+    *, framework_uuid: UUID | str, order_map: dict[str, list[str]]
 ) -> dict[str, list[str]]:
     """Stabilize parent key ordering while preserving deterministic child order.
+
+    By the time this function is called, `order_map` has already been built in step 10
+    by `_build_relationships_and_order()`. At that point, each entry already means:
+
+        * key = exported parent UUID string
+        * value = ordered list of exported child UUID strings
+
+    This function just sorts three top-level outputs for stable serialization. Because
+    Python dicts preserve insertion order, the returned dict will always serialize in
+    this stable order:
+
+        * framework parent first
+        * all remaining parent UUID keys alphabetically
+
+    The child UUID lists are copied over unchanged. So if a parent had children
+    [C3, C1, C2], this function leaves that as [C3, C1, C2]. It does not sort children.
+
+    Examples
+    --------
+    1. Framework key is moved to the front
+        Suppose:
+
+            framework_uuid = "fw"
+            order_map = {
+                "b-parent": ["c2", "c1"],
+                "fw": ["a-parent", "b-parent"],
+                "a-parent": ["a1", "a2"],
+            }
+
+        Then the returned dictionary is:
+
+            {
+                "fw": ["a-parent", "b-parent"],
+                "a-parent": ["a1", "a2"],
+                "b-parent": ["c2", "c1"],
+            }
+
+        The framework entry is placed first, and all remaining parent keys are sorted
+        lexicographically.
+
+    2. Child order is preserved exactly
+        Suppose:
+
+            order_map = {
+                "fw": ["p2", "p1"],
+                "p2": ["x3", "x1", "x2"],
+            }
+
+        `_sort_order_map()` does not sort the child lists. The returned dictionary
+        still contains:
+
+            "fw": ["p2", "p1"]
+            "p2": ["x3", "x1", "x2"]
+
+        Only the ordering of parent keys in the outer dictionary is normalized.
+
+    3. No-op when already stable
+        Suppose:
+
+            framework_uuid = "fw"
+            order_map = {
+                "fw": ["a", "b"],
+                "a": ["a1"],
+                "b": ["b1"],
+            }
+
+        Because the framework key is already first and the remaining keys are already
+        in sorted order, the returned dictionary has the same visible ordering.
+
+    4. Framework key absent
+        Suppose:
+
+            framework_uuid = "fw"
+            order_map = {
+                "b": ["y"],
+                "a": ["x"],
+            }
+
+        Then the returned dictionary is:
+
+            {
+                "a": ["x"],
+                "b": ["y"],
+            }
+
+        The function still sorts non-framework parent keys even when the framework key
+        is absent.
 
     Parameters
     ----------
     framework_uuid
         The UUID of the framework.
     order_map
-        Dictionary mapping parent IDs to sorted child IDs.
+        Dictionary mapping parent IDs to already-ordered child IDs.
 
     Returns
     -------
@@ -2264,6 +3906,115 @@ def _sort_order_map(
     return order_map_sorted
 
 
+def _suppress_attached_to_expectation(
+    *,
+    config: CreateKGConfig,
+    ctx: ExportContext,
+    drop_reasons: dict[str, str],
+    emit_flag: dict[str, bool],
+    reparent_stats: dict[str, Any],
+) -> None:
+    """Modify emit flags and track stats for attach-to-expectation handling.
+
+    NB: If aux statements are "attach_to_expectation_metadata", they should NOT be
+    counted as emitted nodes for pruning. Only aux statements that were successfully
+    attached to an owning expectation are suppressed; orphan aux statements remain
+    emitted (and are tagged as `orphan_aux`). In other words, after this function, aux
+    statements are no longer "real export nodes"---they become metadata only.
+
+    This function basically looks at the set of aux node IDs that were successfully
+    attached to an expectation during steps 3 and 4, and then decides whether those aux
+    nodes should still be emitted as standalone SFIs. Thus, this function is **not**
+    finding new attachments (that already happened in steps 3 and 4). Instead, this
+    function enforces the export policy for those already-attached aux nodes. After
+    step 4, the exporter knows "G1 and D1 belong to expectation E1.". This function
+    then asks: "Since G1 and D1 are already attached to E1's metadata, should they
+    still appear as separate SFIs?".
+
+    NB: There are really three cases for aux nodes.
+        1. Attached aux node -> suppress as standalone SFI. If an aux node was
+            successfully attached to an expectation and the config says
+            attach-to-metadata, then it is dropped from standalone emission in step 5.
+        2. Orphan aux node -> keep as standalone SFI
+            If an aux node was not successfully attached because there was no owning
+            expectation, step 5 does not suppress it. It stays emitted. That is why
+            this function only iterates `attached_aux_node_ids`, not all aux nodes.
+        3. Aux configured as "export_as_sfi_other" -> keep as standalone SFI. If
+            guidance or descriptor handling were configured differently, then
+            `_is_attachable()` would not have attached them in the first place, so step
+            5 would have nothing to suppress for those nodes.
+
+    NB: This function needs to be called before later cleanup because later steps
+    need to know the final emit/non-emit state. The main flow says:
+        - Step 5: Modify emit flags for attach-to-expectation
+        - Step 6: Suppress subtrees rooted under aux nodes converted into
+            expectation metadata
+        - Step 7: Reattach children of dropped nodes
+        - Step 8: Prune empty groupings
+
+    This ordering is correct. If step 5 did not happen first, later cleanup steps
+    would still think those attached aux nodes were legitimate exported nodes and
+    might keep them alive or preserve their subtrees.
+
+    Parameters
+    ----------
+    config
+        The CreateKGConfig for export.
+    ctx
+        The ExportContext for the CanonicalIR.
+    drop_reasons
+        Dictionary mapping node IDs to reasons they were dropped. Mutated in-place.
+    emit_flag
+        Dictionary mapping node IDs to boolean emit flags. Mutated in-place.
+    reparent_stats
+        Dictionary containing reparenting statistics. Mutated in-place. The recorded
+        step 5 counter reflects how many attached aux nodes were newly suppressed in
+        this step, not how many aux nodes had ever been attached overall.
+    """
+
+    newly_suppressed_attached_aux_count = 0
+
+    # Only suppress aux nodes that were actually attached to an expectation's metadata.
+    # This avoids silently deleting "orphan" aux statements that had no owning
+    # expectation (those remain as SFIs and are tagged via `orphan_aux` metadata).
+    attached_aux_node_ids: set[str] = set(
+        reparent_stats.get("attached_aux_node_ids", [])
+    )
+
+    if (
+        config.as_guidance_handling == "attach_to_expectation_metadata"
+        or config.as_descriptor_handling == "attach_to_expectation_metadata"
+    ):
+        for nid in attached_aux_node_ids:
+            if not emit_flag.get(nid, False):
+                continue
+
+            role = ctx.nodes_by_id[nid]["role"]
+
+            if (
+                role == StatementRole.GUIDANCE.value
+                and config.as_guidance_handling == "attach_to_expectation_metadata"
+            ):
+                newly_suppressed_attached_aux_count += 1
+                drop_reasons[nid] = _drop_reason(
+                    "guidance_attached_to_expectation", config.as_guidance_handling
+                )
+                emit_flag[nid] = False
+            elif (
+                role == StatementRole.DESCRIPTOR.value
+                and config.as_descriptor_handling == "attach_to_expectation_metadata"
+            ):
+                newly_suppressed_attached_aux_count += 1
+                drop_reasons[nid] = _drop_reason(
+                    "descriptor_attached_to_expectation", config.as_descriptor_handling
+                )
+                emit_flag[nid] = False
+
+    reparent_stats["suppressed_attached_aux_node_count"] = (
+        newly_suppressed_attached_aux_count
+    )
+
+
 def _suppress_subtrees_of_attached_aux_nodes(
     *,
     drop_reasons: dict[str, str],
@@ -2271,12 +4022,101 @@ def _suppress_subtrees_of_attached_aux_nodes(
     export_children: dict[str, list[str]],
     reparent_stats: dict[str, Any],
 ) -> dict[str, int]:
-    """Suppress exported descendants of aux nodes that were attached to metadata.
+    """Suppress any exported descendants reachable from aux nodes that were attached to
+    expectation metadata, and remove those aux-rooted subtrees from the export tree.
 
-    When a guidance/descriptor node is converted into expectation metadata via
-    `attach_to_expectation_metadata`, its subtree should not later be hoisted back into
-    the Academic Standards hierarchy. This function removes those descendants from the
+    By the time this function runs, an aux node may have been recognized as attached to
+    an expectation in either of two earlier places:
+
+    1. **Step 3** during export-tree construction
+        (`_compute_export_children()`/`_reparent_aux_nodes_under_expectations()`), or
+    2. **Step 4** during the attach-only discovery pass
+    (`_attach_aux_statements_in_export_tree()`).
+
+    Step 5 then flips `emit_flag=False` for those attached aux nodes themselves.
+    However, `export_children` may still contain attached aux nodes as parents with
+    descendants underneath them. This function removes those descendants from the
     export tree and marks any still-emitted descendants as dropped.
+
+    In other words, once an aux node has been converted into expectation metadata in
+    steps 3 - 4, nothing under that aux node should be allowed to survive in the
+    exported hierarchy.
+
+    Without this function, step 7 (`_reattach_children_of_dropped_nodes()`) could see a
+    dropped aux parent that still has children and hoist those children upward to a
+    surviving ancestor. That would reintroduce content from an aux subtree that was
+    supposed to disappear into metadata.
+
+    So, one way to view steps 5-6 is:
+
+    * **Step 5** suppresses the attached aux nodes themselves as standalone SFIs.
+    * **Step 6** suppresses everything below those attached aux nodes so descendants
+        cannot be hoisted back later.
+
+    Examples
+    --------
+    1. Main case that this function is protecting against
+        Suppose step 5 already attached and suppressed G1:
+
+        P
+        - E1 (expectation)
+        - G1 (guidance, attached to E1 metadata, emit_flag=False)
+            - X1
+            - X2
+
+        Without step 6:
+
+        * G1 is dropped,
+        * but G1 still has children X1 and X2,
+        * then step 7 could hoist X1 and X2 up to P or another surviving ancestor.
+
+        That would be wrong, because X1 and X2 only existed under a guidance node that
+        has already been absorbed into metadata.
+
+        With step 6:
+
+        * X1 and X2 are recursively marked non-emitted,
+        * G1, X1, and X2 are removed from export_children,
+        * so step 7 never gets a chance to hoist them.
+
+    2. Multiple attached aux roots
+        Suppose two attached aux nodes still have subtrees:
+
+        P
+        - E1
+        - G1 (attached aux root)
+            - X1
+        - D1 (attached aux root)
+            - Y1
+            - Y2
+
+        Step 6 will:
+
+        * treat G1 and D1 as subtree_roots,
+        * recursively suppress X1, Y1, and Y2,
+        * remove G1, D1, X1, Y1, Y2 from the export tree.
+
+        Returned stats would be:
+
+        {
+            "attached_aux_subtree_root_count": 2,
+            "suppressed_attached_aux_descendant_count": 3,
+        }
+
+    3. No-op case
+        Suppose attached aux nodes are leaves:
+
+        P
+        - E1
+        - G1 (attached aux, no children)
+        - D1 (attached aux, no children)
+
+        Then:
+
+        * attached_aux_node_ids is non-empty,
+        * but subtree_roots is empty because neither G1 nor D1 has children,
+        * so step 6 does no recursive suppression and returns zeros. It only cleans
+            child lists to keep non-emitted nodes out.
 
     Parameters
     ----------
@@ -2287,8 +4127,9 @@ def _suppress_subtrees_of_attached_aux_nodes(
     export_children
         Export parent -> children mapping. Mutated in place.
     reparent_stats
-        Reparent/attach statistics. The function reads `attached_aux_node_ids` and
-        updates subtree-suppression stats.
+        Reparent/attach statistics. The function reads the tracked
+        `attached_aux_node_ids` (regardless of whether they were first discovered in
+        step 3 or step 4) and updates subtree-suppression stats.
 
     Returns
     -------
@@ -2297,18 +4138,24 @@ def _suppress_subtrees_of_attached_aux_nodes(
         and how many descendant nodes were suppressed.
     """
 
+    # Get the aux nodes that were successfully attached to expectation metadata earlier.
     attached_aux_node_ids = set(reparent_stats.get("attached_aux_node_ids", []))
 
+    # No need to suppress if no aux nodes were attached to expectations.
     if not attached_aux_node_ids:
         return {
             "attached_aux_subtree_root_count": 0,
             "suppressed_attached_aux_descendant_count": 0,
         }
 
+    # Find which attached aux nodes are actually subtree roots in the current export
+    # tree. We only care about attached aux nodes that still have exported children.
     subtree_roots: set[str] = {
         nid for nid in attached_aux_node_ids if export_children.get(nid)
     }
 
+    # If none of the attached aux nodes have children, we do a cleanup pass to remove
+    # any non-emitted children from parent lists, then return zero stats.
     if not subtree_roots:
         for pid, kids in list(export_children.items()):
             export_children[pid] = [c for c in kids if emit_flag.get(c, False)]
@@ -2318,10 +4165,12 @@ def _suppress_subtrees_of_attached_aux_nodes(
             "suppressed_attached_aux_descendant_count": 0,
         }
 
-    suppressed_descendants: set[str] = set()
+    # Otherwise, we traverse downward from those aux roots using a stack to collect all
+    # descendants.
     stack: list[str] = [
         child for root in subtree_roots for child in export_children.get(root, [])
     ]
+    suppressed_descendants: set[str] = set()
 
     while stack:
         nid = stack.pop()
@@ -2329,6 +4178,8 @@ def _suppress_subtrees_of_attached_aux_nodes(
         if nid in suppressed_descendants:
             continue
 
+        # For every discovered descendant that is still emitted, we flip the emit flag
+        # and add a drop reason (if it does not exist).
         suppressed_descendants.add(nid)
         stack.extend(export_children.get(nid, []))
 
@@ -2336,9 +4187,10 @@ def _suppress_subtrees_of_attached_aux_nodes(
         if emit_flag.get(nid, False):
             emit_flag[nid] = False
             drop_reasons.setdefault(
-                nid, "dropped:ancestor_attached_to_expectation_metadata"
+                nid, _drop_reason("ancestor_attached_to_expectation_metadata")
             )
 
+    # Now, remove `blocked_nodes` from the export tree.
     blocked_nodes = attached_aux_node_ids | suppressed_descendants
 
     for pid in blocked_nodes:
@@ -2405,8 +4257,7 @@ def _to_iso8601_or_none(v: Any) -> Optional[str]:
         return None
 
     if isinstance(v, str):
-        v2 = v.strip()
-        return v2 or None
+        return v.strip() or None
 
     if isinstance(v, datetime):
         return v.isoformat()
@@ -2430,6 +4281,43 @@ def _verify_standards_export(
     sfi_by_node: dict[str, StandardsFrameworkItem],
 ) -> None:
     """Verify the integrity of the exported standards artifacts.
+
+    Examples
+    --------
+    1. Referential integrity failure
+        Suppose a relationship points to target UUID `UX`, but `UX` is not present in
+        the emitted SFI set.
+
+        Then verification fails with a "Relationship references missing entity"
+        assertion.
+
+    2. Ordering mismatch failure
+        Suppose relationships imply the ordered children:
+
+            parent P -> [A, B]
+
+        but `parent_to_children[P] == [B, A]` or `parent_to_children[P] == [A]`.
+
+        Then verification fails because the hierarchy-order artifact does not exactly
+        match the exported hasChild edge order.
+
+    3. Reachability failure
+        Suppose an expectation SFI `E1` was emitted, but due to a hoisting bug it is
+        not reachable from the framework via any chain of hasChild edges.
+
+        Then verification fails with a reachability assertion, identifying emitted SFIs
+        that are disconnected from the framework root.
+
+    4. Groupings-only export failure
+        Suppose the exporter emitted only grouping SFIs such as stage/strand/subtopic,
+        but no expectation SFI with `normalized_statement_type="Standard"`.
+
+        Then verification fails with:
+
+            "No expectation SFIs emitted (normalized_statement_type='Standard')."
+
+        This prevents a structurally non-empty but semantically useless standards
+        export.
 
     Parameters
     ----------
@@ -2456,25 +4344,26 @@ def _verify_standards_export(
         )
 
     # Check ordering integrity.
-    rel_children_by_parent: DefaultDict[str, set[str]] = defaultdict(set)
+    rel_children_by_parent: DefaultDict[str, list[str]] = defaultdict(list)
 
     for r in relationships:
-        if r.relationship_type == "hasChild":
-            rel_children_by_parent[r.source_entity_value].add(r.target_entity_value)
+        if r.relationship_type == HAS_CHILD:
+            rel_children_by_parent[r.source_entity_value].append(r.target_entity_value)
 
     for parent, kids in rel_children_by_parent.items():
         ordered = parent_to_children.get(parent)
         assert ordered is not None, f"Missing hierarchy order for parent: {parent}"
-        assert set(ordered) == set(
-            kids
-        ), f"Hierarchy order child set mismatch for parent: {parent}"
+        assert ordered == kids, (
+            f"Hierarchy order mismatch for parent: {parent}. "
+            f"Expected ordered children {ordered}, got {kids}."
+        )
 
     # Check reachability: every emitted SFI must be reachable from the framework root
     # via hasChild edges. This catches orphans caused by pruning/filters.
     adj: DefaultDict[str, list[str]] = defaultdict(list)
 
     for r in relationships:
-        if r.relationship_type == "hasChild":
+        if r.relationship_type == HAS_CHILD:
             adj[r.source_entity_value].append(r.target_entity_value)
 
     stack: list[str] = [fw_id]
@@ -2483,11 +4372,11 @@ def _verify_standards_export(
     while stack:
         cur = stack.pop()
 
-        if cur not in visited:
-            visited.add(cur)
+        if cur in visited:
+            continue
 
-            # Add all unvisited neighbors at once.
-            stack.extend(n for n in adj.get(cur, []) if n not in visited)
+        visited.add(cur)
+        stack.extend(adj.get(cur, []))
 
     reachable_sfis = visited - {fw_id}
     missing = sfi_ids - reachable_sfis
@@ -2513,12 +4402,44 @@ def _verify_standards_export(
 def _walk_ancestors(
     *, ctx: ExportContext, node_id: str, parent_by_child: dict[str, str] | None = None
 ) -> list[str]:
-    """Return canonical node_id ancestry from root -> ... -> node_id (excluding root).
+    """Return canonical `node_id` ancestry from root -> ... -> node_id (excluding root).
+
+    Examples
+    --------
+    1. Basic ancestry walk
+        Suppose the canonical hierarchy is:
+
+            ROOT -> A(stage) -> B(subtopic) -> C(expectation)
+
+        Calling:
+
+            _walk_ancestors(..., node_id="C")
+
+        returns:
+
+            ["A", "B", "C"]
+
+        The root is excluded from the returned list.
+
+    2. Export-time parent override
+        Suppose step 7 hoisted an expectation so that its exported ancestry differs
+        from the canonical one.
+
+        If `parent_by_child={"C": "X", "X": "A"}` is passed in, the function walks the
+        export-time ancestry instead of `ctx.parent_by_child`.
+
+        This allows progression metadata to reflect the finalized export hierarchy.
+
+    3. Cycle-safe partial ancestry
+        If the supplied parent mapping is malformed and contains a cycle, the function
+        returns the ancestry accumulated up to the point where the cycle is detected,
+        rather than looping forever.
 
     Parameters
     ----------
     ctx
-        The ExportContext for the CanonicalIR, providing access to parent-child mappings.
+        The ExportContext for the CanonicalIR, providing access to parent-child
+        mappings.
     node_id
         The ID of the canonical node for which to walk ancestors.
     parent_by_child
@@ -2535,9 +4456,9 @@ def _walk_ancestors(
         ancestry up to the point where a cycle is detected or the root is reached.
     """
 
-    parent_lookup = parent_by_child or ctx.parent_by_child
     chain: list[str] = []
     cur: str | None = node_id
+    parent_lookup = parent_by_child or ctx.parent_by_child
     seen: set[str] = set()
 
     while cur and cur != ctx.root_id and cur not in seen:
@@ -2546,7 +4467,6 @@ def _walk_ancestors(
         cur = parent_lookup.get(cur)
 
     chain.reverse()
-
     return chain
 
 
@@ -2564,11 +4484,28 @@ def export_academic_standards(
     The process is as follows:
 
     1. Emit the framework node.
-    2. Precompute node-level emit flags based on drop policies.
-    3. Compute export-time aux parenting based on preceding expectation siblings.
+    2. Precompute node-level emit flags based on segment-drop, statement-role, and
+        grouping-role policies.
+    3. Compute export-time aux attachment/reparenting for descriptor/guidance nodes:
+        - Sibling layout: attach aux siblings to the most recent preceding expectation
+        - Child layout: attach aux children already nested under an expectation
+        - Build the initial export tree
+        - Collect attachment payloads and orphan aux stats
     4. Attach-only discovery pass: when aux nodes remain as siblings (or children) but
         export config requests attaching them to expectation metadata, discover and
-        attach without modifying hierarchy.
+        attach without modifying hierarchy:
+            - Starts from what step 3 already found
+            - Calls `_attach_aux_statements_in_export_tree()`, which tries to discover
+                more attachable aux nodes in the current `export_children` tree without
+                changing the hierarchy
+            - Merges the returned stats back into `reparent_stats`
+            - Overwrites/recomputes the tracked attached/orphan ID lists
+        This step answers the question: "Given the tree we have now, can any remaining
+        aux nodes be attached to expectations as metadata?". This matters because after
+        Step 3, we can still have cases like:
+            - Aux nodes still sitting as children under an expectation
+            - Aux siblings under a non-statement parent that Step 3 did not overwrite
+            - Mixed layouts that were not fully consumed during export-tree construction
     5. Handle attach-to-expectation rules for guidance/descriptors, modifying emit
         flags accordingly.
     6. Suppress export subtrees rooted under aux nodes that were converted into
@@ -2580,7 +4517,65 @@ def export_academic_standards(
     10. Build hasChild relationships and hierarchy order mappings.
     11. Sort items and relationships for stable output.
     12. Package everything into an AcademicStandardsExport dataclass.
-    13. Write JSON artifacts to disk.
+    13. Persist the exported academic standards artifacts to disk. This step writes
+        both:
+            - Decomposed typed artifacts (framework, items, hasChild relationships,
+                hierarchy order, drop reasons, reparent stats), and
+            - A single graph bundle (`academic_standards_kg.json`) built from those
+                artifacts.
+        The decomposed artifacts are used for debugging and for reloading prior exports
+        via `load_academic_standards_export()`. The graph bundle is used as the
+        academic standards sentinel artifact and as the input for later merged bundles
+        with Learning Components and Learning Progressions.
+
+    NB: Aux nodes means auxiliary statement nodes: specifically, canonical nodes whose
+    role is either `descriptor` or `guidance` (as defined by `AUX_ROLES`).
+    `expectation` is considered to be the main normative role. So aux nodes are not
+    "all non-expectations"; they are two statement-role types that are treated as
+    supporting material around an expectation. In practice, aux nodes are things that
+    the exporter can either drop, attach to an expectation's metadata, or keep as SFIs
+    depending on config parameters. For example, `_is_attachable()` determines whether
+    an aux node is eligible for attachment based on its role and the export config.
+
+    NB: In this exporter, an aux node can end up in one of 3 states:
+
+    1. Attached to an expectation as metadata and not emitted as its own SFI. This
+        happens when the config specifies "attach_to_expectation_metadata". In this
+        scenario, the sibling layout approach attaches the aux node to the most
+        preceding expectation sibling. The child layout attaches the aux node to an
+        expectation that already owns it as a child in the export tree.
+    2. Emitted as its own SFI. An aux node is still emitted as a separate SFI in
+        two common cases. First, if the config specifies "export_as_sfi_other",
+        then `_is_attachable()` returns `False`, so that the node is **not**
+        attached into expectation metadata. If `emit_flag=True`, then
+        `_emit_sfis()` will emit it as its own SFI with a normalized statement
+        type of "Other" because that's how aux roles normalize. Second, if
+        attachment was requested but no owning expectation was found, then this is
+        the orphan aux case. If a guidance/descriptor appears before any
+        expectation in sibling order, `_process_sibling_group()` marks it as orphan
+        instead of attaching it to a later expectation.
+        `_suppress_attached_to_expectation()` then suppresses only the aux nodes that
+        were actually attached. Orphan aux nodes remain emitted. `_emit_sfi()`
+        marks them with `metadata["orphan_aux"] = True`. So the rule is:
+        attached aux -> no standalone SFI; orphaned aux -> yes, standalone SFI,
+        tagged as `orphan_aux`.
+    3. Dropped entirely. An aux node can get fully dropped if the config specifies
+        "drop". In this case, the aux node never makes it to the
+        attachment-or-emission decision.
+
+    For example, suppose our config specifies the following:
+
+        * as_guidance_handling = "attach_to_expectation_metadata"
+        * as_descriptor_handling = "attach_to_expectation_metadata"
+        * as_aux_statement_parenting = "under_expectation"
+
+    that means:
+
+        1. Guidance/descriptor nodes are intended to disappear as standalone SFIs if
+            they can be matched to an expectation.
+        2. Only unmatched/orphan guidance/descriptor nodes remain as standalone SFIs.
+        3. Expectations stay emitted as normal SFIs, and they carry matched aux nodes
+            in metadata["aux_statements"].
 
     Parameters
     ----------
@@ -2619,35 +4614,34 @@ def export_academic_standards(
     emit_flag, drop_reasons = _build_initial_emit_flags(config=config, ctx=ctx)
 
     # 3.
-    export_children, aux_attach_to_expectation, reparent_stats = (
+    export_children, aux_nodes_attached_to_expectation, reparent_stats = (
         _compute_export_children(config=config, ctx=ctx, emit_flag=emit_flag)
     )
 
     # 4.
     if (
-        config.guidance_handling == "attach_to_expectation_metadata"
-        or config.descriptor_handling == "attach_to_expectation_metadata"
+        config.as_guidance_handling == "attach_to_expectation_metadata"
+        or config.as_descriptor_handling == "attach_to_expectation_metadata"
     ):
-        attached_aux_node_ids = set(reparent_stats.get("attached_aux_node_ids") or [])
-        orphan_aux_node_ids = set(reparent_stats.get("orphan_aux_node_ids") or [])
-
+        attached_aux_node_ids = set(reparent_stats.get("attached_aux_node_ids", []))
+        orphan_aux_node_ids = set(reparent_stats.get("orphan_aux_node_ids", []))
         attach_only_stats = _attach_aux_statements_in_export_tree(
             attached_aux_node_ids=attached_aux_node_ids,
-            aux_attach_to_expectation=aux_attach_to_expectation,
+            aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
             config=config,
             ctx=ctx,
             emit_flag=emit_flag,
             export_children=export_children,
             orphan_aux_node_ids=orphan_aux_node_ids,
         )
-
         reparent_stats.update(attach_only_stats)
         reparent_stats["attached_aux_node_ids"] = sorted(attached_aux_node_ids)
+        reparent_stats["orphan_aux_node_count"] = len(orphan_aux_node_ids)
         reparent_stats["orphan_aux_node_ids"] = sorted(orphan_aux_node_ids)
-        reparent_stats["orphan_aux_count"] = len(orphan_aux_node_ids)
+        reparent_stats["attached_aux_node_count"] = len(attached_aux_node_ids)
 
     # 5.
-    _process_attach_to_expectation(
+    _suppress_attached_to_expectation(
         config=config,
         ctx=ctx,
         drop_reasons=drop_reasons,
@@ -2666,9 +4660,7 @@ def export_academic_standards(
 
     # 7.
     reattach_stats = _reattach_children_of_dropped_nodes(
-        ctx=ctx,
-        emit_flag=emit_flag,
-        export_children=export_children,
+        ctx=ctx, emit_flag=emit_flag, export_children=export_children
     )
     reparent_stats.update(reattach_stats)
 
@@ -2685,9 +4677,13 @@ def export_academic_standards(
     export_parent_by_child = _build_export_parent_by_child(
         root_id=ctx.root_id, export_children=export_children
     )
-    export_order_index = _build_export_order_index(export_children)
+    export_order_index = {
+        (parent_id, child_id): child_index
+        for parent_id, child_ids in export_children.items()
+        for child_index, child_id in enumerate(child_ids)
+    }
     sfi_by_node = _emit_sfis(
-        aux_attach_to_expectation=aux_attach_to_expectation,
+        aux_nodes_attached_to_expectation=aux_nodes_attached_to_expectation,
         canonical_created_at_iso=canonical_created_at_iso,
         config=config,
         ctx=ctx,
@@ -2760,21 +4756,25 @@ def export_academic_standards(
         json_info=academic_standards.order.model_dump(mode="json"),
     )
     write_to_json(
-        fp=kg_dirs.academic_standards / "academic_standards_kg.json",
-        json_info=_build_academic_standards_graph_bundle(
-            academic_standards=academic_standards, config=config, ctx=ctx
-        ),
-    )
-    write_to_json(
         fp=kg_dirs.academic_standards / "academic_standards_drop_reasons.json",
         json_info=academic_standards.drop_reasons,
+    )
+    write_to_json(
+        fp=kg_dirs.academic_standards / "academic_standards_pruned_node_ids.json",
+        json_info=sorted(academic_standards.pruned_node_ids),
     )
     write_to_json(
         fp=kg_dirs.academic_standards / "academic_standards_reparent_stats.json",
         json_info=academic_standards.reparent_stats,
     )
+    write_to_json(
+        fp=kg_dirs.academic_standards / "academic_standards_kg.json",
+        json_info=_build_academic_standards_graph_bundle(
+            academic_standards=academic_standards, config=config, ctx=ctx
+        ),
+    )
 
-    logger.info(
+    logger.success(
         f"Exported Academic Standards KG: "
         f"{len(academic_standards.items)} items, "
         f"{len(academic_standards.relationships)} `hasChild` relationships"
@@ -2787,8 +4787,8 @@ def load_academic_standards_export(kg_dirs: KGDirs) -> AcademicStandardsExport:
     """Reconstruct an AcademicStandardsExport from previously written disk artifacts.
 
     This enables progressive re-use: if the academic standards KG already exists and
-    `overwrite=False`, we load the prior export rather than re-running the LLM-driven
-    export pipeline.
+    `overwrite=False`, we load the prior export rather than re-running the export
+    pipeline.
 
     Parameters
     ----------
@@ -2819,13 +4819,17 @@ def load_academic_standards_export(kg_dirs: KGDirs) -> AcademicStandardsExport:
         open_json_type(d / "academic_standards_hierarchy_order.json")
     )
 
-    # drop_reasons and reparent_stats are persisted alongside the core artifacts so the
-    # policy coverage report can be fully regenerated even when the export is reused.
+    # drop_reasons, pruned_node_ids, and reparent_stats are persisted alongside the
+    # core artifacts so policy coverage and validation reporting can be fully
+    # regenerated even when the export is reused.
     drop_reasons_fp = d / "academic_standards_drop_reasons.json"
+    pruned_node_ids_fp = d / "academic_standards_pruned_node_ids.json"
     reparent_stats_fp = d / "academic_standards_reparent_stats.json"
-
     drop_reasons: dict[str, str] = (
         open_json_type(drop_reasons_fp) if drop_reasons_fp.exists() else {}
+    )
+    pruned_node_ids = set(
+        open_json_type(pruned_node_ids_fp) if pruned_node_ids_fp.exists() else []
     )
     reparent_stats: dict[str, Any] = (
         open_json_type(reparent_stats_fp) if reparent_stats_fp.exists() else {}
@@ -2836,7 +4840,7 @@ def load_academic_standards_export(kg_dirs: KGDirs) -> AcademicStandardsExport:
         framework=framework,
         items=items,
         order=order,
-        pruned_node_ids=set(),  # Only needed during export; safe to default
+        pruned_node_ids=pruned_node_ids,
         relationships=relationships,
         reparent_stats=reparent_stats,
     )
@@ -2885,7 +4889,7 @@ def load_or_export_academic_standards(
 
     if as_sentinel.exists() and not config.overwrite:
         logger.warning(
-            "Academic Standards KG already exists and overwrite=False — loading from "
+            "Academic Standards KG already exists and overwrite=False--loading from "
             "disk."
         )
         academic_standards = load_academic_standards_export(kg_dirs)
@@ -2907,103 +4911,3 @@ def load_or_export_academic_standards(
         )
 
     return academic_standards, as_reused
-
-
-def should_emit_node(
-    *, config: CreateKGConfig, ctx: ExportContext, node_id: str
-) -> bool:
-    """Determine whether a canonical node should be emitted as a StandardsFrameworkItem
-    based on its properties and the export configuration.
-
-    Parameters
-    ----------
-    config
-        The CreateKGConfig for export, which may influence drop policies.
-    ctx
-        The ExportContext for the CanonicalIR, providing access to node properties and
-        decision/segment information for drop policies.
-    node_id
-        The ID of the canonical node to evaluate.
-
-    Returns
-    -------
-    bool
-        True if the node should be emitted as a StandardsFrameworkItem, False if it
-        should be dropped.
-    """
-
-    ok, _ = should_emit_node_with_reason(config=config, ctx=ctx, node_id=node_id)
-    return ok
-
-
-def should_emit_node_with_reason(
-    *, config: CreateKGConfig, ctx: ExportContext, node_id: str
-) -> tuple[bool, str]:
-    """Determine whether a canonical node should be emitted, with a drop reason.
-
-    Parameters
-    ----------
-    config
-        The CreateKGConfig for export, which may influence drop policies.
-    ctx
-        The ExportContext for the CanonicalIR, providing access to node properties and
-        decision/segment information for drop policies.
-    node_id
-        The ID of the canonical node to evaluate.
-
-    Returns
-    -------
-    tuple[bool, str]
-        (True, "emitted") if the node should be emitted, or (False, reason) where
-        reason is a human-readable string explaining why the node was dropped. In
-        whitelist mode, non-grouping nodes are only eligible for `export_as_sfi_other`
-        when they are leaf nodes.
-    """
-
-    node = ctx.nodes_by_id[node_id]
-    role = str(node.get("role") or "")
-
-    # Segment drop policy.
-    for did in node.get("source_decision_ids", []):
-        dec = ctx.decisions_by_id.get(did)
-
-        if dec and ctx.should_drop_segment(decision=dec):
-            dt = dec.get("decision_type", "unknown")
-            sig = dec.get("columns_signature")
-            return (
-                (False, f"dropped:columns_signature:{sig}")
-                if sig
-                and sig in (ctx.kg_config.non_standard_columns_signature or set())
-                else (False, f"dropped:segment_decision:{dt}")
-            )
-
-    # Role handling.
-    if role == StatementRole.GUIDANCE.value and config.guidance_handling == "drop":
-        return False, "dropped:guidance_handling:drop"
-
-    if role == StatementRole.DESCRIPTOR.value and config.descriptor_handling == "drop":
-        return False, "dropped:descriptor_handling:drop"
-
-    # Strict grouping policy: if it's not a statement role, it must be an allowed
-    # grouping. Non-grouping nodes may only be emitted as `Other` when they are true
-    # leaves. Structural non-grouping nodes are dropped so their children can be
-    # hoisted to the nearest surviving ancestor by
-    # `_reattach_children_of_dropped_nodes`, rather than letting a semantic `Other`
-    # node function as a de facto grouping parent.
-    if (
-        config.grouping_role_policy == "whitelist"
-        and role != NodeRole.FRAMEWORK.value
-        and role not in STATEMENT_ROLE_VALUES
-        and not _is_grouping_role(config=config, role=role)
-    ):
-        if config.non_grouping_role_handling == "drop":
-            return False, "dropped:non_grouping_role:drop"
-
-        has_canonical_children = len(ctx.children_by_parent.get(node_id, [])) > 0
-        return (
-            (False, "dropped:non_grouping_role:structural_parent")
-            if has_canonical_children
-            else (True, "emitted")
-        )
-
-    return True, "emitted"

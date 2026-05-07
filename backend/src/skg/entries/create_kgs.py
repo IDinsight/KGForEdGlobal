@@ -3,14 +3,13 @@ from a canonical IR JSON file. This is step 5.
 
 Step 5 does the following:
 
-1. Loads the canonical IR JSON and validates it.
-2. Builds the knowledge graph export context.
-3. Exports academic standards to the knowledge graphs.
-4. Exports Learning Components KG and writes combined Standards + Learning Components
+1. Builds the knowledge graph export context.
+2. Exports academic standards to the knowledge graphs.
+3. Exports Learning Components KG and writes combined Standards + Learning Components
     graph bundle.
-5. Optionally exports Learning Progressions KG and writes combined Standards +
+4. Optionally exports Learning Progressions KG and writes combined Standards +
     Learning Components + Learning Progressions graph bundle.
-6. Builds reporting and validation artifacts, writes to disk, and logs console summary.
+5. Builds reporting and validation artifacts, writes to disk, and logs console summary.
 
 Invoke from the backend directory via:
 
@@ -43,6 +42,7 @@ from skg.canonical_ir.schemas import CanonicalIR
 from skg.kgs.export_academic_standards import load_or_export_academic_standards
 from skg.kgs.export_learning_components import load_or_export_learning_components
 from skg.kgs.export_learning_progressions import load_or_export_learning_progressions
+from skg.kgs.llm import KGUsageTracker
 from skg.kgs.reporting import (
     build_entity_provenance_export,
     build_policy_coverage_report,
@@ -72,6 +72,7 @@ def create_kgs(
     config: CreateKGConfig,
     kg_dirs: KGDirs,
     provenance_context: dict | None = None,
+    usage_tracker: KGUsageTracker,
 ) -> None:
     """Create Learning Commons knowledge graphs from a single CanonicalIR.
 
@@ -102,6 +103,8 @@ def create_kgs(
     provenance_context
         An optional dictionary containing provenance context information to be included
         in the knowledge graphs.
+    usage_tracker
+        Tracker to accumulate token usage across all KG generation and validation calls.
 
     Raises
     ------
@@ -129,11 +132,13 @@ def create_kgs(
         config=config,
         ctx=kg_export_ctx,
         kg_dirs=kg_dirs,
+        usage_tracker=usage_tracker,
     )
 
     # Sentinels needed for combined bundles.
     as_sentinel = kg_dirs.academic_standards / "academic_standards_kg.json"
     lc_sentinel = kg_dirs.learning_components / "learning_components_kg.json"
+    lp_sentinel = kg_dirs.learning_progressions / "learning_progressions_kg.json"
 
     # Combined Academic Standards + Learning Components bundle.
     combined_as_lc_fp = (
@@ -143,27 +148,28 @@ def create_kgs(
     if combined_as_lc_fp.exists() and as_reused and lc_reused:
         logger.info(
             "Combined Academic Standards and Learning Components bundle already exists "
-            "(both components reused)---skipping."
+            "(both components reused)--skipping."
         )
     else:
-        academic_bundle = open_json_type(as_sentinel)
+        as_bundle = open_json_type(as_sentinel)
         lc_bundle = open_json_type(lc_sentinel)
         combined_bundle = merge_graph_bundles(
-            bundles=[academic_bundle, lc_bundle],
+            bundles=[as_bundle, lc_bundle],
             doc_key=kg_export_ctx.doc_key,
-            export_dialect=str(config.export_dialect),
+            export_dialect=config.as_export_dialect,
         )
         write_to_json(fp=combined_as_lc_fp, json_info=combined_bundle)
 
     # 4.
     learning_progressions = None
 
-    if config.generate_progressions is True:
+    if config.generate_learning_progressions is True:
         learning_progressions, lp_reused = load_or_export_learning_progressions(
             academic_standards=academic_standards,
             config=config,
             ctx=kg_export_ctx,
             kg_dirs=kg_dirs,
+            usage_tracker=usage_tracker,
         )
 
         # Combined Academic Standards + Learning Components + Learning Progressions
@@ -175,18 +181,17 @@ def create_kgs(
 
         if combined_all_fp.exists() and as_reused and lc_reused and lp_reused:
             logger.info(
-                "Combined AS+LC+LP bundle already exists (all components reused)---skipping."
+                "Combined Academic Standards, Learning Components, and Learning Progressions "
+                "bundle already exists (all components reused)--skipping."
             )
         else:
-            academic_bundle = open_json_type(as_sentinel)
+            as_bundle = open_json_type(as_sentinel)
             lc_bundle = open_json_type(lc_sentinel)
-            lp_bundle = open_json_type(
-                kg_dirs.learning_progressions / "learning_progressions_kg.json"
-            )
+            lp_bundle = open_json_type(lp_sentinel)
             combined_bundle = merge_graph_bundles(
-                bundles=[academic_bundle, lc_bundle, lp_bundle],
+                bundles=[as_bundle, lc_bundle, lp_bundle],
                 doc_key=kg_export_ctx.doc_key,
-                export_dialect=str(config.export_dialect),
+                export_dialect=config.as_export_dialect,
             )
             write_to_json(fp=combined_all_fp, json_info=combined_bundle)
 
@@ -244,7 +249,9 @@ def create(
     1. Load config and validate extraction run existence.
     2. Cross-check canonical IR run results.
     3. Persist KG creation run metadata.
-    4. Create Learning Commons knowledge graphs.
+    4. Create a usage tracker to accumulate token costs across all KG generation and
+        validation calls.
+    5. Create Learning Commons knowledge graphs.
 
     Parameters
     ----------
@@ -290,8 +297,11 @@ def create(
     kg_results_dir = extraction_config.output_dir / expected_doc_key / "kgs"
     kg_dirs, kg_run = persist_kg_run(config=config, output_dir=kg_results_dir)
 
+    # 4.
+    usage_tracker = KGUsageTracker()
+
     try:
-        # 4.
+        # 5.
         logger.info(
             f"Starting KG creation process using canonical IR JSON: {canonical_ir_fp}"
         )
@@ -313,6 +323,7 @@ def create(
                     "render_dpi": extraction_config.dpi,
                 }
             },
+            usage_tracker=usage_tracker,
         )
         kg_run.extra["status"] = "success"
 

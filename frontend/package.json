@@ -1,0 +1,64 @@
+{
+  "author": "IDinsight",
+  "description": "MCP server for educational knowledge graph navigation",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "tsc-alias": "^1.8.17",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.3",
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^20",
+    "@typescript-eslint/eslint-plugin": "^8.49.0",
+    "@typescript-eslint/parser": "^8.49.0",
+    "eslint": "^9",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-import-resolver-typescript": "^4.4.4",
+    "eslint-plugin-import": "^2.32.0",
+    "eslint-plugin-jsdoc": "^61.5.0",
+    "eslint-plugin-no-relative-import-paths": "^1.6.1",
+    "eslint-plugin-perfectionist": "^4.15.1",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-unicorn": "^62.0.0",
+    "globals": "16.0.0",
+    "lint-staged": "^16.2.3",
+    "prettier": "^3.7.4",
+    "prettier-plugin-jsdoc": "^1.8.0",
+    "prettier-plugin-tailwindcss": "^0.7.2",
+    "tsx": "^4.0.0",
+    "typescript": "^5"
+  },
+  "directories": {
+    "test": "tests"
+  },
+  "engines": {
+    "node": ">=20.10.0 <24"
+  },
+  "keywords": [
+    "mcp",
+    "knowledge-graph",
+    "education"
+  ],
+  "license": "MIT",
+  "lint-staged": {
+    "src/**/*.css": "stylelint --config .stylelintrc.js --ignore-path .gitignore --fix",
+    "src/**/*.{js,ts,jsx,tsx,mjs,cjs}": [
+      "prettier --write",
+      "eslint --config eslint.config.mjs --fix --format stylish"
+    ]
+  },
+  "main": "build/index.js",
+  "name": "edu-kg-mcp",
+  "private": true,
+  "scripts": {
+    "build": "tsc --project tsconfig.json && tsc-alias -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "lint-fix": "prettier --write \"src/**/*.{js,ts,jsx,tsx,mjs,cjs}\" && eslint --config eslint.config.mjs --fix --format stylish --no-error-on-unmatched-pattern \"src/**/*.{js,ts,jsx,tsx,mjs,cjs}\" && tsc --noEmit",
+    "start": "node build/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}

@@ -23,12 +23,13 @@ from pydantic import Field, field_validator, model_validator
 
 # Package Library
 from skg.page_ir_extraction.schemas import TextUnit
-from skg.schemas import BaseSchema, ExportDialect
+from skg.schemas import BaseSchema, LanguageField, validate_bbox_order
 
 AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo"}
 AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
 MetadataT = dict[str, Any]
 NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
+ProgressionSubtype = Literal["developmental_prerequisite", "recurring_practice"]
 ValidationLevel = Literal["error", "info"]
 
 
@@ -277,6 +278,16 @@ class ProgressionEdge(BaseSchema):
         ge=0.0,
         le=1.0,
     )
+    progression_subtype: Optional[ProgressionSubtype] = Field(
+        default=None,
+        description=(
+            "For Phase 1 within-level buildsTowards only: "
+            "'developmental_prerequisite' means the source is a meaningful prerequisite "
+            "for a more complex or dependent target; 'recurring_practice' means the "
+            "target is a later curriculum occurrence continuing practice of the same "
+            "or substantially similar skill."
+        ),
+    )
     rationale: str = Field(
         description="Brief rationale for the edge (>= 50 chars).",
         min_length=50,
@@ -316,9 +327,8 @@ class ProgressionEdge(BaseSchema):
 
     @field_validator("source_sfi_uuid", "target_sfi_uuid", mode="before")
     @classmethod
-    def _strip_uuid_str(cls, v: Any) -> str:
-        """Strip whitespace and validate that the value is a non-empty string for UUID
-        fields.
+    def _validate_uuid_str(cls, v: Any) -> str:
+        """Strip whitespace and validate that the value is a parseable UUID string.
 
         Parameters
         ----------
@@ -328,12 +338,12 @@ class ProgressionEdge(BaseSchema):
         Returns
         -------
         str
-            The validated and stripped string value.
+            The validated and stripped UUID string.
 
         Raises
         ------
         ValueError
-            If the input value is None or an empty string after stripping.
+            If the input value is null, empty, or not a valid UUID string.
         """
 
         if v is None:
@@ -343,6 +353,11 @@ class ProgressionEdge(BaseSchema):
 
         if not s:
             raise ValueError("UUID cannot be empty")
+
+        try:
+            UUID(s)
+        except Exception as e:  # pylint: disable=broad-except
+            raise ValueError(f"Invalid UUID string: {s}") from e
 
         return s
 
@@ -430,7 +445,7 @@ class StandardsFramework(_CaseIdentifierMixin, _DateValidationMixin, BaseSchema)
             "deterministic across reruns (UUIDv5 recommended)."
         ),
     )
-    in_language: str = Field(
+    in_language: LanguageField = Field(
         description=(
             "Language tag for the framework (e.g., en-US). In `lc_public_strict`, "
             "this should conform to LC enum values; in `global_relaxed`, any valid "
@@ -599,7 +614,7 @@ class StandardsFrameworkItem(_CaseIdentifierMixin, _DateValidationMixin, BaseSch
             "across reruns (UUIDv5 recommended)."
         ),
     )
-    in_language: str = Field(
+    in_language: LanguageField = Field(
         description=(
             "Language tag for the item text (e.g., en-US). "
             "In strict exports this should conform to LC enums; "
@@ -736,14 +751,14 @@ class StandardsFrameworkItem(_CaseIdentifierMixin, _DateValidationMixin, BaseSch
             return []
 
         if not isinstance(v, list):
-            raise TypeError("gradeLevel must be a list of strings")
+            raise TypeError("grade_level must be a list of strings")
 
         cleaned: list[str] = []
         seen: set[str] = set()
 
         for item in v:
             if not isinstance(item, str):
-                raise TypeError("gradeLevel must contain only strings")
+                raise TypeError("grade_level must contain only strings")
 
             s = item.strip()
 
@@ -830,7 +845,7 @@ class LearningComponent(_DateValidationMixin, BaseSchema):
             "across reruns (UUIDv5 recommended)."
         ),
     )
-    in_language: str = Field(
+    in_language: LanguageField = Field(
         description=(
             "Language tag for the component text (e.g., en-US). In strict exports this should "
             "conform to LC enum values; in relaxed exports any valid BCP-47 language tag is allowed."
@@ -1256,11 +1271,36 @@ class BBox(BaseSchema):
         Any
             The validated BBox data, either as a dict or the original data if it was
             not a list/tuple of 4 numbers.
+
+        Raises
+        ------
+        ValueError
+            If the input is a list/tuple but does not have exactly 4 numbers.
         """
 
-        if isinstance(data, (list, tuple)) and len(data) == 4:
+        if isinstance(data, (list, tuple)):
+            if len(data) != 4:
+                raise ValueError(
+                    "Bounding box must have exactly 4 numbers: [x0, y0, x1, y1]."
+                )
+
             return {"x0": data[0], "y0": data[1], "x1": data[2], "y1": data[3]}
         return data
+
+    @model_validator(mode="after")
+    def _normalize_axis_order(self) -> BBox:
+        """Normalize bbox ordering and expand zero-size axes.
+
+        Returns
+        -------
+        BBox
+            The BBox object with normalized coordinates.
+        """
+
+        self.x0, self.y0, self.x1, self.y1 = validate_bbox_order(
+            [self.x0, self.y0, self.x1, self.y1]
+        )
+        return self
 
 
 class EntityProvenance(BaseSchema):
@@ -1296,29 +1336,6 @@ class EntityProvenance(BaseSchema):
     text: Optional[TextUnit] = None
 
 
-class LearningProgressionProvenance(BaseSchema):
-    """Provenance information for a learning progression relationship."""
-
-    confidence: float = Field(ge=0.0, le=1.0)
-    evidence_node_ids: list[str] = Field(default_factory=list)
-    explanation: Optional[str] = None
-    inference_source: Literal["inferred", "llm"]
-    granularity: Literal["coarse", "fine"] = "coarse"
-    llm_model: Optional[str] = Field(default=None)
-    relationship_identifier: UUID
-
-
-class RelationshipProvenance(BaseSchema):
-    """Provenance information for a relationship."""
-
-    evidence_node_ids: list[str] = Field(default_factory=list)
-    evidence_page_indices: list[int] = Field(default_factory=list)
-    relationship_identifier: UUID
-    relationship_type: str
-    source_uuid: UUID
-    target_uuid: UUID
-
-
 # Schemas for export configurations.
 class EntityProvenanceExport(BaseSchema):
     """Schema for entity provenance export.
@@ -1340,248 +1357,6 @@ class HierarchyOrderExport(BaseSchema):
     order: dict[str, list[str]] = Field(
         default_factory=dict, description="Order of child SFIs."
     )
-
-
-class KnowledgeGraphExport(BaseSchema):
-    """Schema for Knowledge Graph export."""
-
-    export_dialect: ExportDialect = Field(
-        default="global_relaxed",
-        description="Export validation mode: strict LC enums vs relaxed global strings.",
-    )
-    frameworks: list[StandardsFramework] = Field(default_factory=list)
-    learning_components: list[LearningComponent] = Field(default_factory=list)
-    relationships: list[Relationship] = Field(default_factory=list)
-    standards_framework_items: list[StandardsFrameworkItem] = Field(
-        default_factory=list
-    )
-
-    def _build_id_maps(self) -> dict[str, set[str]]:
-        """Extract sets of valid IDs for each entity type.
-
-        Returns
-        -------
-        dict[str, set[str]]
-            Mapping of entity types to sets of valid IDs.
-        """
-
-        return {
-            "components": {str(lc.identifier) for lc in self.learning_components},
-            "frameworks": {str(f.case_identifier_uuid) for f in self.frameworks},
-            "items": {
-                str(s.case_identifier_uuid) for s in self.standards_framework_items
-            },
-        }
-
-    @staticmethod
-    def _enforce_reference(
-        *,
-        expected_entity: str,
-        expected_key: str,
-        id_desc: str,
-        rel: Relationship,
-        side: Literal["source", "target"],
-        valid_ids: set[str],
-    ) -> None:
-        """Validate that a relationship side matches expected entity type, key type,
-        and points to an existing ID.
-
-        Parameters
-        ----------
-        expected_entity
-            The expected entity type (e.g., "LearningComponent").
-        expected_key
-            The expected key type (e.g., "identifier").
-        id_desc
-            Description of the ID for error messages.
-        rel
-            The Relationship to validate.
-        side
-            Which side of the relationship to validate ("source" or "target").
-        valid_ids
-            Set of valid IDs for referential integrity check.
-
-        Raises
-        ------
-        ValueError
-            If any validation fails.
-        """
-
-        prefix = f"{rel.relationship_type}.{side}"
-
-        # Determine which fields to check based on side.
-        entity_val = rel.source_entity if side == "source" else rel.target_entity
-        key_val = rel.source_entity_key if side == "source" else rel.target_entity_key
-        id_val = (
-            rel.source_entity_value if side == "source" else rel.target_entity_value
-        )
-
-        # Check entity type.
-        if entity_val != expected_entity:
-            raise ValueError(f"{prefix}Entity must be {expected_entity}")
-
-        # Check key type.
-        if key_val != expected_key:
-            raise ValueError(f"{prefix}EntityKey must be {expected_key}")
-
-        # Check ID existence.
-        if id_val not in valid_ids:
-            raise ValueError(f"{prefix}EntityValue must reference a {id_desc}")
-
-    def _validate_has_child(
-        self, rel: Relationship, id_maps: dict[str, set[str]]
-    ) -> None:
-        """Validate 'hasChild': (Framework|SFI) -> SFI.
-
-        Parameters
-        ----------
-        rel
-            The Relationship to validate.
-        id_maps
-            Mapping of entity types to sets of valid IDs.
-
-        Raises
-        ------
-        ValueError
-            If any hasChild validation fails.
-        """
-
-        # Source: can be framework OR item.
-        if rel.source_entity == "StandardsFramework":
-            self._enforce_reference(
-                expected_entity="StandardsFramework",
-                expected_key="case_identifier_uuid",
-                id_desc="StandardsFramework.case_identifier_uuid",
-                rel=rel,
-                side="source",
-                valid_ids=id_maps["frameworks"],
-            )
-        elif rel.source_entity == "StandardsFrameworkItem":
-            self._enforce_reference(
-                expected_entity="StandardsFrameworkItem",
-                expected_key="case_identifier_uuid",
-                id_desc="StandardsFrameworkItem.case_identifier_uuid",
-                rel=rel,
-                side="source",
-                valid_ids=id_maps["items"],
-            )
-        else:
-            raise ValueError(
-                "hasChild.sourceEntity must be StandardsFramework or StandardsFrameworkItem"
-            )
-
-        # Target: StandardsFrameworkItem.
-        self._enforce_reference(
-            expected_entity="StandardsFrameworkItem",
-            expected_key="case_identifier_uuid",
-            id_desc="StandardsFrameworkItem.case_identifier_uuid",
-            rel=rel,
-            side="target",
-            valid_ids=id_maps["items"],
-        )
-
-    def _validate_sfi_connection(
-        self, rel: Relationship, id_maps: dict[str, set[str]]
-    ) -> None:
-        """Validate 'buildsTowards'/'relatesTo': SFI -> SFI.
-
-        Parameters
-        ----------
-        rel
-            The Relationship to validate.
-        id_maps
-            Mapping of entity types to sets of valid IDs.
-        """
-
-        # Source.
-        self._enforce_reference(
-            expected_entity="StandardsFrameworkItem",
-            expected_key="case_identifier_uuid",
-            id_desc="StandardsFrameworkItem.case_identifier_uuid",
-            rel=rel,
-            side="source",
-            valid_ids=id_maps["items"],
-        )
-
-        # Target.
-        self._enforce_reference(
-            expected_entity="StandardsFrameworkItem",
-            expected_key="case_identifier_uuid",
-            id_desc="StandardsFrameworkItem.case_identifier_uuid",
-            rel=rel,
-            side="target",
-            valid_ids=id_maps["items"],
-        )
-
-    def _validate_single_relationship(
-        self, rel: Relationship, id_maps: dict[str, set[str]]
-    ) -> None:
-        """Dispatch validation based on relationship type.
-
-        Parameters
-        ----------
-        rel
-            The Relationship to validate.
-        id_maps
-            Mapping of entity types to sets of valid IDs.
-        """
-
-        if rel.relationship_type == "supports":
-            self._validate_supports(rel, id_maps)
-        elif rel.relationship_type == "hasChild":
-            self._validate_has_child(rel, id_maps)
-        elif rel.relationship_type in {"buildsTowards", "relatesTo"}:
-            self._validate_sfi_connection(rel, id_maps)
-
-    def _validate_supports(
-        self, rel: Relationship, id_maps: dict[str, set[str]]
-    ) -> None:
-        """Validate 'supports': LC -> SFI.
-
-        Parameters
-        ----------
-        rel
-            The Relationship to validate.
-        id_maps
-            Mapping of entity types to sets of valid IDs.
-        """
-
-        # Source: LearningComponent (identifier).
-        self._enforce_reference(
-            expected_entity="LearningComponent",
-            expected_key="identifier",
-            id_desc="LearningComponent.identifier",
-            rel=rel,
-            side="source",
-            valid_ids=id_maps["components"],
-        )
-
-        # Target: StandardsFrameworkItem (case_identifier_uuid).
-        self._enforce_reference(
-            expected_entity="StandardsFrameworkItem",
-            expected_key="case_identifier_uuid",
-            id_desc="StandardsFrameworkItem.case_identifier_uuid",
-            rel=rel,
-            side="target",
-            valid_ids=id_maps["items"],
-        )
-
-    @model_validator(mode="after")
-    def _validate_integrity(self) -> KnowledgeGraphExport:
-        """Validate referential integrity of relationships against entities.
-
-        Returns
-        -------
-        KnowledgeGraphExport
-            The validated KnowledgeGraphExport object.
-        """
-
-        id_maps = self._build_id_maps()
-
-        for rel in self.relationships:
-            self._validate_single_relationship(rel, id_maps)
-
-        return self
 
 
 # Schemas for graph validation reporting.
@@ -1699,7 +1474,7 @@ class GraphValidationReport(BaseSchema):
             return
 
         # Keep the exception message readable.
-        lines = ["CanonicalIR pre-validation failed:"]
+        lines = ["GraphValidationReport pre-validation failed:"]
 
         for i in self.errors()[:15]:
             lines.append(f"- [{i.code}] {i.message}")
@@ -1722,9 +1497,34 @@ class PolicyCoverageReport(BaseSchema):
     pdf_name: Optional[str] = None
 
     # Node-level drop accounting (academic standards).
-    dropped_attach_to_expectation: int = Field(
+    drop_reason_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Complete count of Academic Standards drop reasons, keyed by the raw "
+            "drop-reason taxonomy string. This preserves new upstream drop reasons "
+            "even before curated report fields are added."
+        ),
+    )
+    dropped_aux_attached_to_expectation: int = Field(
         default=0,
-        description="Aux nodes converted to metadata attachments (not emitted as SFIs).",
+        description=(
+            "Aux guidance/descriptor nodes converted to expectation metadata "
+            "attachments and therefore not emitted as standalone SFIs."
+        ),
+    )
+    dropped_aux_descendants_suppressed: int = Field(
+        default=0,
+        description=(
+            "Descendant nodes suppressed because they lived under an aux node that was "
+            "converted into expectation metadata."
+        ),
+    )
+    dropped_due_to_expectation_metadata_attachment: int = Field(
+        default=0,
+        description=(
+            "Total nodes dropped because of expectation-metadata attachment handling: "
+            "attached aux nodes plus descendants suppressed below attached aux nodes."
+        ),
     )
     dropped_by_columns_signature: dict[str, int] = Field(
         default_factory=dict,
@@ -1735,14 +1535,24 @@ class PolicyCoverageReport(BaseSchema):
         description="Count of nodes dropped per segment decision type (e.g., ignore, unresolved).",
     )
     dropped_descriptor: int = Field(
-        default=0, description="Nodes dropped because descriptor_handling == 'drop'."
+        default=0, description="Nodes dropped because as_descriptor_handling == 'drop'."
     )
     dropped_guidance: int = Field(
-        default=0, description="Nodes dropped because guidance_handling == 'drop'."
+        default=0, description="Nodes dropped because as_guidance_handling == 'drop'."
     )
     dropped_non_grouping_role: int = Field(
         default=0,
-        description="Nodes dropped because non_grouping_role_handling == 'drop'.",
+        description=(
+            "Total nodes dropped with a drop:non_grouping_role:* reason. See "
+            "dropped_non_grouping_role_counts for the suffix-level breakdown."
+        ),
+    )
+    dropped_non_grouping_role_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Count of nodes dropped per drop:non_grouping_role:* suffix, such as "
+            "'drop' or 'structural_parent'."
+        ),
     )
     pruned_empty_groupings: int = Field(
         default=0,
@@ -1751,38 +1561,324 @@ class PolicyCoverageReport(BaseSchema):
     total_canonical_nodes: int = 0
     total_emitted_sfis: int = 0
 
-    # Aux reparenting.
-    aux_reparented_count: int = Field(
-        default=0, description="Aux statement nodes reparented under expectations."
+    # Canonical-node accounting completeness.
+    coverage_accounted_canonical_nodes: int = Field(
+        default=0,
+        description=(
+            "Number of non-root canonical node IDs covered by the union of emitted "
+            "SFI source nodes and dropped canonical nodes."
+        ),
+    )
+    coverage_accounting_ok: bool = Field(
+        default=True,
+        description=(
+            "True when every non-root canonical node is accounted for exactly once as "
+            "either emitted as an SFI or intentionally dropped by Academic Standards "
+            "policy, with no emitted/dropped overlap and no non-canonical node IDs "
+            "appearing in either set."
+        ),
+    )
+    coverage_details_limit: int = Field(
+        default=200,
+        description="Maximum number of node IDs included per coverage-details list.",
+    )
+    coverage_details_truncated: bool = Field(
+        default=False,
+        description=(
+            "Whether any coverage-details list was truncated because it exceeded "
+            "coverage_details_limit."
+        ),
+    )
+    coverage_emitted_and_dropped_overlap_count: int = Field(
+        default=0,
+        description=(
+            "Canonical node IDs that appear both as emitted SFI source nodes and as "
+            "dropped nodes."
+        ),
+    )
+    coverage_emitted_and_dropped_overlap_node_ids: list[str] = Field(
+        default_factory=list,
+        description="Example canonical node IDs both emitted and dropped.",
+    )
+    coverage_emitted_sfis_missing_canonical_node_id_count: int = Field(
+        default=0,
+        description=(
+            "Emitted SFI rows whose metadata lacks canonical_node_id and therefore "
+            "cannot be tied back to a Canonical IR node for coverage accounting."
+        ),
+    )
+    coverage_emitted_sfis_missing_canonical_node_id_examples: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Example emitted SFI UUIDs whose metadata lacks canonical_node_id."
+        ),
+    )
+    coverage_noncanonical_dropped_node_count: int = Field(
+        default=0,
+        description=(
+            "Academic Standards drop_reasons node IDs that are not non-root Canonical "
+            "IR node IDs."
+        ),
+    )
+    coverage_noncanonical_dropped_node_ids: list[str] = Field(
+        default_factory=list,
+        description="Example dropped node IDs not present in Canonical IR.",
+    )
+    coverage_noncanonical_emitted_node_count: int = Field(
+        default=0,
+        description=(
+            "Emitted SFI metadata canonical_node_id values that are not non-root "
+            "Canonical IR node IDs."
+        ),
+    )
+    coverage_noncanonical_emitted_node_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Example emitted canonical_node_id values not present in Canonical IR."
+        ),
+    )
+    coverage_over_accounted_canonical_nodes: int = Field(
+        default=0,
+        description=(
+            "Canonical-node accounting anomalies caused by emitted/dropped overlap or "
+            "node IDs in emitted/drop accounting that do not exist in the Canonical IR."
+        ),
+    )
+    coverage_unaccounted_canonical_nodes: int = Field(
+        default=0,
+        description=(
+            "Canonical nodes that are neither emitted as SFIs nor present in Academic "
+            "Standards drop_reasons."
+        ),
+    )
+    coverage_unaccounted_node_ids: list[str] = Field(
+        default_factory=list,
+        description="Example canonical node IDs not emitted and not dropped.",
+    )
+
+    # Aux reparenting/attachment and hierarchy-hoisting stats.
+    attach_only_newly_attached_aux_node_count: int = Field(
+        default=0,
+        description=(
+            "Unique aux node IDs newly discovered and attached during the step-4 "
+            "attach-only discovery pass."
+        ),
+    )
+    attached_aux_subtree_root_count: int = Field(
+        default=0,
+        description=(
+            "Attached aux nodes that still had exported child subtrees when subtree "
+            "suppression ran."
+        ),
+    )
+    child_layout_aux_attached_count: int = Field(
+        default=0,
+        description=(
+            "Aux statements discovered as canonical children of an expectation and "
+            "attached during step 3 export-tree construction."
+        ),
+    )
+    dropped_parents_processed: int = Field(
+        default=0,
+        description=(
+            "Dropped parents with emitted children that were processed during hierarchy "
+            "hoisting."
+        ),
+    )
+    dropped_parents_removed_from_parent_lists_count: int = Field(
+        default=0,
+        description=(
+            "Dropped parents whose stale references were removed from at least one "
+            "export parent child-list."
+        ),
     )
     orphan_aux_count: int = Field(
         default=0,
-        description="Aux nodes that could not be reparented (no preceding expectation).",
+        description=(
+            "Total unique aux nodes that could not be attached to an owning "
+            "expectation (for example, no preceding expectation in sibling order)."
+        ),
+    )
+    reattach_appended_without_anchor_order_count: int = Field(
+        default=0,
+        description=(
+            "Hoist operations that appended children because no anchor-based ordering "
+            "signal was available."
+        ),
+    )
+    reattach_original_sibling_fallback_count: int = Field(
+        default=0,
+        description=(
+            "Hoist operations that used original sibling-position fallback because "
+            "canonical edge ordering was unavailable."
+        ),
+    )
+    reattached_children_count: int = Field(
+        default=0,
+        description="Emitted children newly inserted under surviving ancestors.",
+    )
+    removed_dropped_parent_reference_list_count: int = Field(
+        default=0,
+        description=(
+            "Total number of export parent child-lists modified while removing stale "
+            "dropped-parent references."
+        ),
+    )
+    sibling_aux_reparented_count: int = Field(
+        default=0,
+        description=(
+            "Aux sibling statements reparented to the most recent preceding "
+            "expectation during step 3 export-tree construction."
+        ),
+    )
+    suppressed_attached_aux_descendant_count: int = Field(
+        default=0,
+        description=(
+            "Descendant nodes suppressed below attached aux nodes so they cannot be "
+            "hoisted back into the exported hierarchy."
+        ),
+    )
+    suppressed_attached_aux_node_count: int = Field(
+        default=0,
+        description=(
+            "Attached aux nodes newly suppressed as standalone SFIs by the "
+            "attach-to-expectation policy enforcement step."
+        ),
+    )
+    total_attached_aux_node_count: int = Field(
+        default=0,
+        description=(
+            "Total unique aux node IDs tracked as attached to an expectation after "
+            "the attach-only discovery pass (steps 3-4 combined)."
+        ),
     )
 
     # LC stats.
+    lc_fallback_sfis_count: int = Field(
+        default=0,
+        description="LC-source SFIs that fell back to deterministic 1_to_1 generation.",
+    )
     lc_max_splits_observed: int = 0
+    lc_source_exclusion_reason_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Counts of LC-source eligibility exclusion reasons. The eligible reason is "
+            "omitted so this field focuses on exclusions."
+        ),
+    )
     lc_split_policy: str = ""
     lc_splits_distribution: dict[str, int] = Field(
         default_factory=dict,
         description="Distribution of split counts: how many SFIs produced N LCs. Keys are stringified integers (e.g., '1': 500, '2': 50).",
     )
-    total_expectations: int = 0
+    total_lc_source_sfis_considered: int = Field(
+        default=0,
+        description="Total SFIs considered by LC-source eligibility filtering.",
+    )
+    total_lc_source_sfis_eligible: int = Field(
+        default=0,
+        description="Total SFIs eligible to generate LearningComponents.",
+    )
+    total_lc_source_sfis_empty_text: int = Field(
+        default=0,
+        description=(
+            "Eligible LC-source SFIs skipped or producing zero LCs because usable text "
+            "was empty."
+        ),
+    )
+    total_lc_source_sfis_excluded: int = Field(
+        default=0,
+        description="Total SFIs excluded by LC-source eligibility filtering.",
+    )
     total_lcs: int = 0
 
-    # Progression stats (populated only when generate_progressions is True).
-    progression_candidate_edges: int = 0
-    progression_dropped_cap_relates: int = 0
-    progression_dropped_low_conf_builds: int = 0
-    progression_dropped_low_conf_relates: int = 0
-    progression_kept_builds_towards: int = 0
-    progression_kept_relates_to: int = 0
+    # LP stats (populated only when `generate_learning_progressions` is True).
+    lp_bucket_drop_counts: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Summarized Learning Progressions bucket/source drops copied from the LP "
+            "report."
+        ),
+    )
+    lp_candidate_builds_towards: int = Field(
+        default=0,
+        description="Candidate buildsTowards edges before filtering.",
+    )
+    lp_candidate_edges_after_dedupe: int = Field(
+        default=0,
+        description="Total candidate edges remaining after deduplication.",
+    )
+    lp_candidate_edges_pre_dedupe: int = Field(
+        default=0,
+        description="Total candidate edges before deduplication.",
+    )
+    lp_candidate_relates_to: int = Field(
+        default=0,
+        description="Candidate relatesTo edges before filtering.",
+    )
+    lp_dropped_cap_relates: int = Field(
+        default=0,
+        description="relatesTo edges dropped due to per-node cap.",
+    )
+    lp_dropped_dedupe: int = Field(
+        default=0,
+        description="Edges dropped during deduplication.",
+    )
+    lp_dropped_doc_order_builds: int = Field(
+        default=0,
+        description="buildsTowards edges dropped by document-order filter.",
+    )
+    lp_dropped_low_conf_builds: int = Field(
+        default=0,
+        description="buildsTowards edges dropped due to low confidence.",
+    )
+    lp_dropped_low_conf_relates: int = Field(
+        default=0,
+        description="relatesTo edges dropped due to low confidence.",
+    )
+    lp_final_relationship_counts: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Final Learning Progressions relationship counts copied from "
+            "learning_progressions.report['final_relationship_counts']."
+        ),
+    )
+    lp_kept_builds_towards: int = Field(
+        default=0,
+        description="Final kept buildsTowards edges after all filters.",
+    )
+    lp_kept_builds_towards_before_doc_order: int = Field(
+        default=0,
+        description="Kept buildsTowards edges before document-order filter.",
+    )
+    lp_kept_relates_to: int = Field(
+        default=0,
+        description="Final kept relatesTo edges after all filters.",
+    )
+    lp_kept_relates_to_after_threshold: int = Field(
+        default=0,
+        description="Kept relatesTo edges after confidence threshold filter.",
+    )
+    lp_phase_toggles: dict[str, Any] = Field(default_factory=dict)
+    lp_thresholds: dict[str, Any] = Field(default_factory=dict)
 
     # Detailed per-node drop log (first N for debuggability).
     drop_details: list[dict[str, Any]] = Field(
         default_factory=list,
         description=(
-            "Per-node drop log (capped at ~200 entries). Each entry includes "
-            "canonical_node_id, role, and drop_reason."
+            "Per-node drop log (capped at drop_details_limit entries). Each entry "
+            "includes canonical_node_id, role, and drop_reason."
         ),
+    )
+    drop_details_limit: int = Field(
+        default=200,
+        description="Maximum number of drop_details entries included in this report.",
+    )
+    drop_details_total_count: int = Field(
+        default=0,
+        description="Total number of dropped nodes before drop_details truncation.",
+    )
+    drop_details_truncated: bool = Field(
+        default=False,
+        description="Whether drop_details was truncated because it exceeded the limit.",
     )

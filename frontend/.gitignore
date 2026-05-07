@@ -1,0 +1,78 @@
+# This is the frontend .gitignore file.
+
+# Build artifacts
+.cache/
+.next/
+.swc/
+.turbo/
+build/
+dist/
+out/
+
+# Dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# Editor and IDE settings
+.idea/
+.vscode/
+*.swo
+*.swp
+*.sublime-workspace
+
+# Logs and debug files
+*.log
+.pnpm-debug.log*
+logs/
+lerna-debug.log*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# MacOS system files
+.DS_Store
+
+# Misc
+.env*.local
+.vscode/*
+*.bak
+*.cache
+*.orig
+*.pem
+*.rej
+
+# next.js
+/.next/
+/out/
+
+# Node modules (dependencies)
+node_modules/
+
+# Production
+/build
+
+# Tests and coverage reports
+/coverage
+*.spec.js
+*.spec.ts
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# vercel
+.vercel
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
