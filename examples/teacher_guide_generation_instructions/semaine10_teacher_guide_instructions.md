@@ -72,8 +72,8 @@ For rows marked ✅ Yes, use the listed UUID as `standard_id` for `get_learning_
 | Production d'Écrits **L1 and L2** | Identifier les caractéristiques d'un texte descriptif | `9ee79d26-94ce-5bc1-bb2b-c4cbed1fdcaf` | ✅ Yes |
 | Récitation **L1 and L2** | Tari taalif / Restituer un poème (Palier 2) | `c1754abf-0ab6-541f-bb9b-f62299f4cd27` | ✅ Yes — palier-scoped |
 | Fluidité **L1 and L2** | Jàng ci kaw ab jukkib melool ak gaawaay, njub ak waxeef | `23a449b7-7706-56b4-9ef0-b083d4bf1ce3` | ✅ Yes — palier-scoped |
-| Identification des Mots Fréquents L2 | Reconnaître instantanément des mots fréquents | (search if needed) | Optional |
-| Remédiation CGP L1/L2 | Lire/écrire des lettres-sons, syllabes, mots inconnus | (search if needed) | Optional |
+| Identification des Mots Fréquents L2 | Reconnaître instantanément des mots fréquents et savoir les orthographier | `11ac919a-3e94-57cd-87e3-991b72a351f7` | ✅ Yes — 2 LCs, palier-scoped |
+| Remédiation CGP L1/L2 | Lire/écrire des lettres-sons, syllabes, mots inconnus | `0b7a88c0-de35-50d2-84fb-bc0eb874a679` | ✅ Yes — 6 LCs, palier-scoped |
 
 **Important:** Expression Orale L1 (Jour 1) and Expression Orale L2 (Jour 5) share the **same** KG standard `f05ac70c`. Its four learning components are the four facets a single oral-expression lesson can target — pick 2–3 per session and keep them coordinated across the L1 and L2 sessions so the L2 session genuinely re-uses the L1 work.
 
@@ -85,8 +85,8 @@ The KG must be used as a **pre-drafting evidence source**, not as an optional af
 
 Build a private table with the following columns. This table is for planning only and must **not** appear in the final DOCX.
 
-| UUID | Sessions using it | Authoritative standard wording | Learning components | `builds_from` prerequisite(s) | How this will appear in the guide |
-|---|---|---|---|---|---|
+| UUID | Sessions using it | Authoritative standard wording | Learning components | `builds_from` prerequisite(s) | Aux statements (palier-scoped only) | How this will appear in the guide |
+|---|---|---|---|---|---|---|
 
 For every **unique UUID marked ✅ Yes** in §2.4, call:
 
@@ -102,15 +102,25 @@ For the curriculum areas where progression is instructionally important, also ca
 get_progression({ identifier: "<uuid>", direction: "builds_from", depth: 1 })
 ```
 
+For **palier-scoped** standards (Expression Orale, Compréhension à l'Audition, Compréhension Écrite, Récitation, Fluidité — i.e. those whose `canonicalPathKey` does **not** contain a `week:N` segment), additionally call:
+
+```text
+get_aux_statements({ identifier: "<uuid>" })
+```
+
+with no filter to discover the framework's `source_label` vocabulary, then narrow with `source_labels` to retrieve the actionable per-week guidance. Record the matching aux statements in the evidence table and use their `text` to populate the *Ëmb bi / Contenu* line for the corresponding week's session. Skip this call for week-grouped standards (their `canonicalPathKey` carries `week:N` and their week-specific content is in the standard description and LCs).
+
 Mandatory `builds_from` progression calls:
 
-| Area | UUID | Why the progression matters |
-|---|---|---|
-| Expression Orale L1/L2 | `f05ac70c-56ce-55fd-a066-7eda2a59a4ad` | Bridge Palier 1 narrative oral expression to Palier 2 descriptive oral expression. |
-| Compréhension à l'Audition + Compréhension Écrite L1/L2 | `1e8d18e0-4a09-5369-919a-e1ce38d88934` | Bridge narrative comprehension strategies to descriptive comprehension strategies. |
-| Conjugaison L2 | `cd2a856e-941e-5d37-ba0b-22e94af60f57` | Connect present-tense regularity from Palier 1 to imparfait regularity in Week 10. |
-| Production d'Écrits L1/L2 | `9ee79d26-94ce-5bc1-bb2b-c4cbed1fdcaf` | Bridge narrative-text features to descriptive-text features. |
-| Fluidité L1/L2 | `23a449b7-7706-56b4-9ef0-b083d4bf1ce3` | Connect prior oral reading fluency to descriptive-text reading. |
+| Area | UUID | Why the progression matters | If `progressionAvailability` is `no_edges_found` |
+|---|---|---|---|
+| Expression Orale L1/L2 | `f05ac70c-56ce-55fd-a066-7eda2a59a4ad` | Bridge Palier 1 narrative oral expression to Palier 2 descriptive oral expression. | Skip the prerequisite anchor. Treat the bridge as inferred from the genre shift only (narrative → descriptive). Do **not** fabricate a Palier 1 standard description or quote a wording the KG did not return. |
+| Compréhension à l'Audition + Compréhension Écrite L1/L2 | `1e8d18e0-4a09-5369-919a-e1ce38d88934` | Bridge narrative comprehension strategies to descriptive comprehension strategies. | Same as above — narrate the bridge from genre framing only, no fabricated Palier 1 anchor. |
+| Conjugaison L2 | `cd2a856e-941e-5d37-ba0b-22e94af60f57` | Connect present-tense regularity from Palier 1 to imparfait regularity in Week 10. | Real edges expected. If empty, log this as a KG regression and skip — do not fabricate. |
+| Production d'Écrits L1/L2 | `9ee79d26-94ce-5bc1-bb2b-c4cbed1fdcaf` | Bridge narrative-text features to descriptive-text features. | Same as above. |
+| Fluidité L1/L2 | `23a449b7-7706-56b4-9ef0-b083d4bf1ce3` | Connect prior oral reading fluency to descriptive-text reading. | Same as above. |
+
+The `get_progression` response includes a `progressionAvailability` field (`"edges_present"` or `"no_edges_found"`) that distinguishes "this standard genuinely has no progression" from "the upstream KG build did not emit progression links yet." Use it to choose the empty-handling branch above.
 
 Use each prerequisite as a **brief bridge, transfer prompt, or reminder only**. Do not turn prerequisites into review lessons.
 
@@ -123,6 +133,8 @@ A KG learning component has been used effectively only if it appears in **all th
 3. **Evaluation** — include a success criterion, expected answer, or short evaluation item that checks the LC.
 
 If a learning component appears only in the session header and not in the activity/evaluation, the KG was not used effectively.
+
+For palier-scoped standards where `get_aux_statements` returned per-week `Contenus`, the same three-place rule applies: the Contenu text drives the *Ëmb bi / Contenu* line, must be operationalized in at least one Découverte/Structuration/Entraînement activity, and must be checked in the evaluation. A Contenu that appears only as a header decoration does not count as effective KG use.
 
 #### 2.5.3 Sessions where KG decomposition must be skipped or not used
 
@@ -148,13 +160,27 @@ Use `get_item` as a verification/detail tool, not as a substitute for search. It
 - whether the item is week-grouped or palier-scoped;
 - available learning components, progression context, and related items.
 
+For **palier-scoped standards** — Expression Orale, Compréhension à l'Audition, Compréhension Écrite, Récitation, Fluidité — the LC list is often sparse or near-verbatim with the standard description, because the per-week teachable content lives in auxiliary statements rather than in separate LCs. After `get_learning_components_for_standard`, also call:
+
+```text
+get_aux_statements({ identifier: "<uuid>" })
+```
+
+with no filter first, to discover which `source_label` values the framework uses for week-specific guidance. Then narrow with `source_labels` to retrieve the entries that carry actionable session content (typical labels include `"Contenus"` for teachable content and `"Durée"` for the intended week placement, but the vocabulary is framework-specific — confirm via the unfiltered call or via `list_facets`):
+
+```text
+get_aux_statements({ identifier: "<uuid>", source_labels: ["Contenus", "Durée"] })
+```
+
+The `Contenus` text feeds the *Ëmb bi / Contenu* and *Nisaru jukki bi / Objectif spécifique* lines for that week. The `Durée` text confirms the week placement (e.g. "Semaine 10"). The *Nisaru njàng mi / Objectif d'apprentissage* still comes from the LC list or the standard description.
+
 Only after this verification should you decide whether to proceed from the KG output or fall back to the progression document.
 
 #### 2.5.5 Search discipline
 
-Do **not** use `search_items` when a UUID is already provided in §2.4. Use the UUID directly.
+Do **not** use `search_items` when a UUID is already provided in §2.4. Use the UUID directly. Every row in the §2.4 anchor table now carries a pinned UUID; there are no remaining "search if needed" rows.
 
-Use `search_items` only for optional items with no UUID, such as Identification des Mots Fréquents or Remédiation CGP.
+Use `search_items` only when a session genuinely lacks an anchor — for instance, if a future Week introduces a topic with no §2.4 entry, or if you need a sibling/related standard not pinned in the table.
 
 When search is necessary, use this pattern:
 
@@ -175,6 +201,7 @@ Search rules:
 - Use short exact query terms; preserve accents and diacritics.
 - Always include `node_type: "standard_item"`, `grade: "CE1"`, and `subject: "Langue et Communication"`.
 - Include `source_label` when the strand is known. High-value labels include `Vocabulaire`, `Grammaire`, `Conjugaison`, `Orthographe`, `Production d'écrits`, and `Écriture / Copie`.
+- When scoping to a specific week, palier, or other curriculum position, prefer `path_segment` over post-filtering on `canonicalPathKey`. Pass the exact segment text including its `key:` prefix — e.g. `path_segment: "week:10"`, `path_segment: "substage:palier-2-communication-ecrite"`. Match is exact (not substring), so `"week:10"` will not false-match `"week:100"`.
 - Use `limit: 100` for exploratory searches because results are not guaranteed to be ranked semantically.
 - Inspect `canonicalPathKey`; keep only results matching `week:10`, `palier-2`, or the explicitly intended strand.
 - If one filtered search and one narrowed retry fail, stop searching and use the progression document's topic description.
@@ -194,7 +221,7 @@ Use these as the two *Objectifs spécifiques* for the Conjugaison L2 session.
 
 **Step 3.** `get_progression("cd2a856e-941e-5d37-ba0b-22e94af60f57", direction="builds_from", depth=1)` returns:
 
-- "Conjuguer au présent de l'indicatif des verbes d'action du 1er groupe en repérant les régularités selon les personnes" (week 5–6, Palier 1).
+- "Conjuguer au présent de l'indicatif des verbes d'action du 1er groupe en repérant les régularités selon les personnes" (week 6, Palier 1).
 
 Use this as the explicit Palier 1 anchor in the Conjugaison L2 session and as the L1↔L2 transfer hook: *présent → imparfait* in French mirrors *teew → weesu* in the Wolof *dégtal* model taught in the L1 session.
 
@@ -211,7 +238,7 @@ Use one short genre bridge somewhere early in the week, preferably in Jour 1:
 > Wolof example: **Bii ayu-bés, dunu nettali ay xew-xew. Danuy melool ay këfin.**
 > French equivalent: **Cette semaine, nous n'allons pas raconter des événements. Nous allons décrire des objets.**
 
-Do not turn this into a review lesson. Palier 1 knowledge may be briefly reactivated only when it directly supports new descriptive work. The KG's `buildsFrom` links can ground the bridge in curriculum structure — for example, the Compréhension Écrite Palier 2 standard `1e8d18e0` has `buildsFrom` links to the Palier 1 reading-comprehension standards.
+Do not turn this into a review lesson. Palier 1 knowledge may be briefly reactivated only when it directly supports new descriptive work. If `get_progression(uuid, direction="builds_from")` returns a non-empty result for the relevant Palier 2 standard (`progressionAvailability: "edges_present"`), use that prerequisite as a brief reminder. If it returns `progressionAvailability: "no_edges_found"`, narrate the bridge from the genre shift alone (narrative texts → descriptive texts) without inventing a Palier 1 anchor that the KG did not supply.
 
 ---
 
@@ -376,7 +403,7 @@ These labels are not decorative. They should shape the visible layout of each se
 
 Generate the guide through this sequence:
 
-**Pass 0 — KG Evidence Pass.** Complete §2.5 before drafting. Do not begin Pass 1 until the private KG Evidence Table is complete.
+**Pass 0 — KG Evidence Pass.** Complete §2.5 before drafting. Do not begin Pass 1 until the private KG Evidence Table is complete. The evidence pass for each unique ✅ Yes UUID consists of: (a) `get_learning_components_for_standard` for the LCs; (b) for the rows in §2.5.1, `get_progression` with `direction="builds_from"` plus inspection of `progressionAvailability`; (c) for **palier-scoped** standards (Expression Orale, Compréhension à l'Audition, Compréhension Écrite, Récitation, Fluidité), `get_aux_statements` for the per-week guidance and duration metadata. Skip step (c) for week-grouped standards — their week-specific content is already encoded in the standard description and LCs.
 
 **Pass 1 — Pedagogical content.** For each of the 22 sessions, draft the classroom script in plain text: the core text/corpus/word list when relevant, teacher questions, expected answers, manipulation or transfer activity, and evaluation task with success criteria. For content-rich sessions — at least 12 of 22 — include one session-specific likely pupil error with corrective feedback. Do not force bulky error blocks into procedural sessions unless the error is natural and useful. Review this draft against the priorities in §14 before proceeding.
 
@@ -594,10 +621,11 @@ Before final delivery, verify the items below. The list is intentionally short a
 - [ ] The DOCX remains easy to edit: clear session boundaries, editable tables, visible objectives/content/evaluation fields, and no unexplained placeholders.
 - [ ] A private KG Evidence Table was completed before drafting.
 - [ ] KG learning components were retrieved for every unique "✅ Yes" UUID in the §2.4 anchor table.
+- [ ] For every palier-scoped "✅ Yes" UUID (Expression Orale, Compréhension à l'Audition, Compréhension Écrite, Récitation, Fluidité), `get_aux_statements` was called and the per-week `Contenus` text was used to populate the *Ëmb bi / Contenu* line of the corresponding session.
 - [ ] Every selected KG learning component appears in objective + activity + evaluation.
-- [ ] Required `builds_from` progressions were retrieved and used only as brief bridges, reminders, or transfer supports.
+- [ ] Required `builds_from` progressions were retrieved and used only as brief bridges, reminders, or transfer supports. Where the call returned `progressionAvailability: "no_edges_found"`, the bridge was narrated from genre framing alone — no Palier 1 anchor was fabricated.
 - [ ] No KG decomposition was used for the known mismatch sessions: Grammar L1/L2, Conjugaison L1, Orthographe L1.
-- [ ] `search_items` was not used for any UUID already listed in §2.4.
+- [ ] `search_items` was not used for any UUID already listed in §2.4. Where `search_items` was used, `path_segment` was preferred over post-filtering on `canonicalPathKey`.
 
 ### Timetable validation
 
