@@ -8,12 +8,14 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   compactNode,
   nodeMatchesGrade,
+  nodeMatchesPathSegment,
   nodeMatchesSourceLabel,
   nodeMatchesStatementType,
   nodeMatchesSubject,
 } from "@/lib/kgs/utils.js";
 import {
   BrowseSubjectSchema,
+  GetAuxStatementsSchema,
   GetFrameworkSchema,
   GetItemSchema,
   GetLearningComponentsForStandardSchema,
@@ -1585,14 +1587,20 @@ export function createKnowledgeGraphUtils(
    * - `"learning_component"` — LCs only.
    *
    * Within the candidate set, each node is tested against the optional facet
-   * filters (`subject`, `grade`, `statementType`, `sourceLabel`) via the
-   * `nodeMatches*` predicates, then against the free-text `query` via the
-   * precomputed `searchTextByNodeId` substring index. Filters are AND-ed: all
-   * provided facets must match _and_ the query must be a substring of the
+   * filters (`subject`, `grade`, `statementType`, `sourceLabel`, `pathSegment`)
+   * via the `nodeMatches*` predicates, then against the free-text `query` via
+   * the precomputed `searchTextByNodeId` substring index. Filters are AND-ed:
+   * all provided facets must match **and** the query must be a substring of the
    * node's cached search blob. An omitted filter is satisfied. The query is
    * normalized (lowercase + trim + collapse whitespace) via
    * `normalizeOptionalText` before matching, so casual queries match the
    * lowercased blob produced by `getSearchText` during factory setup.
+   *
+   * `pathSegment` is matched as a complete `/`-delimited segment of the node's
+   * `canonical_path_key`, not as a substring; see `nodeMatchesPathSegment` for
+   * the framework-agnostic semantics. Useful for scoping to a specific week,
+   * unit, lesson, palier, etc., without committing to any one curriculum's
+   * vocabulary.
    *
    * **Iteration order matters.** SFIs are scanned before LCs (when both are
    * candidates), and within each group nodes are scanned in their underlying
@@ -1615,6 +1623,8 @@ export function createKnowledgeGraphUtils(
    *   `20`. The schema caps this at `100` upstream.
    * @param options.nodeType - Which kinds of node to consider. Defaults to
    *   `"all"`.
+   * @param options.pathSegment - Optional canonical-path segment filter
+   *   forwarded to `nodeMatchesPathSegment`.
    * @param options.query - Optional free-text query, substring-matched against
    *   the lowercased search blob. Defaults to `""` (no text filter, facet-only
    *   browse).
@@ -1633,6 +1643,7 @@ export function createKnowledgeGraphUtils(
     grade?: string;
     limit?: number;
     nodeType?: SearchNodeType;
+    pathSegment?: string;
     query?: string;
     sourceLabel?: string;
     statementType?: string;
@@ -1666,6 +1677,8 @@ export function createKnowledgeGraphUtils(
         if (!nodeMatchesStatementType(node, options.statementType)) continue;
 
         if (!nodeMatchesSourceLabel(node, options.sourceLabel)) continue;
+
+        if (!nodeMatchesPathSegment(node, options.pathSegment)) continue;
 
         if (q && !(searchTextByNodeId.get(node.id) ?? "").includes(q)) continue;
 
@@ -1896,6 +1909,125 @@ export function registerKnowledgeGraphTools({
         },
       }),
     name: "browse_subject",
+    server,
+  });
+
+  registerReadOnlyTool({
+    /**
+     * MCP entry point for the `get_aux_statements` tool: return the auxiliary
+     * statements attached to a single StandardsFrameworkItem, optionally
+     * filtered by `source_label` and/or `path_segment`.
+     *
+     * Aux statements live on `properties.metadata.aux_statements` and are
+     * framework-specific secondary annotations (teachable contents, durations,
+     * examples, descriptors, etc.) that supplement the primary standard
+     * description without being separate `StandardsFrameworkItem` nodes. See
+     * the `AuxStatement` type for the full per-entry shape.
+     *
+     * Resolution falls back through `findStandardItem` only. LearningComponent
+     * identifiers are rejected with a not-found error rather than silently
+     * walking through `supports` edges, since aux statements live exclusively
+     * on the SFI side and the LC's view is already covered by the
+     * `supportingSfiAuxStatements` field of `get_provenance`.
+     *
+     * Filters are case-insensitive and whitespace-normalized via
+     * `normalizeOptionalText` before comparison. They are AND-ed: an entry
+     * matches when its `source_label` is in the requested set **and** its own
+     * `canonical_path_key` (when present) contains the requested path segment.
+     * When `source_labels` is omitted, all labels match. When `path_segment` is
+     * omitted, the path filter is a no-op.
+     *
+     * @param args - Raw tool arguments forwarded by `McpServer`. Validated
+     *   against `GetAuxStatementsSchema`: an `identifier`, an optional
+     *   `source_labels` array, and an optional `path_segment` string.
+     *
+     * @returns A `CallToolResult` carrying the resolved target as a compact
+     *   node, the matching aux statements verbatim, the total available count
+     *   on the target, and the applied filters echoed for visibility. Returns
+     *   an empty `auxStatements` array (not an error) when the target carries
+     *   no aux statements at all or when the filters exclude every entry.
+     */
+    handler: (args) =>
+      runToolHandler({
+        /**
+         * Parse `args`, resolve the target SFI, then project
+         * `metadata.aux_statements` through the optional filters.
+         *
+         * The applied filter values are echoed back as `appliedFilters` so the
+         * caller can confirm which constraints were actually used (e.g. when
+         * the model misnames a label or passes an empty string that the
+         * normalizer drops).
+         *
+         * @returns A `CallToolResult` with the aux statements and provenance,
+         *   or a `toolError` if the identifier does not resolve to an SFI.
+         */
+        handler: () => {
+          const { identifier, path_segment, source_labels } =
+            GetAuxStatementsSchema.parse(args ?? {});
+          const standardNode = findStandardItem(identifier);
+
+          if (!standardNode) {
+            return toolError(`Standard item '${identifier}' not found.`, {
+              hint: "Use search_items with node_type='standard_item' to find a valid identifier. Aux statements live only on StandardsFrameworkItems; for the LC view, use get_provenance.",
+            });
+          }
+
+          const allAux = standardNode.properties.metadata?.aux_statements ?? [];
+          const expectedLabels = source_labels?.length
+            ? new Set(
+                source_labels
+                  .map((label) => normalizeOptionalText(label))
+                  .filter((label): label is string => label != null),
+              )
+            : null;
+          const expectedSegment = normalizeOptionalText(path_segment);
+          const matched = allAux.filter((aux) => {
+            if (expectedLabels) {
+              const label = normalizeOptionalText(aux.source_label);
+
+              if (!label || !expectedLabels.has(label)) return false;
+            }
+
+            if (expectedSegment) {
+              /*
+               * Aux statements may carry their own canonical_path_key under a sibling
+               * field used by some pipelines; fall back through common locations. When
+               * no path key is present at all, the filter excludes the entry rather
+               * than matching by accident.
+               */
+              const auxRecord = aux as Record<string, unknown>;
+              const auxPathKey =
+                typeof auxRecord.canonical_path_key === "string"
+                  ? auxRecord.canonical_path_key
+                  : undefined;
+
+              if (typeof auxPathKey !== "string") return false;
+
+              const matchesSegment = auxPathKey
+                .split("/")
+                .some(
+                  (segment) =>
+                    normalizeOptionalText(segment) === expectedSegment,
+                );
+
+              if (!matchesSegment) return false;
+            }
+
+            return true;
+          });
+          return toolResult({
+            appliedFilters: {
+              pathSegment: path_segment,
+              sourceLabels: source_labels,
+            },
+            auxStatements: matched,
+            count: matched.length,
+            target: compactNode(standardNode),
+            totalAuxStatements: allAux.length,
+          });
+        },
+      }),
+    name: "get_aux_statements",
     server,
   });
 
@@ -2234,9 +2366,20 @@ export function registerKnowledgeGraphTools({
             });
           }
 
+          const traversal = buildProgressionTraversal(
+            standardNode,
+            direction,
+            depth,
+          );
+          const totalEdges =
+            (traversal.buildsFrom as unknown[]).length +
+            (traversal.buildsTowards as unknown[]).length +
+            (traversal.related as unknown[]).length;
           return toolResult({
             mappedFromLearningComponent,
-            ...buildProgressionTraversal(standardNode, direction, depth),
+            ...traversal,
+            progressionAvailability:
+              totalEdges > 0 ? "edges_present" : "no_edges_found",
           });
         },
       }),
@@ -2609,6 +2752,7 @@ export function registerKnowledgeGraphTools({
             grade: parsed.grade,
             limit: parsed.limit,
             nodeType,
+            pathSegment: parsed.path_segment,
             query: parsed.query,
             sourceLabel: parsed.source_label,
             statementType: parsed.statement_type,
@@ -2620,6 +2764,7 @@ export function registerKnowledgeGraphTools({
               grade: parsed.grade,
               limit: parsed.limit,
               nodeType,
+              pathSegment: parsed.path_segment,
               sourceLabel: parsed.source_label,
               statementType: parsed.statement_type,
               subject: parsed.subject,

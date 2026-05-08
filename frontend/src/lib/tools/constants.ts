@@ -3,6 +3,7 @@
 // Package Library
 import {
   BrowseSubjectSchema,
+  GetAuxStatementsSchema,
   GetFrameworkSchema,
   GetItemSchema,
   GetLearningComponentsForStandardSchema,
@@ -42,6 +43,14 @@ export const KNOWLEDGE_GRAPH_TOOL_DEFINITIONS = [
   {
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     description:
+      "Return the auxiliary statements (`metadata.aux_statements`) attached to a StandardsFrameworkItem. Aux statements are framework-specific secondary annotations that supplement the primary standard description — e.g. teachable contents, durations, examples, descriptors — without being separate nodes. Especially useful for standards whose scope is broader than a single time slot (palier, unit, term) and whose per-week/per-lesson teachable content is carried as aux statements rather than as child standards. Pass `source_labels` to scope to specific annotation kinds (the label vocabulary is framework-specific; use list_facets or inspect a sample item to discover available values). Returns the matching aux statements verbatim alongside the resolved target node.",
+    inputSchema: GetAuxStatementsSchema.shape,
+    name: "get_aux_statements",
+    title: "Get Auxiliary Statements",
+  },
+  {
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    description:
       "Return framework-level metadata: name, jurisdiction, author, provider, license, graph type, included graph types, and source PDF name. Use this to answer questions about the curriculum document itself rather than individual items.",
     inputSchema: GetFrameworkSchema.shape,
     name: "get_framework",
@@ -50,7 +59,7 @@ export const KNOWLEDGE_GRAPH_TOOL_DEFINITIONS = [
   {
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     description:
-      "Get detailed information about a single node by identifier. Use an identifier returned by search_items or browse_subject. Returns full properties plus contextual summaries: hierarchy path, child count, learning components, progression links, and related items when available.",
+      "Get detailed information about a single node by identifier. Use an identifier returned by search_items or browse_subject. Returns full properties plus contextual summaries: hierarchy path, child count, learning components, progression links, related items, and a compact `auxStatements` preview when the node carries any. The full aux_statements (with provenance fields) are also accessible verbatim under `properties.metadata.aux_statements`. For filtered access to aux statements alone, prefer `get_aux_statements`.",
     inputSchema: GetItemSchema.shape,
     name: "get_item",
     title: "Get KG Item",
@@ -74,7 +83,7 @@ export const KNOWLEDGE_GRAPH_TOOL_DEFINITIONS = [
   {
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     description:
-      "Trace learning progressions for a StandardsFrameworkItem: what it builds from (prerequisites), what it builds towards (next steps), and cross-curricular related standards. Requires an identifier from search_items or browse_subject. Accepts an optional direction filter ('builds_from', 'builds_towards', 'related', or 'both') and depth (1–3). If given a LearningComponent identifier, it maps to the supported standard first.",
+      "Trace learning progressions for a StandardsFrameworkItem: what it builds from (prerequisites), what it builds towards (next steps), and cross-curricular related standards. Requires an identifier from search_items or browse_subject. Accepts an optional direction filter ('builds_from', 'builds_towards', 'related', or 'both') and depth (1–3). If given a LearningComponent identifier, it maps to the supported standard first. The response includes a `progressionAvailability` discriminator: `\"edges_present\"` when any progression edges were found in the requested direction(s), `\"no_edges_found\"` when none were — useful for distinguishing 'this standard truly has no progression' from 'the upstream KG build did not emit progression links for this standard yet.'",
     inputSchema: GetProgressionSchema.shape,
     name: "get_progression",
     title: "Get Learning Progression Links",
@@ -122,7 +131,7 @@ export const KNOWLEDGE_GRAPH_TOOL_DEFINITIONS = [
   {
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     description:
-      "Primary discovery tool. Search StandardsFrameworkItem and LearningComponent nodes by text query and/or filters for subject, grade, statement type, source label, and node category. Use node_type='standard_item' when looking for standards, node_type='learning_component' when looking for teachable skills, and node_type='all' for broad discovery. Results are compact nodes with identifiers that can be passed to get_item, navigate, get_path, get_progression, get_learning_components_for_standard, get_related_items, or get_provenance as appropriate for the returned node type.",
+      "Primary discovery tool. Search StandardsFrameworkItem and LearningComponent nodes by text query and/or filters for subject, grade, statement type, source label, node category, and canonical-path segment. Use node_type='standard_item' when looking for standards, node_type='learning_component' when looking for teachable skills, and node_type='all' for broad discovery. The optional `path_segment` filter scopes results to a specific position in the curriculum hierarchy via the node's `canonical_path_key` (e.g. 'week:10', 'unit:3', 'quarter:Q1', 'substage:palier-2-lecture'); pass the exact segment text including its `key:` prefix. Results are compact nodes that include a minimal `auxStatements` preview (role, sourceLabel, text) when the node carries any — useful for spotting standards whose teachable content is encoded as aux statements without a separate get_item round trip. Identifiers can be passed to get_item, navigate, get_path, get_progression, get_learning_components_for_standard, get_aux_statements, get_related_items, or get_provenance as appropriate for the returned node type.",
     inputSchema: SearchItemsSchema.shape,
     name: "search_items",
     title: "Search Curriculum Items",

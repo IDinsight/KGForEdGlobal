@@ -133,6 +133,42 @@ export function buildKnowledgeGraphIndexes(
     existingEndRels.push(rel);
   }
 
+  /*
+   * Report progression edge coverage so missing `buildsTowards` edges are visible at
+   * boot time rather than discovered as silent empty traversals during query handling.
+   * An SFI is "covered" if it participates in at least one `buildsTowards` edge in
+   * either direction. The output is informational only: frameworks with intentionally
+   * sparse progressions will simply log a high uncovered count, which is correct for
+   * them. Down-stream tools additionally surface the same signal per-call via
+   * `progressionAvailability` on `get_progression` responses.
+   */
+  let sfisWithProgressionEdges = 0;
+
+  for (const sfi of sfis) {
+    const incoming = relsByEnd.get(sfi.id) ?? [];
+    const outgoing = relsByStart.get(sfi.id) ?? [];
+    const hasProgressionEdge =
+      incoming.some((rel) => rel.type === "buildsTowards") ||
+      outgoing.some((rel) => rel.type === "buildsTowards");
+
+    if (hasProgressionEdge) sfisWithProgressionEdges++;
+  }
+
+  const sfisWithoutProgressionEdges = sfis.length - sfisWithProgressionEdges;
+
+  if (sfis.length > 0) {
+    const coveragePct = (
+      (sfisWithProgressionEdges / sfis.length) *
+      100
+    ).toFixed(1);
+    console.error(
+      `Progression-edge coverage: ${sfisWithProgressionEdges}/${sfis.length} ` +
+        `StandardsFrameworkItems (${coveragePct}%) participate in at least one ` +
+        `buildsTowards edge. ${sfisWithoutProgressionEdges} SFI(s) have no ` +
+        `progression edges and will return empty get_progression traversals.`,
+    );
+  }
+
   return {
     frameworks,
     lcByIdentifier,
@@ -143,6 +179,37 @@ export function buildKnowledgeGraphIndexes(
     sfis,
     sfisByIdentifier,
     unknownNodes,
+  };
+}
+
+/**
+ * Project an `AuxStatement` to the minimal camelCase shape carried inside
+ * `compactNode().auxStatements`.
+ *
+ * The compact projection drops provenance fields (`bbox`, `bbox_ref`,
+ * `canonical_node_id`, `page_indices`, `source_decision_ids`,
+ * `source_segment_ids`) and keeps only the user-facing trio of `role`,
+ * `sourceLabel`, and `text`. The full original aux statement remains accessible
+ * verbatim via `detailedNode().properties.metadata.aux_statements` (used by
+ * `get_item`) and via the `get_aux_statements` tool, which return the
+ * unprojected entries with provenance intact.
+ *
+ * The two-tier exposure pattern keeps compact responses (search results,
+ * progression traversals, navigation neighbors) scannable without truncating
+ * teachable-content text, while still letting callers retrieve full provenance
+ * when they ask for it explicitly.
+ *
+ * @param aux - A single aux statement entry, typically from
+ *   `node.properties.metadata.aux_statements`.
+ *
+ * @returns A flat object with `role`, `sourceLabel`, and `text` fields, each of
+ *   which is `undefined` when absent on the source.
+ */
+function compactAuxStatement(aux: AuxStatement): Record<string, unknown> {
+  return {
+    role: aux.role,
+    sourceLabel: aux.source_label,
+    text: aux.text,
   };
 }
 
@@ -168,6 +235,12 @@ export function buildKnowledgeGraphIndexes(
  * directly; instead they reference the SFI they support. The fallback lets the
  * same compact shape describe both kinds of node without the caller having to
  * branch on `nodeType`.
+ *
+ * `auxStatements` carries a minimal projection (`role`, `sourceLabel`, `text`)
+ * of the SFI's `metadata.aux_statements` array: the full entries with
+ * provenance fields are accessible through `detailedNode` or
+ * `get_aux_statements`. The field is omitted (`undefined`) when no aux
+ * statements are attached, so consumers can use simple truthiness checks.
  *
  * `nodeType` is derived from the node's labels via `nodeTypeFromLabels`.
  *
@@ -200,7 +273,11 @@ export function compactNode(
 ): Record<string, unknown> {
   const metadata = node.properties.metadata ?? {};
   const desc = node.properties.description;
+  const auxStatements = Array.isArray(metadata.aux_statements)
+    ? metadata.aux_statements.map((aux) => compactAuxStatement(aux))
+    : undefined;
   return {
+    auxStatements,
     canonicalPathKey:
       metadata.canonical_path_key ?? metadata.supporting_sfi_canonical_path_key,
     description: !desc
@@ -362,6 +439,61 @@ export function nodeMatchesGrade(node: GraphNode, grade?: string): boolean {
   return Array.isArray(gradeLevels)
     ? gradeLevels.some((g) => normalizeOptionalText(String(g)) === expected)
     : false;
+}
+
+/**
+ * Predicate used by `searchItems` to test whether a node matches an optional
+ * `pathSegment` filter against its `canonical_path_key`.
+ *
+ * The filter is true when `pathSegment` is omitted or empty. A provided filter
+ * is matched as a complete `/`-delimited segment of the node's
+ * `canonical_path_key`: the path is split on `/` and compared
+ * segment-by-segment after `normalizeOptionalText` (lowercase, trim, collapse
+ * whitespace) on both sides. Substring matching is intentionally avoided so
+ * that a filter of `"week:10"` does not accidentally match `"week:100"`.
+ *
+ * For SFIs the path key is read from `metadata.canonical_path_key`. For LCs
+ * that field is absent, so the predicate falls back to
+ * `metadata.supporting_sfi_canonical_path_key`: the path of the SFI the LC
+ * supports. This lets a single filter scope both SFIs and LCs without the
+ * caller branching on node kind, mirroring the fallback pattern in
+ * `compactNode` and `nodeMatchesSourceLabel`. If neither field is present, or
+ * either is non-string, the predicate returns `false`.
+ *
+ * The path-segment vocabulary is framework-specific. A canonical path key like
+ * `section:.../substage:palier-2-lecture/week:10/expectation::HASH` exposes
+ * segments such as `substage:palier-2-lecture` and `week:10`, but other
+ * frameworks may use `unit:3`, `quarter:Q1`, `lesson:5`, or any `key:value`
+ * convention they emit at build time. Pass the exact segment including its
+ * `key:` prefix.
+ *
+ * @param node - The graph node to test.
+ * @param pathSegment - Optional canonical-path segment filter (e.g.
+ *   `"week:10"`, `"unit:3"`). When omitted or empty, the predicate is true.
+ *
+ * @returns `true` if `pathSegment` is omitted/empty, or if any `/`-delimited
+ *   segment of the node's resolved canonical path key equals it after
+ *   normalization. `false` otherwise.
+ */
+export function nodeMatchesPathSegment(
+  node: GraphNode,
+  pathSegment?: string,
+): boolean {
+  if (!pathSegment) return true;
+
+  const expected = normalizeOptionalText(pathSegment);
+
+  if (!expected) return true;
+
+  const pathKey =
+    node.properties.metadata?.canonical_path_key ??
+    node.properties.metadata?.supporting_sfi_canonical_path_key;
+
+  if (typeof pathKey !== "string") return false;
+
+  return pathKey
+    .split("/")
+    .some((segment) => normalizeOptionalText(segment) === expected);
 }
 
 /**

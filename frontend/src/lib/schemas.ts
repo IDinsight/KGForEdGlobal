@@ -18,6 +18,37 @@ export const BrowseSubjectSchema = z
   })
   .strict();
 
+export const GetAuxStatementsSchema = z
+  .object({
+    identifier: z
+      .string()
+      .describe(
+        "StandardsFrameworkItem identifier, graph node UUID, or CASE UUID.",
+      ),
+    path_segment: z
+      .string()
+      .optional()
+      .describe(
+        "Optional filter: only return aux statements whose own canonical path key " +
+          "(if present) contains the given `/`-delimited segment. Useful when an " +
+          "aux statement carries its own canonical_node_id with a distinct path. " +
+          "Most frameworks attach aux statements without their own path, in which " +
+          "case this filter has no effect — to scope by week/unit/lesson, prefer " +
+          "the path_segment filter on search_items at the standard level.",
+      ),
+    source_labels: z
+      .array(z.string().min(1))
+      .optional()
+      .describe(
+        "Optional filter: only return aux statements whose `source_label` matches " +
+          "one of the provided values (case-insensitive, whitespace-normalized). " +
+          "Source label vocabularies are framework-specific — call list_facets or " +
+          "inspect a sample item to discover available values. When omitted, all " +
+          "aux statements on the item are returned.",
+      ),
+  })
+  .strict();
+
 export const GetItemSchema = z
   .object({
     identifier: z
@@ -188,6 +219,18 @@ export const SearchItemsSchema = z
     node_type: SearchNodeTypeSchema.optional().describe(
       "Preferred filter by KG node category.",
     ),
+    path_segment: z
+      .string()
+      .optional()
+      .describe(
+        "Optional filter: only return nodes whose `canonical_path_key` contains " +
+          "the given segment as a complete `/`-delimited path component. The path " +
+          "key encodes curriculum scoping using framework-specific `key:value` " +
+          "segments — e.g. 'week:10', 'unit:3', 'quarter:Q1', 'lesson:5', or " +
+          "'substage:palier-2-lecture'. Pass the exact segment text including its " +
+          "key prefix. For LearningComponents, the supporting SFI's path key is " +
+          "consulted as a fallback.",
+      ),
     query: z
       .string()
       .optional()

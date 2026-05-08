@@ -50,6 +50,7 @@ type KnowledgeGraphUtils = {
     grade?: string;
     limit?: number;
     nodeType?: SearchNodeType;
+    pathSegment?: string;
     query?: string;
     sourceLabel?: string;
     statementType?: string;
@@ -61,6 +62,35 @@ type RelationshipEntity = string;
 type RelationshipEntityKey = string;
 type RelationshipType = "hasChild" | "supports" | "buildsTowards" | "relatesTo";
 type UUIDString = string;
+
+/**
+ * Auxiliary statement attached to a `StandardsFrameworkItem` via
+ * `metadata.aux_statements`. Used by Learning Commons/CASE-style frameworks to
+ * carry secondary annotations (guidance text, durations, examples, descriptors,
+ * etc.) that supplement the primary standard description without being a
+ * separate `StandardsFrameworkItem` node.
+ *
+ * Each entry is paired with a `source_label` distinguishing the kind of
+ * annotation (the exact label vocabulary is framework-specific) and a `role`
+ * discriminating its functional category. Provenance fields (`bbox`,
+ * `page_indices`, `source_decision_ids`, `source_segment_ids`,
+ * `canonical_node_id`) trace the entry back to the source document.
+ *
+ * Surfaced through `compactNode().auxStatements`,
+ * `detailedNode().properties.metadata.aux_statements`, and the dedicated
+ * `get_aux_statements` tool.
+ */
+interface AuxStatement {
+  bbox?: number[];
+  bbox_ref?: string;
+  canonical_node_id?: UUIDString;
+  page_indices?: number[];
+  role?: string;
+  source_decision_ids?: string[];
+  source_label?: string;
+  source_segment_ids?: string[];
+  text?: string;
+}
 
 interface GraphNode {
   id: string;
@@ -107,6 +137,7 @@ interface NodeMetadata {
   [key: string]: unknown;
 
   // Common StandardsFrameworkItem metadata.
+  aux_statements?: AuxStatement[];
   bbox?: number[];
   bbox_ref?: string;
   canonical_node_id?: UUIDString;
