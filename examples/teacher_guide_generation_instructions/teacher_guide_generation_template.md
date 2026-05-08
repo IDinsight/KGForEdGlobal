@@ -436,16 +436,16 @@ Inside each content-rich session:
 
 The final teacher guide is expected as a DOCX. Apply the visual code directly in the document.
 
-| Element | Required formatting |
-|---|---|
-| French text | Default black |
-| Wolof / national-language text | Consistent readable dark blue via named character style, e.g. **`Wolof / Langue nationale`** |
-| Teacher stage directions | Italics |
-| Teacher speech to pupils | Regular, non-italic text |
-| Rules/patterns to remember | Framed box / bordered callout |
-| L1↔L2 transfer activity | Mark with 🔁 or the project's chosen transfer pictogram |
-| Expected answers | Same bullet marker throughout the whole guide |
-| Session/phase labels | Bilingual where appropriate |
+| Element | Required formatting                                                                         |
+|---|---------------------------------------------------------------------------------------------|
+| French text | Default black                                                                               |
+| Wolof / national-language text | Consistent readable bold red via named character style, e.g. **`Wolof / Langue nationale`** |
+| Teacher stage directions | Italics                                                                                     |
+| Teacher speech to pupils | Regular, non-italic text                                                                    |
+| Rules/patterns to remember | Framed box / bordered callout                                                               |
+| L1↔L2 transfer activity | Mark with 🔁 or the project's chosen transfer pictogram                                     |
+| Expected answers | Same bullet marker throughout the whole guide                                               |
+| Session/phase labels | Bilingual where appropriate                                                                 |
 
 Do not explain the visual code repeatedly inside the guide. Use the formatting itself.
 
