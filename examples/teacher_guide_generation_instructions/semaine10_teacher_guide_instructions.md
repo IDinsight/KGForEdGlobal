@@ -1,4 +1,4 @@
-# Concise Instructions for Generating the Teacher Guide for Senegal Grade 3 Reading — Semaine 10
+# Instructions for Generating the Teacher Guide for Senegal Grade 3 Reading — Semaine 10
 
 ## 1. Task
 
@@ -8,63 +8,210 @@ Semaine 10 is:
 
 - the **first regular instructional week of Palier 2 / Jéego 2**;
 - the week that introduces **descriptive-text work** for the first time;
-- a **model-week-level opening guide** for the palier, unless the Knowledge Graph or an explicit ARED/MEN source confirms that it is officially a fully scripted model week;
-- **not** an integration week, revision week, evaluation week, or a single numbered “Lesson 10.”
+- a **model-week-level opening guide** for the palier;
+- **not** an integration week, revision week, evaluation week, or a single numbered "Lesson 10."
 
 The guide must be classroom-usable, bilingual where appropriate, visually scannable, and concise. The full DOCX should normally land around **22–28 pages**. A 30-page guide is acceptable only if the extra length is pedagogically necessary. A 50-page guide is a failure of concision.
 
+**Deliverable: the DOCX teacher guide only.** Do not write a rationale, methodology note, or compliance checklist alongside it.
+
 ---
 
-## 2. Source-of-truth hierarchy
+## 2. Source hierarchy and the role of each source
 
-When sources conflict, apply this hierarchy.
+### 2.1 What each source is for
 
-| Decision area | Source of truth | Rule |
+| Source | Role |
+|---|---|
+| **`reading_wolof_progression.docx`** | **Source of truth for what topic each week teaches**, in both L1 and L2. The progression document tells you the Week 10 vocabulary, grammar, conjugation, orthography, and production-d'écrits content for both languages. When in doubt about *what to teach*, this document wins. |
+| **`edu-kg` connector (KG)** | **Structural index** for the CE1 curriculum. Use the KG to (a) decompose a topic into formal learning components → source for *Nisaru njàng mi* and *Nisaru jukki bi*, (b) confirm prerequisite chains via `buildsFrom` → source for the Palier 1 → 2 bridge and L1↔L2 transfer rationale, (c) retrieve bilingual standard descriptions in their authoritative wording. |
+| **Embedded session-layout mini-template in §6.1** | **Format and tone reference.** Use it as the layout contract for headers, metadata, teacher/student columns, phase flow, and classroom-script style. |
+| **Embedded MEN reading timetable in §5 of this file** | Authoritative for session placement, order, language scope, and duration. |
+
+### 2.2 What the KG does NOT contain
+
+The KG holds standards, learning components, and progression links. It does **not** contain:
+
+- sample classroom texts or descriptive-text exemplars;
+- vocabulary lists, glosses, or example sentences;
+- Wolof corpus material;
+- age-appropriate object lists or cultural examples;
+- pupil-facing dialogue or scripts.
+
+Generate that content yourself using the embedded session-layout mini-template in §6.1, the subject-pattern reminders in §15, and the Week 10 content map. **Do not search the KG for it.**
+
+### 2.3 Handling Week 10 topic divergences
+
+For two language-tool slots, the progression document and the KG disagree on which topic Week 10 teaches:
+
+| Slot | Progression doc says | KG Week-10 standard says |
 |---|---|---|
-| Session placement, order, duration, and language scope | Embedded MEN timetable in this file | Always wins |
-| Palier framing, oral expression, reading/listening comprehension, recitation, Production d’Écrits, Écriture, broad competencies, genre arc | `edu-kg` Connector | Use for curriculum anchors, CE1 source content, and learning objectives (see §2a) |
-| Exact Week 10 L1 language-tool content: vocabulary, grammar, conjugation, orthography | `reading_wolof_progression.docx` | Wins over KG for L1 language tools — the progression document uses Wolof-native conjugation models that the KG does not capture (see §2b) |
-| Exact Week 10 L2 language-tool content: vocabulary, grammar, conjugation, orthography | `reading_wolof_progression.docx`, cross-checked with `edu-kg` | The progression document’s L2 columns and the KG’s French-framed standards generally agree for L2; use the progression document for week assignment, the KG for learning-objective decomposition |
-| Teacher-guide format, tone, classroom-script style | `reading_teacher_guide_grade_3_lesson_1_to_8.docx` | Mirror format while replacing narrative content with Week 10 descriptive content |
-| Wolof terminology | Wolof terminology reference, if provided | If missing, flag limitation and use conservative, consistent terms |
-| Evaluation optimization | Embedded rubric priorities in this file | Guides quality only; does not override curriculum, progression, or timetable |
+| Grammar L1/L2 | Possessive markers (*sama, sa, -am* / *mon, ma, mes…*) | Gender and number of nouns |
+| Conjugation L1 | *Dégtal / énonciatif sotti weesu* with *-oon* (Wolof-native model) | "Imparfait de l'indicatif" (French framing of the same general region) |
 
-### 2a. Using the KG effectively
+**Rule: follow the progression document, full stop.** Use the progression document's content description verbatim as the topic for that session. **Do not** call `get_learning_components_for_standard` on the conflicting Week-10 KG standard for these two slots — its components describe a different topic and will mislead the session objectives. Use the anchor table in §2.4 to see which sessions get KG decomposition and which take their objectives directly from the progression document.
 
-**Learning objectives for session metadata.** The KG contains 462 learning components that decompose standards into assessable sub-skills (e.g., “Conjuguer au présent de l’indicatif” decomposes into “Repérer les régularités de conjugaison selon les personnes” + “Conjuguer des verbes d’action du 1er groupe au présent”). Use the KG’s `get_objectives` tool to source *Nisaru njàng mi / Objectif d’apprentissage* and *Nisaru jukki bi / Objectif spécifique* for each session, especially for KG-governed sessions (oral expression, comprehension, production d’écrits, etc.).
+There is no "divergence flagging" requirement in the output. Just follow the rule and move on.
 
-**Week-grouping nodes.** Some KG standards have parent nodes whose descriptions are week numbers (e.g., “10”, “11”). When a KG standard’s parent chain includes the grouping node “10,” that standard is a candidate for Week 10 content. Use these groupings to cross-check which KG standards belong to this week.
+### 2.4 Week 10 KG anchor table
 
-**Progression chains for sequencing rationale.** The KG contains `buildsFrom` and `buildsTowards` links between standards. Use these to confirm sequencing decisions — for example, verifying that descriptive-text comprehension builds from narrative-text comprehension, or that imparfait builds from présent. These links can inform the Palier 2 bridge (§3) and transfer activities (§10).
+For rows marked ✅ Yes, use the listed UUID as `standard_id` for `get_learning_components_for_standard` and as `identifier` for `get_progression`. Discovery is not required. For rows marked ❌ No, do not call KG decomposition even if a UUID is shown.
 
-**Duplicate-standard disambiguation.** Many KG standards appear multiple times with different UUIDs across paliers (e.g., “Conjuguer au présent de l’indicatif” appears in both Palier 1 and Palier 2 week groupings). When multiple KG standards share the same or near-identical description, prefer the instance whose parent chain includes a Palier 2 grouping node or the week-10 grouping node.
+| Session | KG standard description | UUID | Use KG decomposition? |
+|---|---|---|---|
+| Expression Orale **L1 and L2** (same standard) | Melool këfin, ay pàccam, màndargaam, ak ay njariñam / Décrire un objet, ses éléments, ses caractéristiques, ses fonctions | `f05ac70c-56ce-55fd-a066-7eda2a59a4ad` | ✅ Yes — 4 LCs, palier-scoped |
+| Compréhension Écrite **L1 and L2** | Tabax déggin sukkandiku ci ay jukkiy melool / Construire du sens à partir de textes descriptifs | `1e8d18e0-4a09-5369-919a-e1ce38d88934` | ✅ Yes — palier-scoped |
+| Compréhension à l'Audition **L1 and L2** | (Same palier-scoped reading-comprehension standard above) | `1e8d18e0-4a09-5369-919a-e1ce38d88934` | ✅ Yes |
+| Vocabulaire **L1 and L2** | Acquérir le sens de mots liés au thème | `ecdc9079-d12c-5bbb-b646-1a65f2bb696d` | ✅ Yes — week-grouped |
+| Grammaire **L1 and L2** | KG topic = gender/number of nouns; **progression doc = possessives** | `2de5debd-ed90-5d87-80c3-fb632cf4e0bb` | ❌ **No.** Topic mismatch — derive objectives from progression doc directly |
+| Conjugaison **L1** | Progression doc = dégtal sotti weesu with *-oon* (Wolof-native); KG framing is French | n/a | ❌ **No.** Derive objectives from progression doc directly |
+| Conjugaison **L2** | Imparfait de l'indicatif, verbes 1er groupe | `cd2a856e-941e-5d37-ba0b-22e94af60f57` | ✅ Yes — 2 LCs, valid for L2 |
+| Orthographe **L1** | Progression doc = use of possessive markers in writing | n/a | ❌ Derive from progression doc directly |
+| Orthographe **L2** | Féminin des noms et adjectifs (règle générale) | `a00c8443-0196-5806-ac39-d629ca0e49e5` | ✅ Yes |
+| Écriture **L1 and L2** | Les majuscules cursives : P, B, D, F, R, L, S — copier des textes descriptifs (3–4 lignes) | `d31af96e-503d-546f-ab38-233c284f910a` | ✅ Yes |
+| Production d'Écrits **L1 and L2** | Identifier les caractéristiques d'un texte descriptif | `9ee79d26-94ce-5bc1-bb2b-c4cbed1fdcaf` | ✅ Yes |
+| Récitation **L1 and L2** | Tari taalif / Restituer un poème (Palier 2) | `c1754abf-0ab6-541f-bb9b-f62299f4cd27` | ✅ Yes — palier-scoped |
+| Fluidité **L1 and L2** | Jàng ci kaw ab jukkib melool ak gaawaay, njub ak waxeef | `23a449b7-7706-56b4-9ef0-b083d4bf1ce3` | ✅ Yes — palier-scoped |
+| Identification des Mots Fréquents L2 | Reconnaître instantanément des mots fréquents | (search if needed) | Optional |
+| Remédiation CGP L1/L2 | Lire/écrire des lettres-sons, syllabes, mots inconnus | (search if needed) | Optional |
 
-### 2b. Why the L1 language-tool divergence matters
+**Important:** Expression Orale L1 (Jour 1) and Expression Orale L2 (Jour 5) share the **same** KG standard `f05ac70c`. Its four learning components are the four facets a single oral-expression lesson can target — pick 2–3 per session and keep them coordinated across the L1 and L2 sessions so the L2 session genuinely re-uses the L1 work.
 
-The KG and the progression document diverge specifically for **L1 language-tool content** because they use different linguistic frameworks:
+### 2.5 Mandatory KG workflow
 
-- The KG frames Wolof conjugation through **French grammatical categories** (présent de l’indicatif, imparfait, futur, passé composé, “verbes du 1er groupe”). These categories do not accurately describe the Wolof verbal system.
-- The progression document frames Wolof conjugation through **Wolof-native categories**: conjugation models (*nettali*, *dégtal*, *wonale*, *santaane*) crossed with aspect (*sotti*/*sotteedi* = accomplished/unaccomplished) and time (*teew*/*weesu* = present/past). For example, what the KG calls “imparfait” maps to multiple distinct Wolof teaching items depending on the conjugation model.
+The KG must be used as a **pre-drafting evidence source**, not as an optional afterthought. Before writing any session, complete a private KG Evidence Pass. Do **not** begin drafting the guide until this pass is complete.
 
-For **L2 content**, this divergence does not apply — French conjugation *is* organized by tense, so the KG’s French framing is appropriate for L2 sessions.
+#### 2.5.1 Private KG Evidence Table
 
-**Known Week 10 divergence to flag in the rationale:**
-The KG-backed CE1 curriculum-source content and `reading_wolof_progression.docx` diverge for Week 10 L1 language-tool items. The divergence is primarily in conjugation: the progression document specifies *dégtal / énonciatif sotti weesu* with the *-oon* marker, while the KG frames the equivalent content as “Conjuguer à l’imparfait de l’indicatif.” For generated teacher guides, use `reading_wolof_progression.docx` for exact Week 10 L1 language tools and Wolof-native model names. Use the KG-backed CE1 content for Production d’Écrits, Écriture, oral expression, recitation, comprehension objectives, and L2 learning-objective decomposition. Explicitly note this intentional split in the accompanying rationale.
+Build a private table with the following columns. This table is for planning only and must **not** appear in the final DOCX.
+
+| UUID | Sessions using it | Authoritative standard wording | Learning components | `builds_from` prerequisite(s) | How this will appear in the guide |
+|---|---|---|---|---|---|
+
+For every **unique UUID marked ✅ Yes** in §2.4, call:
+
+```text
+get_learning_components_for_standard({ standard_id: "<uuid>" })
+```
+
+Record the returned learning components and assign the relevant components to the sessions that use that UUID.
+
+For the curriculum areas where progression is instructionally important, also call:
+
+```text
+get_progression({ identifier: "<uuid>", direction: "builds_from", depth: 1 })
+```
+
+Mandatory `builds_from` progression calls:
+
+| Area | UUID | Why the progression matters |
+|---|---|---|
+| Expression Orale L1/L2 | `f05ac70c-56ce-55fd-a066-7eda2a59a4ad` | Bridge Palier 1 narrative oral expression to Palier 2 descriptive oral expression. |
+| Compréhension à l'Audition + Compréhension Écrite L1/L2 | `1e8d18e0-4a09-5369-919a-e1ce38d88934` | Bridge narrative comprehension strategies to descriptive comprehension strategies. |
+| Conjugaison L2 | `cd2a856e-941e-5d37-ba0b-22e94af60f57` | Connect present-tense regularity from Palier 1 to imparfait regularity in Week 10. |
+| Production d'Écrits L1/L2 | `9ee79d26-94ce-5bc1-bb2b-c4cbed1fdcaf` | Bridge narrative-text features to descriptive-text features. |
+| Fluidité L1/L2 | `23a449b7-7706-56b4-9ef0-b083d4bf1ce3` | Connect prior oral reading fluency to descriptive-text reading. |
+
+Use each prerequisite as a **brief bridge, transfer prompt, or reminder only**. Do not turn prerequisites into review lessons.
+
+#### 2.5.2 What counts as effective KG use
+
+A KG learning component has been used effectively only if it appears in **all three** places below:
+
+1. **Objective line** — convert the LC into the session's *Nisaru jukki bi / Objectif spécifique*.
+2. **Teaching activity** — include a Découverte, Structuration, or Entraînement task that directly practices the LC.
+3. **Evaluation** — include a success criterion, expected answer, or short evaluation item that checks the LC.
+
+If a learning component appears only in the session header and not in the activity/evaluation, the KG was not used effectively.
+
+#### 2.5.3 Sessions where KG decomposition must be skipped or not used
+
+For sessions marked **❌ No** in §2.4 — Grammar L1/L2, Conjugaison L1, Orthographe L1 — do not use KG decomposition. Some are known KG/topic mismatches; others have no valid Week 10 KG anchor.
+
+1. Use the progression document's content description verbatim as the session topic.
+2. Decompose it into 1–2 *Nisaru jukki bi / Objectif spécifique* yourself, in CE1-friendly wording.
+3. Do **not** call `get_learning_components_for_standard` on the conflicting KG standard.
+4. Do **not** mention any mismatch in the final guide.
+
+#### 2.5.4 Verification and recovery
+
+If `get_learning_components_for_standard` returns an empty, unexpected, or confusing result, do **not** search first. Call:
+
+```text
+get_item({ identifier: "<uuid>" })
+```
+
+Use `get_item` as a verification/detail tool, not as a substitute for search. It should verify:
+
+- the standard description;
+- the canonical path;
+- whether the item is week-grouped or palier-scoped;
+- available learning components, progression context, and related items.
+
+Only after this verification should you decide whether to proceed from the KG output or fall back to the progression document.
+
+#### 2.5.5 Search discipline
+
+Do **not** use `search_items` when a UUID is already provided in §2.4. Use the UUID directly.
+
+Use `search_items` only for optional items with no UUID, such as Identification des Mots Fréquents or Remédiation CGP.
+
+When search is necessary, use this pattern:
+
+```text
+search_items({
+  query: "<short exact topic keyword with accents/diacritics preserved>",
+  node_type: "standard_item",
+  grade: "CE1",
+  subject: "Langue et Communication",
+  source_label: "<exact strand label when known>",
+  limit: 100
+})
+```
+
+Search rules:
+
+- Prefer UUID calls over search.
+- Use short exact query terms; preserve accents and diacritics.
+- Always include `node_type: "standard_item"`, `grade: "CE1"`, and `subject: "Langue et Communication"`.
+- Include `source_label` when the strand is known. High-value labels include `Vocabulaire`, `Grammaire`, `Conjugaison`, `Orthographe`, `Production d'écrits`, and `Écriture / Copie`.
+- Use `limit: 100` for exploratory searches because results are not guaranteed to be ranked semantically.
+- Inspect `canonicalPathKey`; keep only results matching `week:10`, `palier-2`, or the explicitly intended strand.
+- If one filtered search and one narrowed retry fail, stop searching and use the progression document's topic description.
+
+### 2.6 Worked example — Conjugaison L2
+
+Progression doc row: *"Conjuguer à l'imparfait de l'indicatif des verbes du 1er groupe en repérant les régularités selon les personnes."*
+
+**Step 1.** Anchor table → `cd2a856e-941e-5d37-ba0b-22e94af60f57`.
+
+**Step 2.** `get_learning_components_for_standard("cd2a856e-941e-5d37-ba0b-22e94af60f57")` returns:
+
+- "Conjuguer des verbes du 1er groupe à l'imparfait de l'indicatif selon les différentes personnes"
+- "Repérer les régularités des terminaisons de l'imparfait de l'indicatif selon les personnes"
+
+Use these as the two *Objectifs spécifiques* for the Conjugaison L2 session.
+
+**Step 3.** `get_progression("cd2a856e-941e-5d37-ba0b-22e94af60f57", direction="builds_from", depth=1)` returns:
+
+- "Conjuguer au présent de l'indicatif des verbes d'action du 1er groupe en repérant les régularités selon les personnes" (week 5–6, Palier 1).
+
+Use this as the explicit Palier 1 anchor in the Conjugaison L2 session and as the L1↔L2 transfer hook: *présent → imparfait* in French mirrors *teew → weesu* in the Wolof *dégtal* model taught in the L1 session.
+
+Total cost: 2 KG calls. Objectives, sub-skills, and the Palier 1 prerequisite are all sourced.
 
 ---
 
 ## 3. Palier 2 framing
 
-At week level, briefly state that pupils are moving from **narrative texts** to **descriptive texts**.
+Briefly state once that pupils are moving from **narrative texts** to **descriptive texts**.
 
 Use one short genre bridge somewhere early in the week, preferably in Jour 1:
 
 > Wolof example: **Bii ayu-bés, dunu nettali ay xew-xew. Danuy melool ay këfin.**
-> French equivalent: **Cette semaine, nous n’allons pas raconter des événements. Nous allons décrire des objets.**
+> French equivalent: **Cette semaine, nous n'allons pas raconter des événements. Nous allons décrire des objets.**
 
-Do not turn this into a review lesson. Palier 1 knowledge may be briefly reactivated only when it directly supports new descriptive work.
-
-The KG’s `buildsFrom` progression links can confirm what Palier 1 skills the new descriptive work builds on (e.g., the KG shows that descriptive-text comprehension standards build from narrative-text comprehension standards, and that Palier 2 conjugation standards build from Palier 1 present-tense standards). Use these links to ground the bridge in curriculum structure rather than generating it from general knowledge.
+Do not turn this into a review lesson. Palier 1 knowledge may be briefly reactivated only when it directly supports new descriptive work. The KG's `buildsFrom` links can ground the bridge in curriculum structure — for example, the Compréhension Écrite Palier 2 standard `1e8d18e0` has `buildsFrom` links to the Palier 1 reading-comprehension standards.
 
 ---
 
@@ -77,21 +224,29 @@ Use the table below as the content checklist. Do not pull in neighboring-week co
 | **Expression Orale L1 / Waxinu Lammiñ** | *Melool këfin / Décrire un objet*. Describe an object, its parts, characteristics, and functions. Focus this week: respect of theme and articulation. |
 | **Expression Orale L2** | Same objective in French: describe a familiar object, its parts, characteristics, and functions. |
 | **Poésie-Récitation L1/L2 / Tari-Taalif** | Restitute a **poem** from memory for Week 10, with expression, suitable intonation, and gesture. Do not switch to prose unless an explicit source requires it. |
-| **Compréhension à l’Audition L1/L2** | Understand short descriptive texts read aloud. Build mental images from information in the text. Identify what the text is about using CE1-friendly wording. |
+| **Compréhension à l'Audition L1/L2** | Understand short descriptive texts read aloud. Build mental images from information in the text. Identify what the text is about using CE1-friendly wording. |
 | **Compréhension Écrite L1/L2** | Read and understand short descriptive texts. Use mental images and central-subject identification. |
-| **Vocabulaire L1 / Baataan** | Use vocabulary linked to a descriptive text and Week 10 Wolof structures: **dafa… / dañu, dañoo…**, **am na… / am nañu**. Note: these are Wolof verbal-structure markers (specifically *dégtal* model paradigm markers and existential constructions), placed in the vocabulary column by the progression document as anchors for descriptive production. Treat them as structures to practice in context, not as isolated vocabulary items. |
+| **Vocabulaire L1 / Baataan** | Use vocabulary linked to a descriptive text and Week 10 Wolof descriptive structures: **dafa… / dañu, dañoo…**, **am na… / am nañu**. |
 | **Vocabulaire L2** | Acquire words linked to the descriptive theme and use them in meaningful sentences. Two distinct sessions are required. |
 | **Grammaire L1 / Róofoo gi Baat** | Recognize Wolof possessive markers: **sama**, **sa**, **-am**. |
 | **Grammaire L2** | Recognize possessive adjectives: **mon, ma, mes / ton, ta, tes / son, sa, ses**. |
 | **Conjugaison L1 / Demalin Waxe** | Conjugate in **dégtal / énonciatif sotti weesu** and recognize the **-oon** marker. |
-| **Conjugaison L2** | Conjugate first-group verbs in the **imparfait de l’indicatif** and identify regularities by person. |
+| **Conjugaison L2** | Conjugate first-group verbs in the **imparfait de l'indicatif** and identify regularities by person. |
 | **Orthographe L1 / Tëralinu Mbind** | Use possessive markers in writing, especially **sama… / -am**, as stated in the progression; reinforce **sa** only as linked grammar/transfer. |
 | **Orthographe L2** | Apply the general feminine rule for nouns and adjectives. |
-| **Production d’Écrits L1/L2 / Nasum Mbind** | First identify characteristics of descriptive texts: object/subject described, parts, qualities, function/use, precise vocabulary. Then produce short guided descriptive sentences. Do not require full descriptive compositions in Week 10. |
-| **Écriture / Mbindin** | Continue handwriting practice using words/sentences naturally linked to the week’s descriptive and language-tool targets. |
+| **Production d'Écrits L1/L2 / Nasum Mbind** | First identify characteristics of descriptive texts: object/subject described, parts, qualities, function/use, precise vocabulary. Then produce short guided descriptive sentences. Do not require full descriptive compositions in Week 10. |
+| **Écriture / Mbindin** | Practice **cursive capital letters P, B, D, F, R, L, S** and copy short descriptive texts (3–4 lines) with varied copy types, using words/sentences linked to the week's descriptive and language-tool targets. |
 | **Identification des Mots Fréquents L2** | Continue the Palier 2 high-frequency-word program. Use a new batch; include useful descriptive words when possible. |
 | **Développer la Fluidité L1/L2** | Read a short descriptive text aloud with speed, accuracy, and expression. |
 | **Remédiation CGP L1/L2** | Continue targeted phonics remediation based on diagnostic needs. Choose a small subset from the Palier 2 reinforcement set, e.g. **au, eau, eu, en, an, em, am, ai, ei, in, on, om, ien, oin, ion, ain, aim, oir, ch, gn, ph, qu, gu**. |
+
+Note on Vocabulaire L1: Treat **dafa / dañu / dañoo** and **am na / am nañu** as descriptive-production structures practiced in context, not as isolated vocabulary items.
+
+### 4.1 Descriptive text variety requirement
+
+Compose or select **at least 4 distinct descriptive texts** across the CA and CE sessions (minimum 2 in L1, minimum 2 in L2). Each text must describe a **different type of familiar object or setting** — for example, a clothing item, a household tool, a food item, a place, a school object, a musical instrument. Do not reuse the same object across comprehension sessions.
+
+All texts must use locally familiar Senegalese objects, foods, places, or school items — not abstract or unfamiliar items. Each text should be 4–8 sentences and exercise different descriptive vocabulary: color, shape, texture, size, parts, function. The variety ensures students encounter multiple descriptive models and are not over-fitted to a single object's characteristics.
 
 ---
 
@@ -104,16 +259,16 @@ The generated teacher guide must begin with a **short timetable validation table
 | # | Day | Official day | Block | Session to generate | Scope | Duration |
 |---:|---|---|---|---|---|---:|
 | 1 | Jour 1 | Lundi | 8h–11h | Waxinu Lammiñ / Expression Orale L1 | L1 only | 30 mn |
-| 2 | Jour 1 | Lundi | 8h–11h | Nàmm Deggin / Compréhension à l’Audition L1 | L1 only | 30 mn |
-| 3 | Jour 1 | Lundi | 8h–11h | Compréhension à l’Audition L2 | L2 only | 30 mn |
+| 2 | Jour 1 | Lundi | 8h–11h | Nàmm Deggin / Compréhension à l'Audition L1 | L1 only | 30 mn |
+| 3 | Jour 1 | Lundi | 8h–11h | Compréhension à l'Audition L2 | L2 only | 30 mn |
 | 4 | Jour 1 | Lundi | 11h30–13h | Baataan / Vocabulaire L1 | L1 only | 30 mn |
-| 5 | Jour 1 | Lundi | 11h30–13h | Nasum Mbind / Production d’Écrits L1 | L1 only | 30 mn |
+| 5 | Jour 1 | Lundi | 11h30–13h | Nasum Mbind / Production d'Écrits L1 | L1 only | 30 mn |
 | 6 | Jour 2 | Mardi | 8h–11h | Tari-Taalif / Poésie-Récitation L1/L2 | L1/L2 combined | 30 mn |
 | 7 | Jour 2 | Mardi | 8h–11h | Róofoo gi Baat / Grammaire L1 | L1 only | 30 mn |
 | 8 | Jour 2 | Mardi | 8h–11h | Tëralinu Mbind / Orthographe L1 | L1 only | 30 mn |
 | 9 | Jour 2 | Mardi | 11h30–13h | Dégginu Mbind / Compréhension Écrite L1 | L1 only | 30 mn |
 | 10 | Jour 2 | Mardi | 11h30–13h | Compréhension Écrite L2 | L2 only | 30 mn |
-| 11 | Jour 2 | Mardi | 15h–17h | Production d’Écrits L2 | L2 only | 30 mn |
+| 11 | Jour 2 | Mardi | 15h–17h | Production d'Écrits L2 | L2 only | 30 mn |
 | 12 | Jour 2 | Mardi | 15h–17h | Remédiation CGP L1/L2 | L1/L2 combined | 60 mn |
 | 13 | Jour 3 | Mercredi | 8h–11h | Vocabulaire L2 — Session 1 | L2 only | 30 mn |
 | 14 | Jour 3 | Mercredi | 8h–11h | Identification des Mots Fréquents L2 | L2 only | 30 mn |
@@ -142,53 +297,107 @@ Critical timetable notes:
 Each session must include concise instructional metadata where relevant:
 
 - Palier / competency / subdomain anchoring;
-- **Nisaru njàng mi / Objectif d’apprentissage**;
+- **Nisaru njàng mi / Objectif d'apprentissage**;
 - **Nisaru jukki bi / Objectif spécifique**;
 - **Ëmb bi / Contenu**;
 - **Jumtukaay yi / Moyens**;
 - **Sukkandikukaay / Documentation**.
 
-For KG-governed sessions (oral expression, comprehension, production d’écrits, recitation, etc.), source the learning and specific objectives from the KG’s learning components via `get_objectives`. For progression-document-governed L1 language-tool sessions, derive objectives from the progression document’s content descriptions, using Wolof-native terminology where the session is L1.
+For sessions where the anchor table in §2.4 says "✅ Yes," the *Nisaru jukki bi / Objectif spécifique* lines come from the KG's learning components for that standard. For sessions marked "❌ No," derive them from the progression document's topic description in CE1-friendly wording.
 
-Use the ARED 5-phase regular-week spine:
+For each selected KG learning component, make the alignment visible in three places: the objective line, one direct activity in Découverte/Structuration/Entraînement, and the Évaluation success criteria or expected answers.
 
-1. **Mise en situation**
-2. **Découverte**
-3. **Structuration**
-4. **Entraînement**
-5. **Évaluation**
+Use the ARED regular-week logic: preparation/context, discovery, structuring, practice, and evaluation. The visible phase labels may follow the session-type house style in §6.2.
 
 Semaine 10 is a regular instructional week, so the Évaluation phase is present.
 
-For procedural/practice-heavy sessions — Poésie-Récitation, Écriture, Identification des Mots Fréquents, Fluidité, Remédiation CGP — keep the same phase headings if needed, but compress Découverte and Structuration. Use a short strategy reminder instead of inventing an artificial rule.
+For procedural/practice-heavy sessions — Poésie-Récitation, Écriture, Identification des Mots Fréquents, Fluidité, Remédiation CGP — keep the same regular-week logic if needed, but use the compact session-type phase labels in §6.2 instead of inventing artificial rule-heavy phases.
 
----
+### 6.1 Embedded mini-template for session layout and classroom-script style
 
-## 7. Context vs. instruction inside *Mise en situation*
+Use this mini-template as the built-in format reference. Do **not** require or rely on any separate external layout document.
 
-Inside every content-rich session, visibly separate:
+```md
+SEMAINE 10 — JOUR X
+Séance : N        [session title in the required language(s)]        Durée : 30 mn
 
-| Label | Function | Example |
-|---|---|---|
-| **Context / Waral gi** | Sets the situation: what the class is doing today | “Aujourd’hui, nous allons décrire un objet familier.” / “Tey, dinanu melool ab këfin bu nu xam.” |
-| **Instruction / Ndigël gi** | Tells pupils exactly what to do | “Décris le mbubb : sa couleur, sa forme, sa taille.” / “Meloolal mbubb mi : melo wi, melokaan wi, tolluwaay wi.” |
+Sumb / Palier : [competency or palier anchor]
+Nisaru njàng mi / Objectif d'apprentissage : [broad learning objective]
+Nisaru jukki bi / Objectif spécifique : [session-specific objective, sourced from KG LC when §2.4 says ✅]
+Ëmb bi / Contenu : [Week 10 content target]
+Jumtukaay yi / Moyens : [objects, images, slate, sentence cards, reading text, etc.]
+Sukkandikukaay / Documentation : [teacher-facing source label only, e.g. Référentiel bilingue, progression CE1, supports de classe. Do not include KG UUIDs, tool names, or internal evidence notes.]
 
-Do not blur context and instruction into one long prompt.
+[If the session uses a text, poem, corpus, word list, or model paragraph, place it here before the activity table.]
 
----
-
-## 8. Teacher/student activity layout
-
-Use paired teacher/student columns throughout:
-
-| **Yëngute Muse bi / Activités du maître** | **Yëngute elew yi / Activités des élèves** |
+| Yëngute Muse bi / Activités du maître | Yëngute elew yi / Activités des élèves |
 |---|---|
+| **Mise en situation** — Context / Waral gi: [short situation]. Instruction / Ndigël gi: [exact pupil task]. | [Expected pupil reaction or first production.] |
+| **Découverte** — [Teacher presents object/text/corpus, asks guided observation questions.] | [Pupils observe, read/listen, answer, manipulate.] |
+| **Structuration** — [Teacher guides rule, strategy, descriptive feature, or pattern. Include rule box if useful.] | [Pupils formulate the rule/strategy in simple words and apply it to one example.] |
+| **Entraînement** — [Guided practice, pair work, manipulation, transfer 🔁, or autonomous reinvestment.] | [Pupils produce, compare, correct, or read aloud. Include expected answers where useful.] |
+| **Évaluation** — [Short task with success criteria and one likely error + feedback.] | [Pupils complete the task. Expected answer/success criterion appears here or just below.] |
+```
 
-Column symmetry is required. For every teacher action, the corresponding pupil action must appear on the same row. Do not write independent teacher and student lists that cannot be read across.
+Layout and style requirements:
+
+- Keep one clear session header per session: week/day, session number, title, and duration.
+- Keep metadata compact; do not let it consume the page.
+- Put any core text, poem, corpus, or word list before the activity table, not buried inside long directions.
+- Use paired teacher/student rows. Every teacher action needs a matching pupil action on the same row.
+- Use concrete classroom scripting: questions to ask, likely answers, expected productions, short feedback lines.
+- Do not use empty placeholders such as `p. …`, `image à insérer`, or unexplained `[texte]` fields.
+- If an image is needed, describe the image in words as a teacher-facing prompt instead of leaving an insertion placeholder.
+- Do not use shortcut phrases such as “E déroule la leçon…” or “faire la même procédure” unless the full procedure is already visible in the same session.
+- Do not copy old narrative content or old Week 1–8 texts. Semaine 10 content must be descriptive and aligned to §4.
+
+
+### 6.2 Existing guide house style patterns
+
+The generated DOCX must be self-contained and must not rely on any external example guide. Use the layout patterns below as the embedded house style for Semaine 10. Keep the two-column teacher/student table structure, but choose phase labels that fit the session type instead of forcing every session into identical labels.
+
+| Session type | Preferred phase labels / visual flow |
+|---|---|
+| **Expression orale** | `Waajal gi / Phase d’appropriation et de préparation` → `Wax sa xalaat / Production libre des élèves` → `Leeral gi / Explication ou production dirigée` → `Natt / Évaluation` |
+| **Compréhension à l’Audition** | `Étape 1 : Découvrir le vocabulaire` → `Étape 2 : Lire l’image` → `Étape 3 : Écouter la lecture du texte` → `Étape 4 : Travailler la compréhension` |
+| **Compréhension Écrite** | `Étape 1 : Émettre des hypothèses de lecture` → `Étape 2 : Définir et utiliser des mots` → `Étape 3 : Étude de la stratégie de compréhension` → `Étape 4 : Lecture du texte` → `Étape 5 : Comprendre le texte` |
+| **Vocabulaire** | `Présentation de la situation / Woneb cëslaayu njàng mi` → `Lecture silencieuse contrôlée` → `Lecture du maître` → `Lecture par 2–3 élèves` → `Compréhension générale` → `Étude des mots ou structures ciblés` → `Natt / Évaluation` |
+| **Grammaire / Orthographe / Conjugaison** | `Nafar / Révision` when useful → `Cóobute / Corpus ou situation de départ` → `Caytu / Observation et manipulation` → `Tënk sàrt yi / Synthèse ou règle` → `Tàggatu / Entraînement` → `Natt / Évaluation` |
+| **Poésie-Récitation** | `Nafar / Révision` → `Woneb taalif bi / Présentation du poème` → `Déggin / Compréhension` → `Njàng / Apprentissage par répétition` → `Natt / Évaluation` |
+| **Production d’Écrits** | `Cóobute / Projet d’écriture ou situation` → `Gëstu ak settantal / Recherche et analyse avec grille` → `Tënk sàrt yi / Synthèse des critères` → `Tàggatu / Réinvestissement guidé` → `Natt / Évaluation` |
+| **Identification des Mots Fréquents** | `Étape 1 : Présenter le mot` → `Étape 2 : Écrire le mot` with `Je fais / Nous faisons / Tu fais` → `Étape 3 : Lire le mot à haute voix` with `Je fais / Nous faisons / Tu fais` → `Étape 4 : Afficher et répertorier le mot` |
+| **Écriture / Copie** | `Modèle` → `Observation du tracé` → `Tracé dans l’air ou sur ardoise` → `Copie dans le cahier` → `Correction / Valorisation` |
+| **Fluidité** | `Modèle de lecture` → `Lecture chorale` → `Lecture en binômes` → `Lecture individuelle` → `Feedback sur vitesse, exactitude, expression` |
+| **Remédiation CGP** | Use a fiche-style structure: diagnostic difficulty, remediation objective, target group, modality, means/documentation, then teacher/student table with `Passation des consignes`, `Mise en situation du groupe de besoin`, `Entraînement / Renforcement`, `Contrôle du travail`, `Consolidation et évaluation de l’effet de la remédiation`. |
+
+These labels are not decorative. They should shape the visible layout of each session. Keep them concise, and do not add long explanations under each label unless needed for classroom use.
+
+### 6.3 KG evidence pass + two-pass generation requirement
+
+Generate the guide through this sequence:
+
+**Pass 0 — KG Evidence Pass.** Complete §2.5 before drafting. Do not begin Pass 1 until the private KG Evidence Table is complete.
+
+**Pass 1 — Pedagogical content.** For each of the 22 sessions, draft the classroom script in plain text: the core text/corpus/word list when relevant, teacher questions, expected answers, manipulation or transfer activity, and evaluation task with success criteria. For content-rich sessions — at least 12 of 22 — include one session-specific likely pupil error with corrective feedback. Do not force bulky error blocks into procedural sessions unless the error is natural and useful. Review this draft against the priorities in §14 before proceeding.
+
+**Pass 2 — DOCX formatting.** Convert the reviewed pedagogical content into the formatted DOCX with proper table layout, Wolof blue styling, rule boxes, and visual formatting per §8. Do not let formatting decisions alter, truncate, or compress the pedagogical content from Pass 1.
+
+If time or context constraints force compression, preserve the KG Evidence Pass and pedagogical completeness before visual polish. A well-scripted session in a plain table is more valuable than a beautifully formatted session with thin content.
 
 ---
 
-## 9. DOCX visual formatting rules
+## 7. Layout checks
+
+Inside each content-rich session:
+
+- Separate **Context / Waral gi** from **Instruction / Ndigël gi** in the Mise en situation.
+- Use paired teacher/student columns throughout.
+- Every teacher action must have a matching pupil action on the same row.
+- Do not write independent teacher and student lists that cannot be read across.
+
+---
+
+## 8. DOCX visual formatting rules
 
 The final teacher guide is expected as a DOCX. Apply the visual code directly in the document.
 
@@ -199,7 +408,7 @@ The final teacher guide is expected as a DOCX. Apply the visual code directly in
 | Teacher stage directions | Italics |
 | Teacher speech to pupils | Regular, non-italic text |
 | Rules/patterns to remember | Framed box / bordered callout |
-| L1↔L2 transfer activity | Mark with 🔁 or the project’s chosen transfer pictogram |
+| L1↔L2 transfer activity | Mark with 🔁 or the project's chosen transfer pictogram |
 | Expected answers | Same bullet marker throughout the whole guide |
 | Session/phase labels | Bilingual where appropriate |
 
@@ -207,9 +416,9 @@ Do not explain the visual code repeatedly inside the guide. Use the formatting i
 
 ---
 
-## 10. L1↔L2 transfer requirements
+## 9. L1↔L2 transfer requirements
 
-Transfer must be a pupil activity, not a passing note. A sentence like “this corresponds to Wolof…” is not enough.
+Transfer must be a pupil activity, not a passing note. A sentence like "this corresponds to Wolof…" is not enough.
 
 Use these transfer types:
 
@@ -228,13 +437,25 @@ Required Week 10 transfer placements:
 | Orthographe L1 possessives ↔ Orthographe L2 feminine rule | Contrast activity: how each language marks meaning/form differently | Orthographe L2 |
 | Vocabulaire L1 ↔ Vocabulaire L2 | Bilingual reformulation using the same familiar object | Vocabulaire L2 Session 1 or 2 |
 | Expression Orale L1 → Expression Orale L2 | Re-describe the same object in French | Expression Orale L2 |
-| Compréhension L1 → Compréhension L2 | Reuse mental-image and “What is the text about?” strategies | CA/CE L2 sessions |
+| Compréhension L1 → Compréhension L2 | Reuse mental-image and "What is the text about?" strategies | CA/CE L2 sessions |
 
 Mark each explicit transfer activity with **🔁**.
 
+### 9.1 Transfer operationalization test
+
+For each 🔁 transfer activity, verify that the script includes an **explicit pupil production step** — something the pupil says, writes, translates, or compares. If the transfer only contains a teacher statement ("In wolof, this corresponds to…") without a pupil action, it fails the operationalization test and must be rewritten.
+
+Acceptable pupil actions include:
+
+- "Traduisez : Sama téere → ? (Mon livre)"
+- "Compare the two paradigms side by side: what changes, what stays the same?"
+- "Describe the same object first in wolof, then in French."
+
+A minimum of **4 of the 6 required transfer pairs** must include an explicit pupil translation or comparison task, not just a teacher-stated observation.
+
 ---
 
-## 11. Learner autonomy and manipulation
+## 10. Learner autonomy and manipulation
 
 Include at least **one short autonomous reinvestment activity per day**, preferably in an Entraînement phase.
 
@@ -258,22 +479,22 @@ Observation alone is not enough before rule formulation.
 
 ---
 
-## 12. CE1-appropriate language
+## 11. CE1-appropriate language
 
 Teacher speech to pupils must use simple, age-appropriate wording.
 
 | Avoid in pupil-facing speech | Use instead |
 |---|---|
-| “Identifier le sujet central du texte” | “De quoi parle le texte ?” |
-| “Construire une représentation mentale” | “Ferme les yeux : que vois-tu ?” |
-| “Analyser la structure syntaxique” | “Regarde la phrase. Qu’est-ce qui change ?” |
-| “Adjectif possessif” before explanation | “Petit mot qui dit à qui c’est,” then introduce the term |
+| "Identifier le sujet central du texte" | "De quoi parle le texte ?" |
+| "Construire une représentation mentale" | "Ferme les yeux : que vois-tu ?" |
+| "Analyser la structure syntaxique" | "Regarde la phrase. Qu'est-ce qui change ?" |
+| "Adjectif possessif" before explanation | "Petit mot qui dit à qui c'est," then introduce the term |
 
 Technical terminology may appear in teacher-facing notes and rule boxes, but pupil-facing speech must introduce or gloss technical terms.
 
 ---
 
-## 13. Wolof quality rules
+## 12. Wolof quality rules
 
 Wolof must be native-speaker acceptable.
 
@@ -282,9 +503,9 @@ Check especially:
 - correct tense/aspect; do not use present forms for completed past actions;
 - correct use of Week 10 forms: **sama**, **sa**, **-am**, **-oon**, **dafa**, **dañu / dañoo**, **am na / am nañu**;
 - consistent orthography and terminology;
-- full word forms, e.g. **xew-xew**, not truncated **xew** when “event” is intended;
+- full word forms, e.g. **xew-xew**, not truncated **xew** when "event" is intended;
 - no Wolof sentence begins with **Te**;
-- use **Naka** where “how?” is intended; do not substitute **Noo** incorrectly;
+- use **Naka** where "how?" is intended; do not substitute **Noo** incorrectly;
 - preserve accents and diacritics: **ñ, ŋ, à, é, ë**, etc.;
 - prefer standard Wolof terms over French loans when the Wolof term is available;
 - avoid mechanical French-to-Wolof calques.
@@ -293,7 +514,7 @@ Before finalizing any Wolof passage, correct tense, diacritics, morphology, natu
 
 ---
 
-## 14. Concision rules
+## 13. Concision rules
 
 The guide must be dense and teachable, not bloated.
 
@@ -304,41 +525,45 @@ The guide must be dense and teachable, not bloated.
 - Do not repeat broad Palier 2 explanations inside every session.
 - Do not restate an instruction as both a long stage direction and a quoted teacher line.
 - Use rule boxes, transfer pictograms, bullets, and italics instead of explanatory prose.
-- Cut pedagogical meta-commentary such as “this phase is important because…”.
+- Cut pedagogical meta-commentary such as "this phase is important because…".
 - Keep transitions short: name the phase and move on.
 
 ---
 
-## 15. Evaluation-rubric priorities
+## 14. Evaluation-rubric priorities
 
-Optimize for the embedded human-evaluation framework without reproducing the full rubric in the generated guide.
+Optimize for the embedded human-evaluation framework. Do not reproduce the rubric in the generated guide.
 
-**Embedded Annex 7 scoring frame to preserve:** Didactic relevance 20%; disciplinary accuracy 15%; learner adaptation 10%; language management 15%; task quality 10%; explanation and feedback 10%; controllability 5%; pedagogical coherence 5%; contextual adaptation 5%; efficiency 3%; reliability 1%; ethics and bias 1%. Use these as generation priorities, not as visible headings in the teacher guide.
+**Embedded Annexe 7 weights:** Didactic relevance 20%; disciplinary accuracy 15%; learner adaptation 10%; language management 15%; task quality 10%; explanation and feedback 10%; controllability 5%; pedagogical coherence 5%; contextual adaptation 5%; efficiency 3%; reliability 1%; ethics and bias 1%.
+
+Annexe 7 uses a **0–4 scale**: 0 = nonexistent/incorrect, 1 = very insufficient, 2 = acceptable minimum, 3 = good, 4 = excellent. The global score is a weighted average. These instructions optimize for the 3–4 band without reproducing the rubric in the final teacher guide.
 
 Use locally familiar Senegalese school/community examples and avoid gender, ethnic, socioeconomic, or cultural stereotypes.
 
 | Priority | What the generated guide must show |
 |---|---|
-| Didactic relevance | Palier 2 descriptive focus, clear progression, likely pupil errors with corrective feedback |
+| Didactic relevance | Palier 2 descriptive focus, clear progression. **Every content-rich session (minimum 12 of 22) must include at least one specific likely pupil error and a corrective feedback line in Wolof and/or French.** Generic errors ("the student doesn't understand") do not count. The error must be specific to the content being taught. See Appendix A for calibration examples. |
 | Disciplinary accuracy | Exact Week 10 content, correct Wolof/French grammar and spelling |
-| Learner level | CE1-appropriate tasks, manageable cognitive load, easy/standard/challenge variants where useful |
-| Language management | simple pupil-facing language, context/instruction separation, bilingual coherence |
-| Transfer | operationalized L1↔L2 activities, not passing mentions |
-| Classroom usability | teacher/student paired rows, concrete scripts, expected answers or success criteria |
-| Concision | scannable DOCX, no repeated boilerplate, page target respected |
+| Learner level | CE1-appropriate tasks, manageable cognitive load, and at least one easy/standard/challenge variant in the main practice or evaluation of content-rich sessions where differentiation is pedagogically useful |
+| Language management | Simple pupil-facing language, context/instruction separation, bilingual coherence |
+| Transfer | Operationalized L1↔L2 activities, not passing mentions (see §9.1 operationalization test) |
+| Classroom usability | Teacher/student paired rows, concrete scripts, expected answers or success criteria |
+| Controllability | Keep the DOCX easy to edit: clear session boundaries, editable tables, visible objectives/content/evaluation fields, no hidden dependencies, no unexplained generated placeholders |
+| Reliability | Reduce generation variability by following the source hierarchy, UUID anchor table, fixed timetable, required content map, and final QA gate exactly |
+| Concision | Scannable DOCX, no repeated boilerplate, page target respected |
 
-Rubric-critical safeguards: content-rich sessions include likely pupil errors and a short feedback line; evaluations include expected answers or success criteria; technical terms are glossed in CE1-friendly language before labels.
+Rubric-critical safeguards: content-rich sessions include likely pupil errors and a short feedback line; evaluations include expected answers or success criteria; technical terms are glossed in CE1-friendly language before labels; KG learning components shape objectives, activities, and evaluations instead of appearing only as metadata. Also vary task types, avoid over-reliance on repetition, and include brief alternative reformulations when pupils are likely to misunderstand a concept.
 
 ---
 
-## 16. Subject-pattern reminders
+## 15. Subject-pattern reminders
 
-Use the prior teacher guide’s recurring patterns, but rename phases into the ARED 5-phase structure.
+Use the embedded mini-template in §6.1 plus the recurring patterns below. The patterns guide the flow of each session; they are not permission to add padding.
 
 | Session type | Pattern to preserve |
 |---|---|
 | Oral expression | object observation → free production → guided production → evaluation |
-| Listening comprehension | vocabulary/image/text listening → comprehension questions → mental image and “what is it about?” |
+| Listening comprehension | vocabulary/image/text listening → comprehension questions → mental image and "what is it about?" |
 | Reading comprehension | prediction → key words → strategy → reading → understanding |
 | Vocabulary | corpus → reading/listening → target words/structures → sentence use → evaluation |
 | Grammar/Orthography | corpus → manipulation → rule/pattern → guided practice → evaluation |
@@ -350,94 +575,70 @@ Use the prior teacher guide’s recurring patterns, but rename phases into the A
 | Fluency | model reading → choral reading → paired reading → individual reading → feedback |
 | CGP remediation | diagnostic grouping → targeted decoding → supported reading → reassessment |
 
-Do not let these patterns add unnecessary length. They are structure aids, not padding.
+These patterns are structure aids, not padding.
 
 ---
 
-## 17. Final QA checklist
+## 16. Final QA gate
 
-Before final delivery, verify all items below.
+Before final delivery, verify the items below. The list is intentionally short and orders the highest-impact pedagogical checks first.
 
-### Curriculum and sources
+### Pedagogical depth gate (must all pass before formatting)
 
-- [ ] The guide is framed as the first week of Palier 2 and the first descriptive-text week.
-- [ ] It is not written as an integration, revision, evaluation, or single-lesson guide.
-- [ ] The guide covers Jour 1 through Jour 5.
-- [ ] The narrative-to-descriptive bridge appears once, briefly.
-- [ ] The source hierarchy is followed.
-- [ ] The progression document governs exact Week 10 L1 language-tool content using Wolof-native model names.
-- [ ] L2 language-tool content uses the progression document for week assignment and the KG for learning-objective decomposition.
-- [ ] KG week-grouping nodes (parent = "10") were used to cross-check KG standard selection.
-- [ ] KG learning components were used to source session objectives for KG-governed sessions.
-- [ ] When duplicate KG standards were found, the Palier 2 / week-10 instance was preferred.
-- [ ] The KG/progression L1 divergence is flagged in the rationale, with the linguistic-framework reason stated.
+- [ ] At least **12 content-rich sessions** include a session-specific pupil error with corrective feedback (not generic — see Appendix A).
+- [ ] At least **4 distinct descriptive texts** are used across CA/CE sessions, each describing a different type of object or setting (§4.1).
+- [ ] At least **4 of 6 required transfer activities** include an explicit pupil production step (§9.1).
+- [ ] Every Grammar, Conjugation, and Orthography session includes a manipulation activity in Découverte, before the rule is formulated.
+- [ ] Every Évaluation phase includes either expected answers or explicit success criteria.
+- [ ] Content-rich sessions include easy/standard/challenge variants where differentiation is pedagogically useful.
+- [ ] The DOCX remains easy to edit: clear session boundaries, editable tables, visible objectives/content/evaluation fields, and no unexplained placeholders.
+- [ ] A private KG Evidence Table was completed before drafting.
+- [ ] KG learning components were retrieved for every unique "✅ Yes" UUID in the §2.4 anchor table.
+- [ ] Every selected KG learning component appears in objective + activity + evaluation.
+- [ ] Required `builds_from` progressions were retrieved and used only as brief bridges, reminders, or transfer supports.
+- [ ] No KG decomposition was used for the known mismatch sessions: Grammar L1/L2, Conjugaison L1, Orthographe L1.
+- [ ] `search_items` was not used for any UUID already listed in §2.4.
 
-### Timetable
+### Timetable validation
 
 - [ ] The guide begins with a validation table for all 22 reading sessions.
 - [ ] All 22 sessions appear exactly once, except Vocabulaire L2 which appears as two distinct sessions.
 - [ ] No non-reading subjects are generated.
-- [ ] Day, order, language scope, and duration match the MEN timetable.
-- [ ] Poésie-Récitation, Écriture, and Fluidité are L1/L2 combined.
+- [ ] Day, order, language scope, and duration match §5.
 - [ ] Expression Orale L1 is only Jour 1; Expression Orale L2 is only Jour 5.
-- [ ] Remédiation CGP is the only remediation session generated and lasts 60 mn.
+- [ ] Remédiation CGP L1/L2 is the only remediation session generated (60 mn).
 
-### Week 10 content fidelity
+### Content fidelity (one-pass spot check)
 
-- [ ] Oral expression focuses on object description plus respect of theme and articulation.
-- [ ] CA/CE texts are descriptive and develop mental images and “De quoi parle le texte ?” strategies.
-- [ ] Poésie-Récitation uses a poem, unless an explicit source requires prose.
 - [ ] Grammar L1 teaches **sama, sa, -am**; Grammar L2 teaches **mon/ma/mes, ton/ta/tes, son/sa/ses**.
-- [ ] Conjugation L1 teaches **dégtal / énonciatif sotti weesu** with **-oon** (using the Wolof model name, not the KG’s French equivalent “imparfait”); Conjugation L2 introduces the imparfait.
-- [ ] Vocabulaire L1 structures (**dafa… / dañu, dañoo…**, **am na… / am nañu**) are treated as verbal structures practiced in context, not as isolated vocabulary items.
-- [ ] Orthographe L1 reinforces possessive markers in writing, especially **sama… / -am**; Orthographe L2 teaches the general feminine rule for nouns and adjectives.
-- [ ] Écriture continues handwriting practice with words/sentences linked to Week 10 descriptive and language-tool targets.
+- [ ] Conjugaison L1 uses the Wolof model name **dégtal / énonciatif sotti weesu** with **-oon** (not "imparfait"); Conjugaison L2 uses **imparfait de l'indicatif**.
+- [ ] Orthographe L2 teaches the general feminine rule.
+- [ ] The narrative-to-descriptive bridge appears once, briefly, in Jour 1.
+- [ ] Wolof target forms are correct: **sama, sa, -am, -oon, dafa, dañu / dañoo, am na / am nañu**; no Wolof sentence begins with **Te**; diacritics preserved.
 
-### Pedagogy and layout
+### Concision
 
-- [ ] Content-rich sessions use the 5 ARED phases.
-- [ ] Procedural sessions are compressed instead of padded.
-- [ ] Context and instruction are separated in Mise en situation.
-- [ ] Teacher/student columns are row-symmetric.
-- [ ] Grammar, orthography, and conjugation include manipulation before rule formulation.
-- [ ] At least one autonomous reinvestment activity appears each day.
-- [ ] Production d’Écrits begins with identifying descriptive-text characteristics and moves only to short guided descriptive sentences.
-- [ ] Content-rich sessions include likely pupil errors and corrective feedback.
-- [ ] Differentiation appears where useful through easy / standard / challenge variants.
-- [ ] Evaluation tasks include expected answers or success criteria.
-
-### Bilingualism and language
-
-- [ ] Transfer activities are scripted and marked with 🔁.
-- [ ] Required L1/L2 transfer pairs are covered.
-- [ ] Pupil-facing metalanguage is CE1-appropriate.
-- [ ] New technical terms are explained simply before the technical label.
-- [ ] Wolof target forms are correct: **sama**, **sa**, **-am**, **-oon**, **dafa**, **dañu / dañoo**, **am na / am nañu**.
-- [ ] No Wolof sentence begins with **Te**.
-- [ ] Wolof diacritics and terminology are consistent.
-
-### DOCX formatting and concision
-
-- [ ] Wolof uses the named character style/color.
-- [ ] Teacher directions are italicized.
-- [ ] Teacher speech is regular text.
-- [ ] Rules/patterns appear in framed boxes where appropriate.
-- [ ] Expected answers use one bullet style.
-- [ ] The guide is visually scannable and normally within 22–28 pages.
-- [ ] Repeated boilerplate and evaluator-facing meta-commentary have been removed.
+- [ ] The guide is 22–28 pages and visually scannable.
+- [ ] No repeated palier-level boilerplate inside every session.
+- [ ] The source hierarchy, UUID anchor table, fixed timetable, content map, and QA gate were followed exactly to reduce generation variability.
 
 ---
 
-## 18. Delivery expectations
+## 17. Delivery
 
-Deliver:
+Deliver **only** the complete Semaine 10 teacher guide as a DOCX. No rationale, methodology note, or compliance checklist alongside it. The teacher-facing DOCX should not include intrusive citations.
 
-1. The complete Semaine 10 teacher guide as a DOCX.
-2. A brief rationale that states:
-   - source hierarchy followed;
-   - the KG/progression L1 divergence (Wolof-native conjugation models vs. French grammatical categories) and the intentional split between progression-governed L1 language tools, KG-backed CE1 objectives, and KG-assisted L2 learning-objective decomposition;
-   - whether official model-week status was confirmed or whether the guide is only “model-week-level” because it opens Palier 2;
-   - any missing-source limitations, especially missing Wolof terminology reference.
-3. Optional: a compact checklist confirming timetable and formatting compliance.
+---
 
-The teacher-facing classroom guide should not include intrusive citations. The brief rationale may cite or name sources used when the output format allows.
+## Appendix A — Error anticipation calibration examples
+
+To calibrate the expected specificity of error anticipation, use these examples. Errors in the ❌ column are too generic to improve teaching; errors in the ✅ column are specific enough to help a teacher recognize and correct the problem in real time.
+
+| Session | ❌ Too generic | ✅ Specific enough |
+|---|---|---|
+| Expression Orale | "Student has difficulty describing" | "Student narrates an event instead of describing an object. Correction: *Danuy melool rekk, dunu nettali. Waxal naka mu mel.*" |
+| Grammaire L1 | "Student confuses possessives" | "Student writes -am as a separate word (*mbubb am*) instead of suffixing it (*mbubbam*). Correction: *-am dafay toftal ci birim baat bi.*" |
+| Conjugaison L1 | "Student makes conjugation errors" | "Student adds -oon to the verb (*jàngoon*) instead of the pronoun-aspect marker (*dafoon jàng*). Correction: *-oon dafa tëral ci dafa/dama/dañu, du ci waxe bi.*" |
+| Vocabulaire L1 | "Student doesn't use structures" | "Student uses *dafa* for plural subjects. Correction: *Benn këfin: dafa. Ñaari këfin: dañu.*" |
+| Orthographe L2 | "Student forgets the rule" | "Student writes *grande* for a masculine noun. Correction: -e is only added for the feminine form." |
+| Grammaire L2 | "Student confuses possessives" | "Student uses *mon* before a feminine noun (*mon trousse*). Correction: *mon* = masculin, *ma* = féminin → *ma trousse*. Exception: *mon amie* (before a vowel)." |
