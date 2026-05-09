@@ -26,14 +26,14 @@ repos:
 # while keeping the execution root at the repo root so file paths align.
 - repo: local
   hooks:
-    # Custom scripts
+    # Global
     - id: env-template-sync
       name: Ensure .template.env and .env matches each other
-      entry: uv run --project backend python scripts/tools/check_env_template.py
+      entry: uv run --project python scripts/tools/check_env_template.py
       language: system
       pass_filenames: false
 
-    # Backend Formatters (auto-fix)
+    # Backend
     - id: black
       name: black
       entry: uv run --project backend black
@@ -48,7 +48,6 @@ repos:
       types: [python]
       files: ^backend/(src|tests)/.*\.py$
 
-    # Backend Linters
     - id: ruff
       name: ruff
       entry: uv run --project backend ruff check --fix --exit-non-zero-on-fix
@@ -78,7 +77,7 @@ repos:
       types: [python]
       files: ^backend/(src|tests)/.*\.py$
 
-    # Frontend formatters/linters/type checks
+    # Frontend
     - id: prettier
       name: prettier
       entry: pnpm --dir=frontend exec prettier --write "src/**/*.{js,ts,jsx,tsx,mjs,cjs}"
