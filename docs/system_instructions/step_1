@@ -1,0 +1,299 @@
+## Goal
+
+Build a reusable pipeline that maps **any primary-school curriculum PDF** (often non-US countries like Zambia/Uganda/Tanzania/Senegal) into the high-level entity/relationship shapes used by the **Learning Commons Knowledge Graph (LC KG)**.
+
+### Primary entities in scope (standards + skills)
+- **Entities:** `StandardsFramework`, `StandardsFrameworkItem`, `LearningComponent`
+- **Relationships:** `hasChild`, `supports`, `buildsTowards`, `relatesTo`
+
+### Educational alignment (optional curriculum elements not necessary for v0)
+- **Relationship:** `hasEducationalAlignment` (curriculum element → standards item)
+- Curriculum elements (`Course`, `LessonGrouping`, `Lesson`, `Activity`, `Assessment`, `Material`) are **optional** and should only be materialized when the PDF supports them clearly.
+- These are not yet required for v0.
+
+**Important:** LC KG’s published datasets are currently US-centric (e.g., standards via 1EdTech CASE; progressions via Student Achievement Partners’ Coherence Map), but the objective here is to **preserve the LC ontology “shape” for non-US PDFs**, not to force a 1:1 US CASE import. Attach strong provenance and keep the ontology consistent.
+
+---
+
+## PDFs we’re working with (initial set)
+
+1. **Zambia**: *LOWER PRIMARY EDUCATION SYLLABI GRADE 1–3 ... (2024)*
+   - Table-like pages with columns such as **Topic / Sub-topic / Specific Competences / Learning Activities / Expected Standard**
+   - Often includes hierarchical codes (e.g., `3.9.4.1`)
+   - Expectation statements are strong; progressions mostly implied by grade ordering / code patterns
+
+2. **Uganda**: *Primary 1 (P1) Curriculum*
+   - Thematic curriculum: **12 themes**, **36 sub-themes**
+   - Sub-theme ~ weekly; includes expected learning outcomes and competence statements across strands/learning areas
+   - Progressions mostly implied by theme/week sequencing
+
+3. **Tanzania**: *Curriculum for Primary Education (Standard I–VI)*
+   - Higher-level framework; organized by stages (Std I–II vs Std III–VI), learning areas/subjects
+   - “Main competences” + “Specific competences” in tables
+   - Upper stage often banded rather than grade-by-grade
+   - Translation needed for non-English content; store original + English
+
+4. **Ghana**
+   - Highly structured standards with stable codes and clear roles (standards/indicators/exemplars)
+   - Useful as a reference implementation and inference playground
+
+5. **Senegal (Math Curriculum)**
+   - Bilingual presentation is typically Wolof first, French second for the same competency/outcome.
+   - Strong “framework-style” content up front: Compétence de cycle, Compétence de l’étape, then domain/strand base competencies (e.g., activités numériques / géométriques / mesure / résolution de problèmes).
+   - The bulk is scope-and-sequence via tables organized by Semaine (week), with periodic paliers / activités d’intégration acting like checkpoints.
+   - Progression evidence is mostly explicit sequencing by week (and sometimes by “palier”), rather than stable alphanumeric standard codes.
+
+6. **Senegal (Reading Curriculum)**
+   - Bilingual presentation is typically **Wolof first, French second**, often restating the same competency/outcome in both languages.
+   - Organized with a clear document spine: **Schéma intégrateur**, **Tableau de planification des apprentissages**, then major activity sections such as **Oral**, **Lecture**, **Communication Écrite**, and **Production d’écrits**.
+   - Progression is driven mostly by **Paliers** and **Semaine (week)** sequencing rather than stable alphanumeric standard codes.
+   - Several sections use dense instructional tables where columns function like **learning objectives / specific objectives / content / duration**, while some written-language tables also embed repeated section headers and competency statements inside the table body.
+   - The later written-production portion is structured as recurring components such as **Outils de langue**, **Produire des textes**, and **Copie**, repeated across paliers.
+   - Expect bilingual extraction and normalization needs; store original text plus English where translation is required.
+
+---
+
+## Target LC KG Shape (Conceptual Mapping)
+
+### Academic Standards
+
+#### Entities
+1. **StandardsFramework**
+   - Root “document/framework” node (default: one per PDF).
+2. **StandardsFrameworkItem**
+   - Organizational groupings (grade, stage, subject, theme, strand, topic, unit, week)
+   - Normative expectation statements (outcomes/competences/objectives/standards)
+
+#### Relationships
+1. `(:StandardsFramework)-[:hasChild]->(:StandardsFrameworkItem)`
+2. `(:StandardsFrameworkItem)-[:hasChild]->(:StandardsFrameworkItem)`
+
+#### Requirements
+
+**Mandatory**
+1. **Document scope**: Identifies the document so we can create a `StandardsFramework` root node.
+2. **Normative learning expectations**: Standards/outcomes/competencies/objectives (not merely narrative). These become leaf `StandardsFrameworkItem` nodes (e.g., `normalizedStatementType="Standard"`).
+3. **Grouping structure (hierarchy)**: Subject/grade/theme/topic/etc. These become grouping `StandardsFrameworkItem` nodes (e.g., `normalizedStatementType="Standard Grouping"`) connected via `hasChild`.
+
+**Optional**
+1. Grades/age bands/stage bands (more consistent groupings)
+2. Subjects/learning areas (separate subtrees or per-subject export partitions)
+3. Codes/identifiers (stable IDs and cross-references)
+4. Performance indicators/expected standards (notes or child items, depending on policy)
+5. Time structure (weeks/terms) for grouping + sequencing hints
+6. Metadata (language, publisher/ministry, year, jurisdiction) for provenance/filtering
+7. Assessment guidance/activities/pedagogy (store as guidance; optionally export as curriculum elements)
+
+---
+
+### Learning Components
+
+#### Entity
+- **LearningComponent**
+  - A granular skill/concept aligned to standards.
+
+#### Relationship
+- `(:LearningComponent)-[:supports]->(:StandardsFrameworkItem)`
+
+#### Requirements
+
+**Mandatory**
+1. Standards items exist (`StandardsFrameworkItem`) to anchor `supports`.
+2. Component-like statements: explicit skills OR granular outcomes/objectives OR splittable bullets under standards.
+3. Sufficient clarity to extract atomic skills (prefer actionable/measurable statements).
+4. Alignment anchor for each LC: each LC must support at least one `StandardsFrameworkItem`.
+
+**Optional**
+1. Clear separation between “skill” vs “activity/resource”
+2. Granularity cues (bullets/numbering/subskills)
+3. Examples/indicators (helps splitting)
+4. Cross-subject tags (reuse)
+5. Terminology definitions (normalize synonyms)
+6. Assessment rubrics (validate measurability)
+
+---
+
+### Learning Progressions
+
+#### Relationships
+1. `(:StandardsFrameworkItem)-[:buildsTowards]->(:StandardsFrameworkItem)` (directional)
+2. `(:StandardsFrameworkItem)-[:relatesTo]->(:StandardsFrameworkItem)` (associative)
+
+#### Requirements
+
+**Mandatory**
+1. Standards items exist (`StandardsFrameworkItem`).
+2. Evidence of sequencing:
+   - explicit prereq/progression language (“builds on”, “prior knowledge”), OR
+   - structured order implying development (grade/stage ordering, scope-and-sequence).
+
+**Mandatory for fine-grained progressions**
+1. Comparable adjacent levels (e.g., Grade 1/2/3) or clearly separable per-level items (not only banded stages like “III–VI”).
+
+**Optional (strongly recommended)**
+1. Explicit progression charts/tables
+2. Stable coding scheme encoding grade/strand
+3. Scope-and-sequence (weeks/terms)
+4. Examples of increasing complexity
+5. Teacher guidance about prior/next learning
+
+---
+
+## Curriculum Elements and `hasEducationalAlignment` (Optional, not required for v0)
+
+### Why this is optional and not required yet
+Many non-US curriculum PDFs are standards/syllabi with some guidance, not full lesson materials. Only create curriculum entities when the PDF structure supports them clearly.
+
+### Allowed alignment forms
+- `(:Course|:LessonGrouping|:Lesson|:Activity|:Assessment|:Material)-[:hasEducationalAlignment]->(:StandardsFrameworkItem)`
+
+### Practical mapping guidance (when you do create curriculum elements)
+- **Course**: the highest-level instructional container (often Grade+Subject, or a year-long thematic course)
+- **LessonGrouping**: unit/module/theme
+- **Lesson**: week/sub-theme/lesson-sized chunk (if present)
+- **Activity**: discrete task in “Learning Activities” fields
+- Always mark curriculum entities derived from standards PDFs as **synthetic/derived** and attach provenance.
+
+---
+
+## Core Design Decision: Two-Layer Mapping, One-Layer KG Creation (Keep it General)
+
+### Layer A — Extraction IR (Page-level, layout-oriented)
+**Purpose:** Extract *what is on the page* using a vision model in repeatable JSON, preserving reading order, tables, and bounding boxes.
+
+- Output: `PageIR` per page (ordered list of blocks and tables)
+- Keep semantics light:
+  - headings / paragraphs / lists / captions / tables
+  - avoid deep interpretation (don’t decide “this is a grade node” during extraction)
+
+### Layer B — Canonical Curriculum IR (Document-level, country-agnostic)
+**Purpose:** Deterministically stitch `PageIR[]` into a stable canonical representation with hierarchy + statement roles.
+
+Canonical IR contains:
+- Document metadata: country, ministry/publisher, year, languages, grade range, subjects/areas, title
+- Hierarchy nodes: grade/stage → subject/learning area → theme/strand/topic → unit/week/subtopic
+- Statements with explicit roles:
+  - `expectation` (normative outcome/competence/objective/standard)
+  - `descriptor` (expected standard/benchmark/indicator/assessment criteria)
+  - `guidance` (activities/resources/teacher notes/exemplars)
+- Strong provenance: pdf name, page number, section path, and optional bboxes
+
+### Layer C — Canonical IR → LC KG Export (shape-preserving)
+- One `StandardsFramework` per PDF (default)
+- `StandardsFrameworkItem` hierarchy via `hasChild`
+- `LearningComponent` generation per config + `supports`
+- Progressions: explicit + inferred (with evidence/confidence)
+- Optional: materialize curriculum elements and export `hasEducationalAlignment`
+
+---
+
+## Deterministic Global IDs
+
+IDs must be deterministic across reruns and globally unique across all PDFs.
+
+- Compute `doc_key` deterministically from PDF bytes (e.g., SHA-256)
+- Create canonical string IDs and convert to UUID deterministically (e.g., UUIDv5):
+  - `lc:curriculum:{doc_key}:framework`
+  - `lc:curriculum:{doc_key}:sfi:{role}:{path_or_code}:{normalized_text_hash}`
+  - `lc:curriculum:{doc_key}:lc:{source_sfi_id}:{split_index_or_hash}`
+- Preserve local codes when present (metadata and/or part of canonical keys)
+
+Strict rule: Never use random UUIDs as stable identifiers.
+
+---
+
+## Translation Policy
+
+- Store original text alongside English for non-English content
+- Optionally translate all non-English: titles, headings, statements, descriptors, guidance
+- Keep translation provenance: method/model, timestamp, confidence (if applicable/available)
+
+---
+
+## LearningComponent Creation (Configurable)
+
+- LC source statement roles: default = most granular `expectation`
+- Splitting policies:
+  - `1_to_1`
+  - `split_bullets`
+  - `llm_atomic_skills`
+- Always maintain at least one `supports` anchor per LC
+
+---
+
+## Human-in-the-loop Mapping Wizard (for ambiguous PDFs)
+
+Ask a small repeatable set of inputs:
+1. Framework scope: per-PDF (default) export partition
+2. Normative expectations fields: which columns/sections are standards/outcomes/competences/objectives?
+3. Descriptor vs guidance: which fields are performance descriptors vs instructional guidance?
+4. LC policy: `1_to_1` vs `split_bullets` vs `llm_atomic_skills`
+6. Optional curriculum export: whether to materialize curriculum entities for `hasEducationalAlignment`
+
+---
+
+## Extraction Strategy and Division of Labor
+
+### Vision LLM responsibilities (Extraction Layer only)
+- Output strict JSON that validates against the extraction schema
+- Preserve reading order of `items`
+- Extract tables explicitly:
+  - `header_rows`
+  - keep `row_span` / `col_span` where possible
+  - allow blank cells (don’t hallucinate content)
+- Provide bounding boxes in a declared coordinate space
+  - preferred: pixel coords (`coord_space="px"`) in rendered PNG space
+- Avoid heavy semantics; any region classification should be a hint + confidence
+
+Never:
+- invent missing content
+- merge tables across pages (use continuation hints)
+- create random/stable IDs
+
+### Python responsibilities (Stitching + Canonicalization)
+- Carry forward heading context across pages
+- Assign statement roles using table headers + config
+- Build hierarchy and ordering deterministically
+- Generate deterministic IDs
+- Store ambiguous content in an `unresolved` bucket rather than guessing
+
+---
+
+## Framework Scoping Policy
+
+- Default: `framework_scope = per_pdf`
+- For per-PDF frameworks, create subject/learning-area grouping nodes under the root when applicable
+
+---
+
+## Reference links (LC KG)
+
+- LC KG overview: https://docs.learningcommons.org/knowledge-graph/understanding-knowledge-graph/about-knowledge-graph
+- Academic standards: https://docs.learningcommons.org/knowledge-graph/entity-and-relationship-reference/academic-standards
+- Learning components: https://docs.learningcommons.org/knowledge-graph/entity-and-relationship-reference/learning-components
+- Learning progressions: https://docs.learningcommons.org/knowledge-graph/v1-2-0/entity-and-relationship-reference/learning-progressions
+- Curriculum (Beta): https://docs.learningcommons.org/knowledge-graph/entity-and-relationship-reference/curriculum
+- 1EdTech CASE background: https://www.imsglobal.org/spec/CASE/v1p1/
+
+---
+
+## Starting State for This Session
+
+Files available:
+1. Python files:
+    - `extract_page_ir.py` (entry point module for page IR extraction),
+    - `llm.py`,
+    - `prompts.py`,
+    - `schemas.py`,
+    - `utils.py`,
+    - `validators.py`,
+    - `run_config_schemas.py`,
+    - `constants.py`
+
+### Tasks for this session
+1. Review the Python files to gain a deep understanding of what I have implemented so far and check for correctness, consistency, alignment, and generality.
+    1a. Note that `extract_page_ir.py` is the main entry point for extracting the page IRs.
+    1b. Also note that I renamed the run config schemas as `run_config_schemas.py` to avoid a name conflict with the other `schemas.py` file that is uploaded.
+    1c. In my code, all imports are correct and you do NOT have to check my imports.
+2. NB: My code reflects the current state and it's likely that my instructions above might be outdated. If the instructions above conflict with my code, flag it for my attention.
+3. After you have done your initial review of the files, I will detail the next steps.
