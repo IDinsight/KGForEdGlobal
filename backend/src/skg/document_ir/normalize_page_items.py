@@ -101,6 +101,102 @@ def _item_display_kind(item: Block | Table) -> str:
     return "table"
 
 
+def _propagate_caption_local_codes(
+    *, items: list[tuple[int, Block | Table]], page_index: int, warnings: list[str]
+) -> None:
+    """Propagate caption-derived table and figure codes to the correct same-page item.
+
+    This function intentionally binds codes from true caption blocks only. Headings and
+    paragraphs are not treated as fallback label sources, which reduces false positives
+    from prose like "Table 4 shows ...".
+
+    NB: This function **mutates** `local_code` on target items in-place. The propagated
+    code preserves the original form from the caption (e.g., `"Tableau 4"` stays
+    `"Tableau 4"`; it is NOT canonicalized to `"Table 4"`).
+
+    For each normalized item, the flow is:
+
+    1. Only continue if it is a Block of type CAPTION.
+    2. Try to resolve a table/figure code from it.
+    3. If found, possibly write that code back onto the caption block itself.
+    4. Look at the next non-artifact item.
+    5. Try immediate assignment to that next item.
+    6. Stop early in certain cases to avoid “jumping” a caption over another labeled
+        caption.
+    7. If that fails, maybe scan farther forward for the nearest compatible target.
+
+    Parameters
+    ----------
+    items
+        The page's normalized items list.
+    page_index
+        The page index.
+    warnings
+        A list to append warning messages to.
+    """
+
+    for i, (label_orig_index, label_item) in enumerate(items):
+        # 1.
+        if (
+            not isinstance(label_item, Block)
+            or label_item.block_type != BlockType.CAPTION
+        ):
+            continue
+
+        # 2.
+        code = _resolve_label_code(label_item)
+
+        if not code:
+            continue
+
+        # 3.
+        if not (label_item.local_code or "").strip():
+            label_item.local_code = code
+
+        # 4.
+        next_data = _find_next_non_artifact(items=items, start_index=i + 1)
+
+        if not next_data:  # Nothing follows the caption except artifacts
+            continue
+
+        next_idx, next_orig_index, next_item = next_data
+
+        # 5.
+        was_assigned = _try_assign_immediate(
+            code=code,
+            label_info=(label_orig_index, label_item),
+            page_index=page_index,
+            target_info=(next_orig_index, next_item),
+            warnings=warnings,
+        )
+
+        if was_assigned:
+            continue
+
+        # 6.
+        #
+        # NB: If the immediate next non-artifact item is itself another labeled
+        # caption, don't let the current caption's code "jump over" it.
+        if (
+            isinstance(next_item, Block)
+            and next_item.block_type == BlockType.CAPTION
+            and _resolve_label_code(next_item) is not None
+        ):
+            continue
+
+        # 7. Fallback: scan forward for the nearest compatible target when the caption
+        # is not immediately adjacent to its table or figure. Start *past* next_idx
+        # because _try_assign_immediate already rejected it.
+        _try_fallback_scan(
+            code=code,
+            items=items,
+            label_orig_index=label_orig_index,
+            page_index=page_index,
+            start_index=next_idx + 1,
+            warnings=warnings,
+        )
+
+
 def _resolve_label_code(item: Block) -> Optional[str]:
     """Resolve a table/figure code from a label-like Block.
 
@@ -443,104 +539,8 @@ def normalize_page_items(
     # Propagate caption-derived local codes to the correct same-page item. This is the
     # last normalization step before the page items are consumed by the linker, which
     # relies on local codes for accurate cross-page stitching of tables and figures.
-    propagate_caption_local_codes(
+    _propagate_caption_local_codes(
         items=items_mapping, page_index=page_ir.page_index, warnings=warnings
     )
 
     return items_mapping
-
-
-def propagate_caption_local_codes(
-    *, items: list[tuple[int, Block | Table]], page_index: int, warnings: list[str]
-) -> None:
-    """Propagate caption-derived table and figure codes to the correct same-page item.
-
-    This function intentionally binds codes from true caption blocks only. Headings and
-    paragraphs are not treated as fallback label sources, which reduces false positives
-    from prose like "Table 4 shows ...".
-
-    NB: This function **mutates** `local_code` on target items in-place. The propagated
-    code preserves the original form from the caption (e.g., `"Tableau 4"` stays
-    `"Tableau 4"`; it is NOT canonicalized to `"Table 4"`).
-
-    For each normalized item, the flow is:
-
-    1. Only continue if it is a Block of type CAPTION.
-    2. Try to resolve a table/figure code from it.
-    3. If found, possibly write that code back onto the caption block itself.
-    4. Look at the next non-artifact item.
-    5. Try immediate assignment to that next item.
-    6. Stop early in certain cases to avoid “jumping” a caption over another labeled
-        caption.
-    7. If that fails, maybe scan farther forward for the nearest compatible target.
-
-    Parameters
-    ----------
-    items
-        The page's normalized items list.
-    page_index
-        The page index.
-    warnings
-        A list to append warning messages to.
-    """
-
-    for i, (label_orig_index, label_item) in enumerate(items):
-        # 1.
-        if (
-            not isinstance(label_item, Block)
-            or label_item.block_type != BlockType.CAPTION
-        ):
-            continue
-
-        # 2.
-        code = _resolve_label_code(label_item)
-
-        if not code:
-            continue
-
-        # 3.
-        if not (label_item.local_code or "").strip():
-            label_item.local_code = code
-
-        # 4.
-        next_data = _find_next_non_artifact(items=items, start_index=i + 1)
-
-        if not next_data:  # Nothing follows the caption except artifacts
-            continue
-
-        next_idx, next_orig_index, next_item = next_data
-
-        # 5.
-        was_assigned = _try_assign_immediate(
-            code=code,
-            label_info=(label_orig_index, label_item),
-            page_index=page_index,
-            target_info=(next_orig_index, next_item),
-            warnings=warnings,
-        )
-
-        if was_assigned:
-            continue
-
-        # 6.
-        #
-        # NB: If the immediate next non-artifact item is itself another labeled
-        # caption, don't let the current caption's code "jump over" it.
-        if (
-            isinstance(next_item, Block)
-            and next_item.block_type == BlockType.CAPTION
-            and _resolve_label_code(next_item) is not None
-        ):
-            continue
-
-        # 7. Fallback: scan forward for the nearest compatible target when the caption
-        # is not immediately adjacent to its table or figure. Start *past* next_idx
-        # because _try_assign_immediate already rejected it.
-        _try_fallback_scan(
-            code=code,
-            items=items,
-            label_orig_index=label_orig_index,
-            page_index=page_index,
-            start_index=next_idx + 1,
-            warnings=warnings,
-        )

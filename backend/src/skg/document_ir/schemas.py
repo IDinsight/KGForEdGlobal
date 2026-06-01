@@ -17,7 +17,7 @@ from skg.schemas import BaseSchema, BBox
 from skg.utils.constants import BlockType, ItemBoundary
 
 
-def validate_block_payload(
+def _validate_block_payload(
     *,
     block_type: BlockType,
     figure: FigureUnit | None,
@@ -79,7 +79,7 @@ def validate_block_payload(
             )
 
 
-def validate_segment_provenance_pairwise(
+def _validate_segment_provenance_pairwise(
     *,
     owner_name: str,
     segment_provenance: list[SegmentProvenance],
@@ -199,14 +199,13 @@ class BlockSlice(BaseSchema):
             If the slice payload does not match its block type.
         """
 
-        validate_block_payload(
+        _validate_block_payload(
             block_type=self.block_type,
             figure=self.figure,
             list_items=self.list_items,
             owner_name="BlockSlice",
             text=self.text,
         )
-
         return self
 
 
@@ -529,14 +528,13 @@ class BlockSegment(BaseSchema):
             If the segment payload does not match its block type.
         """
 
-        validate_block_payload(
+        _validate_block_payload(
             block_type=self.block_type,
             figure=self.figure,
             list_items=self.list_items,
             owner_name="BlockSegment",
             text=self.text,
         )
-
         return self
 
     @model_validator(mode="after")
@@ -582,7 +580,7 @@ class BlockSegment(BaseSchema):
                 "BlockSegment.slices must be ordered by (page_index, item_index)."
             )
 
-        validate_segment_provenance_pairwise(
+        _validate_segment_provenance_pairwise(
             owner_name="BlockSegment",
             segment_provenance=self.segment_provenance,
             slices=self.slices,
@@ -931,12 +929,11 @@ class TableSegment(BaseSchema):
                 "TableSegment.slices must be ordered by (page_index, item_index)."
             )
 
-        validate_segment_provenance_pairwise(
+        _validate_segment_provenance_pairwise(
             owner_name="TableSegment",
             segment_provenance=self.segment_provenance,
             slices=self.slices,
         )
-
         return self
 
 

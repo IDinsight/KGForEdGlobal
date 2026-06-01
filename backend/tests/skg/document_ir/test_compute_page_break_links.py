@@ -897,19 +897,19 @@ def test_bbox_contains_obeys_tolerance() -> None:
     """BBox containment should respect the configured tolerance."""
 
     assert (
-        compute_page_break_links.bbox_contains(
+        compute_page_break_links._bbox_contains(
             inner=[1.0, 1.0, 9.0, 9.0], outer=[0.0, 0.0, 10.0, 10.0], tol=0.0
         )
         is True
     )
     assert (
-        compute_page_break_links.bbox_contains(
+        compute_page_break_links._bbox_contains(
             inner=[-1.0, 1.0, 9.0, 9.0], outer=[0.0, 0.0, 10.0, 10.0], tol=0.0
         )
         is False
     )
     assert (
-        compute_page_break_links.bbox_contains(
+        compute_page_break_links._bbox_contains(
             inner=[-1.0, 1.0, 9.0, 9.0], outer=[0.0, 0.0, 10.0, 10.0], tol=1.1
         )
         is True
@@ -1036,7 +1036,7 @@ def test_match_candidates_picks_best_unused_matches() -> None:
     pair_debug: dict[str, Any] = {"chosen_links": []}
     warnings: list[str] = []
 
-    links = compute_page_break_links.match_candidates(
+    links = compute_page_break_links._match_candidates(
         current_page_ir=current_page_ir,
         link_debug=[],
         min_link_score=3.0,
@@ -1080,7 +1080,7 @@ def test_match_candidates_rejects_weak_match_below_threshold() -> None:
     pair_debug: dict[str, Any] = {"chosen_links": []}
     warnings: list[str] = []
 
-    links = compute_page_break_links.match_candidates(
+    links = compute_page_break_links._match_candidates(
         current_page_ir=current_page_ir,
         link_debug=[],
         min_link_score=3.0,
@@ -1138,7 +1138,7 @@ def test_process_page_pair_returns_empty_when_guardrails_fail() -> None:
     )
     warnings: list[str] = []
 
-    links = compute_page_break_links.process_page_pair(
+    links = compute_page_break_links._process_page_pair(
         current_page_ir=current_page_ir,
         edge_record=edge_record,
         link_debug=[],
@@ -1196,7 +1196,7 @@ def test_process_page_pair_returns_heuristic_link_for_valid_candidates() -> None
         ],
     )
 
-    links = compute_page_break_links.process_page_pair(
+    links = compute_page_break_links._process_page_pair(
         current_page_ir=current_page_ir,
         edge_record=edge_record,
         link_debug=[],
@@ -1226,7 +1226,7 @@ def test_process_page_pair_short_circuits_high_confidence_negative_verdict() -> 
     next_page_ir = make_page_ir(page_index=1)
     page_pair_debug: list[dict[str, Any]] = []
 
-    links = compute_page_break_links.process_page_pair(
+    links = compute_page_break_links._process_page_pair(
         current_page_ir=current_page_ir,
         edge_record=edge_record,
         link_debug=[],

@@ -547,6 +547,32 @@ def _are_items_compatible_for_emitted_link(
     return False
 
 
+def _bbox_contains(*, inner: list[float], outer: list[float], tol: float = 2.0) -> bool:
+    """Return True if `inner` bbox is fully contained in `outer` bbox (with tolerance).
+
+    Parameters
+    ----------
+    inner
+        The inner bounding box [x0, y0, x1, y1].
+    outer
+        The outer bounding box [x0, y0, x1, y1].
+    tol
+        Tolerance in pixels.
+
+    Returns
+    -------
+    bool
+        True if `inner` is contained in `outer`, False otherwise.
+    """
+
+    ox0, oy0, ox1, oy1 = outer
+    ix0, iy0, ix1, iy1 = inner
+
+    return (
+        ix0 >= ox0 - tol and iy0 >= oy0 - tol and ix1 <= ox1 + tol and iy1 <= oy1 + tol
+    )
+
+
 def _block_edge_fraction(*, next_item: Block, prev_item: Block) -> float:
     """Return the edge-fraction threshold used for Block continuation geometry.
 
@@ -682,6 +708,86 @@ def _column_signature(*, mode: str, table: Table) -> str:
 
     # Join rows with "||" and cells with "|".
     return "||".join("|".join(row) for row in canonical_rows)
+
+
+def _debug_features_for_pair(
+    *,
+    next_item: Block | Table,
+    next_page_h: int,
+    prev_item: Block | Table,
+    prev_page_h: int,
+) -> dict[str, Any]:
+    """Return semantic-light debug signals explaining why two items might stitch. This
+    is used only for reporting/debugging and should remain deterministic.
+
+    Parameters
+    ----------
+    next_item
+        The next item.
+    next_page_h
+        The next page height.
+    prev_item
+        The previous item.
+    prev_page_h
+        The previous page height.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary of debug features.
+    """
+
+    output: dict[str, Any] = {
+        "prev_kind": prev_item.kind,
+        "next_kind": next_item.kind,
+        "edge_proximity": None,
+        "same_block_type": False,
+        "same_columns_signature_strong": False,
+        "same_columns_signature_weak": False,
+        "same_local_code": False,
+    }
+
+    # local_code signal (works for both blocks and tables if present).
+    if prev_item.local_code and next_item.local_code:
+        output["same_local_code"] = normalize_local_code(
+            prev_item.local_code
+        ) == normalize_local_code(next_item.local_code)
+
+    # Column signature signals (tables only). Mirrors _score_table_match: strong first,
+    # weak fallback.
+    if isinstance(prev_item, Table) and isinstance(next_item, Table):
+        prev_sig_strong = _column_signature(mode="strong", table=prev_item)
+        next_sig_strong = _column_signature(mode="strong", table=next_item)
+        output["same_columns_signature_strong"] = bool(
+            prev_sig_strong and next_sig_strong and prev_sig_strong == next_sig_strong
+        )
+        output["edge_proximity"] = _build_edge_proximity_debug(
+            edge_frac=_table_edge_fraction(next_item=next_item, prev_item=prev_item),
+            next_bbox=next_item.bbox,
+            next_page_h=next_page_h,
+            prev_bbox=prev_item.bbox,
+            prev_page_h=prev_page_h,
+        )
+
+        if not output["same_columns_signature_strong"]:
+            prev_sig_weak = _column_signature(mode="weak", table=prev_item)
+            next_sig_weak = _column_signature(mode="weak", table=next_item)
+            output["same_columns_signature_weak"] = bool(
+                prev_sig_weak and next_sig_weak and prev_sig_weak == next_sig_weak
+            )
+
+    # block_type signal (blocks only).
+    if isinstance(prev_item, Block) and isinstance(next_item, Block):
+        output["same_block_type"] = prev_item.block_type == next_item.block_type
+        output["edge_proximity"] = _build_edge_proximity_debug(
+            edge_frac=_block_edge_fraction(next_item=next_item, prev_item=prev_item),
+            next_bbox=next_item.bbox,
+            next_page_h=next_page_h,
+            prev_bbox=prev_item.bbox,
+            prev_page_h=prev_page_h,
+        )
+
+    return output
 
 
 def _edge_window_indices(
@@ -910,7 +1016,7 @@ def _is_embedded_overlay_figure(
         return False
 
     for t in tables:
-        if bbox_contains(inner=item.bbox, outer=t.bbox, tol=tol):
+        if _bbox_contains(inner=item.bbox, outer=t.bbox, tol=tol):
             return True
 
     return False
@@ -950,6 +1056,506 @@ def _is_vertical_continuation(
     prev_near_bottom = prev_bbox[3] >= (prev_page_h * (1.0 - edge_frac))
     next_near_top = next_bbox[1] <= (next_page_h * edge_frac)
     return prev_near_bottom and next_near_top
+
+
+def _match_candidates(
+    *,
+    current_page_ir: PageIR,
+    link_debug: list[dict[str, Any]],
+    min_link_score: float,
+    next_candidate_indices: list[int],
+    next_page_ir: PageIR,
+    next_page_items: list[tuple[int, Block | Table]],
+    pair_debug: dict[str, Any],
+    prev_candidate_indices: list[int],
+    prev_page_items: list[tuple[int, Block | Table]],
+    warnings: list[str],
+) -> dict[tuple[int, int], tuple[int, int]]:
+    """Sort candidates by proximity and find the best matches.
+
+    If both sides have valid candidates, this function tries to pair them. It does the
+    following in order:
+
+    1. Sort previous-page candidates by bottom edge descending
+    2. Sort next-page candidates by top edge ascending
+    3. For each previous candidate:
+        - Scan unused next candidates
+        - Keep only stitch-compatible ones
+        - Compute a score with match_score()
+        - Keep the best-scoring unused next candidate
+    4. Reject the best if it is below min_link_score
+    5. Otherwise, create the link and mark the next candidate as used
+
+    This is greedy one-to-one matching. Each previous candidate gets at most one next
+    candidate and each next candidate can be used only once.
+
+    Example:
+
+    Suppose page N has two valid candidates near the bottom:
+        - P1 = paragraph
+        - T1 = table
+
+    and page N + 1 has two valid candidates near the top:
+        - P2 = paragraph
+        - T2 = table
+
+    match_candidates() will score P1 against the compatible next candidates, score T1
+    against the remaining compatible next candidates, and output two links if both best
+    scores clear min_link_score.
+
+    Parameters
+    ----------
+    current_page_ir
+        The current PageIR.
+    link_debug
+        List to append per-link debug info to.
+    min_link_score
+        Minimum score for a link to be considered valid.
+    next_candidate_indices
+        A list of indices of valid next-page candidates.
+    next_page_ir
+        The next PageIR.
+    next_page_items
+        The next page's normalized items list.
+    pair_debug
+        Dict to append per-page-pair debug info to.
+    prev_candidate_indices
+        A list of indices of valid previous-page candidates.
+    prev_page_items
+        The previous page's normalized items list.
+    warnings
+        A list to append warning messages to.
+
+    Returns
+    -------
+    dict[tuple[int, int], tuple[int, int]]
+        Forward links for items that continue across the page break.
+    """
+
+    # Sort bottom of previous page by highest y-coordinate and top of next page by
+    # lowest y-coordinate.
+    prev_candidate_indices.sort(
+        key=lambda index: float(prev_page_items[index][1].bbox[3]),
+        reverse=True,
+    )
+    next_candidate_indices.sort(
+        key=lambda index: float(next_page_items[index][1].bbox[1])
+    )
+
+    page_pair_links: dict[tuple[int, int], tuple[int, int]] = {}
+    used_next_indices: set[int] = set()
+
+    for prev_index in prev_candidate_indices:
+        best: tuple[float, int] = (float("-inf"), -1)  # (score, next_index)
+        candidate_scores: list[dict[str, Any]] = []
+        prev_orig_index, prev_item = prev_page_items[prev_index]
+
+        # Evaluate this previous candidate against all next candidates and keep track
+        # of the best scoring match.
+        for next_index in next_candidate_indices:
+            if next_index in used_next_indices:
+                continue
+
+            next_item = next_page_items[next_index][1]
+
+            if not _are_items_compatible_for_emitted_link(
+                next_item=next_item, prev_item=prev_item
+            ):
+                continue
+
+            score = _match_score(
+                next_item=next_item,
+                next_page_h=next_page_ir.image_height,
+                prev_item=prev_item,
+                prev_page_h=current_page_ir.image_height,
+            )
+            candidate_scores.append(
+                {
+                    "next_item_orig_index": next_page_items[next_index][0],
+                    "features": _debug_features_for_pair(
+                        next_item=next_item,
+                        next_page_h=next_page_ir.image_height,
+                        prev_item=prev_item,
+                        prev_page_h=current_page_ir.image_height,
+                    ),
+                    "score": score,
+                }
+            )
+
+            if score > best[0]:
+                best = (score, next_index)
+
+        if best[1] != -1:
+            best_score, best_next_index = best
+
+            # Retrieve the original index of the matched next item.
+            match_orig_index = next_page_items[best_next_index][0]
+
+            # Enforce minimum confidence threshold: if the match is too weak, do not
+            # stitch. This prevents accidental cross-links when multiple candidates
+            # exist near the page edges.
+            if best_score < min_link_score:
+                msg = (
+                    f"Rejected weak continuation match across page break "
+                    f"{current_page_ir.page_index}->{next_page_ir.page_index}: "
+                    f"prev_item_orig_index={prev_orig_index}, next_item_orig_index={match_orig_index}, "
+                    f"score={best_score} < min_link_score={min_link_score}"
+                )
+                logger.warning(msg)
+                warnings.append(msg)
+                link_debug.append(
+                    {
+                        "from_page": current_page_ir.page_index,
+                        "to_page": next_page_ir.page_index,
+                        "prev_item_orig_index": prev_orig_index,
+                        "next_item_orig_index": match_orig_index,
+                        "score": best_score,
+                        "candidate_scores": candidate_scores,
+                        "note": "rejected_weak_match",
+                    }
+                )
+                continue
+
+            # Store page pair link: (Page A, Orig Index A) -> (Page B, Orig Index B).
+            page_pair_links[(current_page_ir.page_index, prev_orig_index)] = (
+                next_page_ir.page_index,
+                match_orig_index,
+            )
+            used_next_indices.add(best_next_index)
+
+            # Debug record for the chosen link (and all candidates considered).
+            link_debug.append(
+                {
+                    "from_page": current_page_ir.page_index,
+                    "to_page": next_page_ir.page_index,
+                    "prev_item_orig_index": prev_orig_index,
+                    "next_item_orig_index": match_orig_index,
+                    "score": best_score,
+                    "candidate_scores": candidate_scores,
+                }
+            )
+            pair_debug["chosen_links"].append(
+                {
+                    "prev_item_orig_index": prev_orig_index,
+                    "next_item_orig_index": match_orig_index,
+                    "score": best_score,
+                }
+            )
+        else:
+            # No link found for this prev candidate: also record (useful for debugging).
+            link_debug.append(
+                {
+                    "from_page": current_page_ir.page_index,
+                    "to_page": next_page_ir.page_index,
+                    "prev_item_orig_index": prev_orig_index,
+                    "next_item_orig_index": None,
+                    "score": None,
+                    "candidate_scores": candidate_scores,
+                    "note": "no_compatible_next_candidate",
+                }
+            )
+
+    return page_pair_links
+
+
+def _match_score(
+    *,
+    next_item: Block | Table,
+    next_page_h: int,
+    prev_item: Block | Table,
+    prev_page_h: int,
+) -> float:
+    """Score a potential continuation match (higher is better).
+
+    Parameters
+    ----------
+    next_item
+        The next item.
+    next_page_h
+        The next page height.
+    prev_item
+        The previous item.
+    prev_page_h
+        The previous page height.
+
+    Returns
+    -------
+    float
+        The match score.
+    """
+
+    if isinstance(prev_item, Table) and isinstance(next_item, Table):
+        return _score_table_match(
+            next_item=next_item,
+            next_page_h=next_page_h,
+            prev_item=prev_item,
+            prev_page_h=prev_page_h,
+        )
+
+    if isinstance(prev_item, Block) and isinstance(next_item, Block):
+        return _score_block_match(
+            next_item=next_item,
+            next_page_h=next_page_h,
+            prev_item=prev_item,
+            prev_page_h=prev_page_h,
+        )
+
+    return float("-inf")
+
+
+def _process_page_pair(
+    *,
+    current_page_ir: PageIR,
+    edge_record: EdgeVerdictRecord,
+    link_debug: list[dict[str, Any]],
+    min_link_score: float,
+    next_page_ir: PageIR,
+    next_page_items: list[tuple[int, Block | Table]],
+    page_pair_debug: list[dict[str, Any]],
+    prev_page_items: list[tuple[int, Block | Table]],
+    verdict_confidence_threshold: float,
+    warnings: list[str],
+) -> dict[tuple[int, int], tuple[int, int]]:
+    """Orchestrate candidate finding, warning logging, and linking for a single pair of
+    pages.
+
+    The process is as follows:
+
+    1. If a high-confidence verification verdict exists, apply it directly.
+    2. Identify candidates (rejected vs. valid).
+    3. Apply page-level boundary state guardrails.
+    4. Prepare a page-pair debug record.
+    5. Append warnings for unsafe candidates (rejected).
+    6. Append warnings for scenarios where no candidates exist.
+    7. Compute links between valid candidates.
+    8. Append page-pair debug info.
+
+    Parameters
+    ----------
+    current_page_ir
+        The current PageIR.
+    edge_record
+        Edge verdict record for this page pair. If above the confidence threshold, it
+        bypasses heuristic scoring.
+    link_debug
+        List to append per-link debug info to.
+    min_link_score
+        Minimum score for a link to be considered valid.
+    next_page_ir
+        The next PageIR.
+    next_page_items
+        The next page's normalized items list.
+    page_pair_debug
+        Optional list to append per-page-pair debug info to.
+    prev_page_items
+        The previous page's normalized items list.
+    verdict_confidence_threshold
+        Minimum verdict confidence to bypass heuristic scoring.
+    warnings
+        A list to append warning messages to.
+
+    Returns
+    -------
+    dict[tuple[int, int], tuple[int, int]]
+        Forward links for items that continue across the page break.
+    """
+
+    verdict = edge_record.verdict
+
+    # 1.
+    if verdict.confidence >= verdict_confidence_threshold:
+        if not verdict.is_continuation:
+            # High-confidence "no continuation" —> skip this page pair entirely.
+            page_pair_debug.append(
+                {
+                    "from_page": current_page_ir.page_index,
+                    "to_page": next_page_ir.page_index,
+                    "verdict_override": True,
+                    "verdict_confidence": verdict.confidence,
+                    "verdict_is_continuation": False,
+                    "verdict_continuation_kind": verdict.continuation_kind.value,
+                    "chosen_links": [],
+                    "note": "verdict_no_continuation",
+                }
+            )
+            logger.info(
+                f"Verdict override: no continuation for pages "
+                f"{current_page_ir.page_index}->{next_page_ir.page_index} "
+                f"(confidence={verdict.confidence})"
+            )
+            return {}
+
+        # High-confidence "yes continuation" —> try to apply the verdict directly.
+        return _apply_verification_verdict(
+            current_page_ir=current_page_ir,
+            edge_record=edge_record,
+            link_debug=link_debug,
+            next_page_ir=next_page_ir,
+            next_page_items=next_page_items,
+            page_pair_debug=page_pair_debug,
+            prev_page_items=prev_page_items,
+        )
+
+    # 2.
+    (
+        prev_rejected_indices,
+        prev_candidate_indices,
+        prev_rejection_reasons,
+        next_rejected_indices,
+        next_candidate_indices,
+        next_rejection_reasons,
+    ) = _find_paired_candidates(next_items=next_page_items, prev_items=prev_page_items)
+
+    # 3.
+    prev_candidate_indices, next_candidate_indices, allow_stitching = (
+        _apply_page_boundary_state_guardrails(
+            current_page_ir=current_page_ir,
+            next_candidate_indices=next_candidate_indices,
+            next_page_ir=next_page_ir,
+            next_page_items=next_page_items,
+            prev_candidate_indices=prev_candidate_indices,
+            prev_page_items=prev_page_items,
+            warnings=warnings,
+        )
+    )
+
+    if not allow_stitching:
+        return {}
+
+    # 4.
+    pair_debug: dict[str, Any] = {
+        "from_page": current_page_ir.page_index,
+        "to_page": next_page_ir.page_index,
+        "prev_candidate_item_indices": [
+            prev_page_items[i][0] for i in prev_candidate_indices
+        ],
+        "next_candidate_item_indices": [
+            next_page_items[i][0] for i in next_candidate_indices
+        ],
+        "prev_rejected_item_indices": [
+            prev_page_items[i][0] for i in prev_rejected_indices
+        ],
+        "next_rejected_item_indices": [
+            next_page_items[i][0] for i in next_rejected_indices
+        ],
+        "prev_candidates": [
+            _summarize_item_for_debug(
+                item=prev_page_items[i][1],
+                orig_item_index=prev_page_items[i][0],
+                page_index=current_page_ir.page_index,
+            )
+            for i in prev_candidate_indices
+        ],
+        "next_candidates": [
+            _summarize_item_for_debug(
+                item=next_page_items[i][1],
+                orig_item_index=next_page_items[i][0],
+                page_index=next_page_ir.page_index,
+            )
+            for i in next_candidate_indices
+        ],
+        "prev_rejected": [
+            {
+                **_summarize_item_for_debug(
+                    item=prev_page_items[i][1],
+                    orig_item_index=prev_page_items[i][0],
+                    page_index=current_page_ir.page_index,
+                ),
+                "rejection_reason": prev_rejection_reasons.get(i),
+            }
+            for i in prev_rejected_indices
+        ],
+        "next_rejected": [
+            {
+                **_summarize_item_for_debug(
+                    item=next_page_items[i][1],
+                    orig_item_index=next_page_items[i][0],
+                    page_index=next_page_ir.page_index,
+                ),
+                "rejection_reason": next_rejection_reasons.get(i),
+            }
+            for i in next_rejected_indices
+        ],
+        "chosen_links": [],
+    }
+
+    # 5.
+    _append_rejected_warnings(
+        is_prev=True,
+        items=prev_page_items,
+        page_ir=current_page_ir,
+        rejected_indices=prev_rejected_indices,
+        rejection_reasons=prev_rejection_reasons,
+        warnings=warnings,
+    )
+    _append_rejected_warnings(
+        is_prev=False,
+        items=next_page_items,
+        page_ir=next_page_ir,
+        rejected_indices=next_rejected_indices,
+        rejection_reasons=next_rejection_reasons,
+        warnings=warnings,
+    )
+
+    # 6.
+    if not prev_candidate_indices or not next_candidate_indices:
+        # Only emit "unmatched" warnings if the missing side has *no* continuation
+        # signals at all (neither valid candidates nor rejected boundary-marked items).
+        # If the missing side has rejected indices, we already logged the true reason
+        # via _append_rejected_warnings(), so an additional "unmatched" warning is
+        # redundant and confusing.
+        should_emit_unmatched = (
+            prev_candidate_indices
+            and not next_candidate_indices
+            and not next_rejected_indices
+        ) or (
+            next_candidate_indices
+            and not prev_candidate_indices
+            and not prev_rejected_indices
+        )
+
+        if should_emit_unmatched:
+            _append_unmatched_warnings(
+                current_page_ir=current_page_ir,
+                next_candidate_indices=next_candidate_indices,
+                next_items=next_page_items,
+                next_page_ir=next_page_ir,
+                prev_candidate_indices=prev_candidate_indices,
+                prev_items=prev_page_items,
+                warnings=warnings,
+            )
+        else:
+            # Emit one concise summary line instead (much clearer than "unmatched").
+            msg = (
+                f"No links created for page break {current_page_ir.page_index}->{next_page_ir.page_index} "
+                f"(candidates missing after safety checks): "
+                f"prev_candidates={len(prev_candidate_indices)} prev_rejected={len(prev_rejected_indices)} "
+                f"next_candidates={len(next_candidate_indices)} next_rejected={len(next_rejected_indices)}."
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+
+        page_pair_debug.append(pair_debug)
+        return {}
+
+    # 7.
+    links = _match_candidates(
+        current_page_ir=current_page_ir,
+        link_debug=link_debug,
+        min_link_score=min_link_score,
+        next_candidate_indices=next_candidate_indices,
+        next_page_ir=next_page_ir,
+        next_page_items=next_page_items,
+        pair_debug=pair_debug,
+        prev_candidate_indices=prev_candidate_indices,
+        prev_page_items=prev_page_items,
+        warnings=warnings,
+    )
+
+    # 8.
+    page_pair_debug.append(pair_debug)
+
+    return links
 
 
 def _safe_to_ignore_between_pages(item: Block | Table) -> bool:
@@ -1029,7 +1635,7 @@ def _safe_to_ignore_between_pages_relative(
         and isinstance(item, Block)
         and item.boundary == ItemBoundary.COMPLETE
         and item.block_type == BlockType.FIGURE
-        and bbox_contains(outer=anchor.bbox, inner=item.bbox)
+        and _bbox_contains(outer=anchor.bbox, inner=item.bbox)
     ):
         return True
 
@@ -1269,6 +1875,55 @@ def _score_table_match(
     return score
 
 
+def _summarize_item_for_debug(
+    *, item: Block | Table, orig_item_index: int, page_index: int
+) -> dict[str, Any]:
+    """Return a JSON-safe summary of an item for debug/reporting purposes.
+
+    Parameters
+    ----------
+
+    item
+        The Block or Table item.
+    orig_item_index
+        The original item index within PageIR.items.
+    page_index
+        The 0-based page index.
+
+    Returns
+    -------
+    dict[str, Any]
+        The item summary.
+    """
+
+    output: dict[str, Any] = {
+        "page_index": page_index,
+        "item_index": orig_item_index,
+        "item_addr": f"p{page_index}:raw{orig_item_index}",
+        "kind": item.kind,
+        "boundary": item.boundary.value,
+        "local_code": item.local_code,
+        "bbox": item.bbox,
+    }
+
+    if isinstance(item, Block):
+        text_or_none = item.text
+        text = (
+            (text_or_none.text or "").strip()
+            if isinstance(text_or_none, TextUnit)
+            else ""
+        )
+        output["block_type"] = item.block_type.value
+        output["text_snippet"] = text[:200]
+    else:
+        output["n_rows"] = int(len(item.rows))
+        output["n_cols"] = None if item.n_cols is None else int(item.n_cols)
+        output["repeats_header"] = item.repeats_header
+        output["header_row_count"] = int(item.header_row_count)
+
+    return output
+
+
 def _table_edge_fraction(*, next_item: Table, prev_item: Table) -> float:
     """Return the edge-fraction threshold used for Table continuation geometry.
 
@@ -1291,32 +1946,6 @@ def _table_edge_fraction(*, next_item: Table, prev_item: Table) -> float:
     } and next_item.boundary in {ItemBoundary.RESUMED, ItemBoundary.BOTH}
 
     return 0.25 if boundary_aligned else 0.20
-
-
-def bbox_contains(*, inner: list[float], outer: list[float], tol: float = 2.0) -> bool:
-    """Return True if `inner` bbox is fully contained in `outer` bbox (with tolerance).
-
-    Parameters
-    ----------
-    inner
-        The inner bounding box [x0, y0, x1, y1].
-    outer
-        The outer bounding box [x0, y0, x1, y1].
-    tol
-        Tolerance in pixels.
-
-    Returns
-    -------
-    bool
-        True if `inner` is contained in `outer`, False otherwise.
-    """
-
-    ox0, oy0, ox1, oy1 = outer
-    ix0, iy0, ix1, iy1 = inner
-
-    return (
-        ix0 >= ox0 - tol and iy0 >= oy0 - tol and ix1 <= ox1 + tol and iy1 <= oy1 + tol
-    )
 
 
 def compute_page_break_links(
@@ -1418,7 +2047,7 @@ def compute_page_break_links(
                 f"{cur_page_index}->{next_page_index}."
             )
 
-        page_pair_links = process_page_pair(
+        page_pair_links = _process_page_pair(
             current_page_ir=current_page_ir,
             edge_record=edge_record,
             link_debug=link_debug,
@@ -1435,632 +2064,3 @@ def compute_page_break_links(
     logger.success("Completed computing page break links!")
 
     return all_page_pair_links
-
-
-def debug_features_for_pair(
-    *,
-    next_item: Block | Table,
-    next_page_h: int,
-    prev_item: Block | Table,
-    prev_page_h: int,
-) -> dict[str, Any]:
-    """Return semantic-light debug signals explaining why two items might stitch. This
-    is used only for reporting/debugging and should remain deterministic.
-
-    Parameters
-    ----------
-    next_item
-        The next item.
-    next_page_h
-        The next page height.
-    prev_item
-        The previous item.
-    prev_page_h
-        The previous page height.
-
-    Returns
-    -------
-    dict[str, Any]
-        A dictionary of debug features.
-    """
-
-    output: dict[str, Any] = {
-        "prev_kind": prev_item.kind,
-        "next_kind": next_item.kind,
-        "edge_proximity": None,
-        "same_block_type": False,
-        "same_columns_signature_strong": False,
-        "same_columns_signature_weak": False,
-        "same_local_code": False,
-    }
-
-    # local_code signal (works for both blocks and tables if present).
-    if prev_item.local_code and next_item.local_code:
-        output["same_local_code"] = normalize_local_code(
-            prev_item.local_code
-        ) == normalize_local_code(next_item.local_code)
-
-    # Column signature signals (tables only). Mirrors _score_table_match: strong first,
-    # weak fallback.
-    if isinstance(prev_item, Table) and isinstance(next_item, Table):
-        prev_sig_strong = _column_signature(mode="strong", table=prev_item)
-        next_sig_strong = _column_signature(mode="strong", table=next_item)
-        output["same_columns_signature_strong"] = bool(
-            prev_sig_strong and next_sig_strong and prev_sig_strong == next_sig_strong
-        )
-        output["edge_proximity"] = _build_edge_proximity_debug(
-            edge_frac=_table_edge_fraction(next_item=next_item, prev_item=prev_item),
-            next_bbox=next_item.bbox,
-            next_page_h=next_page_h,
-            prev_bbox=prev_item.bbox,
-            prev_page_h=prev_page_h,
-        )
-
-        if not output["same_columns_signature_strong"]:
-            prev_sig_weak = _column_signature(mode="weak", table=prev_item)
-            next_sig_weak = _column_signature(mode="weak", table=next_item)
-            output["same_columns_signature_weak"] = bool(
-                prev_sig_weak and next_sig_weak and prev_sig_weak == next_sig_weak
-            )
-
-    # block_type signal (blocks only).
-    if isinstance(prev_item, Block) and isinstance(next_item, Block):
-        output["same_block_type"] = prev_item.block_type == next_item.block_type
-        output["edge_proximity"] = _build_edge_proximity_debug(
-            edge_frac=_block_edge_fraction(next_item=next_item, prev_item=prev_item),
-            next_bbox=next_item.bbox,
-            next_page_h=next_page_h,
-            prev_bbox=prev_item.bbox,
-            prev_page_h=prev_page_h,
-        )
-
-    return output
-
-
-def match_candidates(
-    *,
-    current_page_ir: PageIR,
-    link_debug: list[dict[str, Any]],
-    min_link_score: float,
-    next_candidate_indices: list[int],
-    next_page_ir: PageIR,
-    next_page_items: list[tuple[int, Block | Table]],
-    pair_debug: dict[str, Any],
-    prev_candidate_indices: list[int],
-    prev_page_items: list[tuple[int, Block | Table]],
-    warnings: list[str],
-) -> dict[tuple[int, int], tuple[int, int]]:
-    """Sort candidates by proximity and find the best matches.
-
-    If both sides have valid candidates, this function tries to pair them. It does the
-    following in order:
-
-    1. Sort previous-page candidates by bottom edge descending
-    2. Sort next-page candidates by top edge ascending
-    3. For each previous candidate:
-        - Scan unused next candidates
-        - Keep only stitch-compatible ones
-        - Compute a score with match_score()
-        - Keep the best-scoring unused next candidate
-    4. Reject the best if it is below min_link_score
-    5. Otherwise, create the link and mark the next candidate as used
-
-    This is greedy one-to-one matching. Each previous candidate gets at most one next
-    candidate and each next candidate can be used only once.
-
-    Example:
-
-    Suppose page N has two valid candidates near the bottom:
-        - P1 = paragraph
-        - T1 = table
-
-    and page N + 1 has two valid candidates near the top:
-        - P2 = paragraph
-        - T2 = table
-
-    match_candidates() will score P1 against the compatible next candidates, score T1
-    against the remaining compatible next candidates, and output two links if both best
-    scores clear min_link_score.
-
-    Parameters
-    ----------
-    current_page_ir
-        The current PageIR.
-    link_debug
-        List to append per-link debug info to.
-    min_link_score
-        Minimum score for a link to be considered valid.
-    next_candidate_indices
-        A list of indices of valid next-page candidates.
-    next_page_ir
-        The next PageIR.
-    next_page_items
-        The next page's normalized items list.
-    pair_debug
-        Dict to append per-page-pair debug info to.
-    prev_candidate_indices
-        A list of indices of valid previous-page candidates.
-    prev_page_items
-        The previous page's normalized items list.
-    warnings
-        A list to append warning messages to.
-
-    Returns
-    -------
-    dict[tuple[int, int], tuple[int, int]]
-        Forward links for items that continue across the page break.
-    """
-
-    # Sort bottom of previous page by highest y-coordinate and top of next page by
-    # lowest y-coordinate.
-    prev_candidate_indices.sort(
-        key=lambda index: float(prev_page_items[index][1].bbox[3]),
-        reverse=True,
-    )
-    next_candidate_indices.sort(
-        key=lambda index: float(next_page_items[index][1].bbox[1])
-    )
-
-    page_pair_links: dict[tuple[int, int], tuple[int, int]] = {}
-    used_next_indices: set[int] = set()
-
-    for prev_index in prev_candidate_indices:
-        best: tuple[float, int] = (float("-inf"), -1)  # (score, next_index)
-        candidate_scores: list[dict[str, Any]] = []
-        prev_orig_index, prev_item = prev_page_items[prev_index]
-
-        # Evaluate this previous candidate against all next candidates and keep track
-        # of the best scoring match.
-        for next_index in next_candidate_indices:
-            if next_index in used_next_indices:
-                continue
-
-            next_item = next_page_items[next_index][1]
-
-            if not _are_items_compatible_for_emitted_link(
-                next_item=next_item, prev_item=prev_item
-            ):
-                continue
-
-            score = match_score(
-                next_item=next_item,
-                next_page_h=next_page_ir.image_height,
-                prev_item=prev_item,
-                prev_page_h=current_page_ir.image_height,
-            )
-            candidate_scores.append(
-                {
-                    "next_item_orig_index": next_page_items[next_index][0],
-                    "features": debug_features_for_pair(
-                        next_item=next_item,
-                        next_page_h=next_page_ir.image_height,
-                        prev_item=prev_item,
-                        prev_page_h=current_page_ir.image_height,
-                    ),
-                    "score": score,
-                }
-            )
-
-            if score > best[0]:
-                best = (score, next_index)
-
-        if best[1] != -1:
-            best_score, best_next_index = best
-
-            # Retrieve the original index of the matched next item.
-            match_orig_index = next_page_items[best_next_index][0]
-
-            # Enforce minimum confidence threshold: if the match is too weak, do not
-            # stitch. This prevents accidental cross-links when multiple candidates
-            # exist near the page edges.
-            if best_score < min_link_score:
-                msg = (
-                    f"Rejected weak continuation match across page break "
-                    f"{current_page_ir.page_index}->{next_page_ir.page_index}: "
-                    f"prev_item_orig_index={prev_orig_index}, next_item_orig_index={match_orig_index}, "
-                    f"score={best_score} < min_link_score={min_link_score}"
-                )
-                logger.warning(msg)
-                warnings.append(msg)
-                link_debug.append(
-                    {
-                        "from_page": current_page_ir.page_index,
-                        "to_page": next_page_ir.page_index,
-                        "prev_item_orig_index": prev_orig_index,
-                        "next_item_orig_index": match_orig_index,
-                        "score": best_score,
-                        "candidate_scores": candidate_scores,
-                        "note": "rejected_weak_match",
-                    }
-                )
-                continue
-
-            # Store page pair link: (Page A, Orig Index A) -> (Page B, Orig Index B).
-            page_pair_links[(current_page_ir.page_index, prev_orig_index)] = (
-                next_page_ir.page_index,
-                match_orig_index,
-            )
-            used_next_indices.add(best_next_index)
-
-            # Debug record for the chosen link (and all candidates considered).
-            link_debug.append(
-                {
-                    "from_page": current_page_ir.page_index,
-                    "to_page": next_page_ir.page_index,
-                    "prev_item_orig_index": prev_orig_index,
-                    "next_item_orig_index": match_orig_index,
-                    "score": best_score,
-                    "candidate_scores": candidate_scores,
-                }
-            )
-            pair_debug["chosen_links"].append(
-                {
-                    "prev_item_orig_index": prev_orig_index,
-                    "next_item_orig_index": match_orig_index,
-                    "score": best_score,
-                }
-            )
-        else:
-            # No link found for this prev candidate: also record (useful for debugging).
-            link_debug.append(
-                {
-                    "from_page": current_page_ir.page_index,
-                    "to_page": next_page_ir.page_index,
-                    "prev_item_orig_index": prev_orig_index,
-                    "next_item_orig_index": None,
-                    "score": None,
-                    "candidate_scores": candidate_scores,
-                    "note": "no_compatible_next_candidate",
-                }
-            )
-
-    return page_pair_links
-
-
-def match_score(
-    *,
-    next_item: Block | Table,
-    next_page_h: int,
-    prev_item: Block | Table,
-    prev_page_h: int,
-) -> float:
-    """Score a potential continuation match (higher is better).
-
-    Parameters
-    ----------
-    next_item
-        The next item.
-    next_page_h
-        The next page height.
-    prev_item
-        The previous item.
-    prev_page_h
-        The previous page height.
-
-    Returns
-    -------
-    float
-        The match score.
-    """
-
-    if isinstance(prev_item, Table) and isinstance(next_item, Table):
-        return _score_table_match(
-            next_item=next_item,
-            next_page_h=next_page_h,
-            prev_item=prev_item,
-            prev_page_h=prev_page_h,
-        )
-
-    if isinstance(prev_item, Block) and isinstance(next_item, Block):
-        return _score_block_match(
-            next_item=next_item,
-            next_page_h=next_page_h,
-            prev_item=prev_item,
-            prev_page_h=prev_page_h,
-        )
-
-    return float("-inf")
-
-
-def process_page_pair(
-    *,
-    current_page_ir: PageIR,
-    edge_record: EdgeVerdictRecord,
-    link_debug: list[dict[str, Any]],
-    min_link_score: float,
-    next_page_ir: PageIR,
-    next_page_items: list[tuple[int, Block | Table]],
-    page_pair_debug: list[dict[str, Any]],
-    prev_page_items: list[tuple[int, Block | Table]],
-    verdict_confidence_threshold: float,
-    warnings: list[str],
-) -> dict[tuple[int, int], tuple[int, int]]:
-    """Orchestrate candidate finding, warning logging, and linking for a single pair of
-    pages.
-
-    The process is as follows:
-
-    1. If a high-confidence verification verdict exists, apply it directly.
-    2. Identify candidates (rejected vs. valid).
-    3. Apply page-level boundary state guardrails.
-    4. Prepare a page-pair debug record.
-    5. Append warnings for unsafe candidates (rejected).
-    6. Append warnings for scenarios where no candidates exist.
-    7. Compute links between valid candidates.
-    8. Append page-pair debug info.
-
-    Parameters
-    ----------
-    current_page_ir
-        The current PageIR.
-    edge_record
-        Edge verdict record for this page pair. If above the confidence threshold, it
-        bypasses heuristic scoring.
-    link_debug
-        List to append per-link debug info to.
-    min_link_score
-        Minimum score for a link to be considered valid.
-    next_page_ir
-        The next PageIR.
-    next_page_items
-        The next page's normalized items list.
-    page_pair_debug
-        Optional list to append per-page-pair debug info to.
-    prev_page_items
-        The previous page's normalized items list.
-    verdict_confidence_threshold
-        Minimum verdict confidence to bypass heuristic scoring.
-    warnings
-        A list to append warning messages to.
-
-    Returns
-    -------
-    dict[tuple[int, int], tuple[int, int]]
-        Forward links for items that continue across the page break.
-    """
-
-    verdict = edge_record.verdict
-
-    # 1.
-    if verdict.confidence >= verdict_confidence_threshold:
-        if not verdict.is_continuation:
-            # High-confidence "no continuation" —> skip this page pair entirely.
-            page_pair_debug.append(
-                {
-                    "from_page": current_page_ir.page_index,
-                    "to_page": next_page_ir.page_index,
-                    "verdict_override": True,
-                    "verdict_confidence": verdict.confidence,
-                    "verdict_is_continuation": False,
-                    "verdict_continuation_kind": verdict.continuation_kind.value,
-                    "chosen_links": [],
-                    "note": "verdict_no_continuation",
-                }
-            )
-            logger.info(
-                f"Verdict override: no continuation for pages "
-                f"{current_page_ir.page_index}->{next_page_ir.page_index} "
-                f"(confidence={verdict.confidence})"
-            )
-            return {}
-
-        # High-confidence "yes continuation" —> try to apply the verdict directly.
-        return _apply_verification_verdict(
-            current_page_ir=current_page_ir,
-            edge_record=edge_record,
-            link_debug=link_debug,
-            next_page_ir=next_page_ir,
-            next_page_items=next_page_items,
-            page_pair_debug=page_pair_debug,
-            prev_page_items=prev_page_items,
-        )
-
-    # 2.
-    (
-        prev_rejected_indices,
-        prev_candidate_indices,
-        prev_rejection_reasons,
-        next_rejected_indices,
-        next_candidate_indices,
-        next_rejection_reasons,
-    ) = _find_paired_candidates(next_items=next_page_items, prev_items=prev_page_items)
-
-    # 3.
-    prev_candidate_indices, next_candidate_indices, allow_stitching = (
-        _apply_page_boundary_state_guardrails(
-            current_page_ir=current_page_ir,
-            next_candidate_indices=next_candidate_indices,
-            next_page_ir=next_page_ir,
-            next_page_items=next_page_items,
-            prev_candidate_indices=prev_candidate_indices,
-            prev_page_items=prev_page_items,
-            warnings=warnings,
-        )
-    )
-
-    if not allow_stitching:
-        return {}
-
-    # 4.
-    pair_debug: dict[str, Any] = {
-        "from_page": current_page_ir.page_index,
-        "to_page": next_page_ir.page_index,
-        "prev_candidate_item_indices": [
-            prev_page_items[i][0] for i in prev_candidate_indices
-        ],
-        "next_candidate_item_indices": [
-            next_page_items[i][0] for i in next_candidate_indices
-        ],
-        "prev_rejected_item_indices": [
-            prev_page_items[i][0] for i in prev_rejected_indices
-        ],
-        "next_rejected_item_indices": [
-            next_page_items[i][0] for i in next_rejected_indices
-        ],
-        "prev_candidates": [
-            summarize_item_for_debug(
-                item=prev_page_items[i][1],
-                orig_item_index=prev_page_items[i][0],
-                page_index=current_page_ir.page_index,
-            )
-            for i in prev_candidate_indices
-        ],
-        "next_candidates": [
-            summarize_item_for_debug(
-                item=next_page_items[i][1],
-                orig_item_index=next_page_items[i][0],
-                page_index=next_page_ir.page_index,
-            )
-            for i in next_candidate_indices
-        ],
-        "prev_rejected": [
-            {
-                **summarize_item_for_debug(
-                    item=prev_page_items[i][1],
-                    orig_item_index=prev_page_items[i][0],
-                    page_index=current_page_ir.page_index,
-                ),
-                "rejection_reason": prev_rejection_reasons.get(i),
-            }
-            for i in prev_rejected_indices
-        ],
-        "next_rejected": [
-            {
-                **summarize_item_for_debug(
-                    item=next_page_items[i][1],
-                    orig_item_index=next_page_items[i][0],
-                    page_index=next_page_ir.page_index,
-                ),
-                "rejection_reason": next_rejection_reasons.get(i),
-            }
-            for i in next_rejected_indices
-        ],
-        "chosen_links": [],
-    }
-
-    # 5.
-    _append_rejected_warnings(
-        is_prev=True,
-        items=prev_page_items,
-        page_ir=current_page_ir,
-        rejected_indices=prev_rejected_indices,
-        rejection_reasons=prev_rejection_reasons,
-        warnings=warnings,
-    )
-    _append_rejected_warnings(
-        is_prev=False,
-        items=next_page_items,
-        page_ir=next_page_ir,
-        rejected_indices=next_rejected_indices,
-        rejection_reasons=next_rejection_reasons,
-        warnings=warnings,
-    )
-
-    # 6.
-    if not prev_candidate_indices or not next_candidate_indices:
-        # Only emit "unmatched" warnings if the missing side has *no* continuation
-        # signals at all (neither valid candidates nor rejected boundary-marked items).
-        # If the missing side has rejected indices, we already logged the true reason
-        # via _append_rejected_warnings(), so an additional "unmatched" warning is
-        # redundant and confusing.
-        should_emit_unmatched = (
-            prev_candidate_indices
-            and not next_candidate_indices
-            and not next_rejected_indices
-        ) or (
-            next_candidate_indices
-            and not prev_candidate_indices
-            and not prev_rejected_indices
-        )
-
-        if should_emit_unmatched:
-            _append_unmatched_warnings(
-                current_page_ir=current_page_ir,
-                next_candidate_indices=next_candidate_indices,
-                next_items=next_page_items,
-                next_page_ir=next_page_ir,
-                prev_candidate_indices=prev_candidate_indices,
-                prev_items=prev_page_items,
-                warnings=warnings,
-            )
-        else:
-            # Emit one concise summary line instead (much clearer than "unmatched").
-            msg = (
-                f"No links created for page break {current_page_ir.page_index}->{next_page_ir.page_index} "
-                f"(candidates missing after safety checks): "
-                f"prev_candidates={len(prev_candidate_indices)} prev_rejected={len(prev_rejected_indices)} "
-                f"next_candidates={len(next_candidate_indices)} next_rejected={len(next_rejected_indices)}."
-            )
-            logger.warning(msg)
-            warnings.append(msg)
-
-        page_pair_debug.append(pair_debug)
-        return {}
-
-    # 7.
-    links = match_candidates(
-        current_page_ir=current_page_ir,
-        link_debug=link_debug,
-        min_link_score=min_link_score,
-        next_candidate_indices=next_candidate_indices,
-        next_page_ir=next_page_ir,
-        next_page_items=next_page_items,
-        pair_debug=pair_debug,
-        prev_candidate_indices=prev_candidate_indices,
-        prev_page_items=prev_page_items,
-        warnings=warnings,
-    )
-
-    # 8.
-    page_pair_debug.append(pair_debug)
-
-    return links
-
-
-def summarize_item_for_debug(
-    *, item: Block | Table, orig_item_index: int, page_index: int
-) -> dict[str, Any]:
-    """Return a JSON-safe summary of an item for debug/reporting purposes.
-
-    Parameters
-    ----------
-
-    item
-        The Block or Table item.
-    orig_item_index
-        The original item index within PageIR.items.
-    page_index
-        The 0-based page index.
-
-    Returns
-    -------
-    dict[str, Any]
-        The item summary.
-    """
-
-    output: dict[str, Any] = {
-        "page_index": page_index,
-        "item_index": orig_item_index,
-        "item_addr": f"p{page_index}:raw{orig_item_index}",
-        "kind": item.kind,
-        "boundary": item.boundary.value,
-        "local_code": item.local_code,
-        "bbox": item.bbox,
-    }
-
-    if isinstance(item, Block):
-        text_or_none = item.text
-        text = (
-            (text_or_none.text or "").strip()
-            if isinstance(text_or_none, TextUnit)
-            else ""
-        )
-        output["block_type"] = item.block_type.value
-        output["text_snippet"] = text[:200]
-    else:
-        output["n_rows"] = int(len(item.rows))
-        output["n_cols"] = None if item.n_cols is None else int(item.n_cols)
-        output["repeats_header"] = item.repeats_header
-        output["header_row_count"] = int(item.header_row_count)
-
-    return output

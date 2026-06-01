@@ -74,6 +74,28 @@ class ParsedCaptionCode:
     prefix_raw: str
 
 
+def _create_document_ir_dirs(*, output_dir: Path) -> DocumentIRDirs:
+    """Create document IR directories for a given stitching run.
+
+    Parameters
+    ----------
+    output_dir
+        The output directory root.
+
+    Returns
+    -------
+    DocumentIRDirs
+        The created document IR directories.
+    """
+
+    root = output_dir
+
+    for p in [root]:
+        make_dir(p)
+
+    return DocumentIRDirs(root=root)
+
+
 def _normalize_caption_identifier(identifier: str) -> str:
     """Normalize a caption identifier for comparisons.
 
@@ -291,28 +313,6 @@ def compatible_kinds_for_stitch(
     return (prev_type == next_type) or (
         prev_type in paragraph_list_types and next_type in paragraph_list_types
     )
-
-
-def create_document_ir_dirs(*, output_dir: Path) -> DocumentIRDirs:
-    """Create document IR directories for a given stitching run.
-
-    Parameters
-    ----------
-    output_dir
-        The output directory root.
-
-    Returns
-    -------
-    DocumentIRDirs
-        The created document IR directories.
-    """
-
-    root = output_dir
-
-    for p in [root]:
-        make_dir(p)
-
-    return DocumentIRDirs(root=root)
 
 
 def cross_check_verification_run(
@@ -604,7 +604,7 @@ def persist_stitching_run(
         The created stitching directories and persisted stitching run metadata.
     """
 
-    stitching_dirs = create_document_ir_dirs(output_dir=output_dir)
+    stitching_dirs = _create_document_ir_dirs(output_dir=output_dir)
     exclude_keys = {"overwrite"}
     stitching_run = RunCtx(
         extra={

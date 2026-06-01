@@ -665,7 +665,7 @@ class TestPropagateCaptionLocalCodes:
         items: ItemsType = [(0, caption), (1, table_item_)]
         warnings: list[str] = []
 
-        normalize_page_items.propagate_caption_local_codes(
+        normalize_page_items._propagate_caption_local_codes(
             items=items, page_index=12, warnings=warnings
         )
 
@@ -684,7 +684,7 @@ class TestPropagateCaptionLocalCodes:
         items: ItemsType = [(0, first_caption), (1, second_caption), (2, table_item_)]
         warnings: list[str] = []
 
-        normalize_page_items.propagate_caption_local_codes(
+        normalize_page_items._propagate_caption_local_codes(
             items=items, page_index=2, warnings=warnings
         )
 
@@ -705,7 +705,7 @@ class TestPropagateCaptionLocalCodes:
         items: ItemsType = [(0, caption), (1, paragraph), (2, figure)]
         warnings: list[str] = []
 
-        normalize_page_items.propagate_caption_local_codes(
+        normalize_page_items._propagate_caption_local_codes(
             items=items, page_index=4, warnings=warnings
         )
 
