@@ -294,12 +294,12 @@ def row(*cells: TableCell) -> TableRow:
 
 
 class TestAlignTableRowsWithRowspans:
-    """Tests for align_table_rows_with_rowspans()."""
+    """Tests for _align_table_rows_with_rowspans()."""
 
     def test_empty_page_irs(self) -> None:
         """Return no changes when page_irs is empty."""
 
-        changes = postprocess_page_irs.align_table_rows_with_rowspans(page_irs={})
+        changes = postprocess_page_irs._align_table_rows_with_rowspans(page_irs={})
 
         assert not changes
 
@@ -327,7 +327,7 @@ class TestAlignTableRowsWithRowspans:
             1: make_page_ir(items=[table_b], page_index=1),
         }
 
-        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+        changes = postprocess_page_irs._normalize_table_row_cell_counts(
             page_irs=page_irs
         )
 
@@ -338,7 +338,9 @@ class TestAlignTableRowsWithRowspans:
         """Return no changes when pages contain only blocks."""
 
         page_irs = {0: make_page_ir(items=[make_block()], page_index=0)}
-        changes = postprocess_page_irs.align_table_rows_with_rowspans(page_irs=page_irs)
+        changes = postprocess_page_irs._align_table_rows_with_rowspans(
+            page_irs=page_irs
+        )
 
         assert not changes
 
@@ -354,7 +356,9 @@ class TestAlignTableRowsWithRowspans:
         )
         page_irs = {0: make_page_ir(items=[table], page_index=0)}
 
-        changes = postprocess_page_irs.align_table_rows_with_rowspans(page_irs=page_irs)
+        changes = postprocess_page_irs._align_table_rows_with_rowspans(
+            page_irs=page_irs
+        )
 
         assert len(changes) == 1
         assert len(table.rows[1].cells) == 2
@@ -373,7 +377,7 @@ class TestAlignTableRowsWithRowspans:
             0: make_page_ir(items=[make_block(), table, make_block()], page_index=0)
         }
 
-        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+        changes = postprocess_page_irs._normalize_table_row_cell_counts(
             page_irs=page_irs
         )
 
@@ -390,7 +394,7 @@ class TestFindCaptionCode:
         items: list[Block | Table] = [
             make_caption_block(text="Tab. 12 Résumé"),
         ]
-        assert postprocess_page_irs.find_caption_code(items=items) == "Tab. 12"
+        assert postprocess_page_irs._find_caption_code(items=items) == "Tab. 12"
 
     def test_caption_local_code_non_table_prefix_skipped(self) -> None:
         """Skip a caption whose local_code doesn't match a table prefix pattern."""
@@ -399,7 +403,7 @@ class TestFindCaptionCode:
             make_caption_block(local_code="Figure 2", text="Figure 2: Something"),
         ]
 
-        assert postprocess_page_irs.find_caption_code(items=items) is None
+        assert postprocess_page_irs._find_caption_code(items=items) is None
 
     def test_caption_local_code_takes_priority_over_text(self) -> None:
         """Prefer caption.local_code over parsing caption.text."""
@@ -407,7 +411,7 @@ class TestFindCaptionCode:
         items: list[Block | Table] = [
             make_caption_block(local_code="Table 1", text="Tableau 99: something"),
         ]
-        assert postprocess_page_irs.find_caption_code(items=items) == "Table 1"
+        assert postprocess_page_irs._find_caption_code(items=items) == "Table 1"
 
     def test_caption_text_fallback_dotted_number(self) -> None:
         """Parse a dotted number from caption text (e.g. 'Table 2.1')."""
@@ -415,7 +419,7 @@ class TestFindCaptionCode:
         items: list[Block | Table] = [
             make_caption_block(text="Table 2.1 Weekly Schedule"),
         ]
-        assert postprocess_page_irs.find_caption_code(items=items) == "Table 2.1"
+        assert postprocess_page_irs._find_caption_code(items=items) == "Table 2.1"
 
     def test_caption_text_fallback_when_no_local_code(self) -> None:
         """Parse the code from caption text when local_code is absent."""
@@ -423,7 +427,7 @@ class TestFindCaptionCode:
         items: list[Block | Table] = [
             make_caption_block(text="Tableau 5: Résultats"),
         ]
-        assert postprocess_page_irs.find_caption_code(items=items) == "Tableau 5"
+        assert postprocess_page_irs._find_caption_code(items=items) == "Tableau 5"
 
     def test_caption_text_no_number_returns_none(self) -> None:
         """Return None when caption text has a table prefix but no number."""
@@ -431,7 +435,7 @@ class TestFindCaptionCode:
         items: list[Block | Table] = [
             make_caption_block(text="Table of Contents"),
         ]
-        assert postprocess_page_irs.find_caption_code(items=items) is None
+        assert postprocess_page_irs._find_caption_code(items=items) is None
 
     def test_caption_with_local_code_matching_table_pattern(self) -> None:
         """Return the local_code when a caption has a matching table-pattern code."""
@@ -439,7 +443,7 @@ class TestFindCaptionCode:
         items: list[Block | Table] = [
             make_caption_block(local_code="Table 3.2", text="Table 3.2: Overview"),
         ]
-        assert postprocess_page_irs.find_caption_code(items=items) == "Table 3.2"
+        assert postprocess_page_irs._find_caption_code(items=items) == "Table 3.2"
 
     def test_caption_with_non_table_prefix_returns_none(self) -> None:
         """Return None when the caption text uses a figure prefix instead of table."""
@@ -447,12 +451,12 @@ class TestFindCaptionCode:
         items: list[Block | Table] = [
             make_caption_block(text="Figure 7: Diagram"),
         ]
-        assert postprocess_page_irs.find_caption_code(items=items) is None
+        assert postprocess_page_irs._find_caption_code(items=items) is None
 
     def test_empty_items_returns_none(self) -> None:
         """Return None when the items list is empty."""
 
-        assert postprocess_page_irs.find_caption_code(items=[]) is None
+        assert postprocess_page_irs._find_caption_code(items=[]) is None
 
     def test_nearest_caption_wins_reverse_order(self) -> None:
         """The nearest (last in reading order) matching caption wins."""
@@ -462,13 +466,13 @@ class TestFindCaptionCode:
             make_block(text="Some paragraph", y0=80.0, y1=100.0),
             make_caption_block(text="Table 2: Second", y0=110.0, y1=130.0),
         ]
-        assert postprocess_page_irs.find_caption_code(items=items) == "Table 2"
+        assert postprocess_page_irs._find_caption_code(items=items) == "Table 2"
 
     def test_no_captions_returns_none(self) -> None:
         """Return None when no caption blocks exist in items."""
 
         items: list[Block | Table] = [make_block(text="Some paragraph"), make_table()]
-        assert postprocess_page_irs.find_caption_code(items=items) is None
+        assert postprocess_page_irs._find_caption_code(items=items) is None
 
     def test_skips_non_matching_caption_finds_earlier_match(self) -> None:
         """Skip a non-matching caption and find an earlier matching one."""
@@ -477,7 +481,7 @@ class TestFindCaptionCode:
             make_caption_block(text="Table 1: First", y0=50.0, y1=70.0),
             make_caption_block(text="No code here", y0=80.0, y1=100.0),
         ]
-        assert postprocess_page_irs.find_caption_code(items=items) == "Table 1"
+        assert postprocess_page_irs._find_caption_code(items=items) == "Table 1"
 
     def test_swahili_prefix_jedwali(self) -> None:
         """Recognize the Swahili 'jedwali' prefix."""
@@ -485,7 +489,7 @@ class TestFindCaptionCode:
         items: list[Block | Table] = [
             make_caption_block(text="Jedwali 4 Ratiba ya Wiki"),
         ]
-        assert postprocess_page_irs.find_caption_code(items=items) == "Jedwali 4"
+        assert postprocess_page_irs._find_caption_code(items=items) == "Jedwali 4"
 
 
 class TestGetHeaderEffectiveCols:
@@ -540,7 +544,7 @@ class TestGetHeaderEffectiveCols:
 
 
 class TestNormalizeEmptyTableCells:
-    """Tests for normalize_empty_table_cells()."""
+    """Tests for _normalize_empty_table_cells()."""
 
     def test_already_empty_string_no_change(self) -> None:
         """A cell whose text is already '' produces no change record."""
@@ -548,7 +552,7 @@ class TestNormalizeEmptyTableCells:
         table = make_table_from_rows(rows=[row(cell(text=""))])
         page_irs = {0: make_page_ir(items=[table], page_index=0)}
 
-        changes = postprocess_page_irs.normalize_empty_table_cells(page_irs=page_irs)
+        changes = postprocess_page_irs._normalize_empty_table_cells(page_irs=page_irs)
 
         assert not changes
 
@@ -558,7 +562,7 @@ class TestNormalizeEmptyTableCells:
         table = make_table_from_rows(rows=[row(cell(text="ok")), row(cell(text="\t"))])
         page_irs = {2: make_page_ir(items=[make_block(), table], page_index=2)}
 
-        changes = postprocess_page_irs.normalize_empty_table_cells(page_irs=page_irs)
+        changes = postprocess_page_irs._normalize_empty_table_cells(page_irs=page_irs)
 
         assert len(changes) == 1
         assert changes[0]["page"] == 2
@@ -569,7 +573,7 @@ class TestNormalizeEmptyTableCells:
     def test_empty_page_irs(self) -> None:
         """Return no changes when page_irs is empty."""
 
-        changes = postprocess_page_irs.normalize_empty_table_cells(page_irs={})
+        changes = postprocess_page_irs._normalize_empty_table_cells(page_irs={})
 
         assert not changes
 
@@ -581,7 +585,7 @@ class TestNormalizeEmptyTableCells:
         )
         page_irs = {0: make_page_ir(items=[table], page_index=0)}
 
-        changes = postprocess_page_irs.normalize_empty_table_cells(page_irs=page_irs)
+        changes = postprocess_page_irs._normalize_empty_table_cells(page_irs=page_irs)
 
         assert len(changes) == 1
         assert changes[0]["cell_index"] == 1
@@ -592,7 +596,7 @@ class TestNormalizeEmptyTableCells:
         table = make_table_from_rows(rows=[row(cell(text="\n\n"))])
         page_irs = {0: make_page_ir(items=[table], page_index=0)}
 
-        changes = postprocess_page_irs.normalize_empty_table_cells(page_irs=page_irs)
+        changes = postprocess_page_irs._normalize_empty_table_cells(page_irs=page_irs)
 
         assert len(changes) == 1
         assert table.rows[0].cells[0].text.text == ""
@@ -602,7 +606,7 @@ class TestNormalizeEmptyTableCells:
 
         page_irs = {0: make_page_ir(items=[make_block()], page_index=0)}
 
-        changes = postprocess_page_irs.normalize_empty_table_cells(page_irs=page_irs)
+        changes = postprocess_page_irs._normalize_empty_table_cells(page_irs=page_irs)
 
         assert not changes
 
@@ -612,7 +616,7 @@ class TestNormalizeEmptyTableCells:
         table = make_table_from_rows(rows=[row(cell(text="hello"))])
         page_irs = {0: make_page_ir(items=[table], page_index=0)}
 
-        changes = postprocess_page_irs.normalize_empty_table_cells(page_irs=page_irs)
+        changes = postprocess_page_irs._normalize_empty_table_cells(page_irs=page_irs)
 
         assert not changes
         assert table.rows[0].cells[0].text.text == "hello"
@@ -623,7 +627,7 @@ class TestNormalizeEmptyTableCells:
         table = make_table_from_rows(rows=[row(empty_cell())])
         page_irs = {0: make_page_ir(items=[table], page_index=0)}
 
-        changes = postprocess_page_irs.normalize_empty_table_cells(page_irs=page_irs)
+        changes = postprocess_page_irs._normalize_empty_table_cells(page_irs=page_irs)
 
         assert not changes
 
@@ -633,7 +637,7 @@ class TestNormalizeEmptyTableCells:
         table = make_table_from_rows(rows=[row(cell(text="  \n  "))])
         page_irs = {0: make_page_ir(items=[table], page_index=0)}
 
-        changes = postprocess_page_irs.normalize_empty_table_cells(page_irs=page_irs)
+        changes = postprocess_page_irs._normalize_empty_table_cells(page_irs=page_irs)
 
         assert len(changes) == 1
         assert changes[0]["type"] == "normalize_empty_string_cell_text"
@@ -642,7 +646,7 @@ class TestNormalizeEmptyTableCells:
 
 
 class TestNormalizeTableRowCellCounts:
-    """Tests for normalize_table_row_cell_counts()."""
+    """Tests for _normalize_table_row_cell_counts()."""
 
     def test_col_span_counted_in_effective_width(self) -> None:
         """A row with col_span cells reaching n_cols is not padded."""
@@ -653,7 +657,7 @@ class TestNormalizeTableRowCellCounts:
         )
         page_irs = {0: make_page_ir(items=[table], page_index=0)}
 
-        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+        changes = postprocess_page_irs._normalize_table_row_cell_counts(
             page_irs=page_irs
         )
 
@@ -662,7 +666,7 @@ class TestNormalizeTableRowCellCounts:
     def test_empty_page_irs(self) -> None:
         """Return no changes when page_irs is empty."""
 
-        changes = postprocess_page_irs.normalize_table_row_cell_counts(page_irs={})
+        changes = postprocess_page_irs._normalize_table_row_cell_counts(page_irs={})
 
         assert not changes
 
@@ -689,7 +693,7 @@ class TestNormalizeTableRowCellCounts:
             1: make_page_ir(items=[table_b], page_index=1),
         }
 
-        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+        changes = postprocess_page_irs._normalize_table_row_cell_counts(
             page_irs=page_irs
         )
 
@@ -701,7 +705,7 @@ class TestNormalizeTableRowCellCounts:
         table = make_table_from_rows(n_cols=None, rows=[row(cell())])
         page_irs = {0: make_page_ir(items=[table], page_index=0)}
 
-        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+        changes = postprocess_page_irs._normalize_table_row_cell_counts(
             page_irs=page_irs
         )
 
@@ -719,7 +723,7 @@ class TestNormalizeTableRowCellCounts:
         )
         page_irs = {0: make_page_ir(items=[table], page_index=0)}
 
-        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+        changes = postprocess_page_irs._normalize_table_row_cell_counts(
             page_irs=page_irs, rowspan_conflict_keys=None
         )
 
@@ -730,7 +734,7 @@ class TestNormalizeTableRowCellCounts:
         """Return no changes when pages contain only blocks."""
 
         page_irs = {0: make_page_ir(items=[make_block()], page_index=0)}
-        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+        changes = postprocess_page_irs._normalize_table_row_cell_counts(
             page_irs=page_irs
         )
 
@@ -748,7 +752,7 @@ class TestNormalizeTableRowCellCounts:
         )
         page_irs = {0: make_page_ir(items=[table], page_index=0)}
 
-        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+        changes = postprocess_page_irs._normalize_table_row_cell_counts(
             page_irs=page_irs
         )
 
@@ -768,7 +772,7 @@ class TestNormalizeTableRowCellCounts:
         page_irs = {0: make_page_ir(items=[table], page_index=0)}
         conflict_keys: set[tuple[int, int, int]] = {(0, 0, 1)}
 
-        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+        changes = postprocess_page_irs._normalize_table_row_cell_counts(
             page_irs=page_irs, rowspan_conflict_keys=conflict_keys
         )
 
@@ -785,7 +789,7 @@ class TestNormalizeTableRowCellCounts:
             0: make_page_ir(items=[make_block(), table, make_block()], page_index=0)
         }
 
-        changes = postprocess_page_irs.normalize_table_row_cell_counts(
+        changes = postprocess_page_irs._normalize_table_row_cell_counts(
             page_irs=page_irs
         )
 
@@ -1360,7 +1364,7 @@ class TestProcessTableRow:
 
 
 class TestPropagateTableLocalCodes:
-    """Tests for propagate_table_local_codes()."""
+    """Tests for _propagate_table_local_codes()."""
 
     def test_artifact_items_are_skipped(self) -> None:
         """Artifact blocks are filtered out and do not interfere with propagation."""
@@ -1397,7 +1401,7 @@ class TestPropagateTableLocalCodes:
         }
         edges = {(0, 1, 1, 1)}
 
-        postprocess_page_irs.propagate_table_local_codes(
+        postprocess_page_irs._propagate_table_local_codes(
             page_irs=page_irs, verified_table_continuation_edges=edges
         )
 
@@ -1425,7 +1429,7 @@ class TestPropagateTableLocalCodes:
         }
         edges = {(0, 0, 1, 1)}
 
-        changes = postprocess_page_irs.propagate_table_local_codes(
+        changes = postprocess_page_irs._propagate_table_local_codes(
             page_irs=page_irs, verified_table_continuation_edges=edges
         )
 
@@ -1462,7 +1466,7 @@ class TestPropagateTableLocalCodes:
         }
         edges = {(0, 0, 1, 0), (1, 0, 2, 0)}
 
-        postprocess_page_irs.propagate_table_local_codes(
+        postprocess_page_irs._propagate_table_local_codes(
             page_irs=page_irs, verified_table_continuation_edges=edges
         )
 
@@ -1492,7 +1496,7 @@ class TestPropagateTableLocalCodes:
         }
         edges = {(0, 0, 1, 0)}
 
-        changes = postprocess_page_irs.propagate_table_local_codes(
+        changes = postprocess_page_irs._propagate_table_local_codes(
             page_irs=page_irs, verified_table_continuation_edges=edges
         )
 
@@ -1526,7 +1530,7 @@ class TestPropagateTableLocalCodes:
         }
         edges = {(0, 0, 1, 0)}
 
-        changes = postprocess_page_irs.propagate_table_local_codes(
+        changes = postprocess_page_irs._propagate_table_local_codes(
             page_irs=page_irs, verified_table_continuation_edges=edges
         )
 
@@ -1541,7 +1545,7 @@ class TestPropagateTableLocalCodes:
     def test_empty_page_irs_returns_no_changes(self, empty_edges: set) -> None:
         """No changes when page_irs is empty."""
 
-        changes = postprocess_page_irs.propagate_table_local_codes(
+        changes = postprocess_page_irs._propagate_table_local_codes(
             page_irs={}, verified_table_continuation_edges=empty_edges
         )
 
@@ -1554,7 +1558,7 @@ class TestPropagateTableLocalCodes:
             0: make_page_ir(items=[make_table(local_code="Table 1")], page_index=0),
         }
 
-        changes = postprocess_page_irs.propagate_table_local_codes(
+        changes = postprocess_page_irs._propagate_table_local_codes(
             page_irs=page_irs, verified_table_continuation_edges=empty_edges
         )
 
@@ -1579,7 +1583,7 @@ class TestPropagateTableLocalCodes:
         # specific items; the propagation checks resumed_table_keys.
         edges: set[tuple[int, int, int, int]] = set()
 
-        changes = postprocess_page_irs.propagate_table_local_codes(
+        changes = postprocess_page_irs._propagate_table_local_codes(
             page_irs=page_irs, verified_table_continuation_edges=edges
         )
 
@@ -1613,7 +1617,7 @@ class TestPropagateTableLocalCodes:
         }
         edges = {(0, 0, 2, 0)}
 
-        changes = postprocess_page_irs.propagate_table_local_codes(
+        changes = postprocess_page_irs._propagate_table_local_codes(
             page_irs=page_irs, verified_table_continuation_edges=edges
         )
 
@@ -1648,7 +1652,7 @@ class TestPropagateTableLocalCodes:
         }
         edges = {(0, 0, 1, 0)}
 
-        changes = postprocess_page_irs.propagate_table_local_codes(
+        changes = postprocess_page_irs._propagate_table_local_codes(
             page_irs=page_irs, verified_table_continuation_edges=edges
         )
 
@@ -1667,7 +1671,7 @@ class TestPropagateTableLocalCodes:
             0: make_page_ir(items=[make_table(local_code="Table 1")], page_index=0),
         }
 
-        changes = postprocess_page_irs.propagate_table_local_codes(
+        changes = postprocess_page_irs._propagate_table_local_codes(
             page_irs=page_irs, verified_table_continuation_edges=empty_edges
         )
 

@@ -46,6 +46,36 @@ class PageIRVerificationDirs:
     page_irs_verified: Path
 
 
+def _create_page_ir_verification_dirs(output_dir: Path) -> PageIRVerificationDirs:
+    """Create page IR verification directories for a given verification run.
+
+    Parameters
+    ----------
+    output_dir
+        The output directory root.
+
+    Returns
+    -------
+    PageIRVerificationDirs
+        The created page IR verification directories.
+    """
+
+    root = output_dir
+    page_irs_pair_crops = root / "page_irs_pair_crops"
+    page_irs_pair_reports = root / "page_irs_pair_reports"
+    page_irs_verified = root / "page_irs_verified"
+
+    for p in [root, page_irs_pair_crops, page_irs_pair_reports, page_irs_verified]:
+        make_dir(p)
+
+    return PageIRVerificationDirs(
+        root=root,
+        page_irs_pair_crops=page_irs_pair_crops,
+        page_irs_pair_reports=page_irs_pair_reports,
+        page_irs_verified=page_irs_verified,
+    )
+
+
 def _derive_page_boundary_state(page_ir: PageIR) -> PageBoundaryState:
     """Derive page-level boundary_state from verified item boundaries.
 
@@ -137,36 +167,6 @@ def _require_non_negative_int(
         )
 
     return value
-
-
-def create_page_ir_verification_dirs(output_dir: Path) -> PageIRVerificationDirs:
-    """Create page IR verification directories for a given verification run.
-
-    Parameters
-    ----------
-    output_dir
-        The output directory root.
-
-    Returns
-    -------
-    PageIRVerificationDirs
-        The created page IR verification directories.
-    """
-
-    root = output_dir
-    page_irs_pair_crops = root / "page_irs_pair_crops"
-    page_irs_pair_reports = root / "page_irs_pair_reports"
-    page_irs_verified = root / "page_irs_verified"
-
-    for p in [root, page_irs_pair_crops, page_irs_pair_reports, page_irs_verified]:
-        make_dir(p)
-
-    return PageIRVerificationDirs(
-        root=root,
-        page_irs_pair_crops=page_irs_pair_crops,
-        page_irs_pair_reports=page_irs_pair_reports,
-        page_irs_verified=page_irs_verified,
-    )
 
 
 def cross_check_extraction_run(
@@ -661,7 +661,7 @@ def persist_verification_run(
         The created verification directories and persisted verification run metadata.
     """
 
-    verification_dirs = create_page_ir_verification_dirs(output_dir)
+    verification_dirs = _create_page_ir_verification_dirs(output_dir)
     exclude_keys = {"overwrite"}
     extra = {
         k: v for k, v in config.model_dump(mode="json").items() if k not in exclude_keys
@@ -682,7 +682,7 @@ def persist_verification_run(
     return verification_dirs, verification_run
 
 
-def run_save_step(
+def save_verified_page_irs(
     *,
     compile_ran: bool,
     config: VerificationConfig,
@@ -718,6 +718,8 @@ def run_save_step(
     RuntimeError
         If the compile step needs to run but cannot because of existing outputs while
         overwrite=False.
+    ValueError
+        If the verification results already exist.
     """
 
     expected_outputs = [
@@ -741,30 +743,6 @@ def run_save_step(
             "postprocessed state required for saving. Delete the stale verification "
             "outputs or rerun with overwrite=True."
         )
-
-    save_verified_page_irs(page_irs=page_irs, verification_dirs=verification_dirs)
-
-
-def save_verified_page_irs(
-    *, page_irs: dict[int, PageIR], verification_dirs: PageIRVerificationDirs
-) -> None:
-    """Save verified page IRs to the verified directory.
-
-    Parameters
-    ----------
-    page_irs
-        The dictionary of page IRs by page index.
-    verification_dirs
-        The verification directories.
-
-    Raises
-    ------
-    ValueError
-        If any page IR's page_index does not match its dictionary key, which indicates
-        a mismatch that could lead to incorrectly saved results. In this case, the
-        function raises an error and refuses to save any results to prevent silent data
-        corruption.
-    """
 
     logger.info(
         f"Saving all verified page IR JSONs to: {verification_dirs.page_irs_verified}"

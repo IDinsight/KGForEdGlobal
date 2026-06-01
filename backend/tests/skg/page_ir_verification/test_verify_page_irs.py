@@ -794,7 +794,7 @@ class TestGenerateCandidatePairs:
             [(1, next_item_b)],
         ]
 
-        pair_specs, primary_indices = verify_page_pairs.generate_candidate_pairs(
+        pair_specs, primary_indices = verify_page_pairs._generate_candidate_pairs(
             config=config, next_page_ir=next_page_ir, prev_candidates=prev_candidates
         )
 
@@ -858,7 +858,7 @@ class TestGenerateCandidatePairs:
             [(0, next_item_bottom), (0, next_item_bottom), (1, next_item_mid)],
         ]
 
-        pair_specs, primary_indices = verify_page_pairs.generate_candidate_pairs(
+        pair_specs, primary_indices = verify_page_pairs._generate_candidate_pairs(
             config=config, next_page_ir=next_page_ir, prev_candidates=[(7, prev_item)]
         )
 
@@ -963,7 +963,7 @@ class TestGenerateCandidatePairs:
             ordered_next_candidates,
         ]
 
-        pair_specs, primary_indices = verify_page_pairs.generate_candidate_pairs(
+        pair_specs, primary_indices = verify_page_pairs._generate_candidate_pairs(
             config=config, next_page_ir=next_page_ir, prev_candidates=prev_candidates
         )
 
@@ -1504,7 +1504,7 @@ class TestPickTopmost:
         assert result == (1, paragraph_item)
 
 
-def test_bottom_continuity_candidates_honors_visible_y_min_before_filling_output() -> (
+def test__bottom_continuity_candidates_honors_visible_y_min_before_filling_output() -> (
     None
 ):
     """Test that `visible_y_min` restricts both the primary pick and extra candidates."""
@@ -1518,7 +1518,7 @@ def test_bottom_continuity_candidates_honors_visible_y_min_before_filling_output
         y0=720.0,
         y1=770.0,
     )
-    result = verify_page_pairs.bottom_continuity_candidates(
+    result = verify_page_pairs._bottom_continuity_candidates(
         image_height=1000.0,
         items=[hidden_bottom, visible_block, visible_table],
         k=3,
@@ -1527,24 +1527,26 @@ def test_bottom_continuity_candidates_honors_visible_y_min_before_filling_output
     assert [index for index, _ in result] == [2, 1]
 
 
-def test_bottom_continuity_candidates_raises_for_invalid_k() -> None:
+def test__bottom_continuity_candidates_raises_for_invalid_k() -> None:
     """Test that ``bottom_continuity_candidates()`` rejects `k < 1`."""
 
     item = create_text_block(text="Body", y0=10.0, y1=20.0)
 
     with pytest.raises(ValueError, match="k must be >= 1"):
-        verify_page_pairs.bottom_continuity_candidates(
+        verify_page_pairs._bottom_continuity_candidates(
             image_height=1000.0, items=[item], k=0, visible_y_min=None
         )
 
 
-def test_bottom_continuity_candidates_raises_when_crop_removes_all_candidates() -> None:
+def test__bottom_continuity_candidates_raises_when_crop_removes_all_candidates() -> (
+    None
+):
     """Test that cropping can eliminate every candidate and trigger the empty-pool error."""
 
     low_item = create_text_block(text="Low", y0=10.0, y1=20.0)
 
     with pytest.raises(ValueError, match="No non-artifact items found."):
-        verify_page_pairs.bottom_continuity_candidates(
+        verify_page_pairs._bottom_continuity_candidates(
             image_height=1000.0,
             items=[low_item],
             k=3,
@@ -1552,7 +1554,9 @@ def test_bottom_continuity_candidates_raises_when_crop_removes_all_candidates() 
         )
 
 
-def test_bottom_continuity_candidates_returns_primary_then_non_heading_extras() -> None:
+def test__bottom_continuity_candidates_returns_primary_then_non_heading_extras() -> (
+    None
+):
     """Test that extras preserve near-bottom order while skipping heading anchors."""
 
     primary_table = create_table(boundary=ItemBoundary.TRUNCATED, y0=880.0, y1=980.0)
@@ -1571,7 +1575,7 @@ def test_bottom_continuity_candidates_returns_primary_then_non_heading_extras() 
         y1=810.0,
     )
     second_table = create_table(boundary=ItemBoundary.COMPLETE, y0=700.0, y1=750.0)
-    result = verify_page_pairs.bottom_continuity_candidates(
+    result = verify_page_pairs._bottom_continuity_candidates(
         image_height=1000.0,
         items=[second_table, body_block, heading_block, primary_table],
         k=3,
@@ -1580,7 +1584,7 @@ def test_bottom_continuity_candidates_returns_primary_then_non_heading_extras() 
     assert [index for index, _ in result] == [3, 1, 0]
 
 
-def test_bottom_continuity_candidates_sorts_by_bottom_edge_before_primary_pick() -> (
+def test__bottom_continuity_candidates_sorts_by_bottom_edge_before_primary_pick() -> (
     None
 ):
     """Test that the primary picker receives candidates sorted by descending `y1`."""
@@ -1593,7 +1597,7 @@ def test_bottom_continuity_candidates_sorts_by_bottom_edge_before_primary_pick()
         "skg.page_ir_verification.verify_page_pairs._pick_bottommost"
     ) as mock_pick_bottommost:
         mock_pick_bottommost.return_value = (1, highest_item)
-        result = verify_page_pairs.bottom_continuity_candidates(
+        result = verify_page_pairs._bottom_continuity_candidates(
             image_height=1000.0,
             items=[lower_item, highest_item, middle_item],
             k=1,
@@ -1607,6 +1611,37 @@ def test_bottom_continuity_candidates_sorts_by_bottom_edge_before_primary_pick()
 
     assert [index for index, _ in sorted_candidates] == [1, 2, 0]
     assert result == [(1, highest_item)]
+
+
+def test__truncate_text_appends_ellipsis_when_text_exceeds_limit() -> None:
+    """Append an ellipsis when the normalized text is longer than the limit."""
+
+    assert (
+        verify_page_pairs._truncate_text(max_chars=8, text="abcdefghijk") == "abcde..."
+    )
+
+
+def test__truncate_text_keeps_text_shorter_than_limit() -> None:
+    """Return the original text when it already fits within the limit."""
+
+    assert verify_page_pairs._truncate_text(max_chars=12, text="hello") == "hello"
+
+
+def test__truncate_text_replaces_newlines_and_strips_surrounding_whitespace() -> None:
+    """Normalize newlines to spaces and trim leading and trailing whitespace."""
+
+    assert (
+        verify_page_pairs._truncate_text(
+            max_chars=50, text="  First line\nsecond line\n third line  "
+        )
+        == "First line second line  third line"
+    )
+
+
+def test__truncate_text_returns_ellipsis_only_when_limit_is_less_than_three() -> None:
+    """Return only an ellipsis when truncation is required below three characters."""
+
+    assert verify_page_pairs._truncate_text(max_chars=2, text="abcdef") == "..."
 
 
 def test_builds_record_and_writes_report_from_selected_attempt() -> None:
@@ -1655,15 +1690,15 @@ def test_builds_record_and_writes_report_from_selected_attempt() -> None:
 
     with (
         patch(
-            "skg.page_ir_verification.verify_page_pairs.bottom_continuity_candidates",
+            "skg.page_ir_verification.verify_page_pairs._bottom_continuity_candidates",
             return_value=[(3, prev_item)],
         ) as mock_bottom_candidates,
         patch(
-            "skg.page_ir_verification.verify_page_pairs.execute_verification_attempts",
+            "skg.page_ir_verification.verify_page_pairs._execute_verification_attempts",
             return_value=execute_result,
         ) as mock_execute_attempts,
         patch(
-            "skg.page_ir_verification.verify_page_pairs.generate_candidate_pairs",
+            "skg.page_ir_verification.verify_page_pairs._generate_candidate_pairs",
             return_value=([MagicMock()], primary_indices),
         ) as mock_generate_pairs,
         patch("skg.page_ir_verification.verify_page_pairs.write_to_json") as mock_write,
@@ -1752,7 +1787,7 @@ def test_clamps_saved_crop_height_to_page_height_when_requested_crop_exceeds_ima
     spec = create_candidate_pair_spec(crop_y_max=120.6, next_index=2, prev_index=0)
     create_image(fp=next_page_image_fp, size=(60, 80))
 
-    crop_fp = verify_page_pairs.ensure_pair_specific_crop(
+    crop_fp = verify_page_pairs._ensure_pair_specific_crop(
         crop_cache=crop_cache,
         next_page_image_fp=next_page_image_fp,
         next_page_index=7,
@@ -1786,7 +1821,7 @@ def test_enforces_minimum_one_pixel_crop_when_requested_crop_rounds_to_zero(
     spec = create_candidate_pair_spec(crop_y_max=0.4, next_index=1, prev_index=0)
     create_image(fp=next_page_image_fp, size=(50, 90))
 
-    crop_fp = verify_page_pairs.ensure_pair_specific_crop(
+    crop_fp = verify_page_pairs._ensure_pair_specific_crop(
         crop_cache=crop_cache,
         next_page_image_fp=next_page_image_fp,
         next_page_index=3,
@@ -2142,15 +2177,15 @@ def test_raises_runtime_error_when_all_attempts_fail() -> None:
 
     with (
         patch(
-            "skg.page_ir_verification.verify_page_pairs.ensure_pair_specific_crop",
+            "skg.page_ir_verification.verify_page_pairs._ensure_pair_specific_crop",
             side_effect=[Path("/tmp/crops/a.png"), Path("/tmp/crops/b.png")],
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs.make_verification_excerpt",
+            "skg.page_ir_verification.verify_page_pairs._make_verification_excerpt",
             return_value={"excerpt": True},
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs.strip_continuity_hints",
+            "skg.page_ir_verification.verify_page_pairs._strip_continuity_hints",
             side_effect=lambda item_json: item_json,
         ),
         patch(
@@ -2159,7 +2194,7 @@ def test_raises_runtime_error_when_all_attempts_fail() -> None:
         ),
     ):
         with pytest.raises(RuntimeError) as exc_info:
-            verify_page_pairs.execute_verification_attempts(
+            verify_page_pairs._execute_verification_attempts(
                 config=config,
                 next_page_image_fp=Path("/tmp/pages/0001.png"),
                 page_index=5,
@@ -2236,15 +2271,15 @@ def test_records_errors_then_selects_the_later_successful_attempt() -> None:
 
     with (
         patch(
-            "skg.page_ir_verification.verify_page_pairs.ensure_pair_specific_crop",
+            "skg.page_ir_verification.verify_page_pairs._ensure_pair_specific_crop",
             side_effect=[crop_fp_a, crop_fp_b],
         ) as mock_ensure_crop,
         patch(
-            "skg.page_ir_verification.verify_page_pairs.make_verification_excerpt",
+            "skg.page_ir_verification.verify_page_pairs._make_verification_excerpt",
             return_value={"excerpt": True},
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs.strip_continuity_hints",
+            "skg.page_ir_verification.verify_page_pairs._strip_continuity_hints",
             side_effect=lambda item_json: item_json,
         ),
         patch(
@@ -2252,7 +2287,7 @@ def test_records_errors_then_selects_the_later_successful_attempt() -> None:
             side_effect=[RuntimeError("boom"), verdict],
         ) as mock_verify,
     ):
-        result = verify_page_pairs.execute_verification_attempts(
+        result = verify_page_pairs._execute_verification_attempts(
             config=config,
             next_page_image_fp=Path("/tmp/pages/0001.png"),
             page_index=0,
@@ -2304,7 +2339,7 @@ def test_removes_boundary_but_preserves_non_table_repeats_header_field() -> None
     """
 
     item_json = create_block_item_json(repeats_header=False)
-    cleaned_item_json = verify_page_pairs.strip_continuity_hints(item_json=item_json)
+    cleaned_item_json = verify_page_pairs._strip_continuity_hints(item_json=item_json)
 
     assert cleaned_item_json == {
         "bbox": [0.0, 10.0, 100.0, 40.0],
@@ -2327,7 +2362,7 @@ def test_removes_table_continuity_hints_without_mutating_input() -> None:
     """
 
     item_json = create_table_item_json()
-    cleaned_item_json = verify_page_pairs.strip_continuity_hints(item_json=item_json)
+    cleaned_item_json = verify_page_pairs._strip_continuity_hints(item_json=item_json)
     cleaned_item_json["meta"]["source"]["page"] = 99
 
     assert cleaned_item_json == {
@@ -2398,13 +2433,13 @@ def test_returns_none_and_skips_downstream_work_when_either_page_has_no_items() 
 
     with (
         patch(
-            "skg.page_ir_verification.verify_page_pairs.bottom_continuity_candidates"
+            "skg.page_ir_verification.verify_page_pairs._bottom_continuity_candidates"
         ) as mock_bottom_candidates,
         patch(
-            "skg.page_ir_verification.verify_page_pairs.execute_verification_attempts"
+            "skg.page_ir_verification.verify_page_pairs._execute_verification_attempts"
         ) as mock_execute_attempts,
         patch(
-            "skg.page_ir_verification.verify_page_pairs.generate_candidate_pairs"
+            "skg.page_ir_verification.verify_page_pairs._generate_candidate_pairs"
         ) as mock_generate_pairs,
         patch("skg.page_ir_verification.verify_page_pairs.write_to_json") as mock_write,
     ):
@@ -2446,7 +2481,7 @@ def test_reuses_cached_crop_for_same_next_index_and_same_rounded_crop_height(
     spec_b = create_candidate_pair_spec(crop_y_max=20.49, next_index=4, prev_index=9)
     create_image(fp=next_page_image_fp, size=(40, 100))
 
-    first_crop_fp = verify_page_pairs.ensure_pair_specific_crop(
+    first_crop_fp = verify_page_pairs._ensure_pair_specific_crop(
         crop_cache=crop_cache,
         next_page_image_fp=next_page_image_fp,
         next_page_index=5,
@@ -2465,7 +2500,7 @@ def test_reuses_cached_crop_for_same_next_index_and_same_rounded_crop_height(
             "skg.page_ir_verification.verify_page_pairs.make_dir", autospec=True
         ) as mock_make_dir,
     ):
-        second_crop_fp = verify_page_pairs.ensure_pair_specific_crop(
+        second_crop_fp = verify_page_pairs._ensure_pair_specific_crop(
             crop_cache=crop_cache,
             next_page_image_fp=next_page_image_fp,
             next_page_index=5,
@@ -2517,15 +2552,15 @@ def test_stops_early_for_primary_primary_patchable_positive() -> None:
 
     with (
         patch(
-            "skg.page_ir_verification.verify_page_pairs.ensure_pair_specific_crop",
+            "skg.page_ir_verification.verify_page_pairs._ensure_pair_specific_crop",
             return_value=Path("/tmp/crops/first.png"),
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs.make_verification_excerpt",
+            "skg.page_ir_verification.verify_page_pairs._make_verification_excerpt",
             return_value={"excerpt": True},
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs.strip_continuity_hints",
+            "skg.page_ir_verification.verify_page_pairs._strip_continuity_hints",
             side_effect=lambda item_json: item_json,
         ),
         patch(
@@ -2533,7 +2568,7 @@ def test_stops_early_for_primary_primary_patchable_positive() -> None:
             return_value=verdict,
         ) as mock_verify,
     ):
-        result = verify_page_pairs.execute_verification_attempts(
+        result = verify_page_pairs._execute_verification_attempts(
             config=config,
             next_page_image_fp=Path("/tmp/pages/0001.png"),
             page_index=0,
@@ -2602,15 +2637,15 @@ def test_stops_early_for_primary_primary_same_family_high_confidence_negative() 
 
     with (
         patch(
-            "skg.page_ir_verification.verify_page_pairs.ensure_pair_specific_crop",
+            "skg.page_ir_verification.verify_page_pairs._ensure_pair_specific_crop",
             return_value=Path("/tmp/crops/negative.png"),
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs.make_verification_excerpt",
+            "skg.page_ir_verification.verify_page_pairs._make_verification_excerpt",
             return_value={"excerpt": True},
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs.strip_continuity_hints",
+            "skg.page_ir_verification.verify_page_pairs._strip_continuity_hints",
             side_effect=lambda item_json: item_json,
         ),
         patch(
@@ -2618,7 +2653,7 @@ def test_stops_early_for_primary_primary_same_family_high_confidence_negative() 
             return_value=verdict,
         ) as mock_verify,
     ):
-        result = verify_page_pairs.execute_verification_attempts(
+        result = verify_page_pairs._execute_verification_attempts(
             config=config,
             next_page_image_fp=Path("/tmp/pages/0001.png"),
             page_index=0,
@@ -2702,37 +2737,6 @@ def test_table_row_preview_truncates_dict_cell_text_and_preserves_cell_order() -
     ]
 
 
-def test_truncate_text_appends_ellipsis_when_text_exceeds_limit() -> None:
-    """Append an ellipsis when the normalized text is longer than the limit."""
-
-    assert (
-        verify_page_pairs.truncate_text(max_chars=8, text="abcdefghijk") == "abcde..."
-    )
-
-
-def test_truncate_text_keeps_text_shorter_than_limit() -> None:
-    """Return the original text when it already fits within the limit."""
-
-    assert verify_page_pairs.truncate_text(max_chars=12, text="hello") == "hello"
-
-
-def test_truncate_text_replaces_newlines_and_strips_surrounding_whitespace() -> None:
-    """Normalize newlines to spaces and trim leading and trailing whitespace."""
-
-    assert (
-        verify_page_pairs.truncate_text(
-            max_chars=50, text="  First line\nsecond line\n third line  "
-        )
-        == "First line second line  third line"
-    )
-
-
-def test_truncate_text_returns_ellipsis_only_when_limit_is_less_than_three() -> None:
-    """Return only an ellipsis when truncation is required below three characters."""
-
-    assert verify_page_pairs.truncate_text(max_chars=2, text="abcdef") == "..."
-
-
 def test_uses_pair_priority_key_to_select_the_best_successful_attempt() -> None:
     """Test that final selection delegates ordering to `_pair_priority_key()`.
 
@@ -2789,15 +2793,15 @@ def test_uses_pair_priority_key_to_select_the_best_successful_attempt() -> None:
 
     with (
         patch(
-            "skg.page_ir_verification.verify_page_pairs.ensure_pair_specific_crop",
+            "skg.page_ir_verification.verify_page_pairs._ensure_pair_specific_crop",
             side_effect=[Path("/tmp/crops/a.png"), Path("/tmp/crops/b.png")],
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs.make_verification_excerpt",
+            "skg.page_ir_verification.verify_page_pairs._make_verification_excerpt",
             return_value={"excerpt": True},
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs.strip_continuity_hints",
+            "skg.page_ir_verification.verify_page_pairs._strip_continuity_hints",
             side_effect=lambda item_json: item_json,
         ),
         patch(
@@ -2809,7 +2813,7 @@ def test_uses_pair_priority_key_to_select_the_best_successful_attempt() -> None:
             side_effect=priority_side_effect,
         ) as mock_priority,
     ):
-        result = verify_page_pairs.execute_verification_attempts(
+        result = verify_page_pairs._execute_verification_attempts(
             config=config,
             next_page_image_fp=Path("/tmp/pages/0001.png"),
             page_index=0,

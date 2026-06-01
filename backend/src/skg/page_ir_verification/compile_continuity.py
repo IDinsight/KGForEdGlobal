@@ -214,6 +214,151 @@ def _brief_edge_record(record: EdgeVerdictRecord) -> dict[str, Any]:
     }
 
 
+def _compile_continuity_from_edge_verdicts(
+    *,
+    edge_records: list[EdgeVerdictRecord],
+    min_confidence_to_patch: float,
+    min_confidence_to_select_positive: float,
+    min_confidence_to_stop_negative_search: float,
+    page_irs: dict[int, PageIR],
+    verification_dirs: PageIRVerificationDirs,
+) -> set[tuple[int, int, int, int]]:
+    """Apply all continuity decisions in one pass as follows:
+
+    1. Positive edge -> set prev.to_next and next.from_prev
+    2. Negative edge -> clear ONLY that directional connection
+    3. Then recompute ItemBoundary enums from bits and also enforce repeats_header
+        consistency with boundary state.
+
+    Parameters
+    ----------
+    edge_records
+        List of edge verdict records.
+    min_confidence_to_patch
+        Minimum confidence threshold to apply edits.
+    min_confidence_to_select_positive
+        Verification-time selection threshold carried through for provenance in the
+        compile report. Compile treats incoming edge_records as already
+        verification-selected and does not re-rank per-boundary candidates.
+    min_confidence_to_stop_negative_search
+        Verification-time early-stop threshold carried through for provenance in the
+        compile report. Compile treats incoming edge_records as already
+        verification-selected and does not re-run boundary search.
+    page_irs
+        Mapping of page_index to PageIR objects.
+    verification_dirs
+        Directory paths for the verification run, used for writing the continuity
+        compile report.
+
+    Returns
+    -------
+    set[tuple[int, int, int, int]]
+        The applied VERIFIED table-continuation edges as
+        (prev_page, prev_index, next_page, next_index) tuples.
+    """
+
+    bools, effective_local_codes = _initialize_states(page_irs)
+    sorted_edge_records, boundary_duplicate_resolutions = (
+        _deduplicate_and_sort_edge_records(edge_records)
+    )
+
+    dirty_keys: set[tuple[int, int]] = set()
+    local_code_conflicts: list[dict[str, Any]] = []
+    local_code_propagation_conflicts: list[dict[str, Any]] = []
+    local_code_patch: dict[tuple[int, int], str] = {}
+    repeats_header_patch: dict[tuple[int, int], bool] = {}
+
+    applied_edges = _apply_edge_verdicts(
+        bools=bools,
+        dirty_keys=dirty_keys,
+        effective_local_codes=effective_local_codes,
+        local_code_conflicts=local_code_conflicts,
+        local_code_propagation_conflicts=local_code_propagation_conflicts,
+        local_code_patch=local_code_patch,
+        min_confidence_to_patch=min_confidence_to_patch,
+        repeats_header_patch=repeats_header_patch,
+        sorted_edge_records=sorted_edge_records,
+    )
+
+    (
+        boundary_changes,
+        repeats_header_changes,
+        repeats_header_review_flags,
+    ) = _reconcile_dirty_item_states(
+        bools=bools,
+        dirty_keys=dirty_keys,
+        page_irs=page_irs,
+        repeats_header_patch=repeats_header_patch,
+    )
+
+    local_code_changes: list[dict[str, Any]] = []
+    local_code_patch_skips: list[dict[str, Any]] = []
+
+    for (page_index, item_index), code in sorted(local_code_patch.items()):
+        item = page_irs[page_index].items[item_index]
+        before_code = _normalize_local_code(getattr(item, "local_code", None))
+
+        if before_code is None:
+            item.local_code = code
+            local_code_changes.append(
+                {
+                    "after": code,
+                    "before": None,
+                    "item_index": item_index,
+                    "page": page_index,
+                }
+            )
+        elif before_code != code:
+            local_code_patch_skips.append(
+                {
+                    "desired": code,
+                    "existing": before_code,
+                    "item_index": item_index,
+                    "page": page_index,
+                    "reason": "item_already_has_local_code",
+                }
+            )
+            logger.warning(
+                f"Page {page_index} item {item_index}: skipping local_code patch "
+                f"'{code}' because item already has local_code='{before_code}'."
+            )
+
+    compile_report = {
+        "applied_edges": applied_edges,
+        "boundary_duplicate_resolutions": boundary_duplicate_resolutions,
+        "boundary_changes": boundary_changes,
+        "selection_policy": {
+            "min_confidence_to_patch": min_confidence_to_patch,
+            "min_confidence_to_select_positive": min_confidence_to_select_positive,
+            "min_confidence_to_stop_negative_search": min_confidence_to_stop_negative_search,
+        },
+        "local_code_changes": local_code_changes,
+        "local_code_patch_skips": local_code_patch_skips,
+        "local_code_propagation_conflicts": local_code_propagation_conflicts,
+        "local_code_conflicts": local_code_conflicts,
+        "repeats_header_changes": repeats_header_changes,
+        "repeats_header_review_flags": repeats_header_review_flags,
+    }
+
+    write_to_json(
+        fp=verification_dirs.root / "continuity_compile_report.json",
+        json_info=compile_report,
+    )
+
+    return {
+        (
+            int(edge["prev_page"]),
+            int(edge["prev_index"]),
+            int(edge["next_page"]),
+            int(edge["next_index"]),
+        )
+        for edge in applied_edges
+        if edge.get("applied")
+        and edge.get("is_continuation")
+        and edge.get("continuation_kind") == PageContinuationKind.TABLE.value
+    }
+
+
 def _deduplicate_and_sort_edge_records(
     edge_records: list[EdgeVerdictRecord],
 ) -> tuple[list[EdgeVerdictRecord], list[dict[str, Any]]]:
@@ -898,151 +1043,6 @@ def _try_propagate_code(
     local_code_patch.setdefault(target_key, code)
 
 
-def compile_continuity_from_edge_verdicts(
-    *,
-    edge_records: list[EdgeVerdictRecord],
-    min_confidence_to_patch: float,
-    min_confidence_to_select_positive: float,
-    min_confidence_to_stop_negative_search: float,
-    page_irs: dict[int, PageIR],
-    verification_dirs: PageIRVerificationDirs,
-) -> set[tuple[int, int, int, int]]:
-    """Apply all continuity decisions in one pass as follows:
-
-    1. Positive edge -> set prev.to_next and next.from_prev
-    2. Negative edge -> clear ONLY that directional connection
-    3. Then recompute ItemBoundary enums from bits and also enforce repeats_header
-        consistency with boundary state.
-
-    Parameters
-    ----------
-    edge_records
-        List of edge verdict records.
-    min_confidence_to_patch
-        Minimum confidence threshold to apply edits.
-    min_confidence_to_select_positive
-        Verification-time selection threshold carried through for provenance in the
-        compile report. Compile treats incoming edge_records as already
-        verification-selected and does not re-rank per-boundary candidates.
-    min_confidence_to_stop_negative_search
-        Verification-time early-stop threshold carried through for provenance in the
-        compile report. Compile treats incoming edge_records as already
-        verification-selected and does not re-run boundary search.
-    page_irs
-        Mapping of page_index to PageIR objects.
-    verification_dirs
-        Directory paths for the verification run, used for writing the continuity
-        compile report.
-
-    Returns
-    -------
-    set[tuple[int, int, int, int]]
-        The applied VERIFIED table-continuation edges as
-        (prev_page, prev_index, next_page, next_index) tuples.
-    """
-
-    bools, effective_local_codes = _initialize_states(page_irs)
-    sorted_edge_records, boundary_duplicate_resolutions = (
-        _deduplicate_and_sort_edge_records(edge_records)
-    )
-
-    dirty_keys: set[tuple[int, int]] = set()
-    local_code_conflicts: list[dict[str, Any]] = []
-    local_code_propagation_conflicts: list[dict[str, Any]] = []
-    local_code_patch: dict[tuple[int, int], str] = {}
-    repeats_header_patch: dict[tuple[int, int], bool] = {}
-
-    applied_edges = _apply_edge_verdicts(
-        bools=bools,
-        dirty_keys=dirty_keys,
-        effective_local_codes=effective_local_codes,
-        local_code_conflicts=local_code_conflicts,
-        local_code_propagation_conflicts=local_code_propagation_conflicts,
-        local_code_patch=local_code_patch,
-        min_confidence_to_patch=min_confidence_to_patch,
-        repeats_header_patch=repeats_header_patch,
-        sorted_edge_records=sorted_edge_records,
-    )
-
-    (
-        boundary_changes,
-        repeats_header_changes,
-        repeats_header_review_flags,
-    ) = _reconcile_dirty_item_states(
-        bools=bools,
-        dirty_keys=dirty_keys,
-        page_irs=page_irs,
-        repeats_header_patch=repeats_header_patch,
-    )
-
-    local_code_changes: list[dict[str, Any]] = []
-    local_code_patch_skips: list[dict[str, Any]] = []
-
-    for (page_index, item_index), code in sorted(local_code_patch.items()):
-        item = page_irs[page_index].items[item_index]
-        before_code = _normalize_local_code(getattr(item, "local_code", None))
-
-        if before_code is None:
-            item.local_code = code
-            local_code_changes.append(
-                {
-                    "after": code,
-                    "before": None,
-                    "item_index": item_index,
-                    "page": page_index,
-                }
-            )
-        elif before_code != code:
-            local_code_patch_skips.append(
-                {
-                    "desired": code,
-                    "existing": before_code,
-                    "item_index": item_index,
-                    "page": page_index,
-                    "reason": "item_already_has_local_code",
-                }
-            )
-            logger.warning(
-                f"Page {page_index} item {item_index}: skipping local_code patch "
-                f"'{code}' because item already has local_code='{before_code}'."
-            )
-
-    compile_report = {
-        "applied_edges": applied_edges,
-        "boundary_duplicate_resolutions": boundary_duplicate_resolutions,
-        "boundary_changes": boundary_changes,
-        "selection_policy": {
-            "min_confidence_to_patch": min_confidence_to_patch,
-            "min_confidence_to_select_positive": min_confidence_to_select_positive,
-            "min_confidence_to_stop_negative_search": min_confidence_to_stop_negative_search,
-        },
-        "local_code_changes": local_code_changes,
-        "local_code_patch_skips": local_code_patch_skips,
-        "local_code_propagation_conflicts": local_code_propagation_conflicts,
-        "local_code_conflicts": local_code_conflicts,
-        "repeats_header_changes": repeats_header_changes,
-        "repeats_header_review_flags": repeats_header_review_flags,
-    }
-
-    write_to_json(
-        fp=verification_dirs.root / "continuity_compile_report.json",
-        json_info=compile_report,
-    )
-
-    return {
-        (
-            int(edge["prev_page"]),
-            int(edge["prev_index"]),
-            int(edge["next_page"]),
-            int(edge["next_index"]),
-        )
-        for edge in applied_edges
-        if edge.get("applied")
-        and edge.get("is_continuation")
-        and edge.get("continuation_kind") == PageContinuationKind.TABLE.value
-    }
-
-
 def run_compile_step(
     *,
     config: VerificationConfig,
@@ -1083,7 +1083,7 @@ def run_compile_step(
         )
         return False, None
 
-    verified_table_edges = compile_continuity_from_edge_verdicts(
+    verified_table_edges = _compile_continuity_from_edge_verdicts(
         edge_records=edge_records,
         min_confidence_to_patch=config.min_confidence_to_patch,
         min_confidence_to_select_positive=config.min_confidence_to_select_positive,

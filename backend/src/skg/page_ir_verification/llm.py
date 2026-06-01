@@ -199,6 +199,37 @@ def _run_validation_agent(
     return result.output
 
 
+def verify_page_ir_continuity_verdict(
+    *,
+    next_item: Block | Table,
+    prev_item: Block | Table,
+    verdict: PageIRContinuityVerdict,
+) -> None:
+    """Validate *quality* (not schema) of a parsed PageIR.
+
+    Parameters
+    ----------
+    next_item
+        The parsed next page candidate item.
+    prev_item
+        The parsed previous page candidate item.
+    verdict
+        The PageIRContinuityVerdict to validate.
+
+    Raises
+    ------
+    QualityError
+        If any quality checks fail.
+    """
+
+    # NB: Order matters — don't change unless you really know what you are doing!
+    validate_item_continuation_kind(
+        next_item=next_item, prev_item=prev_item, verdict=verdict
+    )
+    validate_repeats_header_requires_table_item(next_item=next_item, verdict=verdict)
+    validate_semantic_flow(next_item=next_item, prev_item=prev_item, verdict=verdict)
+
+
 def verify_page_ir_pairs(
     *,
     min_confidence_to_patch: float,
@@ -356,34 +387,3 @@ def verify_page_ir_pairs(
     )
 
     return validation_verdict.corrected_verdict
-
-
-def verify_page_ir_continuity_verdict(
-    *,
-    next_item: Block | Table,
-    prev_item: Block | Table,
-    verdict: PageIRContinuityVerdict,
-) -> None:
-    """Validate *quality* (not schema) of a parsed PageIR.
-
-    Parameters
-    ----------
-    next_item
-        The parsed next page candidate item.
-    prev_item
-        The parsed previous page candidate item.
-    verdict
-        The PageIRContinuityVerdict to validate.
-
-    Raises
-    ------
-    QualityError
-        If any quality checks fail.
-    """
-
-    # NB: Order matters — don't change unless you really know what you are doing!
-    validate_item_continuation_kind(
-        next_item=next_item, prev_item=prev_item, verdict=verdict
-    )
-    validate_repeats_header_requires_table_item(next_item=next_item, verdict=verdict)
-    validate_semantic_flow(next_item=next_item, prev_item=prev_item, verdict=verdict)

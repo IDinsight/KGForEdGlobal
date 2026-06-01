@@ -22,6 +22,80 @@ from skg.utils.constants import BlockType, PageContinuationKind
 from skg.utils.general import open_json_type, write_to_json
 
 
+def _align_table_rows_with_rowspans(
+    page_irs: dict[int, PageIR],
+) -> list[dict[str, Any]]:
+    """Insert placeholder empty cells where prior-row rowspans occupy columns. Fixes
+    common failure mode where a row under a row-spanned subject shifts left.
+
+    Parameters
+    ----------
+    page_irs
+        Mapping of page_index to PageIR objects.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A list of change summaries for rows that were modified.
+    """
+
+    changes: list[dict[str, Any]] = []
+
+    for page_index in sorted(page_irs.keys()):
+        page_ir = page_irs[page_index]
+
+        for item_index, item in enumerate(page_ir.items):
+            if item.kind != "table":
+                continue
+
+            table_changes = _process_table_item(
+                item=item, item_index=item_index, page_index=page_index
+            )
+            changes.extend(table_changes)
+
+    return changes
+
+
+def _find_caption_code(items: list[Block | Table]) -> str | None:
+    """Find the nearest preceding valid Table-like local_code from a caption block.
+
+    Parameters
+    ----------
+    items
+        List of PageIR items ordered by reading order. The nearest qualifying caption
+        before the target table is preferred over earlier captions on the page.
+
+    Returns
+    -------
+    str | None
+        The found caption local_code, or None if not found.
+    """
+
+    for item in reversed(items):
+        if item.kind == "block" and item.block_type == BlockType.CAPTION:
+            # Prefer extractor-provided local_code.
+            code = (item.local_code or "").strip()
+
+            if code and TABLE_CODE_RE.match(code):
+                return code
+
+            # Fallback: parse from caption text if local_code missing.
+            text = (
+                (item.text.text or "").strip()
+                if isinstance(item.text, TextUnit)
+                else ""
+            )
+
+            if text and (m := TABLE_CODE_RE.match(text)) is not None:
+                # Return the verbatim matched prefix + number from the source text. Do
+                # NOT canonicalize to English (e.g., "Tableau 3" stays as-is);
+                # canonicalization is the responsibility of downstream pipeline stages,
+                # not the verification/postprocess layer.
+                return m.group(0).strip()
+
+    return None
+
+
 def _get_header_effective_cols(*, header_row_count: int, rows: list[Any]) -> int:
     """Calculate the max width found in the header rows. If there are no header rows,
     return 0.
@@ -43,6 +117,246 @@ def _get_header_effective_cols(*, header_row_count: int, rows: list[Any]) -> int
     return max(
         (sum(c.col_span for c in r.cells) for r in rows[:header_row_count]),
         default=0,
+    )
+
+
+def _load_verified_table_continuation_edges(
+    verification_dirs: PageIRVerificationDirs,
+) -> set[tuple[int, int, int, int]]:
+    """Load the set of VERIFIED table-continuation edges from the compile report.
+
+    The compile step (compile_continuity_from_edge_verdicts) writes
+    `continuity_compile_report.json`, whose `applied_edges` list includes the edges
+    that were actually applied (i.e., met min_confidence_to_patch and were not skipped).
+
+    We treat an edge as a VERIFIED table continuation edge iff:
+
+    1. applied == True
+    2. is_continuation == True
+    3. continuation_kind == "table"
+
+    Returns
+    -------
+    set[tuple[int, int, int, int]]
+        A set of edges represented as tuples of (prev_page, prev_index, next_page,
+        next_index).
+    """
+
+    fp = verification_dirs.root / "continuity_compile_report.json"
+    report = open_json_type(fp)
+    edges: set[tuple[int, int, int, int]] = set()
+
+    for edge in report.get("applied_edges", []) or []:
+        if not edge.get("applied", False):
+            continue
+        if not edge.get("is_continuation", False):
+            continue
+        if edge.get("continuation_kind") != PageContinuationKind.TABLE.value:
+            continue
+
+        edges.add(
+            (
+                int(edge["prev_page"]),
+                int(edge["prev_index"]),
+                int(edge["next_page"]),
+                int(edge["next_index"]),
+            )
+        )
+
+    return edges
+
+
+def _normalize_empty_table_cells(page_irs: dict[int, PageIR]) -> list[dict[str, Any]]:
+    """Normalize visually-empty table cell TextUnit text like '' / ' ' / '\\n' into
+    text='' while preserving the TextUnit object (and its provenance such as bbox).
+    This stabilizes rowspan logic and downstream canonicalization by making emptiness
+    explicit without dropping metadata.
+
+    Parameters
+    ----------
+    page_irs
+        Mapping of page index to PageIR dict.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A list of change records describing the modifications made.
+    """
+
+    changes: list[dict[str, Any]] = []
+
+    for page_index in sorted(page_irs.keys()):
+        page_ir = page_irs[page_index]
+
+        for item_index, item in enumerate(page_ir.items):
+            if item.kind != "table":
+                continue
+
+            for row_index, row in enumerate(item.rows):
+                for cell_index, cell in enumerate(row.cells):
+                    text_or_none = cell.text
+
+                    # Only record a normalization when we actually mutate the stored
+                    # text. Cells that are already exactly "" are already normalized
+                    # and should not produce noisy repeat change records on subsequent
+                    # runs.
+                    if (
+                        isinstance(text_or_none, TextUnit)
+                        and text_or_none.text != ""
+                        and not (text_or_none.text or "").strip()
+                    ):
+                        before_text = text_or_none.text
+                        text_or_none.text = ""
+                        changes.append(
+                            {
+                                "type": "normalize_empty_string_cell_text",
+                                "page": page_index,
+                                "item_index": item_index,
+                                "row_index": row_index,
+                                "cell_index": cell_index,
+                                "before_text": before_text,
+                            }
+                        )
+
+    return changes
+
+
+def _normalize_table_row_cell_counts(
+    *,
+    page_irs: dict[int, PageIR],
+    rowspan_conflict_keys: set[tuple[int, int, int]] | None = None,
+) -> list[dict[str, Any]]:
+    """Normalize table rows to have consistent cell counts matching the table's n_cols
+    by inserting synthetic placeholder cells on the left or right as needed.
+
+    This function:
+
+    1. Walks through every page in order and for every item on the page
+    2. Skips anything that is NOT a table
+    3. Calls _process_table_normalization() on each table
+    4. If `rowspan_conflict_keys` is None, it uses an empty set
+    5. At the end, it returns one flat list of change records for all pages/tables
+
+    This function runs **after** rowspan alignment, and rows that had unresolved
+    rowspan conflicts are passed in so their later padding changes can be annotated for
+    audit.
+
+    Parameters
+    ----------
+    page_irs
+        Mapping of page index to PageIR dict.
+    rowspan_conflict_keys
+        Optional set of (page_index, item_index, row_index) keys identifying rows that
+        had unresolved rowspan alignment conflicts. When provided, padding changes on
+        these rows are annotated for audit traceability.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A list of change records describing the modifications made.
+    """
+
+    conflict_keys = rowspan_conflict_keys or set()
+    changes: list[dict[str, Any]] = []
+
+    for page_index, page_ir in sorted(page_irs.items()):
+        for item_index, item in enumerate(page_ir.items):
+            if item.kind != "table":
+                continue
+
+            changes.extend(
+                _process_table_normalization(
+                    item=item,
+                    item_index=item_index,
+                    page_index=page_index,
+                    rowspan_conflict_keys=conflict_keys,
+                )
+            )
+
+    return changes
+
+
+def _postprocess_verified_page_irs(
+    *,
+    page_irs: dict[int, PageIR],
+    verification_dirs: PageIRVerificationDirs,
+    verified_table_continuation_edges: set[tuple[int, int, int, int]] | None = None,
+) -> None:
+    """Run all postprocess fixes before writing verified JSONs.
+
+    NB: Order matters here. Don't change unless you know what you are doing!
+
+    Parameters
+    ----------
+    page_irs
+        The dictionary of page IRs by page index.
+    verification_dirs
+        The verification directories.
+    verified_table_continuation_edges
+        Optional in-memory set of VERIFIED table-continuation edges. When omitted, the
+        edges are reloaded from the compile report instead.
+    """
+
+    # Enrich data by flowing local codes across VERIFIED table-continuation edges.
+    #
+    # NB: compile_continuity already propagates local_code at the edge level (between
+    # the exact candidate pair items). This second pass operates at the chain level: it
+    # carries codes sequentially across multi-page table spans and seeds missing codes
+    # from nearby captions. Both passes guard against double-patching (compile skips
+    # items that already have a code; this pass checks `not code` before applying).
+    verified_table_edges = (
+        verified_table_continuation_edges
+        if verified_table_continuation_edges is not None
+        else _load_verified_table_continuation_edges(verification_dirs)
+    )
+    table_code_changes = _propagate_table_local_codes(
+        page_irs=page_irs, verified_table_continuation_edges=verified_table_edges
+    )
+
+    # Normalize empty-string cell text to stabilize downstream logic that distinguishes
+    # empty vs. non-empty cells.
+    empty_cell_changes = _normalize_empty_table_cells(page_irs)
+
+    # Insert placeholders under rowspans to prevent column drift.
+    #
+    # NB: This runs BEFORE normalize_table_row_cell_counts (padding). The padding
+    # heuristic ignores synthetic leading placeholders inserted by this pass, so
+    # rowspan repair does not bias the later left vs. right padding decision.
+    rowspan_alignment_changes = _align_table_rows_with_rowspans(page_irs)
+
+    # Build a set of (page, item_index, row_index) keys for rows that had unresolved
+    # rowspan conflicts so the padding step can annotate those rows in its change
+    # records. This preserves the full audit chain: "rowspan repair was skipped for
+    # this row, then padding was applied instead."
+    rowspan_conflict_keys: set[tuple[int, int, int]] = {
+        (change["page"], change["item_index"], change["row_index"])
+        for change in rowspan_alignment_changes
+        if change.get("type") == "rowspan_alignment_conflict_overflow"
+    }
+
+    # Fix structural "empty cell" hallucinations from the extraction model.
+    pad_changes = _normalize_table_row_cell_counts(
+        page_irs=page_irs, rowspan_conflict_keys=rowspan_conflict_keys
+    )
+
+    # Persist what was changed for audit/debug.
+    write_to_json(
+        fp=verification_dirs.root / "postprocess_report.json",
+        json_info={
+            "table_local_code_changes": table_code_changes,
+            "empty_cell_text_normalization_changes": empty_cell_changes,
+            "rowspan_alignment_changes": rowspan_alignment_changes,
+            "table_row_normalization_changes": pad_changes,
+        },
+    )
+
+    logger.success(
+        f"Saved postprocess report with "
+        f"{len(table_code_changes)} table code propagations, "
+        f"{len(empty_cell_changes)} empty cell normalizations, "
+        f"{len(rowspan_alignment_changes)} rowspan alignment changes, and "
+        f"{len(pad_changes)} table row normalization changes to: "
+        f"{verification_dirs.root / 'postprocess_report.json'}"
     )
 
 
@@ -452,6 +766,125 @@ def _process_table_row(
     return conflict
 
 
+def _propagate_table_local_codes(
+    *,
+    page_irs: dict[int, PageIR],
+    verified_table_continuation_edges: set[tuple[int, int, int, int]],
+) -> list[dict[str, Any]]:
+    """Carry forward "Table X" codes across VERIFIED table-continuation edges.
+
+    This post-pass is intentionally conservative:
+
+    1. Only propagate codes across page boundaries when the compile step has actually
+       *applied* a TABLE continuation edge (i.e., met min_confidence_to_patch).
+    2. Only carry *one* code forward: the code of the **last table in reading order**
+       on the page that continues onto the next page (outgoing verified edge).
+    3. Never let later, non-continuing tables overwrite the carry-forward code.
+
+    Parameters
+    ----------
+    page_irs
+        The dictionary of page IRs by page index.
+    verified_table_continuation_edges
+        Set of (prev_page, prev_item_index, next_page, next_item_index) tuples for
+        TABLE continuation edges that were actually applied by the compile step.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A list of changes made during the post-pass.
+    """
+
+    # Precompute which table items have VERIFIED incoming/outgoing edges.
+    resumed_table_keys: set[tuple[int, int]] = {
+        (next_page, next_index)
+        for (
+            prev_page,
+            prev_index,
+            next_page,
+            next_index,
+        ) in verified_table_continuation_edges
+    }
+    truncated_table_keys: set[tuple[int, int]] = {
+        (prev_page, prev_index)
+        for (
+            prev_page,
+            prev_index,
+            next_page,
+            next_index,
+        ) in verified_table_continuation_edges
+    }
+
+    carry_from_prev: str | None = None
+    changes: list[dict[str, Any]] = []
+    last_page_idx: int | None = None
+
+    for page_idx in sorted(page_irs.keys()):
+        carry_from_prev = _validate_page_gap(
+            carry_from_prev=carry_from_prev,
+            changes=changes,
+            last_page_idx=last_page_idx,
+            page_idx=page_idx,
+        )
+
+        page = page_irs[page_idx]
+        items = [(i, it) for i, it in enumerate(page.items) if not is_artifact(it)]
+
+        # Drop the carried code if the current page has no VERIFIED-resumed tables.
+        if carry_from_prev is not None and not any(
+            item.kind == "table" and (page_idx, item_index) in resumed_table_keys
+            for item_index, item in items
+        ):
+            logger.info(
+                f"Page {page_idx} has no VERIFIED-resumed tables; dropping carried "
+                f"table local_code '{carry_from_prev}'."
+            )
+            changes.append(
+                {
+                    "type": "propagate_table_local_code_dropped_no_resumed_table",
+                    "page": page_idx,
+                    "dropped_local_code": carry_from_prev,
+                }
+            )
+            carry_from_prev = None
+
+        # Attempt to find a table code from a caption before the first VERIFIED-resumed
+        # table.
+        if carry_from_prev is None:
+            first_relevant_table_pos = next(
+                (
+                    pos
+                    for pos, (orig_idx, item) in enumerate(items)
+                    if item.kind == "table"
+                    and (page_idx, orig_idx) in resumed_table_keys
+                    and not (item.local_code or "").strip()
+                ),
+                None,
+            )
+
+            if first_relevant_table_pos is not None:
+                caption_scope = [item for _, item in items[:first_relevant_table_pos]]
+                caption_code = _find_caption_code(caption_scope)
+
+                if caption_code:
+                    carry_from_prev = caption_code.strip() or None
+
+        carry_to_next = _process_page_tables(
+            carry_from_prev=carry_from_prev,
+            changes=changes,
+            items=items,
+            page_idx=page_idx,
+            resumed_table_keys=resumed_table_keys,
+            truncated_table_keys=truncated_table_keys,
+        )
+
+        # Carry forward only the table that continues onto the next page.
+        carry_from_prev = carry_to_next
+        last_page_idx = page_idx
+
+    return changes
+
+
 def _should_pad_left(*, header_row_count: int, n_cols: int, rows: list) -> bool:
     """Decide if the table requires left-padding based on header and body signals.
 
@@ -765,437 +1198,6 @@ def _validate_page_gap(
     return carry_from_prev
 
 
-def align_table_rows_with_rowspans(page_irs: dict[int, PageIR]) -> list[dict[str, Any]]:
-    """Insert placeholder empty cells where prior-row rowspans occupy columns. Fixes
-    common failure mode where a row under a row-spanned subject shifts left.
-
-    Parameters
-    ----------
-    page_irs
-        Mapping of page_index to PageIR objects.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        A list of change summaries for rows that were modified.
-    """
-
-    changes: list[dict[str, Any]] = []
-
-    for page_index in sorted(page_irs.keys()):
-        page_ir = page_irs[page_index]
-
-        for item_index, item in enumerate(page_ir.items):
-            if item.kind != "table":
-                continue
-
-            table_changes = _process_table_item(
-                item=item, item_index=item_index, page_index=page_index
-            )
-            changes.extend(table_changes)
-
-    return changes
-
-
-def find_caption_code(items: list[Block | Table]) -> str | None:
-    """Find the nearest preceding valid Table-like local_code from a caption block.
-
-    Parameters
-    ----------
-    items
-        List of PageIR items ordered by reading order. The nearest qualifying caption
-        before the target table is preferred over earlier captions on the page.
-
-    Returns
-    -------
-    str | None
-        The found caption local_code, or None if not found.
-    """
-
-    for item in reversed(items):
-        if item.kind == "block" and item.block_type == BlockType.CAPTION:
-            # Prefer extractor-provided local_code.
-            code = (item.local_code or "").strip()
-
-            if code and TABLE_CODE_RE.match(code):
-                return code
-
-            # Fallback: parse from caption text if local_code missing.
-            text = (
-                (item.text.text or "").strip()
-                if isinstance(item.text, TextUnit)
-                else ""
-            )
-
-            if text and (m := TABLE_CODE_RE.match(text)) is not None:
-                # Return the verbatim matched prefix + number from the source text. Do
-                # NOT canonicalize to English (e.g., "Tableau 3" stays as-is);
-                # canonicalization is the responsibility of downstream pipeline stages,
-                # not the verification/postprocess layer.
-                return m.group(0).strip()
-
-    return None
-
-
-def load_verified_table_continuation_edges(
-    verification_dirs: PageIRVerificationDirs,
-) -> set[tuple[int, int, int, int]]:
-    """Load the set of VERIFIED table-continuation edges from the compile report.
-
-    The compile step (compile_continuity_from_edge_verdicts) writes
-    `continuity_compile_report.json`, whose `applied_edges` list includes the edges
-    that were actually applied (i.e., met min_confidence_to_patch and were not skipped).
-
-    We treat an edge as a VERIFIED table continuation edge iff:
-
-    1. applied == True
-    2. is_continuation == True
-    3. continuation_kind == "table"
-
-    Returns
-    -------
-    set[tuple[int, int, int, int]]
-        A set of edges represented as tuples of (prev_page, prev_index, next_page,
-        next_index).
-    """
-
-    fp = verification_dirs.root / "continuity_compile_report.json"
-    report = open_json_type(fp)
-    edges: set[tuple[int, int, int, int]] = set()
-
-    for edge in report.get("applied_edges", []) or []:
-        if not edge.get("applied", False):
-            continue
-        if not edge.get("is_continuation", False):
-            continue
-        if edge.get("continuation_kind") != PageContinuationKind.TABLE.value:
-            continue
-
-        edges.add(
-            (
-                int(edge["prev_page"]),
-                int(edge["prev_index"]),
-                int(edge["next_page"]),
-                int(edge["next_index"]),
-            )
-        )
-
-    return edges
-
-
-def normalize_empty_table_cells(page_irs: dict[int, PageIR]) -> list[dict[str, Any]]:
-    """Normalize visually-empty table cell TextUnit text like '' / ' ' / '\\n' into
-    text='' while preserving the TextUnit object (and its provenance such as bbox).
-    This stabilizes rowspan logic and downstream canonicalization by making emptiness
-    explicit without dropping metadata.
-
-    Parameters
-    ----------
-    page_irs
-        Mapping of page index to PageIR dict.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        A list of change records describing the modifications made.
-    """
-
-    changes: list[dict[str, Any]] = []
-
-    for page_index in sorted(page_irs.keys()):
-        page_ir = page_irs[page_index]
-
-        for item_index, item in enumerate(page_ir.items):
-            if item.kind != "table":
-                continue
-
-            for row_index, row in enumerate(item.rows):
-                for cell_index, cell in enumerate(row.cells):
-                    text_or_none = cell.text
-
-                    # Only record a normalization when we actually mutate the stored
-                    # text. Cells that are already exactly "" are already normalized
-                    # and should not produce noisy repeat change records on subsequent
-                    # runs.
-                    if (
-                        isinstance(text_or_none, TextUnit)
-                        and text_or_none.text != ""
-                        and not (text_or_none.text or "").strip()
-                    ):
-                        before_text = text_or_none.text
-                        text_or_none.text = ""
-                        changes.append(
-                            {
-                                "type": "normalize_empty_string_cell_text",
-                                "page": page_index,
-                                "item_index": item_index,
-                                "row_index": row_index,
-                                "cell_index": cell_index,
-                                "before_text": before_text,
-                            }
-                        )
-
-    return changes
-
-
-def normalize_table_row_cell_counts(
-    *,
-    page_irs: dict[int, PageIR],
-    rowspan_conflict_keys: set[tuple[int, int, int]] | None = None,
-) -> list[dict[str, Any]]:
-    """Normalize table rows to have consistent cell counts matching the table's n_cols
-    by inserting synthetic placeholder cells on the left or right as needed.
-
-    This function:
-
-    1. Walks through every page in order and for every item on the page
-    2. Skips anything that is NOT a table
-    3. Calls _process_table_normalization() on each table
-    4. If `rowspan_conflict_keys` is None, it uses an empty set
-    5. At the end, it returns one flat list of change records for all pages/tables
-
-    This function runs **after** rowspan alignment, and rows that had unresolved
-    rowspan conflicts are passed in so their later padding changes can be annotated for
-    audit.
-
-    Parameters
-    ----------
-    page_irs
-        Mapping of page index to PageIR dict.
-    rowspan_conflict_keys
-        Optional set of (page_index, item_index, row_index) keys identifying rows that
-        had unresolved rowspan alignment conflicts. When provided, padding changes on
-        these rows are annotated for audit traceability.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        A list of change records describing the modifications made.
-    """
-
-    conflict_keys = rowspan_conflict_keys or set()
-    changes: list[dict[str, Any]] = []
-
-    for page_index, page_ir in sorted(page_irs.items()):
-        for item_index, item in enumerate(page_ir.items):
-            if item.kind != "table":
-                continue
-
-            changes.extend(
-                _process_table_normalization(
-                    item=item,
-                    item_index=item_index,
-                    page_index=page_index,
-                    rowspan_conflict_keys=conflict_keys,
-                )
-            )
-
-    return changes
-
-
-def postprocess_verified_page_irs(
-    *,
-    page_irs: dict[int, PageIR],
-    verification_dirs: PageIRVerificationDirs,
-    verified_table_continuation_edges: set[tuple[int, int, int, int]] | None = None,
-) -> None:
-    """Run all postprocess fixes before writing verified JSONs.
-
-    NB: Order matters here. Don't change unless you know what you are doing!
-
-    Parameters
-    ----------
-    page_irs
-        The dictionary of page IRs by page index.
-    verification_dirs
-        The verification directories.
-    verified_table_continuation_edges
-        Optional in-memory set of VERIFIED table-continuation edges. When omitted, the
-        edges are reloaded from the compile report instead.
-    """
-
-    # Enrich data by flowing local codes across VERIFIED table-continuation edges.
-    #
-    # NB: compile_continuity already propagates local_code at the edge level (between
-    # the exact candidate pair items). This second pass operates at the chain level: it
-    # carries codes sequentially across multi-page table spans and seeds missing codes
-    # from nearby captions. Both passes guard against double-patching (compile skips
-    # items that already have a code; this pass checks `not code` before applying).
-    verified_table_edges = (
-        verified_table_continuation_edges
-        if verified_table_continuation_edges is not None
-        else load_verified_table_continuation_edges(verification_dirs)
-    )
-    table_code_changes = propagate_table_local_codes(
-        page_irs=page_irs, verified_table_continuation_edges=verified_table_edges
-    )
-
-    # Normalize empty-string cell text to stabilize downstream logic that distinguishes
-    # empty vs. non-empty cells.
-    empty_cell_changes = normalize_empty_table_cells(page_irs)
-
-    # Insert placeholders under rowspans to prevent column drift.
-    #
-    # NB: This runs BEFORE normalize_table_row_cell_counts (padding). The padding
-    # heuristic ignores synthetic leading placeholders inserted by this pass, so
-    # rowspan repair does not bias the later left vs. right padding decision.
-    rowspan_alignment_changes = align_table_rows_with_rowspans(page_irs)
-
-    # Build a set of (page, item_index, row_index) keys for rows that had unresolved
-    # rowspan conflicts so the padding step can annotate those rows in its change
-    # records. This preserves the full audit chain: "rowspan repair was skipped for
-    # this row, then padding was applied instead."
-    rowspan_conflict_keys: set[tuple[int, int, int]] = {
-        (change["page"], change["item_index"], change["row_index"])
-        for change in rowspan_alignment_changes
-        if change.get("type") == "rowspan_alignment_conflict_overflow"
-    }
-
-    # Fix structural "empty cell" hallucinations from the extraction model.
-    pad_changes = normalize_table_row_cell_counts(
-        page_irs=page_irs, rowspan_conflict_keys=rowspan_conflict_keys
-    )
-
-    # Persist what was changed for audit/debug.
-    write_to_json(
-        fp=verification_dirs.root / "postprocess_report.json",
-        json_info={
-            "table_local_code_changes": table_code_changes,
-            "empty_cell_text_normalization_changes": empty_cell_changes,
-            "rowspan_alignment_changes": rowspan_alignment_changes,
-            "table_row_normalization_changes": pad_changes,
-        },
-    )
-
-    logger.success(
-        f"Saved postprocess report with "
-        f"{len(table_code_changes)} table code propagations, "
-        f"{len(empty_cell_changes)} empty cell normalizations, "
-        f"{len(rowspan_alignment_changes)} rowspan alignment changes, and "
-        f"{len(pad_changes)} table row normalization changes to: "
-        f"{verification_dirs.root / 'postprocess_report.json'}"
-    )
-
-
-def propagate_table_local_codes(
-    *,
-    page_irs: dict[int, PageIR],
-    verified_table_continuation_edges: set[tuple[int, int, int, int]],
-) -> list[dict[str, Any]]:
-    """Carry forward "Table X" codes across VERIFIED table-continuation edges.
-
-    This post-pass is intentionally conservative:
-
-    1. Only propagate codes across page boundaries when the compile step has actually
-       *applied* a TABLE continuation edge (i.e., met min_confidence_to_patch).
-    2. Only carry *one* code forward: the code of the **last table in reading order**
-       on the page that continues onto the next page (outgoing verified edge).
-    3. Never let later, non-continuing tables overwrite the carry-forward code.
-
-    Parameters
-    ----------
-    page_irs
-        The dictionary of page IRs by page index.
-    verified_table_continuation_edges
-        Set of (prev_page, prev_item_index, next_page, next_item_index) tuples for
-        TABLE continuation edges that were actually applied by the compile step.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        A list of changes made during the post-pass.
-    """
-
-    # Precompute which table items have VERIFIED incoming/outgoing edges.
-    resumed_table_keys: set[tuple[int, int]] = {
-        (next_page, next_index)
-        for (
-            prev_page,
-            prev_index,
-            next_page,
-            next_index,
-        ) in verified_table_continuation_edges
-    }
-    truncated_table_keys: set[tuple[int, int]] = {
-        (prev_page, prev_index)
-        for (
-            prev_page,
-            prev_index,
-            next_page,
-            next_index,
-        ) in verified_table_continuation_edges
-    }
-
-    carry_from_prev: str | None = None
-    changes: list[dict[str, Any]] = []
-    last_page_idx: int | None = None
-
-    for page_idx in sorted(page_irs.keys()):
-        carry_from_prev = _validate_page_gap(
-            carry_from_prev=carry_from_prev,
-            changes=changes,
-            last_page_idx=last_page_idx,
-            page_idx=page_idx,
-        )
-
-        page = page_irs[page_idx]
-        items = [(i, it) for i, it in enumerate(page.items) if not is_artifact(it)]
-
-        # Drop the carried code if the current page has no VERIFIED-resumed tables.
-        if carry_from_prev is not None and not any(
-            item.kind == "table" and (page_idx, item_index) in resumed_table_keys
-            for item_index, item in items
-        ):
-            logger.info(
-                f"Page {page_idx} has no VERIFIED-resumed tables; dropping carried "
-                f"table local_code '{carry_from_prev}'."
-            )
-            changes.append(
-                {
-                    "type": "propagate_table_local_code_dropped_no_resumed_table",
-                    "page": page_idx,
-                    "dropped_local_code": carry_from_prev,
-                }
-            )
-            carry_from_prev = None
-
-        # Attempt to find a table code from a caption before the first VERIFIED-resumed
-        # table.
-        if carry_from_prev is None:
-            first_relevant_table_pos = next(
-                (
-                    pos
-                    for pos, (orig_idx, item) in enumerate(items)
-                    if item.kind == "table"
-                    and (page_idx, orig_idx) in resumed_table_keys
-                    and not (item.local_code or "").strip()
-                ),
-                None,
-            )
-
-            if first_relevant_table_pos is not None:
-                caption_scope = [item for _, item in items[:first_relevant_table_pos]]
-                caption_code = find_caption_code(caption_scope)
-
-                if caption_code:
-                    carry_from_prev = caption_code.strip() or None
-
-        carry_to_next = _process_page_tables(
-            carry_from_prev=carry_from_prev,
-            changes=changes,
-            items=items,
-            page_idx=page_idx,
-            resumed_table_keys=resumed_table_keys,
-            truncated_table_keys=truncated_table_keys,
-        )
-
-        # Carry forward only the table that continues onto the next page.
-        carry_from_prev = carry_to_next
-        last_page_idx = page_idx
-
-    return changes
-
-
 def run_postprocess_step(
     *,
     compile_ran: bool,
@@ -1260,7 +1262,7 @@ def run_postprocess_step(
             "overwrite=True."
         )
 
-    postprocess_verified_page_irs(
+    _postprocess_verified_page_irs(
         page_irs=page_irs,
         verification_dirs=verification_dirs,
         verified_table_continuation_edges=verified_table_edges,

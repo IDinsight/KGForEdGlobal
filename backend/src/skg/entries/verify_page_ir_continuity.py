@@ -46,7 +46,7 @@ from skg.page_ir_verification.utils import (
     cross_check_extraction_run,
     load_edge_verdict_from_pair_report,
     persist_verification_run,
-    run_save_step,
+    save_verified_page_irs,
 )
 from skg.page_ir_verification.verify_page_pairs import verify_single_page_pair
 from skg.schemas import RunConfig, RunCtx, VerificationConfig
@@ -152,7 +152,7 @@ def verify_page_ir_continuity(
         verified_table_edges=verified_table_edges,
     )
 
-    run_save_step(
+    save_verified_page_irs(
         compile_ran=compile_ran,
         config=config,
         page_irs=page_irs,
