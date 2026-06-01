@@ -24,12 +24,13 @@ class BackendSettings(BaseSettings):
 
     # LLM
     LLM_ANTHROPIC_EFFORT: str = "high"
-    LLM_KG_MODEL: str = "anthropic:claude-opus-4-6"
+    LLM_ANTHROPIC_THINKING_BUDGET_TOKENS: int = 16384
+    LLM_KG_MODEL: str = "anthropic:claude-opus-4-7"
     LLM_OPENAI_REASONING_EFFORT: str = "high"
     LLM_OPENAI_TEMPERATURE: float = 0.0
     LLM_OPENAI_TOP_P: float = 0.95
-    LLM_PAGE_IR_EXTRACTION_MODEL: str = "anthropic:claude-opus-4-6"
-    LLM_PAGE_IR_VERIFICATION_MODEL: str = "anthropic:claude-opus-4-6"
+    LLM_PAGE_IR_EXTRACTION_MODEL: str = "anthropic:claude-opus-4-7"
+    LLM_PAGE_IR_VERIFICATION_MODEL: str = "anthropic:claude-opus-4-7"
 
     # Logging
     LOGGING_LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
@@ -93,11 +94,12 @@ class BackendSettings(BaseSettings):
         """
 
         return ModelConfig(
-            model=self._llm_type_registry(model_type),
             anthropic_effort=self.LLM_ANTHROPIC_EFFORT,
+            anthropic_thinking_budget_tokens=self.LLM_ANTHROPIC_THINKING_BUDGET_TOKENS,
+            model=self._llm_type_registry(model_type),
+            openai_reasoning_effort=self.LLM_OPENAI_REASONING_EFFORT,
             openai_temperature=self.LLM_OPENAI_TEMPERATURE,
             openai_top_p=self.LLM_OPENAI_TOP_P,
-            openai_reasoning_effort=self.LLM_OPENAI_REASONING_EFFORT,
         )
 
 

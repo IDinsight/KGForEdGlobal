@@ -249,33 +249,6 @@ def test_node_role_enum_snapshot() -> None:
     )
 
 
-def test_non_artifacts_snapshot() -> None:
-    """Snapshot test for the `NonArtifacts` set.
-
-    Validates that every entry is a unique, lowercase, stripped string.
-    """
-
-    assert constants.NonArtifacts == {
-        "abbreviations and acronyms",
-        "acknowledgements",
-        "acknowledgments",
-        "bibliography",
-        "contents",
-        "list of figures",
-        "list of tables",
-        "preface",
-        "reference list",
-        "references",
-        "table of contents",
-    }
-
-    # Keep matching data normalized.
-    for s in constants.NonArtifacts:
-        assert isinstance(s, str)
-        assert s == s.strip()
-        assert s == s.lower()
-
-
 def test_page_boundary_state_enum_snapshot() -> None:
     """Snapshot test for the `PageBoundaryState` string enum."""
 

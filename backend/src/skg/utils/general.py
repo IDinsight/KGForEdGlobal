@@ -22,20 +22,6 @@ from pydantic_ai.result import RunUsage
 # Package Library
 from skg.regexes import TOKEN_RE
 
-QUOTES_TRANSLATION = str.maketrans(
-    {
-        "“": '"',
-        "”": '"',
-        "„": '"',
-        "‟": '"',
-        "’": "'",
-        "‘": "'",
-        "‚": "'",
-        "‛": "'",
-        "\u00a0": " ",  # NBSP -> space
-    }
-)
-
 
 @dataclass
 class AgentUsageBucket:

@@ -8,10 +8,10 @@ import pytest
 
 # Package Library
 from skg.regexes import (
+    _CAPTION_NUMERIC_IDENTIFIER_RE,
+    _CAPTION_ROMAN_NUMERAL_RE,
     ALPHA_RE,
     CAPTION_IDENTIFIER_RE,
-    CAPTION_NUMERIC_IDENTIFIER_RE,
-    CAPTION_ROMAN_NUMERAL_RE,
     DASH_RE,
     DIGIT_RE,
     FIGURE_PREFIX_PATTERN,
@@ -103,7 +103,7 @@ def _compile_numeric_identifier(flags: int = 0) -> re.Pattern[str]:
         Compiled pattern.
     """
 
-    return re.compile(rf"^{CAPTION_NUMERIC_IDENTIFIER_RE}$", flags=flags)
+    return re.compile(rf"^{_CAPTION_NUMERIC_IDENTIFIER_RE}$", flags=flags)
 
 
 class TestAlphaRe:
@@ -188,7 +188,7 @@ class TestCaptionRomanNumeralRe:
             Compiled pattern anchored to start/end.
         """
 
-        return re.compile(rf"^{CAPTION_ROMAN_NUMERAL_RE}$")
+        return re.compile(rf"^{_CAPTION_ROMAN_NUMERAL_RE}$")
 
     @PARAM(
         "text", ["I", "IV", "IX", "XIV", "XL", "XC", "CD", "CM", "MCMXCIX", "MMMCMXCIX"]

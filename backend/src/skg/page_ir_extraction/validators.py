@@ -23,13 +23,21 @@ from typing import Any
 
 # Package Library
 from skg.page_ir_extraction.schemas import PageIR, TextUnit
-from skg.utils.constants import (
-    BlockType,
-    FigureKind,
-    ItemBoundary,
-    NonArtifacts,
-    PageBoundaryState,
-)
+from skg.utils.constants import BlockType, FigureKind, ItemBoundary, PageBoundaryState
+
+NonArtifacts = {
+    "abbreviations and acronyms",
+    "acknowledgements",
+    "acknowledgments",
+    "bibliography",
+    "contents",
+    "list of figures",
+    "list of tables",
+    "preface",
+    "reference list",
+    "references",
+    "table of contents",
+}
 
 
 @dataclass
@@ -148,6 +156,193 @@ def _is_truncated(boundary: ItemBoundary) -> bool:
     return boundary in (ItemBoundary.TRUNCATED, ItemBoundary.BOTH)
 
 
+def _validate_table_cells_text_en(*, index: int, rows: list[Any]) -> None:
+    """Validate that table cell text_en is null during extraction.
+
+    Parameters
+    ----------
+    index
+        The index of the table in items.
+    rows
+        The rows of the table.
+
+    Raises
+    ------
+    QualityError
+        If any cell has text_en populated.
+    """
+
+    for r, row in enumerate(rows):
+        for c, cell in enumerate(row.cells):
+            _validate_text_en_is_none(
+                text=cell.text, where_=f"items[{index}].rows[{r}].cells[{c}].text"
+            )
+
+
+def _validate_table_collapse_by_header_body(
+    *, cell_counts: list[int], eff_widths: list[int], header_row_count: int, index: int
+) -> None:
+    """Detect likely table collapse via header vs. body effective widths.
+
+    Parameters
+    ----------
+    cell_counts
+        The raw cell counts per row.
+    eff_widths
+        The effective widths (span-aware) per row.
+    header_row_count
+        The header_row_count of the table.
+    index
+        The index of the table in items.
+
+    Raises
+    ------
+    QualityError
+        If the table likely collapsed.
+    """
+
+    # Detect likely collapse: header shows multiple columns but body is mostly
+    # single-column in effective width.
+    if not 0 < header_row_count < len(eff_widths):
+        return
+
+    header_max = max(eff_widths[:header_row_count])
+    body_widths = eff_widths[header_row_count:]
+
+    if not body_widths:
+        return
+
+    body_sorted = sorted(body_widths)
+    body_median = body_sorted[len(body_sorted) // 2]
+    frac_single = sum(w == 1 for w in body_widths) / len(body_widths)
+
+    if header_max >= 3 and body_median <= 1 and frac_single >= 0.60:
+        # Include raw cell counts for debugging.
+        header_cell_max = max(cell_counts[:header_row_count])
+        raise QualityError(
+            f"Table at items[{index}] likely collapsed: header shows {header_max} columns "
+            f"(effective, spans-aware; raw max cells={header_cell_max}), but "
+            f"{frac_single:.0%} of body rows have effective width 1. Split body rows "
+            f"into separate cells per visible column (or set correct col_span values)."
+        )
+
+
+def _validate_table_has_any_text(*, index: int, rows: list[Any]) -> None:
+    """Validate that the table has any text content.
+
+    Parameters
+    ----------
+    index
+        The index of the table in items.
+    rows
+        The rows of the table.
+
+    Raises
+    ------
+    QualityError
+        If the table has no text content.
+    """
+
+    for row in rows:
+        for cell in row.cells or []:
+            text_or_none = cell.text
+
+            if isinstance(text_or_none, TextUnit) and text_or_none.text.strip():
+                return
+
+    raise QualityError(f"Table at items[{index}] contains no text content.")
+
+
+def _validate_table_inconsistent_widths(
+    *, eff_widths: list[int], index: int, max_eff: int
+) -> None:
+    """Catch wildly inconsistent table widths overall (span-aware).
+
+    Parameters
+    ----------
+    eff_widths
+        The effective widths (span-aware) per row.
+    index
+        The index of the table in items.
+    max_eff
+        The maximum effective width of the table (sum of col_span).
+
+    Raises
+    ------
+    QualityError
+        If the table appears mostly single-column.
+    """
+
+    if max_eff < 4:
+        return
+
+    # Catch wildly inconsistent widths overall (span-aware).
+    mode_eff, _ = Counter(eff_widths).most_common(1)[0]
+    frac_single_all = sum(w == 1 for w in eff_widths) / len(eff_widths)
+
+    if mode_eff == 1 and frac_single_all >= 0.70:
+        raise QualityError(
+            f"Table at items[{index}] appears mostly single-column rows "
+            f"({frac_single_all:.0%} of rows have effective width 1). This often "
+            f"indicates the table grid was collapsed. Represent each visible column as "
+            f"a separate cell (or set correct col_span values)."
+        )
+
+
+def _validate_table_n_cols(*, index: int, n_cols: Any) -> None:
+    """Validate that table n_cols is within a plausible range.
+
+    Parameters
+    ----------
+    index
+        The index of the table in items.
+    n_cols
+        The n_cols of the table.
+
+    Raises
+    ------
+    QualityError
+        If n_cols is outside a plausible range.
+    """
+
+    if n_cols is None:
+        return
+
+    if not isinstance(n_cols, int):
+        raise QualityError(
+            f"n_cols must be an int or null at items[{index}].n_cols; got {type(n_cols)}"
+        )
+    if n_cols > 50:
+        raise QualityError(
+            f"Suspicious n_cols={n_cols} at items[{index}].n_cols (expected 1..50 or null)."
+        )
+
+
+def _validate_text_en_is_none(*, text: TextUnit | None, where_: str) -> None:
+    """Enforce that extraction does not populate English translations.
+
+    Parameters
+    ----------
+    text
+        Either a TextUnit object or None.
+    where_
+        Description of where the TextUnit is located (for error messages).
+
+    Raises
+    ------
+    QualityError
+        If text_en is populated during extraction.
+    """
+
+    if text is None:
+        return
+
+    # TextUnit.text_en must be null/omitted during extraction; translation happens
+    # later.
+    if text.text_en is not None:
+        raise QualityError(f"text_en must be null during extraction at: {where_}.")
+
+
 def compute_boundary_state_from_items(page_ir: PageIR) -> PageBoundaryState:
     """Derive the page boundary state from item boundaries.
 
@@ -258,7 +453,7 @@ def validate_basic_block_invariants(ctx: PageIRExtractionQualityCtx) -> None:
             for j, list_item in enumerate(list_items):
                 list_item_text_or_none = list_item.text
 
-                validate_text_en_is_none(
+                _validate_text_en_is_none(
                     text=list_item_text_or_none,
                     where_=f"items[{i}].list_items[{j}].text",
                 )
@@ -349,6 +544,38 @@ def validate_continuity_for_extraction(ctx: PageIRExtractionQualityCtx) -> None:
             )
 
 
+def validate_extraction_text_constraints(ctx: PageIRExtractionQualityCtx) -> None:
+    """Validate extraction-specific text constraints on blocks.
+
+    Checks that text_en is null on all text-bearing fields (extraction produces source
+    text only; translation happens in a later pass) and that figure captions also have
+    text_en=null.
+
+    Parameters
+    ----------
+    ctx
+        The PageIR extraction quality context.
+
+    Raises
+    ------
+    QualityError
+        If any extraction-specific text constraint is violated.
+    """
+
+    for i, item in enumerate(ctx.items):
+        if item.kind != "block":
+            continue
+
+        # text_en must be null during extraction.
+        _validate_text_en_is_none(text=item.text, where_=f"items[{i}].text")
+
+        # Check figure captions for text_en.
+        if item.figure is not None and item.figure.caption is not None:
+            _validate_text_en_is_none(
+                text=item.figure.caption, where_=f"items[{i}].figure.caption"
+            )
+
+
 def validate_figure_blocks_are_well_formed(ctx: PageIRExtractionQualityCtx) -> None:
     """Validate extraction-specific figure block constraints.
 
@@ -374,12 +601,12 @@ def validate_figure_blocks_are_well_formed(ctx: PageIRExtractionQualityCtx) -> N
 
         # Extraction-specific: no translations during extraction.
         if fig.caption is not None:
-            validate_text_en_is_none(
+            _validate_text_en_is_none(
                 text=fig.caption, where_=f"items[{i}].figure.caption"
             )
 
         if fig.embedded_text is not None:
-            validate_text_en_is_none(
+            _validate_text_en_is_none(
                 text=fig.embedded_text, where_=f"items[{i}].figure.embedded_text"
             )
 
@@ -759,38 +986,6 @@ def validate_no_duplicate_item_bboxes(ctx: PageIRExtractionQualityCtx) -> None:
     )
 
 
-def validate_extraction_text_constraints(ctx: PageIRExtractionQualityCtx) -> None:
-    """Validate extraction-specific text constraints on blocks.
-
-    Checks that text_en is null on all text-bearing fields (extraction produces source
-    text only; translation happens in a later pass) and that figure captions also have
-    text_en=null.
-
-    Parameters
-    ----------
-    ctx
-        The PageIR extraction quality context.
-
-    Raises
-    ------
-    QualityError
-        If any extraction-specific text constraint is violated.
-    """
-
-    for i, item in enumerate(ctx.items):
-        if item.kind != "block":
-            continue
-
-        # text_en must be null during extraction.
-        validate_text_en_is_none(text=item.text, where_=f"items[{i}].text")
-
-        # Check figure captions for text_en.
-        if item.figure is not None and item.figure.caption is not None:
-            validate_text_en_is_none(
-                text=item.figure.caption, where_=f"items[{i}].figure.caption"
-            )
-
-
 def validate_placeholder_bboxes(ctx: PageIRExtractionQualityCtx) -> None:
     """Detect placeholder bboxes used across many items.
 
@@ -858,139 +1053,6 @@ def validate_placeholder_bboxes(ctx: PageIRExtractionQualityCtx) -> None:
             )
 
 
-def validate_table_cells_text_en(*, index: int, rows: list[Any]) -> None:
-    """Validate that table cell text_en is null during extraction.
-
-    Parameters
-    ----------
-    index
-        The index of the table in items.
-    rows
-        The rows of the table.
-
-    Raises
-    ------
-    QualityError
-        If any cell has text_en populated.
-    """
-
-    for r, row in enumerate(rows):
-        for c, cell in enumerate(row.cells):
-            validate_text_en_is_none(
-                text=cell.text, where_=f"items[{index}].rows[{r}].cells[{c}].text"
-            )
-
-
-def validate_table_collapse_by_header_body(
-    *, cell_counts: list[int], eff_widths: list[int], header_row_count: int, index: int
-) -> None:
-    """Detect likely table collapse via header vs. body effective widths.
-
-    Parameters
-    ----------
-    cell_counts
-        The raw cell counts per row.
-    eff_widths
-        The effective widths (span-aware) per row.
-    header_row_count
-        The header_row_count of the table.
-    index
-        The index of the table in items.
-
-    Raises
-    ------
-    QualityError
-        If the table likely collapsed.
-    """
-
-    # Detect likely collapse: header shows multiple columns but body is mostly
-    # single-column in effective width.
-    if not 0 < header_row_count < len(eff_widths):
-        return
-
-    header_max = max(eff_widths[:header_row_count])
-    body_widths = eff_widths[header_row_count:]
-
-    if not body_widths:
-        return
-
-    body_sorted = sorted(body_widths)
-    body_median = body_sorted[len(body_sorted) // 2]
-    frac_single = sum(w == 1 for w in body_widths) / len(body_widths)
-
-    if header_max >= 3 and body_median <= 1 and frac_single >= 0.60:
-        # Include raw cell counts for debugging.
-        header_cell_max = max(cell_counts[:header_row_count])
-        raise QualityError(
-            f"Table at items[{index}] likely collapsed: header shows {header_max} columns "
-            f"(effective, spans-aware; raw max cells={header_cell_max}), but "
-            f"{frac_single:.0%} of body rows have effective width 1. Split body rows "
-            f"into separate cells per visible column (or set correct col_span values)."
-        )
-
-
-def validate_table_has_any_text(*, index: int, rows: list[Any]) -> None:
-    """Validate that the table has any text content.
-
-    Parameters
-    ----------
-    index
-        The index of the table in items.
-    rows
-        The rows of the table.
-
-    Raises
-    ------
-    QualityError
-        If the table has no text content.
-    """
-
-    for row in rows:
-        for cell in row.cells or []:
-            text_or_none = cell.text
-
-            if isinstance(text_or_none, TextUnit) and text_or_none.text.strip():
-                return
-
-    raise QualityError(f"Table at items[{index}] contains no text content.")
-
-
-def validate_table_inconsistent_widths(
-    *, eff_widths: list[int], index: int, max_eff: int
-) -> None:
-    """Catch wildly inconsistent table widths overall (span-aware).
-
-    Parameters
-    ----------
-    eff_widths
-        The effective widths (span-aware) per row.
-    index
-        The index of the table in items.
-    max_eff
-        The maximum effective width of the table (sum of col_span).
-
-    Raises
-    ------
-    QualityError
-        If the table appears mostly single-column.
-    """
-
-    if max_eff < 4:
-        return
-
-    # Catch wildly inconsistent widths overall (span-aware).
-    mode_eff, _ = Counter(eff_widths).most_common(1)[0]
-    frac_single_all = sum(w == 1 for w in eff_widths) / len(eff_widths)
-
-    if mode_eff == 1 and frac_single_all >= 0.70:
-        raise QualityError(
-            f"Table at items[{index}] appears mostly single-column rows "
-            f"({frac_single_all:.0%} of rows have effective width 1). This often "
-            f"indicates the table grid was collapsed. Represent each visible column as "
-            f"a separate cell (or set correct col_span values)."
-        )
-
-
 def validate_table_integrity(ctx: PageIRExtractionQualityCtx) -> None:
     """Validate table integrity via heuristic quality checks.
 
@@ -1012,7 +1074,7 @@ def validate_table_integrity(ctx: PageIRExtractionQualityCtx) -> None:
         rows = item.rows or []
 
         # Extraction-specific: text_en must be null on all cells.
-        validate_table_cells_text_en(index=i, rows=rows)
+        _validate_table_cells_text_en(index=i, rows=rows)
 
         # Lightweight column-count sanity checks (span-aware). NB: We must account for
         # col_span when assessing whether a table has "collapsed" into single-cell
@@ -1033,69 +1095,15 @@ def validate_table_integrity(ctx: PageIRExtractionQualityCtx) -> None:
         )
 
         if stats is not None:
-            validate_table_n_cols(index=i, n_cols=item.n_cols)
-            validate_table_collapse_by_header_body(
+            _validate_table_n_cols(index=i, n_cols=item.n_cols)
+            _validate_table_collapse_by_header_body(
                 cell_counts=stats.cell_counts,
                 eff_widths=stats.eff_widths,
                 header_row_count=int(item.header_row_count),
                 index=i,
             )
-            validate_table_inconsistent_widths(
+            _validate_table_inconsistent_widths(
                 eff_widths=stats.eff_widths, index=i, max_eff=stats.max_eff
             )
 
-        validate_table_has_any_text(index=i, rows=rows)
-
-
-def validate_table_n_cols(*, index: int, n_cols: Any) -> None:
-    """Validate that table n_cols is within a plausible range.
-
-    Parameters
-    ----------
-    index
-        The index of the table in items.
-    n_cols
-        The n_cols of the table.
-
-    Raises
-    ------
-    QualityError
-        If n_cols is outside a plausible range.
-    """
-
-    if n_cols is None:
-        return
-
-    if not isinstance(n_cols, int):
-        raise QualityError(
-            f"n_cols must be an int or null at items[{index}].n_cols; got {type(n_cols)}"
-        )
-    if n_cols > 50:
-        raise QualityError(
-            f"Suspicious n_cols={n_cols} at items[{index}].n_cols (expected 1..50 or null)."
-        )
-
-
-def validate_text_en_is_none(*, text: TextUnit | None, where_: str) -> None:
-    """Enforce that extraction does not populate English translations.
-
-    Parameters
-    ----------
-    text
-        Either a TextUnit object or None.
-    where_
-        Description of where the TextUnit is located (for error messages).
-
-    Raises
-    ------
-    QualityError
-        If text_en is populated during extraction.
-    """
-
-    if text is None:
-        return
-
-    # TextUnit.text_en must be null/omitted during extraction; translation happens
-    # later.
-    if text.text_en is not None:
-        raise QualityError(f"text_en must be null during extraction at: {where_}.")
+        _validate_table_has_any_text(index=i, rows=rows)

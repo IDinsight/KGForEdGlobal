@@ -31,7 +31,7 @@ _UNESCAPED_ANGLE_BRACKET_RE = re.compile(pattern=r"(?<!\\)[<>]")
         ("123", 123),
     ],
 )
-def test_escape_angle_brackets_basic_cases(*, expected: str, x: Any) -> None:
+def test__escape_angle_brackets_basic_cases(*, expected: str, x: Any) -> None:
     """Escape `<` and `>` in the string form of the input, with exact expected output.
 
     Parameters
@@ -43,17 +43,17 @@ def test_escape_angle_brackets_basic_cases(*, expected: str, x: Any) -> None:
         string before escaping.
     """
 
-    result = logging_.escape_angle_brackets(x=x)
+    result = logging_._escape_angle_brackets(x=x)
     assert isinstance(result, str)
     assert result == expected
 
 
-def test_escape_angle_brackets_does_not_mutate_containers() -> None:
+def test__escape_angle_brackets_does_not_mutate_containers() -> None:
     """Container inputs should not be mutated because the function operates on `str(x)`."""
 
     x: list[Any] = ["<a>", {"k": "<v>"}]
     x_before: list[Any] = deepcopy(x=x)
-    _ = logging_.escape_angle_brackets(x=x)
+    _ = logging_._escape_angle_brackets(x=x)
     assert x == x_before
 
 
@@ -66,7 +66,7 @@ def test_escape_angle_brackets_does_not_mutate_containers() -> None:
         ("prefix <tag> suffix",),
     ],
 )
-def test_escape_angle_brackets_escapes_every_angle_bracket(*, x: str) -> None:
+def test__escape_angle_brackets_escapes_every_angle_bracket(*, x: str) -> None:
     """All angle brackets in the output should be escaped (no raw `<` or `>`).
 
     Parameters
@@ -75,8 +75,41 @@ def test_escape_angle_brackets_escapes_every_angle_bracket(*, x: str) -> None:
         The input string containing angle brackets to escape.
     """
 
-    result = logging_.escape_angle_brackets(x=x)
+    result = logging_._escape_angle_brackets(x=x)
     assert _UNESCAPED_ANGLE_BRACKET_RE.search(string=result) is None
+
+
+def test__generate_entry_and_exit_log_str() -> None:
+    """Test `generate_entry_log_str` and `generate_exit_log_str`."""
+
+    class Obj:
+        """A simple object with a `user_id` attribute."""
+
+        def __init__(self) -> None:
+            """Initialize the object with a `user_id` attribute."""
+
+            self.user_id = 123
+
+    args: tuple[Any, ...] = (Obj(), "a<b")  # args[0] has 'user_id'
+    kwargs: dict[str, Any] = {"k": "v>z"}
+    entry_str = logging_._generate_entry_log_str(
+        args=args,
+        extra_args=["user_id", "missing"],
+        kwargs=kwargs,
+        name="fn",
+    )
+    assert "ENTERING: 'fn'" in entry_str
+    assert "args:\n" in entry_str and "kwargs:\n" in entry_str
+
+    # `extra_args` section shows both present and missing attributes.
+    assert "user_id: 123" in entry_str
+    assert "missing: N/A" in entry_str
+
+    exit_str = logging_._generate_exit_log_str(name="fn", result={"ok": "<yes>"})
+    assert "EXITING: 'fn'" in exit_str
+
+    # With stubbed escaper, the dict should be wrapped.
+    assert "{'ok': '\\<yes\\>'}" in exit_str
 
 
 def test_intercept_handler_forwards_stdlib_logs(
@@ -207,39 +240,6 @@ def test_intercept_handler_increments_depth_while_in_logging_frames(
     assert calls[0]["opt_kwargs"]["depth"] == 2 + n
 
     assert calls[0]["level"] == "INFO"
-
-
-def test_generate_entry_and_exit_log_str() -> None:
-    """Test `generate_entry_log_str` and `generate_exit_log_str`."""
-
-    class Obj:
-        """A simple object with a `user_id` attribute."""
-
-        def __init__(self) -> None:
-            """Initialize the object with a `user_id` attribute."""
-
-            self.user_id = 123
-
-    args: tuple[Any, ...] = (Obj(), "a<b")  # args[0] has 'user_id'
-    kwargs: dict[str, Any] = {"k": "v>z"}
-    entry_str = logging_.generate_entry_log_str(
-        args=args,
-        extra_args=["user_id", "missing"],
-        kwargs=kwargs,
-        name="fn",
-    )
-    assert "ENTERING: 'fn'" in entry_str
-    assert "args:\n" in entry_str and "kwargs:\n" in entry_str
-
-    # `extra_args` section shows both present and missing attributes.
-    assert "user_id: 123" in entry_str
-    assert "missing: N/A" in entry_str
-
-    exit_str = logging_.generate_exit_log_str(name="fn", result={"ok": "<yes>"})
-    assert "EXITING: 'fn'" in exit_str
-
-    # With stubbed escaper, the dict should be wrapped.
-    assert "{'ok': '\\<yes\\>'}" in exit_str
 
 
 def test_initialize_logger_builds_config_and_appends_file_handler(

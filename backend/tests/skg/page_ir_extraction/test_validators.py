@@ -19,9 +19,16 @@ from skg.page_ir_extraction.schemas import (
     TextUnit,
 )
 from skg.page_ir_extraction.validators import (
+    NonArtifacts,
     PageIRExtractionQualityCtx,
     QualityError,
     _is_full_page_bbox,
+    _validate_table_cells_text_en,
+    _validate_table_collapse_by_header_body,
+    _validate_table_has_any_text,
+    _validate_table_inconsistent_widths,
+    _validate_table_n_cols,
+    _validate_text_en_is_none,
     compute_boundary_state_from_items,
     validate_artifacts_are_true_artifacts,
     validate_basic_block_invariants,
@@ -36,13 +43,7 @@ from skg.page_ir_extraction.validators import (
     validate_item_bboxes_required_and_in_bounds,
     validate_no_duplicate_item_bboxes,
     validate_placeholder_bboxes,
-    validate_table_cells_text_en,
-    validate_table_collapse_by_header_body,
-    validate_table_has_any_text,
-    validate_table_inconsistent_widths,
     validate_table_integrity,
-    validate_table_n_cols,
-    validate_text_en_is_none,
 )
 from skg.utils.constants import (
     BlockType,
@@ -353,6 +354,112 @@ def test__is_full_page_bbox_respects_tolerance() -> None:
     )
 
 
+def test__validate_table_cells_text_en_rejects_any_translation(
+    make_text_unit: Callable[..., TextUnit],
+) -> None:
+    """validate_table_cells_text_en should reject any table cell where text_en is
+    populated.
+
+    Parameters
+    ----------
+    make_text_unit
+        Factory fixture for creating TextUnit instances.
+    """
+
+    rows = [
+        TableRow(
+            cells=[
+                TableCell(
+                    col_span=1, row_span=1, text=make_text_unit(text="A", text_en="A")
+                )
+            ]
+        ),
+    ]
+
+    with pytest.raises(QualityError, match="cells\\[0\\]"):
+        _validate_table_cells_text_en(index=0, rows=rows)
+
+
+def test__validate_table_collapse_by_header_body_detects_likely_collapse() -> None:
+    """`_validate_table_collapse_by_header_body` should flag tables whose body
+    collapses into single-cell rows.
+    """
+
+    cell_counts = [3, 1, 1, 1, 1, 2]
+    eff_widths = [3, 1, 1, 1, 1, 2]
+
+    with pytest.raises(QualityError, match="likely collapsed"):
+        _validate_table_collapse_by_header_body(
+            cell_counts=cell_counts, eff_widths=eff_widths, header_row_count=1, index=2
+        )
+
+
+def test__validate_table_has_any_text_rejects_all_empty_cells() -> None:
+    """validate_table_has_any_text should reject tables where all cells are text=null
+    or whitespace.
+    """
+
+    rows = [
+        TableRow(cells=[TableCell(col_span=1, row_span=1, text=None)]),
+        TableRow(cells=[TableCell(col_span=1, row_span=1, text=None)]),
+    ]
+
+    with pytest.raises(QualityError, match="contains no text content"):
+        _validate_table_has_any_text(index=0, rows=rows)
+
+
+def test__validate_table_inconsistent_widths_detects_mostly_single_column_when_max_eff_large() -> (
+    None
+):
+    """validate_table_inconsistent_widths should flag tables with max_eff>=4 but most
+    rows width=1.
+    """
+
+    eff_widths = [4, 1, 1, 1, 1, 1, 1, 1]
+
+    with pytest.raises(QualityError, match="mostly single-column"):
+        _validate_table_inconsistent_widths(eff_widths=eff_widths, index=0, max_eff=4)
+
+
+def test__validate_table_n_cols_rejects_implausibly_large() -> None:
+    """validate_table_n_cols should reject suspiciously large column counts."""
+
+    with pytest.raises(QualityError, match="Suspicious n_cols"):
+        _validate_table_n_cols(index=0, n_cols=51)
+
+
+def test__validate_table_n_cols_rejects_non_int() -> None:
+    """validate_table_n_cols should reject non-int values (defense-in-depth vs. schema
+    drift).
+    """
+
+    with pytest.raises(QualityError, match="n_cols must be an int"):
+        _validate_table_n_cols(index=0, n_cols="3")
+
+
+def test__validate_text_en_is_none_allows_none_text_unit() -> None:
+    """validate_text_en_is_none should no-op when the TextUnit is None."""
+
+    _validate_text_en_is_none(text=None, where_="items[0].text")
+
+
+def test__validate_text_en_is_none_rejects_populated_translation(
+    make_text_unit: Callable[..., TextUnit],
+) -> None:
+    """validate_text_en_is_none should reject populated text_en with a useful pointer.
+
+    Parameters
+    ----------
+    make_text_unit
+        Factory fixture for creating TextUnit instances.
+    """
+
+    with pytest.raises(QualityError, match="text_en must be null"):
+        _validate_text_en_is_none(
+            text=make_text_unit(text="Hola", text_en="Hello"), where_="items[0].text"
+        )
+
+
 def test_compute_boundary_state_from_items_ignores_artifacts(
     make_block: Callable[..., Block],
 ) -> None:
@@ -415,6 +522,33 @@ def test_compute_boundary_state_from_items_detects_from_prev_to_next(
     )
 
     assert compute_boundary_state_from_items(page_ir) == PageBoundaryState.BOTH
+
+
+def test_non_artifacts_snapshot() -> None:
+    """Snapshot test for the `NonArtifacts` set.
+
+    Validates that every entry is a unique, lowercase, stripped string.
+    """
+
+    assert NonArtifacts == {
+        "abbreviations and acronyms",
+        "acknowledgements",
+        "acknowledgments",
+        "bibliography",
+        "contents",
+        "list of figures",
+        "list of tables",
+        "preface",
+        "reference list",
+        "references",
+        "table of contents",
+    }
+
+    # Keep matching data normalized.
+    for s in NonArtifacts:
+        assert isinstance(s, str)
+        assert s == s.strip()
+        assert s == s.lower()
 
 
 def test_validate_artifacts_are_true_artifacts_allows_true_artifacts(
@@ -1424,73 +1558,6 @@ def test_validate_placeholder_bboxes_rejects_origin_anchored_placeholders() -> N
         validate_placeholder_bboxes(ctx)
 
 
-def test_validate_table_cells_text_en_rejects_any_translation(
-    make_text_unit: Callable[..., TextUnit],
-) -> None:
-    """validate_table_cells_text_en should reject any table cell where text_en is
-    populated.
-
-    Parameters
-    ----------
-    make_text_unit
-        Factory fixture for creating TextUnit instances.
-    """
-
-    rows = [
-        TableRow(
-            cells=[
-                TableCell(
-                    col_span=1, row_span=1, text=make_text_unit(text="A", text_en="A")
-                )
-            ]
-        ),
-    ]
-
-    with pytest.raises(QualityError, match="cells\\[0\\]"):
-        validate_table_cells_text_en(index=0, rows=rows)
-
-
-def test_validate_table_collapse_by_header_body_detects_likely_collapse() -> None:
-    """validate_table_collapse_by_header_body should flag tables whose body collapses
-    into single-cell rows.
-    """
-
-    cell_counts = [3, 1, 1, 1, 1, 2]
-    eff_widths = [3, 1, 1, 1, 1, 2]
-
-    with pytest.raises(QualityError, match="likely collapsed"):
-        validate_table_collapse_by_header_body(
-            cell_counts=cell_counts, eff_widths=eff_widths, header_row_count=1, index=2
-        )
-
-
-def test_validate_table_has_any_text_rejects_all_empty_cells() -> None:
-    """validate_table_has_any_text should reject tables where all cells are text=null
-    or whitespace.
-    """
-
-    rows = [
-        TableRow(cells=[TableCell(col_span=1, row_span=1, text=None)]),
-        TableRow(cells=[TableCell(col_span=1, row_span=1, text=None)]),
-    ]
-
-    with pytest.raises(QualityError, match="contains no text content"):
-        validate_table_has_any_text(index=0, rows=rows)
-
-
-def test_validate_table_inconsistent_widths_detects_mostly_single_column_when_max_eff_large() -> (
-    None
-):
-    """validate_table_inconsistent_widths should flag tables with max_eff>=4 but most
-    rows width=1.
-    """
-
-    eff_widths = [4, 1, 1, 1, 1, 1, 1, 1]
-
-    with pytest.raises(QualityError, match="mostly single-column"):
-        validate_table_inconsistent_widths(eff_widths=eff_widths, index=0, max_eff=4)
-
-
 def test_validate_table_integrity_passes_on_well_formed_table(
     make_table: Callable[..., Table],
 ) -> None:
@@ -1546,42 +1613,3 @@ def test_validate_table_integrity_surfaces_collapse_errors(
 
     with pytest.raises(QualityError, match="likely collapsed"):
         validate_table_integrity(ctx)
-
-
-def test_validate_table_n_cols_rejects_implausibly_large() -> None:
-    """validate_table_n_cols should reject suspiciously large column counts."""
-
-    with pytest.raises(QualityError, match="Suspicious n_cols"):
-        validate_table_n_cols(index=0, n_cols=51)
-
-
-def test_validate_table_n_cols_rejects_non_int() -> None:
-    """validate_table_n_cols should reject non-int values (defense-in-depth vs. schema
-    drift).
-    """
-
-    with pytest.raises(QualityError, match="n_cols must be an int"):
-        validate_table_n_cols(index=0, n_cols="3")
-
-
-def test_validate_text_en_is_none_allows_none_text_unit() -> None:
-    """validate_text_en_is_none should no-op when the TextUnit is None."""
-
-    validate_text_en_is_none(text=None, where_="items[0].text")
-
-
-def test_validate_text_en_is_none_rejects_populated_translation(
-    make_text_unit: Callable[..., TextUnit],
-) -> None:
-    """validate_text_en_is_none should reject populated text_en with a useful pointer.
-
-    Parameters
-    ----------
-    make_text_unit
-        Factory fixture for creating TextUnit instances.
-    """
-
-    with pytest.raises(QualityError, match="text_en must be null"):
-        validate_text_en_is_none(
-            text=make_text_unit(text="Hola", text_en="Hello"), where_="items[0].text"
-        )

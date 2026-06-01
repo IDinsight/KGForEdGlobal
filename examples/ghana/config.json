@@ -1,44 +1,38 @@
 {
 	"page_ir_extraction": {
-		"always_double_check_first_attempt": true,
 		"country": "Ghana",
 		"dpi": 250,
 		"end_page": null,
 		"languages": [
 			"en"
 		],
-		"model": "gpt-5.2-2025-12-11",
-		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results",
+		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results/kg_for_ed",
 		"overwrite": false,
 		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/ghana/ghana.pdf",
 		"start_page": 0,
-		"use_text_layer_hints": true,
+		"use_extracted_hints": true,
 		"year": 2019
 	},
 	"page_ir_verification": {
-		"always_double_check_first_attempt": true,
 		"end_page": null,
-		"min_confidence_to_patch": 0.75,
-		"model": "gpt-5.2-2025-12-11",
+		"min_confidence_to_patch": 0.5,
+		"min_confidence_to_select_positive": 0.5,
+		"min_confidence_to_stop_negative_search": 0.9,
+		"next_page_crop_padding_px": 120,
+		"overwrite": false,
 		"start_page": 0
 	},
 	"document_ir": {
 		"keep_artifacts": false,
 		"max_section_path_length": 12,
-		"min_link_score": 2,
+		"min_link_score": 1.0,
 		"overwrite": true,
 		"repair_hyphenation": true,
 		"sort_items_by_bbox": true,
 		"table_filldown_enabled": true,
-		"table_filldown_group_cols_max": 1
+		"table_filldown_group_cols_max": 1,
+		"verification_auto_stitch_confidence": 0.7
 	},
-	"canonical_ir": {
-		"always_double_check_first_attempt": true,
-		"canonical_grouping_min_confidence": 0.80,
-		"max_table_rows_per_decision": null,
-		"model": "gpt-5.2-2025-12-11",
-		"overwrite": false,
-		"segment_decision_conf_threshold": 0.75,
-		"structural_leaf_warn_threshold": 0.75
-	}
+	"canonical_ir": null,
+	"kgs": null
 }

@@ -40,7 +40,6 @@ from skg.kgs.utils import (
 )
 from skg.kgs.validators import validate_atomic_skills
 from skg.schemas import CreateKGConfig
-from skg.utils.constants import LANG_PRIMARY_CODE_TO_NAME
 from skg.utils.general import open_json_type, write_to_json
 
 _DEFAULT_LC_PROMPT_LANGUAGE_INSTRUCTION = "the same language as the input text"
@@ -50,6 +49,18 @@ _INLINE_BULLET_CHARS = r"[\u2022\u00b7•·\*]"
 
 # Line bullets: allow hyphen/dash, but we only treat them as bullets at line-start.
 _LINE_BULLET_CHARS = r"[\u2022\u00b7•·\-\–\—\*]"
+
+# Primary-language map for common BCP-47 tags seen in primary-school curricula.
+LANG_PRIMARY_CODE_TO_NAME: dict[str, str] = {
+    "ar": "Arabic",
+    "en": "English",
+    "es": "Spanish",
+    "fr": "French",
+    "pt": "Portuguese",
+    "sw": "Swahili",
+    "und": "Undetermined",
+    "wo": "Wolof",
+}
 
 SUPPORTS = "supports"
 

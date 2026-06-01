@@ -1,4 +1,6 @@
-"""This module contains constants used throughout the application."""
+"""This module contains constants used throughout the application. Module specific
+constants should be scoped to the module.
+"""
 
 # Standard Library
 from enum import Enum
@@ -220,29 +222,3 @@ DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER: tuple[NodeRole, ...] = (
     NodeRole.TOPIC,
     NodeRole.SUBTOPIC,
 )
-
-# Primary-language map for common BCP-47 tags seen in primary-school curricula.
-LANG_PRIMARY_CODE_TO_NAME: dict[str, str] = {
-    "ar": "Arabic",
-    "en": "English",
-    "es": "Spanish",
-    "fr": "French",
-    "pt": "Portuguese",
-    "sw": "Swahili",
-    "und": "Undetermined",
-    "wo": "Wolof",
-}
-
-NonArtifacts = {
-    "abbreviations and acronyms",
-    "acknowledgements",
-    "acknowledgments",
-    "bibliography",
-    "contents",
-    "list of figures",
-    "list of tables",
-    "preface",
-    "reference list",
-    "references",
-    "table of contents",
-}

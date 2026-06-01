@@ -6,8 +6,80 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 # Package Library
-from skg.schemas import BBox, BCP47Str, validate_bbox_order, validate_bcp47
+from skg.schemas import BBox, _BCP47Str, _validate_bcp47, validate_bbox_order
 from tests.constants import PARAM
+
+
+@PARAM(
+    argnames=("code", "expected"),
+    argvalues=[
+        ("en_us", "en-US"),
+        (" en-US ", "en-US"),
+        ("zh_hans_cn", "zh-Hans-CN"),
+        ("mul", "mul"),
+        (" und ", "und"),
+        ("", "und"),
+    ],
+)
+def test__validate_bcp47_normalizes_and_standardizes(
+    *, code: str, expected: str
+) -> None:
+    """`validate_bcp47` normalizes underscore/whitespace and standardizes tag casing.
+
+    Parameters
+    ----------
+    code
+        The BCP-47 language tag to validate, which may have non-standard formatting.
+    expected
+        The expected output tag after validation, which is the canonicalized form of
+        the input tag if valid, or "und" if the input is empty or only whitespace.
+    """
+
+    assert _validate_bcp47(code=code) == expected
+
+
+def test__validate_bcp47_raises_on_parseable_but_invalid_tags() -> None:
+    """Parseable-but-invalid tags raise `ValueError` (langcodes `is_valid()` is False)."""
+
+    with pytest.raises(
+        expected_exception=ValueError, match=r"Invalid BCP-47 language tag"
+    ):
+        _ = _validate_bcp47(code="en-US-foobar")
+
+
+@PARAM(
+    argnames=("code", "match"),
+    argvalues=[
+        ("   ", r"Unparseable language tag"),
+        ("en-!!", r"Unparseable language tag"),
+    ],
+)
+def test__validate_bcp47_raises_on_unparseable_tags(*, code: str, match: str) -> None:
+    """Unparseable tags raise a `ValueError` with a stable, descriptive message.
+
+    Parameters
+    ----------
+    code
+        The BCP-47 language tag to validate, which is unparseable and should trigger a
+        `ValueError`.
+    match
+        A regex pattern that should match the error message of the raised `ValueError`.
+    """
+
+    with pytest.raises(expected_exception=ValueError, match=match):
+        _ = _validate_bcp47(code=code)
+
+
+def test__validate_bcp47_type_annotated_validator_runs_in_pydantic() -> None:
+    """`BCP47Str` (Annotated + AfterValidator) applies `validate_bcp47` in Pydantic
+    models.
+    """
+
+    ta = TypeAdapter(_BCP47Str)
+    assert ta.validate_python("en_us") == "en-US"
+
+    with pytest.raises(ValidationError):
+        ta.validate_python("en-!!")
 
 
 @PARAM(
@@ -82,75 +154,3 @@ def test_validate_bbox_order_raises_on_wrong_length(*, bbox: list[float]) -> Non
         match=r"Bounding box must have exactly 4 numbers",
     ):
         _ = validate_bbox_order(bbox=bbox)
-
-
-@PARAM(
-    argnames=("code", "expected"),
-    argvalues=[
-        ("en_us", "en-US"),
-        (" en-US ", "en-US"),
-        ("zh_hans_cn", "zh-Hans-CN"),
-        ("mul", "mul"),
-        (" und ", "und"),
-        ("", "und"),
-    ],
-)
-def test_validate_bcp47_normalizes_and_standardizes(
-    *, code: str, expected: str
-) -> None:
-    """`validate_bcp47` normalizes underscore/whitespace and standardizes tag casing.
-
-    Parameters
-    ----------
-    code
-        The BCP-47 language tag to validate, which may have non-standard formatting.
-    expected
-        The expected output tag after validation, which is the canonicalized form of
-        the input tag if valid, or "und" if the input is empty or only whitespace.
-    """
-
-    assert validate_bcp47(code=code) == expected
-
-
-def test_validate_bcp47_raises_on_parseable_but_invalid_tags() -> None:
-    """Parseable-but-invalid tags raise `ValueError` (langcodes `is_valid()` is False)."""
-
-    with pytest.raises(
-        expected_exception=ValueError, match=r"Invalid BCP-47 language tag"
-    ):
-        _ = validate_bcp47(code="en-US-foobar")
-
-
-@PARAM(
-    argnames=("code", "match"),
-    argvalues=[
-        ("   ", r"Unparseable language tag"),
-        ("en-!!", r"Unparseable language tag"),
-    ],
-)
-def test_validate_bcp47_raises_on_unparseable_tags(*, code: str, match: str) -> None:
-    """Unparseable tags raise a `ValueError` with a stable, descriptive message.
-
-    Parameters
-    ----------
-    code
-        The BCP-47 language tag to validate, which is unparseable and should trigger a
-        `ValueError`.
-    match
-        A regex pattern that should match the error message of the raised `ValueError`.
-    """
-
-    with pytest.raises(expected_exception=ValueError, match=match):
-        _ = validate_bcp47(code=code)
-
-
-def test_validate_bcp47_type_annotated_validator_runs_in_pydantic() -> None:
-    """`BCP47Str` (Annotated + AfterValidator) applies `validate_bcp47` in Pydantic
-    models.
-    """
-
-    ta = TypeAdapter(BCP47Str)
-    assert ta.validate_python("en_us") == "en-US"
-
-    with pytest.raises(ValidationError):
-        ta.validate_python("en-!!")

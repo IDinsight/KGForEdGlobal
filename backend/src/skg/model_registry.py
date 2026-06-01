@@ -22,6 +22,15 @@ from pydantic_ai.settings import ModelSettings
 # Package Library
 from skg.schemas import BaseSchema
 
+# Anthropic models that support adaptive thinking ({"type": "adaptive"}). Adaptive
+# thinking is a 4.6+ feature; 4.5-generation models (e.g. claude-haiku-4-5) reject it
+# with a 400 error and must use extended thinking with an explicit token budget
+# instead. NB: extended thinking is removed on opus-4-7+, so any new flagship model
+# MUST be added here, otherwise it falls back to extended thinking and is rejected.
+_ADAPTIVE_THINKING_MODEL_NAMES: frozenset[str] = frozenset(
+    {"claude-opus-4-6", "claude-opus-4-7", "claude-sonnet-4-6"}
+)
+
 
 def _anthropic_kgs_settings(
     *, config: ModelConfig, type_: str
@@ -114,6 +123,39 @@ def _anthropic_page_ir_verification_settings(
         anthropic_thinking={"type": "adaptive"},
         anthropic_effort=config.anthropic_effort,
     )
+
+
+def _anthropic_thinking_settings(config: ModelConfig) -> AnthropicModelSettings:
+    """Build the Anthropic thinking-related settings for one model.
+
+    Adaptive thinking capable models use {"type": "adaptive"} tuned by
+    `anthropic_effort`. Older models (e.g. claude-haiku-4-5) fall back to extended
+    thinking with an explicit token budget, which 4.5-generation Anthropic models
+    accept. The extended-thinking budget must stay below the request `max_tokens`.
+
+    Parameters
+    ----------
+    config
+        The ModelConfig instance containing the provider-agnostic model configuration.
+
+    Returns
+    -------
+    dict[str, Any]
+        Keyword arguments to merge into an AnthropicModelSettings construction.
+    """
+
+    if config.supports_adaptive_thinking:
+        return {
+            "anthropic_effort": config.anthropic_effort,
+            "anthropic_thinking": {"type": "adaptive"},
+        }
+
+    return {
+        "anthropic_thinking": {
+            "budget_tokens": config.anthropic_thinking_budget_tokens,
+            "type": "enabled",
+        }
+    }
 
 
 def _openai_kgs_settings(
@@ -233,6 +275,7 @@ class ModelConfig(BaseSchema):
 
     # Anthropic settings.
     anthropic_effort: Literal["low", "medium", "high"] = "high"
+    anthropic_thinking_budget_tokens: int = 16384
 
     # OpenAI settings.
     openai_reasoning_effort: Literal["low", "medium", "high"] = "high"
@@ -338,6 +381,22 @@ class ModelConfig(BaseSchema):
         """
 
         return self.model.split(":")[0]
+
+    @property
+    def supports_adaptive_thinking(self) -> bool:
+        """Return whether the configured model supports Anthropic adaptive thinking.
+
+        Returns
+        -------
+        bool
+            True when the model is a known adaptive-thinking-capable Anthropic model;
+            otherwise False. Non-Anthropic models always return False.
+        """
+
+        if self.provider != "anthropic":
+            return False
+
+        return self.model.split(":")[-1] in _ADAPTIVE_THINKING_MODEL_NAMES
 
     def wrap_output_type(
         self, output_type: Type[BaseModel]

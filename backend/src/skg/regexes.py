@@ -8,6 +8,19 @@ import re
 # Package Library
 from skg.utils.constants import CaptionFigurePrefixes, CaptionTablePrefixes
 
+# Matches a base number, optionally followed by sub-identifiers separated by a dot,
+# slash, or hyphen. For example: "1", "12", "1.1", "3-A", "4/B", "1.2.3-final".
+_CAPTION_NUMERIC_IDENTIFIER_RE = r"\d+(?:[./-][A-Za-z0-9]+)*"
+
+# Matches valid Roman Numerals from 1 to 3999. The positive lookahead (?=[MDCLXVI])
+# ensures it doesn't match an empty string.
+_CAPTION_ROMAN_NUMERAL_RE = (
+    r"(?=[MDCLXVI])M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})"
+)
+
+# Matches exactly one uppercase letter. For example: "A", "B", "Z".
+_CAPTION_SINGLE_LETTER_RE = r"[A-Z]"
+
 # Matches a single alphabetical character, including standard English letters
 # (A-Z, a-z) and extended Latin/Western European accented characters
 # (like é, à, ç, ñ, ü). The ranges À-Ö, Ø-ö, and ø-ÿ are specifically chosen to skip
@@ -15,26 +28,13 @@ from skg.utils.constants import CaptionFigurePrefixes, CaptionTablePrefixes
 # middle of those Unicode blocks.
 ALPHA_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]")
 
-# Matches a base number, optionally followed by sub-identifiers separated by a dot,
-# slash, or hyphen. For example: "1", "12", "1.1", "3-A", "4/B", "1.2.3-final".
-CAPTION_NUMERIC_IDENTIFIER_RE = r"\d+(?:[./-][A-Za-z0-9]+)*"
-
-# Matches valid Roman Numerals from 1 to 3999. The positive lookahead (?=[MDCLXVI])
-# ensures it doesn't match an empty string.
-CAPTION_ROMAN_NUMERAL_RE = (
-    r"(?=[MDCLXVI])M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})"
-)
-
-# Matches exactly one uppercase letter. For example: "A", "B", "Z".
-CAPTION_SINGLE_LETTER_RE = r"[A-Z]"
-
 # Combines the three above regexes into a single non-capturing group using the OR (|)
 # operator. For example: Any valid identifier format (e.g., "1.2", "IV", or "A").
 CAPTION_IDENTIFIER_RE = (
     rf"(?:"
-    rf"{CAPTION_NUMERIC_IDENTIFIER_RE}"
-    rf"|{CAPTION_ROMAN_NUMERAL_RE}"
-    rf"|{CAPTION_SINGLE_LETTER_RE}"
+    rf"{_CAPTION_NUMERIC_IDENTIFIER_RE}"
+    rf"|{_CAPTION_ROMAN_NUMERAL_RE}"
+    rf"|{_CAPTION_SINGLE_LETTER_RE}"
     rf")"
 )
 

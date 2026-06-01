@@ -41,9 +41,22 @@ from skg.utils.constants import (
     StatementRole,
     UnresolvedReason,
 )
-from skg.utils.general import QUOTES_TRANSLATION, write_to_json
+from skg.utils.general import write_to_json
 
 HAS_CHILD = "hasChild"
+QUOTES_TRANSLATION = str.maketrans(
+    {
+        "“": '"',
+        "”": '"',
+        "„": '"',
+        "‟": '"',
+        "’": "'",
+        "‘": "'",
+        "‚": "'",
+        "‛": "'",
+        "\u00a0": " ",  # NBSP -> space
+    }
+)
 T = TypeVar("T")
 
 

@@ -65,7 +65,7 @@ class InterceptHandler(logging.Handler):
         )
 
 
-def escape_angle_brackets(x: Any) -> str:
+def _escape_angle_brackets(x: Any) -> str:
     """Escape angle brackets for colorized logging. If this is not done, then
     `loguru` will throw a `ValueError` when attempting to log objects with angle
     brackets. See: https://github.com/Delgan/loguru/issues/140 for more details.
@@ -84,7 +84,7 @@ def escape_angle_brackets(x: Any) -> str:
     return recurse_replace(r"\>", ">", recurse_replace(r"\<", "<", str(x)))
 
 
-def generate_entry_log_str(
+def _generate_entry_log_str(
     *, args: Any, extra_args: list[str], kwargs: Any, name: str
 ) -> str:
     """Generate a log string for function entry.
@@ -106,16 +106,16 @@ def generate_entry_log_str(
         The log string for function entry.
     """
 
-    a_str = escape_angle_brackets(args)
-    k_str = escape_angle_brackets(kwargs)
+    a_str = _escape_angle_brackets(args)
+    k_str = _escape_angle_brackets(kwargs)
     extra_args_str = "\n".join(
-        f"{escape_angle_brackets(arg)}: {escape_angle_brackets(getattr(args[0], arg, 'N/A'))}"
+        f"{_escape_angle_brackets(arg)}: {_escape_angle_brackets(getattr(args[0], arg, 'N/A'))}"
         for arg in extra_args
     )
     return f"ENTERING: '{name}'\n\nargs:\n{a_str}\n\nkwargs:\n{k_str}\n\nextra_args:\n{extra_args_str}"
 
 
-def generate_exit_log_str(*, name: str, result: Any) -> str:
+def _generate_exit_log_str(*, name: str, result: Any) -> str:
     """Generate a log string for function entry.
 
     Parameters
@@ -131,11 +131,12 @@ def generate_exit_log_str(*, name: str, result: Any) -> str:
         The log string for function exit.
     """
 
-    r_str = escape_angle_brackets(result)
+    r_str = _escape_angle_brackets(result)
     return f"EXITING: '{name}'\nresult={r_str}"
 
 
 def initialize_logger(
+    *,
     config: Optional[dict[str, Any]] = None,
     logging_level: str = LOGGING_LOG_LEVEL,
     log_fp: Optional[str | Path] = None,
@@ -299,7 +300,7 @@ def log_func_call(
         if entry:
             logger_.log(
                 level,
-                generate_entry_log_str(
+                _generate_entry_log_str(
                     args=args, extra_args=extra_args_, kwargs=kwargs, name=name
                 ),
             )
@@ -315,7 +316,7 @@ def log_func_call(
 
             result = await func(*args, **kwargs)
             if exit_:
-                logger_.log(level, generate_exit_log_str(name=name, result=result))
+                logger_.log(level, _generate_exit_log_str(name=name, result=result))
             return result
 
         def _sync() -> Any:
@@ -329,7 +330,7 @@ def log_func_call(
 
             result = func(*args, **kwargs)
             if exit_:
-                logger_.log(level, generate_exit_log_str(name=name, result=result))
+                logger_.log(level, _generate_exit_log_str(name=name, result=result))
             return result
 
         return _async() if is_async else _sync()

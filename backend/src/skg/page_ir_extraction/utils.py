@@ -66,6 +66,33 @@ class PageTextLayerHints:
         return self.text_hint is not None or self.table_hint is not None
 
 
+def _create_page_ir_extraction_dirs(output_dir: Path) -> PageIRExtractionDirs:
+    """Create page IR extraction directories for a given extraction run.
+
+    Parameters
+    ----------
+    output_dir
+        The output directory root.
+
+    Returns
+    -------
+    PageIRExtractionDirs
+        The created page IR extraction directories.
+    """
+
+    root = output_dir
+    page_images = root / "page_images"
+    page_irs = root / "page_irs"
+    page_irs_raw = root / "page_irs_raw"
+
+    for p in [root, page_images, page_irs, page_irs_raw]:
+        make_dir(p)
+
+    return PageIRExtractionDirs(
+        root=root, page_images=page_images, page_irs=page_irs, page_irs_raw=page_irs_raw
+    )
+
+
 def _extract_table_hint(*, page: pymupdf.Page, page_index: int) -> str | None:
     """Extract table structures from a PyMuPDF page and serialize them.
 
@@ -218,33 +245,6 @@ def _serialize_table(*, table_data: list[list[str | None]], table_index: int) ->
     return "\n".join(lines)
 
 
-def create_page_ir_extraction_dirs(output_dir: Path) -> PageIRExtractionDirs:
-    """Create page IR extraction directories for a given extraction run.
-
-    Parameters
-    ----------
-    output_dir
-        The output directory root.
-
-    Returns
-    -------
-    PageIRExtractionDirs
-        The created page IR extraction directories.
-    """
-
-    root = output_dir
-    page_images = root / "page_images"
-    page_irs = root / "page_irs"
-    page_irs_raw = root / "page_irs_raw"
-
-    for p in [root, page_images, page_irs, page_irs_raw]:
-        make_dir(p)
-
-    return PageIRExtractionDirs(
-        root=root, page_images=page_images, page_irs=page_irs, page_irs_raw=page_irs_raw
-    )
-
-
 def extract_page_text_layer_hints(
     *, page: pymupdf.Page, page_index: int
 ) -> PageTextLayerHints:
@@ -271,7 +271,6 @@ def extract_page_text_layer_hints(
 
     table_hint = _extract_table_hint(page=page, page_index=page_index)
     text_hint = _extract_text_hint(page=page, page_index=page_index)
-
     return PageTextLayerHints(table_hint=table_hint, text_hint=text_hint)
 
 
@@ -292,7 +291,7 @@ def persist_extraction_run(
     """
 
     doc_key = compute_doc_key(n_hex=64, pdf_fp=config.pdf_fp)
-    extraction_dirs = create_page_ir_extraction_dirs(
+    extraction_dirs = _create_page_ir_extraction_dirs(
         output_dir=config.output_dir / doc_key / "extraction"
     )
     exclude_keys = {"overwrite"}

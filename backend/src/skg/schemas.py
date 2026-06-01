@@ -31,127 +31,7 @@ from skg.utils.constants import (
 from skg.utils.general import make_dir
 
 
-def validate_bbox_order(bbox: list[float]) -> list[float]:
-    """Ensure bbox is well-ordered: [x0, y0, x1, y1] with x0 < x1 and y0 < y1.
-
-    Parameters
-    ----------
-    bbox
-        The bounding box to validate.
-
-    Returns
-    -------
-    list[float]
-        The validated bounding box.
-
-    Raises
-    ------
-    ValueError
-        If the bounding box does not have exactly 4 numbers.
-    """
-
-    if len(bbox) != 4:
-        raise ValueError(
-            f"Bounding box must have exactly 4 numbers: [x0, y0, x1, y1]. Got: {bbox}"
-        )
-
-    x0, y0, x1, y1 = bbox
-
-    # Auto-correct inverted or zero-dimension axes. For equal dimensions, add 1 pixel.
-    if x0 >= x1:
-        if x0 > x1:
-            x0, x1 = x1, x0
-        else:
-            x1 = x0 + 1.0
-    if y0 >= y1:
-        if y0 > y1:
-            y0, y1 = y1, y0
-        else:
-            y1 = y0 + 1.0
-
-    return [x0, y0, x1, y1]
-
-
-def validate_lp_role(*, field_name: str, role: NodeRole) -> NodeRole:
-    """Validate that a learning progression role config field uses a concrete hierarchy
-    role.
-
-    Parameters
-    ----------
-    field_name
-        The config field name for error messages.
-    role
-        The role value to validate.
-
-    Returns
-    -------
-    NodeRole
-        The validated role.
-
-    Raises
-    ------
-    ValueError
-        If the role is too generic to be useful for learning progression bucketing.
-    """
-
-    disallowed_roles = {NodeRole.FRAMEWORK, NodeRole.UNRESOLVED}
-
-    if role in disallowed_roles:
-        disallowed_values = ", ".join(sorted(item.value for item in disallowed_roles))
-        raise ValueError(
-            f"{field_name} cannot contain {role.value!r}. Use a concrete hierarchy role "
-            f"such as 'subject', 'learning_area', 'strand', or 'theme'. "
-            f"Disallowed roles: {disallowed_values}."
-        )
-
-    return role
-
-
-def validate_lp_roles(
-    *, field_name: str, roles: Optional[list[NodeRole]]
-) -> Optional[list[NodeRole]]:
-    """Validate a learning progression role list for non-empty, unique, concrete roles.
-
-    Parameters
-    ----------
-    field_name
-        The config field name for error messages.
-    roles
-        The ordered role list to validate.
-
-    Returns
-    -------
-    Optional[list[NodeRole]]
-        The validated role list.
-
-    Raises
-    ------
-    ValueError
-        If the list contains duplicates or disallowed roles.
-    """
-
-    if roles is None:
-        return roles
-
-    validated_roles: list[NodeRole] = []
-    seen_roles: set[NodeRole] = set()
-
-    for role in roles:
-        validated_role = validate_lp_role(field_name=field_name, role=role)
-
-        if validated_role in seen_roles:
-            raise ValueError(
-                f"{field_name} must not contain duplicate roles. "
-                f"Duplicate value: {validated_role.value}."
-            )
-
-        seen_roles.add(validated_role)
-        validated_roles.append(validated_role)
-
-    return validated_roles
-
-
-def validate_bcp47(code: str) -> str:
+def _validate_bcp47(code: str) -> str:
     """Validates that a string is a valid BCP-47 language tag.
 
     Parameters
@@ -186,7 +66,86 @@ def validate_bcp47(code: str) -> str:
         raise ValueError(f"Unparseable language tag: '{code}'") from exc
 
 
-def validate_regex_prefixed_patterns(
+def _validate_lp_role(*, field_name: str, role: NodeRole) -> NodeRole:
+    """Validate that a learning progression role config field uses a concrete hierarchy
+    role.
+
+    Parameters
+    ----------
+    field_name
+        The config field name for error messages.
+    role
+        The role value to validate.
+
+    Returns
+    -------
+    NodeRole
+        The validated role.
+
+    Raises
+    ------
+    ValueError
+        If the role is too generic to be useful for learning progression bucketing.
+    """
+
+    disallowed_roles = {NodeRole.FRAMEWORK, NodeRole.UNRESOLVED}
+
+    if role in disallowed_roles:
+        disallowed_values = ", ".join(sorted(item.value for item in disallowed_roles))
+        raise ValueError(
+            f"{field_name} cannot contain {role.value!r}. Use a concrete hierarchy role "
+            f"such as 'subject', 'learning_area', 'strand', or 'theme'. "
+            f"Disallowed roles: {disallowed_values}."
+        )
+
+    return role
+
+
+def _validate_lp_roles(
+    *, field_name: str, roles: Optional[list[NodeRole]]
+) -> Optional[list[NodeRole]]:
+    """Validate a learning progression role list for non-empty, unique, concrete roles.
+
+    Parameters
+    ----------
+    field_name
+        The config field name for error messages.
+    roles
+        The ordered role list to validate.
+
+    Returns
+    -------
+    Optional[list[NodeRole]]
+        The validated role list.
+
+    Raises
+    ------
+    ValueError
+        If the list contains duplicates or disallowed roles.
+    """
+
+    if roles is None:
+        return roles
+
+    validated_roles: list[NodeRole] = []
+    seen_roles: set[NodeRole] = set()
+
+    for role in roles:
+        validated_role = _validate_lp_role(field_name=field_name, role=role)
+
+        if validated_role in seen_roles:
+            raise ValueError(
+                f"{field_name} must not contain duplicate roles. "
+                f"Duplicate value: {validated_role.value}."
+            )
+
+        seen_roles.add(validated_role)
+        validated_roles.append(validated_role)
+
+    return validated_roles
+
+
+def _validate_regex_prefixed_patterns(
     *, field_name: str, patterns: list[str]
 ) -> list[str]:
     """Validate regex-based path patterns in LC source filtering config.
@@ -242,10 +201,54 @@ def validate_regex_prefixed_patterns(
     return patterns
 
 
+def validate_bbox_order(bbox: list[float]) -> list[float]:
+    """Ensure bbox is well-ordered: [x0, y0, x1, y1] with x0 < x1 and y0 < y1.
+
+    Parameters
+    ----------
+    bbox
+        The bounding box to validate.
+
+    Returns
+    -------
+    list[float]
+        The validated bounding box.
+
+    Raises
+    ------
+    ValueError
+        If the bounding box does not have exactly 4 numbers.
+    """
+
+    if len(bbox) != 4:
+        raise ValueError(
+            f"Bounding box must have exactly 4 numbers: [x0, y0, x1, y1]. Got: {bbox}"
+        )
+
+    x0, y0, x1, y1 = bbox
+
+    # Auto-correct inverted or zero-dimension axes. For equal dimensions, add 1 pixel.
+    if x0 >= x1:
+        if x0 > x1:
+            x0, x1 = x1, x0
+        else:
+            x1 = x0 + 1.0
+    if y0 >= y1:
+        if y0 > y1:
+            y0, y1 = y1, y0
+        else:
+            y1 = y0 + 1.0
+
+    return [x0, y0, x1, y1]
+
+
 # Common fields with descriptions.
-AuxStatementHandling = Literal[
+_AuxStatementHandling = Literal[
     "drop", "export_as_sfi_other", "attach_to_expectation_metadata"
 ]
+_BCP47Str = Annotated[str, AfterValidator(_validate_bcp47)]
+_ExportDialect = Literal["lc_public_strict", "global_relaxed"]
+_LCSourceNormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
 BBox = Annotated[
     list[float],
     AfterValidator(validate_bbox_order),
@@ -255,15 +258,12 @@ BBox = Annotated[
         min_length=4,
     ),
 ]
-BCP47Str = Annotated[str, AfterValidator(validate_bcp47)]
-ExportDialect = Literal["lc_public_strict", "global_relaxed"]
 LanguageField = Annotated[
-    BCP47Str,
+    _BCP47Str,
     Field(
         description="Strict BCP-47 language code (e.g., 'en', 'sw'). Use 'und' if unknown; use 'mul' if mixed languages.",
     ),
 ]
-LCSourceNormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
 
 
 class BaseSchema(BaseModel):
@@ -756,11 +756,11 @@ class CreateKGConfig(BaseSchema):
             "'prefer_text_en' uses the English translation when available."
         ),
     )
-    as_descriptor_handling: AuxStatementHandling = Field(
+    as_descriptor_handling: _AuxStatementHandling = Field(
         default="export_as_sfi_other",
         description="How to handle descriptor statements during KG export.",
     )
-    as_export_dialect: ExportDialect = Field(
+    as_export_dialect: _ExportDialect = Field(
         default="global_relaxed",
         description=(
             "Export schema dialect. 'lc_public_strict' enforces LC KG public schema "
@@ -795,7 +795,7 @@ class CreateKGConfig(BaseSchema):
             "and used as aux-parenting anchors). Default excludes PROSE."
         ),
     )
-    as_guidance_handling: AuxStatementHandling = Field(
+    as_guidance_handling: _AuxStatementHandling = Field(
         default="drop",
         description="How to handle guidance statements during KG export.",
     )
@@ -965,9 +965,9 @@ class CreateKGConfig(BaseSchema):
         ),
         ge=0,
     )
-    lc_source_normalized_statement_types: set[LCSourceNormalizedStatementType] = Field(
+    lc_source_normalized_statement_types: set[_LCSourceNormalizedStatementType] = Field(
         default_factory=lambda: cast(
-            set[LCSourceNormalizedStatementType], {"Standard"}
+            set[_LCSourceNormalizedStatementType], {"Standard"}
         ),
         description=(
             "Normalized StandardsFrameworkItem types eligible to generate "
@@ -1353,7 +1353,7 @@ class CreateKGConfig(BaseSchema):
             If a regex-prefixed path pattern is empty or invalid.
         """
 
-        return validate_regex_prefixed_patterns(field_name=info.field_name, patterns=v)
+        return _validate_regex_prefixed_patterns(field_name=info.field_name, patterns=v)
 
     @field_validator("lp_within_level_fallback_fields")
     @classmethod
@@ -1425,7 +1425,7 @@ class CreateKGConfig(BaseSchema):
             If the role list contains duplicates or disallowed roles.
         """
 
-        return validate_lp_roles(field_name=info.field_name, roles=v)
+        return _validate_lp_roles(field_name=info.field_name, roles=v)
 
     @field_validator("lp_subject_role")
     @classmethod
@@ -1451,7 +1451,7 @@ class CreateKGConfig(BaseSchema):
         if v is None:
             return v
 
-        return validate_lp_role(field_name="lp_subject_role", role=v)
+        return _validate_lp_role(field_name="lp_subject_role", role=v)
 
     @field_validator("as_framework_name", mode="before")
     @classmethod
@@ -1631,13 +1631,4 @@ class RunCtx(BaseSchema):
     )
     started_at: Optional[datetime] = Field(
         default=None, description="UTC timestamp when the run started."
-    )
-
-
-# Global schemas.
-class Limits(BaseSchema):
-    """Pydantic model for global limits."""
-
-    max_retry_attempts: int = Field(
-        10, ge=0, description="Must be a non-negative integer"
     )

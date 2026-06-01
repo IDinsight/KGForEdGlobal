@@ -1,7 +1,7 @@
 #!make
 
 .DEFAULT_GOAL := help
-.PHONY: clean-docker clean-docker-container down-local help up-local
+.PHONY: clean-docker clean-docker-container help
 
 # Put it first so that "make" without argument is like "make help".
 help: ## Display available commands
@@ -54,38 +54,3 @@ clean-docker-container = \
 	docker stop $(1) || true; \
 	docker rm $(1) || true; \
 	docker system prune -f
-
-########## LOCAL SETUP/TEARDOWN/ETC ##########
-up-local: up-pgvector up-redis ## Set up the local development environment by starting all containers
-
-up-pgvector: ## Set up pg-vector container
-	$(call clean-docker-container,pg-vector-local)
-	@sleep 2
-	@echo "$(GREEN)Starting a new pg-vector container...$(RESET)"
-	@docker run \
-		--name pg-vector-local \
-		--env-file "$(CURDIR)/.env.local" \
-		-p $(POSTGRES_PORT):$(POSTGRES_PORT) \
-		-v pgvector_data:/var/lib/postgresql/18/docker \
-		-d $(DOCKER_PG_VECTOR_IMAGE)
-	@sleep 2
-	@echo "$(GREEN)Running database migrations...$(RESET)"
-	@set -a && source "$(CURDIR)/backend/.env.local" && set +a && cd backend && python -m alembic upgrade head
-
-up-redis: ## Set up Redis container
-	$(call clean-docker-container,redis-local)
-	@sleep 2
-	@echo "$(GREEN)Starting a new Redis container...$(RESET)"
-	@docker run \
-		--name redis-local \
-		--env-file "$(CURDIR)/.env.local" \
-     	-p $(REDIS_PORT):$(REDIS_PORT) \
-	 	-d $(DOCKER_REDIS_IMAGE)
-
-down-local: down-pgvector down-redis ## Tear down all local development containers
-
-down-pgvector: ## Tear down pg-vector container
-	$(call clean-docker-container,pg-vector-local)
-
-down-redis: ## Tear down Redis container
-	$(call clean-docker-container,redis-local)
