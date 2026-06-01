@@ -52,15 +52,9 @@ def _anthropic_kgs_settings(
     """
 
     if type_ == "learning_components":
-        return AnthropicModelSettings(
-            anthropic_thinking={"type": "adaptive"},
-            anthropic_effort=config.anthropic_effort,
-        )
+        return _anthropic_thinking_settings(config)
 
-    return AnthropicModelSettings(
-        anthropic_thinking={"type": "adaptive"},
-        anthropic_effort=config.anthropic_effort,
-    )
+    return _anthropic_thinking_settings(config)
 
 
 def _anthropic_page_ir_extraction_settings(
@@ -83,15 +77,9 @@ def _anthropic_page_ir_extraction_settings(
     """
 
     if type_ == "extraction":
-        return AnthropicModelSettings(
-            anthropic_thinking={"type": "adaptive"},
-            anthropic_effort=config.anthropic_effort,
-        )
+        return _anthropic_thinking_settings(config)
 
-    return AnthropicModelSettings(
-        anthropic_thinking={"type": "adaptive"},
-        anthropic_effort=config.anthropic_effort,
-    )
+    return _anthropic_thinking_settings(config)
 
 
 def _anthropic_page_ir_verification_settings(
@@ -114,15 +102,9 @@ def _anthropic_page_ir_verification_settings(
     """
 
     if type_ == "verification":
-        return AnthropicModelSettings(
-            anthropic_thinking={"type": "adaptive"},
-            anthropic_effort=config.anthropic_effort,
-        )
+        return _anthropic_thinking_settings(config)
 
-    return AnthropicModelSettings(
-        anthropic_thinking={"type": "adaptive"},
-        anthropic_effort=config.anthropic_effort,
-    )
+    return _anthropic_thinking_settings(config)
 
 
 def _anthropic_thinking_settings(config: ModelConfig) -> AnthropicModelSettings:
@@ -145,17 +127,17 @@ def _anthropic_thinking_settings(config: ModelConfig) -> AnthropicModelSettings:
     """
 
     if config.supports_adaptive_thinking:
-        return {
-            "anthropic_effort": config.anthropic_effort,
-            "anthropic_thinking": {"type": "adaptive"},
-        }
+        return AnthropicModelSettings(
+            anthropic_thinking={"type": "adaptive"},
+            anthropic_effort=config.anthropic_effort,
+        )
 
-    return {
-        "anthropic_thinking": {
+    return AnthropicModelSettings(
+        anthropic_thinking={
             "budget_tokens": config.anthropic_thinking_budget_tokens,
             "type": "enabled",
-        }
-    }
+        },
+    )
 
 
 def _openai_kgs_settings(
