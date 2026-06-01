@@ -27,7 +27,7 @@ class CanonicalIRDirs:
     segment_decisions: Path
 
 
-def create_canonical_ir_dirs(*, output_dir: Path) -> CanonicalIRDirs:
+def _create_canonical_ir_dirs(*, output_dir: Path) -> CanonicalIRDirs:
     """Create canonical IR directories for a given creation run.
 
     Parameters
@@ -165,7 +165,7 @@ def persist_canonical_run(
         metadata.
     """
 
-    creation_dirs = create_canonical_ir_dirs(output_dir=output_dir)
+    creation_dirs = _create_canonical_ir_dirs(output_dir=output_dir)
     exclude_keys = {"overwrite"}
     creation_run = RunCtx(
         extra={

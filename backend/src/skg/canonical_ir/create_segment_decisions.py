@@ -52,7 +52,7 @@ PendingCaption = tuple[BlockSegment, str, CaptionKind, int, int]
 
 # Sentinel value returned by _process_column_cell when a skip_row override fires. Using
 # a dedicated constant avoids returning a misleading tuple with decision=None.
-_SKIP_ROW_SENTINEL = "SKIP_ROW"
+SKIP_ROW_SENTINEL = "SKIP_ROW"
 
 
 @dataclass
@@ -352,6 +352,138 @@ class CurriculumResolvedColumnRole:
     grouping_role_overrides: list[CurriculumGroupingRoleOverride] = field(
         default_factory=list
     )
+
+
+def _build_ancestry_map(
+    root: CurriculumSkeletonNode,
+) -> dict[str, list[CurriculumSkeletonNode]]:
+    """Build node_id -> full ancestry chain (root -> node, inclusive).
+
+    The reason this function exists is that later, when `match_curriculum()` finds that
+    a segment matched some node, `_record_match()` grabs
+    `ancestry = ancestry_map[node.id]` and stores it on the `CurriculumMatchedSegment`.
+    That ancestry is then used downstream to build context groupings and keep the
+    matched segment attached to the right structural path.
+
+    Parameters
+    ----------
+    root
+        The root `CurriculumSkeletonNode`.
+
+    Returns
+    -------
+    dict[str, list[CurriculumSkeletonNode]]
+        Mapping from each node ID to its full ancestry chain.
+    """
+
+    result: dict[str, list[CurriculumSkeletonNode]] = {}
+
+    def _walk(
+        *, ancestors: list[CurriculumSkeletonNode], node: CurriculumSkeletonNode
+    ) -> None:
+        """DFS walk to build ancestry map.
+
+        Parameters
+        ----------
+        ancestors
+            Ancestry chain from root to parent of current node.
+        node
+            Current SkeletonNode being visited.
+        """
+
+        chain = ancestors + [node]
+        assert (
+            node.id not in result
+        ), f"Duplicate node ID detected in curriculum skeleton: {node.id}"
+        result[node.id] = chain
+
+        for child in node.children:
+            _walk(ancestors=chain, node=child)
+
+    _walk(ancestors=[], node=root)
+    return result
+
+
+def _build_context_groupings(
+    *,
+    ancestry: list[CurriculumSkeletonNode],
+    context_groupings_role_order: list[NodeRole] | None = None,
+    matched_node: CurriculumSkeletonNode,
+) -> list[GroupingDecision]:
+    """Build context groupings from the curriculum skeleton ancestry chain.
+
+    We include ancestors that:
+
+    1. Have a `grouping_role` (i.e., not None, FRAMEWORK, etc.).
+    2. Are NOT the matched node itself (that goes in `groupings`).
+    3. Are `EMIT_GROUPING`/`EMIT_GROUPING_AND_LEAF`/`EMIT_TABLE_ROWS` (i.e., visible in
+        document), OR are `CONTAINER_ONLY` with `implicit=True`.
+
+    The result is sorted by role precedence (outer -> inner).
+
+    Parameters
+    ----------
+    ancestry
+        Full ancestry chain from root to matched node (inclusive).
+    context_groupings_role_order
+        Custom role precedence order. Falls back to
+        `DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER` if not provided.
+    matched_node
+        The node that was matched (excluded from context).
+
+    Returns
+    -------
+    list[GroupingDecision]
+        Sorted context groupings for the SegmentDecision.
+    """
+
+    precedence = {
+        role: i
+        for i, role in enumerate(
+            context_groupings_role_order or DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER
+        )
+    }
+    context: list[GroupingDecision] = []
+
+    visible_grouping_emits = {
+        CurriculumEmitPolicy.EMIT_GROUPING,
+        CurriculumEmitPolicy.EMIT_GROUPING_AND_LEAF,
+        CurriculumEmitPolicy.EMIT_TABLE_ROWS,
+    }
+
+    for node in ancestry:
+        # Stop before the matched node itself.
+        if node.id == matched_node.id:
+            break
+
+        # Skip nodes without grouping roles.
+        if node.grouping_role in (None, NodeRole.FRAMEWORK):
+            continue
+
+        # CONTAINER_ONLY nodes are invisible UNLESS implicit=True. Other ancestor node
+        # types only contribute context when they are grouping-bearing visible emits.
+        # This keeps IGNORE/EMIT_LEAF ancestors from leaking into context_groupings
+        # when a curriculum skeleton accidentally sets grouping_role.
+        is_implicit_container = (
+            node.emit == CurriculumEmitPolicy.CONTAINER_ONLY and node.implicit
+        )
+        is_visible_emit = node.emit in visible_grouping_emits
+
+        if not (is_implicit_container or is_visible_emit):
+            continue
+
+        context.append(
+            GroupingDecision(
+                local_code=node.local_code,
+                preserve_if_empty=node.preserve_if_empty,
+                role=node.grouping_role,
+                source_label=node.source_label,
+                title=node.canonical_name.primary,
+            )
+        )
+
+    context.sort(key=lambda g: precedence.get(g.role, 999))
+    return context
 
 
 def _build_segment_groupings(node: CurriculumSkeletonNode) -> list[GroupingDecision]:
@@ -1014,6 +1146,79 @@ def _determine_segment_decision_type(
     return SegmentDecisionType.UNRESOLVED
 
 
+def _dfs_all(root: CurriculumSkeletonNode) -> list[CurriculumSkeletonNode]:
+    """Flatten **all** curriculum skeleton nodes into DFS order (including CONTAINER_ONLY).
+
+    Parameters
+    ----------
+    root
+        The root CurriculumSkeletonNode.
+
+    Returns
+    -------
+    list[CurriculumSkeletonNode]
+        All nodes in DFS traversal order.
+    """
+
+    nodes: list[CurriculumSkeletonNode] = []
+
+    def _walk(node: CurriculumSkeletonNode) -> None:
+        """DFS walk to collect all nodes.
+
+        Parameters
+        ----------
+        node
+            Current curriculum skeleton node being visited.
+        """
+
+        nodes.append(node)
+
+        for child in node.children:
+            _walk(child)
+
+    _walk(root)
+    return nodes
+
+
+def _dfs_matchable(root: CurriculumSkeletonNode) -> list[CurriculumSkeletonNode]:
+    """Flatten the curriculum skeleton into DFS order, keeping only matchable nodes.
+
+    A node is matchable if it is not `CONTAINER_ONLY` and has at least one
+    `match_phrase`. This includes `IGNORE` nodes, because they still need to consume
+    matching document segments deterministically.
+
+    Parameters
+    ----------
+    root
+        The root `CurriculumSkeletonNode`.
+
+    Returns
+    -------
+    list[CurriculumSkeletonNode]
+        Matchable nodes in DFS traversal order.
+    """
+
+    nodes: list[CurriculumSkeletonNode] = []
+
+    def _walk(node: CurriculumSkeletonNode) -> None:
+        """DFS walk to collect matchable nodes.
+
+        Parameters
+        ----------
+        node
+            Current curriculum skeleton node being visited.
+        """
+
+        if node.emit != CurriculumEmitPolicy.CONTAINER_ONLY and node.match_phrases:
+            nodes.append(node)
+
+        for child in node.children:
+            _walk(child)
+
+    _walk(root)
+    return nodes
+
+
 def _drain_cursor(
     *,
     consumed_node_ids: set[str],
@@ -1321,7 +1526,7 @@ def _extract_row_content_by_column(
             continue
 
         # Handle the early exit signal for 'skip_row'
-        if result is _SKIP_ROW_SENTINEL:
+        if result is SKIP_ROW_SENTINEL:
             return [], {}, {}, True
 
         assert not isinstance(result, str)
@@ -1381,9 +1586,7 @@ def _generate_mapped_row_decisions(
     expectation_cols = sorted(
         col_index
         for col_index, leaves in column_row_leaves.items()
-        if any(
-            _statement_role_value(role=leaf.role) == "expectation" for leaf in leaves
-        )
+        if any(_statement_role_value(leaf.role) == "expectation" for leaf in leaves)
     )
     aux_only_cols = sorted(
         col_index
@@ -1542,6 +1745,7 @@ def _get_table_rows_source(*, segment_id: str, table_seg: TableSegment) -> list[
         f"(rows_filldown and rows_grid are both None). "
         f"Column-index alignment may be broken due to col_span > 1 cells."
     )
+
     return table_seg.rows
 
 
@@ -1954,7 +2158,7 @@ def _process_column_cell(
     effective_role = _resolve_effective_role(cell_text=cell_text, col_role=col_role)
 
     if effective_role.kind == "skip_row":
-        return _SKIP_ROW_SENTINEL
+        return SKIP_ROW_SENTINEL
 
     if effective_role.kind == "skip":
         return None
@@ -2716,6 +2920,341 @@ def _statement_role_value(role: StatementRole | str) -> str:
     return str(getattr(role, "value", role)).casefold()
 
 
+def _translate_matched_segment(
+    *,
+    context_groupings_role_order: list[NodeRole] | None = None,
+    doc_key: str,
+    matched: CurriculumMatchedSegment,
+) -> SegmentDecision:
+    """Convert one successful curriculum skeleton match into a SegmentDecision.
+
+    This function is the main bridge between the matching stage and the canonical IR
+    decision stage. Given a `CurriculumMatchedSegment`, it looks at the matched
+    curriculum skeleton node and turns that match into the appropriate
+    `SegmentDecision` shape. This function answers the question: "Now that this
+    document segment matched this curriculum skeleton node, what should we emit for the
+    canonical IR?"
+
+    High-level behavior
+    -------------------
+    1. Build `context_groupings` from the matched node's ancestry in the curriculum
+        skeleton. These are outer structural containers such as grade, section, strand,
+        or substage that provide context for the matched content.
+    2. Create a deterministic `decision_id` using the document key and the primary
+        matched segment ID.
+    3. Merge text from the primary matched segment plus any
+        `matched.additional_segments`. This is mainly used for cases like bilingual
+        pairs or multi-segment headings/body content that should become one leaf
+        statement.
+    4. Dispatch based on the matched node's `emit` policy:
+        - `IGNORE`: Return an IGNORE decision with no emitted content.
+        - `EMIT_GROUPING`: Emit one top-level `GroupingDecision`.
+        - `EMIT_LEAF`: Emit one top-level `LeafDecision`.
+        - `EMIT_GROUPING_AND_LEAF`: Emit both one grouping and one leaf.
+        - `EMIT_TABLE_ROWS`: Delegate table translation to `_translate_table_rows()`,
+            which produces row-level decisions from the matched table segment.
+
+    NB:
+
+    1. The returned decision is anchored to the **primary** matched segment
+        (`matched.segment.segment_id`), even when `additional_segments` were merged into
+        the text.
+    2. `context_groupings` come from ancestor curriculum skeleton nodes, while
+        `groupings` and `leaves` describe what this matched node itself emits.
+    3. For table-emitting nodes, this function does not parse rows directly; it passes
+        the work to `_translate_table_rows()`.
+    4. The practical difference between EMIT_GROUPING and EMIT_GROUPING_AND_LEAF is:
+        Suppose the matched heading is: Palier 1 — Communication orale. If we use
+        EMIT_GROUPING, then we are saying: “This heading is only structural. Make a
+        substage node for Palier 1, but do not treat the heading text itself as a
+        standard.”. If we use EMIT_GROUPING_AND_LEAF, then we are saying: “This heading
+        is structural, but it also carries a real curriculum expectation that we want
+        preserved as a leaf.”
+
+    Examples
+    --------
+    1. IGNORE
+        This is used when the matched segment should be consumed so it does not remain
+        unmatched, but it should not create any canonical content. The function returns
+        decision_type=IGNORE with empty context_groupings, groupings, leaves, and rows.
+
+        * Source heading: APPRENTISSAGES PONCTUELS
+        * Why ignore it: It is just a repeated document heading, not a curriculum node
+            or standard.
+        * Output shape:
+            SegmentDecision(
+                decision_type=IGNORE,
+                context_groupings=[],
+                groupings=[],
+                leaves=[],
+                rows=[],
+            )
+
+    2. EMIT_GROUPING
+        This is used when the matched segment is a structural container like a section,
+        strand, or unit, and we want it to become a node in the canonical IR hierarchy,
+        but we do not want the matched text itself to become a standard/expectation
+        leaf. The function emits one top-level GroupingDecision and no leaves.
+
+        * Source heading: 1.2 Tableau de planification des apprentissages
+        * Intended meaning: Create a section node called “Planification des
+            apprentissages du CE1”
+        * Output shape:
+            SegmentDecision(
+                decision_type=EMIT_GROUPINGS_ONLY,
+                context_groupings=[...],
+                groupings=[
+                    GroupingDecision(
+                        role="section",
+                        title="Planification des apprentissages du CE1",
+                    )
+                ],
+                leaves=[],
+                rows=[],
+            )
+
+        This is the right choice when the heading is just a container and the real
+        curricular content lives underneath it in child tables or child statements. For
+        example, in the Senegal reading curriculum skeleton, nodes like
+        schema-integrateur and planification-oral-lecture are set up this way.
+
+    3. EMIT_LEAF
+        This is used when the matched segment is a statement only. It should produce a
+        LeafDecision, but it should not create a new grouping node. The function emits
+        decision_type=EMIT_LEAVES_ONLY, no top-level groupings, and one
+        LeafDecision(body=combined_text).
+
+        * Source paragraph: The learner identifies vowels and consonants in simple
+            words.
+        * Intended meaning: This is directly a standard/expectation statement, not a
+            new container.
+        * Output shape:
+            SegmentDecision(
+                decision_type=EMIT_LEAVES_ONLY,
+                context_groupings=[...],   # e.g. Grade 1 > Literacy > Phonics
+                groupings=[],
+                leaves=[
+                    LeafDecision(
+                        role="expectation",
+                        body="The learner identifies vowels and consonants in simple words.",
+                    )
+                ],
+                rows=[],
+            )
+
+    4. EMIT_GROUPING_AND_LEAF1
+        This is used when the matched segment is doing two jobs at once: it names a
+        structural grouping and the heading itself carries a meaningful curriculum
+        statement. The function emits one GroupingDecision plus one
+        LeafDecision(body=combined_text).
+
+        * Source heading: Palier 1 — Production d’écrits : production de textes
+            narratifs
+        * Intended meaning: Create a substage grouping for Palier 1 and also preserve
+            the actual expectation text carried by that heading
+        * Output shape:
+            SegmentDecision(
+                decision_type=EMIT_GROUPINGS_AND_LEAVES,
+                context_groupings=[...],
+                groupings=[
+                    GroupingDecision(
+                        role="substage",
+                        title="Palier 1 — Production d'écrits",
+                    )
+                ],
+                leaves=[
+                    LeafDecision(
+                        role="expectation",
+                        body="Palier 1 ... production de textes narratifs",
+                    )
+                ],
+                rows=[],
+            )
+
+    5. EMIT_TABLE_ROWS
+        This is used when the matched segment is a table and the content should be
+        interpreted row by row rather than as one big leaf.
+        `translate_matched_segment()` does not parse the table itself in this case; it
+        hands off to `_translate_table_rows()`, which uses the curriculum skeleton’s
+        `column_mappings` to build RowDecision[]. Those row decisions may contain
+        row-level groupings and leaves, and the overall decision type is chosen based
+        on what the rows actually produced.
+
+        * Source table caption: Tableau 1.6.1 — Outils de langue, Palier 1
+            Table columns:
+                Outils de langue -> grouping subtopic
+                Objectif spécifique -> leaf expectation
+                Contenus -> leaf guidance
+                Durée -> leaf descriptor
+        * Output shape:
+            SegmentDecision(
+                decision_type=EMIT_GROUPINGS_AND_LEAVES,   # Assuming rows produce both
+                context_groupings=[...],
+                groupings=[],   # Maybe a segment-level grouping, maybe not
+                leaves=[],
+                rows=[
+                    RowDecision(
+                        row_index=0,
+                        groupings=[GroupingDecision(role="subtopic", title="Vocabulaire")],
+                        leaves=[
+                            LeafDecision(role="expectation", body="..."),
+                            LeafDecision(role="guidance", body="..."),
+                            LeafDecision(role="descriptor", body="30 min"),
+                        ],
+                    ),
+                    ...
+                ],
+            )
+
+    Parameters
+    ----------
+    context_groupings_role_order
+        Optional custom role ordering used when sorting `context_groupings`.
+    doc_key
+        Stable document key used to build the deterministic decision ID.
+    matched
+        The successful match produced by the curriculum matching engine. This includes
+        the matched curriculum skeleton node, the primary matched segment, its
+        ancestry, and any additional continuation segments.
+
+    Returns
+    -------
+    SegmentDecision
+        The canonical decision corresponding to this matched segment and curriculum
+        skeleton node.
+
+    Raises
+    ------
+    ValueError
+        If the matched node uses an emit policy that this function does not handle.
+    """
+
+    node = matched.node
+    segment = matched.segment
+    context = _build_context_groupings(
+        ancestry=matched.ancestry,
+        context_groupings_role_order=context_groupings_role_order,
+        matched_node=node,
+    )
+    decision_id = f"curriculum_skeleton:{doc_key}:{segment.segment_id}"
+    block_type = BlockType(segment.block_type) if segment.block_type else None
+
+    # Combine text from bilingual pairs.
+    all_texts = [segment.text or ""] + [
+        extra.text for extra in matched.additional_segments if extra.text
+    ]
+    combined_text = "\n\n".join(t for t in all_texts if t.strip())
+
+    # IGNORE.
+    if node.emit == CurriculumEmitPolicy.IGNORE:
+        return SegmentDecision(
+            block_type=block_type,
+            confidence=1.0,
+            context_groupings=[],
+            decision_id=decision_id,
+            decision_type=SegmentDecisionType.IGNORE,
+            groupings=[],
+            leaves=[],
+            rationale=f"Curriculum skeleton IGNORE: '{node.id}'.",
+            rows=[],
+            segment_id=segment.segment_id,
+            segment_kind=segment.segment_kind,
+        )
+
+    # EMIT_GROUPING.
+    if node.emit == CurriculumEmitPolicy.EMIT_GROUPING:
+        return SegmentDecision(
+            block_type=block_type,
+            confidence=1.0,
+            context_groupings=context,
+            decision_id=decision_id,
+            decision_type=SegmentDecisionType.EMIT_GROUPINGS_ONLY,
+            groupings=[
+                GroupingDecision(
+                    local_code=node.local_code,
+                    preserve_if_empty=node.preserve_if_empty,
+                    role=node.grouping_role,
+                    source_label=node.source_label,
+                    title=node.canonical_name.primary,
+                )
+            ],
+            leaves=[],
+            rationale=(
+                f"Curriculum skeleton EMIT_GROUPING: '{node.id}' "
+                f"-> {node.grouping_role.value}."
+            ),
+            rows=[],
+            segment_id=segment.segment_id,
+            segment_kind=segment.segment_kind,
+        )
+
+    # EMIT_LEAF.
+    if node.emit == CurriculumEmitPolicy.EMIT_LEAF:
+        return SegmentDecision(
+            block_type=block_type,
+            confidence=1.0,
+            context_groupings=context,
+            decision_id=decision_id,
+            decision_type=SegmentDecisionType.EMIT_LEAVES_ONLY,
+            groupings=[],
+            leaves=[
+                LeafDecision(
+                    body=combined_text,
+                    role=node.leaf_role,
+                    source_label=node.source_label,
+                )
+            ],
+            rationale=(
+                f"Curriculum skeleton EMIT_LEAF: '{node.id}' → {node.leaf_role.value}."
+            ),
+            rows=[],
+            segment_id=segment.segment_id,
+            segment_kind=segment.segment_kind,
+        )
+
+    # EMIT_GROUPING_AND_LEAF.
+    if node.emit == CurriculumEmitPolicy.EMIT_GROUPING_AND_LEAF:
+        return SegmentDecision(
+            block_type=block_type,
+            confidence=1.0,
+            context_groupings=context,
+            decision_id=decision_id,
+            decision_type=SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES,
+            groupings=[
+                GroupingDecision(
+                    local_code=node.local_code,
+                    preserve_if_empty=node.preserve_if_empty,
+                    role=node.grouping_role,
+                    source_label=node.source_label,
+                    title=node.canonical_name.primary,
+                )
+            ],
+            leaves=[
+                LeafDecision(
+                    body=combined_text,
+                    role=node.leaf_role,
+                    source_label=node.source_label,
+                )
+            ],
+            rationale=f"Curriculum skeleton EMIT_GROUPING_AND_LEAF: '{node.id}'.",
+            rows=[],
+            segment_id=segment.segment_id,
+            segment_kind=segment.segment_kind,
+        )
+
+    # EMIT_TABLE_ROWS.
+    if node.emit == CurriculumEmitPolicy.EMIT_TABLE_ROWS:
+        return _translate_table_rows(
+            context=context,
+            context_groupings_role_order=context_groupings_role_order,
+            decision_id=decision_id,
+            node=node,
+            seg=segment,
+        )
+
+    raise ValueError(f"Unhandled emit policy: {node.emit}")
+
+
 def _translate_table_rows(
     *,
     context: list[GroupingDecision],
@@ -2919,10 +3458,7 @@ def _translate_table_rows(
         header_rows_canonical=list(list(row) for row in seg.header_rows_canonical),
     )
 
-    rows_source = _get_table_rows_source(
-        segment_id=seg.segment_id,
-        table_seg=table_seg,
-    )
+    rows_source = _get_table_rows_source(segment_id=seg.segment_id, table_seg=table_seg)
 
     hrc = table_seg.header_row_count or 0
     row_decisions: list[RowDecision] = []
@@ -3023,54 +3559,63 @@ def _translate_table_rows(
     )
 
 
-def build_ancestry_map(
-    root: CurriculumSkeletonNode,
-) -> dict[str, list[CurriculumSkeletonNode]]:
-    """Build node_id -> full ancestry chain (root -> node, inclusive).
+def _translate_unmatched(
+    *, doc_key: str, seg: CurriculumMatchableSegment
+) -> SegmentDecision:
+    """Convert an unmatched segment into a SegmentDecision.
 
-    The reason this function exists is that later, when `match_curriculum()` finds that
-    a segment matched some node, `_record_match()` grabs
-    `ancestry = ancestry_map[node.id]` and stores it on the `CurriculumMatchedSegment`.
-    That ancestry is then used downstream to build context groupings and keep the
-    matched segment attached to the right structural path.
+    Bound caption blocks (whose text was transferred to a table's caption_text field)
+    are marked IGNORE--they were intentionally neutralized and are not missing content.
+
+    All other unmatched segments are marked UNRESOLVED so they surface in the canonical
+    IR's `unresolved` list for human review. This prevents genuine curriculum content
+    that the curriculum skeleton failed to match from being silently dropped.
 
     Parameters
     ----------
-    root
-        The root `CurriculumSkeletonNode`.
+    doc_key
+        Document key for decision ID generation.
+    seg
+        The unmatched `CurriculumMatchableSegment`.
 
     Returns
     -------
-    dict[str, list[CurriculumSkeletonNode]]
-        Mapping from each node ID to its full ancestry chain.
+    SegmentDecision
+        An IGNORE decision for bound captions, or an UNRESOLVED decision for genuinely
+        unmatched segments.
     """
 
-    result: dict[str, list[CurriculumSkeletonNode]] = {}
+    # Bound captions are intentionally neutralized; they are not missing content and can
+    # be (safely) silently ignored.
+    if seg.is_bound_caption:
+        return SegmentDecision(
+            block_type=BlockType(seg.block_type) if seg.block_type else None,
+            confidence=1.0,
+            context_groupings=[],
+            decision_id=f"curriculum_skeleton:{doc_key}:{seg.segment_id}:bound_caption",
+            decision_type=SegmentDecisionType.IGNORE,
+            groupings=[],
+            leaves=[],
+            rationale="Bound caption block; text transferred to table caption_text.",
+            rows=[],
+            segment_id=seg.segment_id,
+            segment_kind=seg.segment_kind,
+        )
 
-    def _walk(
-        *, ancestors: list[CurriculumSkeletonNode], node: CurriculumSkeletonNode
-    ) -> None:
-        """DFS walk to build ancestry map.
-
-        Parameters
-        ----------
-        ancestors
-            Ancestry chain from root to parent of current node.
-        node
-            Current SkeletonNode being visited.
-        """
-
-        chain = ancestors + [node]
-        assert (
-            node.id not in result
-        ), f"Duplicate node ID detected in curriculum skeleton: {node.id}"
-        result[node.id] = chain
-
-        for child in node.children:
-            _walk(ancestors=chain, node=child)
-
-    _walk(ancestors=[], node=root)
-    return result
+    # Genuinely unmatched segment--flag for human review.
+    return SegmentDecision(
+        block_type=BlockType(seg.block_type) if seg.block_type else None,
+        confidence=1.0,
+        context_groupings=[],
+        decision_id=f"curriculum_skeleton:{doc_key}:{seg.segment_id}:unmatched",
+        decision_type=SegmentDecisionType.UNRESOLVED,
+        groupings=[],
+        leaves=[],
+        rationale="No curriculum skeleton node matched this segment; flagged for human review.",
+        rows=[],
+        segment_id=seg.segment_id,
+        segment_kind=seg.segment_kind,
+    )
 
 
 def build_caption_bindings(
@@ -3320,161 +3865,6 @@ def build_caption_bindings(
     return caption_bindings
 
 
-def build_context_groupings(
-    *,
-    ancestry: list[CurriculumSkeletonNode],
-    context_groupings_role_order: list[NodeRole] | None = None,
-    matched_node: CurriculumSkeletonNode,
-) -> list[GroupingDecision]:
-    """Build context groupings from the curriculum skeleton ancestry chain.
-
-    We include ancestors that:
-
-    1. Have a `grouping_role` (i.e., not None, FRAMEWORK, etc.).
-    2. Are NOT the matched node itself (that goes in `groupings`).
-    3. Are `EMIT_GROUPING`/`EMIT_GROUPING_AND_LEAF`/`EMIT_TABLE_ROWS` (i.e., visible in
-        document), OR are `CONTAINER_ONLY` with `implicit=True`.
-
-    The result is sorted by role precedence (outer -> inner).
-
-    Parameters
-    ----------
-    ancestry
-        Full ancestry chain from root to matched node (inclusive).
-    context_groupings_role_order
-        Custom role precedence order. Falls back to
-        `DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER` if not provided.
-    matched_node
-        The node that was matched (excluded from context).
-
-    Returns
-    -------
-    list[GroupingDecision]
-        Sorted context groupings for the SegmentDecision.
-    """
-
-    precedence = {
-        role: i
-        for i, role in enumerate(
-            context_groupings_role_order or DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER
-        )
-    }
-    context: list[GroupingDecision] = []
-
-    visible_grouping_emits = {
-        CurriculumEmitPolicy.EMIT_GROUPING,
-        CurriculumEmitPolicy.EMIT_GROUPING_AND_LEAF,
-        CurriculumEmitPolicy.EMIT_TABLE_ROWS,
-    }
-
-    for node in ancestry:
-        # Stop before the matched node itself.
-        if node.id == matched_node.id:
-            break
-
-        # Skip nodes without grouping roles.
-        if node.grouping_role in (None, NodeRole.FRAMEWORK):
-            continue
-
-        # CONTAINER_ONLY nodes are invisible UNLESS implicit=True. Other ancestor node
-        # types only contribute context when they are grouping-bearing visible emits.
-        # This keeps IGNORE/EMIT_LEAF ancestors from leaking into context_groupings
-        # when a curriculum skeleton accidentally sets grouping_role.
-        is_implicit_container = (
-            node.emit == CurriculumEmitPolicy.CONTAINER_ONLY and node.implicit
-        )
-        is_visible_emit = node.emit in visible_grouping_emits
-
-        if not (is_implicit_container or is_visible_emit):
-            continue
-
-        context.append(
-            GroupingDecision(
-                local_code=node.local_code,
-                preserve_if_empty=node.preserve_if_empty,
-                role=node.grouping_role,
-                source_label=node.source_label,
-                title=node.canonical_name.primary,
-            )
-        )
-
-    context.sort(key=lambda g: precedence.get(g.role, 999))
-    return context
-
-
-def dfs_all(root: CurriculumSkeletonNode) -> list[CurriculumSkeletonNode]:
-    """Flatten **all** curriculum skeleton nodes into DFS order (including CONTAINER_ONLY).
-
-    Parameters
-    ----------
-    root
-        The root CurriculumSkeletonNode.
-
-    Returns
-    -------
-    list[CurriculumSkeletonNode]
-        All nodes in DFS traversal order.
-    """
-
-    nodes: list[CurriculumSkeletonNode] = []
-
-    def _walk(node: CurriculumSkeletonNode) -> None:
-        """DFS walk to collect all nodes.
-
-        Parameters
-        ----------
-        node
-            Current curriculum skeleton node being visited.
-        """
-
-        nodes.append(node)
-
-        for child in node.children:
-            _walk(child)
-
-    _walk(root)
-    return nodes
-
-
-def dfs_matchable(root: CurriculumSkeletonNode) -> list[CurriculumSkeletonNode]:
-    """Flatten the curriculum skeleton into DFS order, keeping only matchable nodes.
-
-    A node is matchable if it is not `CONTAINER_ONLY` and has at least one
-    `match_phrase`. This includes `IGNORE` nodes, because they still need to consume
-    matching document segments deterministically.
-
-    Parameters
-    ----------
-    root
-        The root `CurriculumSkeletonNode`.
-
-    Returns
-    -------
-    list[CurriculumSkeletonNode]
-        Matchable nodes in DFS traversal order.
-    """
-
-    nodes: list[CurriculumSkeletonNode] = []
-
-    def _walk(node: CurriculumSkeletonNode) -> None:
-        """DFS walk to collect matchable nodes.
-
-        Parameters
-        ----------
-        node
-            Current curriculum skeleton node being visited.
-        """
-
-        if node.emit != CurriculumEmitPolicy.CONTAINER_ONLY and node.match_phrases:
-            nodes.append(node)
-
-        for child in node.children:
-            _walk(child)
-
-    _walk(root)
-    return nodes
-
-
 def generate_curriculum_match_report(
     *,
     curriculum_match_report_fp: Path,
@@ -3497,8 +3887,8 @@ def generate_curriculum_match_report(
         bound caption blocks, which are excluded from the effective denominator below.
     """
 
-    all_nodes = dfs_all(curriculum_skeleton.root)
-    matchable_nodes = dfs_matchable(curriculum_skeleton.root)
+    all_nodes = _dfs_all(curriculum_skeleton.root)
+    matchable_nodes = _dfs_matchable(curriculum_skeleton.root)
     matched_node_ids = {m.node.id for m in curriculum_match_results.matched}
     container_only_nodes = [
         n for n in all_nodes if n.emit == CurriculumEmitPolicy.CONTAINER_ONLY
@@ -3815,7 +4205,7 @@ def match_curriculum(
     if max_skip_distance < 1:
         raise ValueError(f"max_skip_distance must be >= 1. Got: {max_skip_distance}.")
 
-    matchable_nodes = dfs_matchable(curriculum_skeleton.root)
+    matchable_nodes = _dfs_matchable(curriculum_skeleton.root)
     assert matchable_nodes, "Curriculum skeleton contains 0 matchable nodes."
 
     # Pre-compute normalized match phrases for all matchable nodes once, avoiding
@@ -3827,7 +4217,7 @@ def match_curriculum(
         if node.match_phrases
     }
 
-    ancestry_map = build_ancestry_map(curriculum_skeleton.root)
+    ancestry_map = _build_ancestry_map(curriculum_skeleton.root)
 
     # Where in the curriculum skeleton we currently are.
     cursor: int = 0
@@ -4151,341 +4541,6 @@ def prepare_matchable_segments(
     return result
 
 
-def translate_matched_segment(
-    *,
-    context_groupings_role_order: list[NodeRole] | None = None,
-    doc_key: str,
-    matched: CurriculumMatchedSegment,
-) -> SegmentDecision:
-    """Convert one successful curriculum skeleton match into a SegmentDecision.
-
-    This function is the main bridge between the matching stage and the canonical IR
-    decision stage. Given a `CurriculumMatchedSegment`, it looks at the matched
-    curriculum skeleton node and turns that match into the appropriate
-    `SegmentDecision` shape. This function answers the question: "Now that this
-    document segment matched this curriculum skeleton node, what should we emit for the
-    canonical IR?"
-
-    High-level behavior
-    -------------------
-    1. Build `context_groupings` from the matched node's ancestry in the curriculum
-        skeleton. These are outer structural containers such as grade, section, strand,
-        or substage that provide context for the matched content.
-    2. Create a deterministic `decision_id` using the document key and the primary
-        matched segment ID.
-    3. Merge text from the primary matched segment plus any
-        `matched.additional_segments`. This is mainly used for cases like bilingual
-        pairs or multi-segment headings/body content that should become one leaf
-        statement.
-    4. Dispatch based on the matched node's `emit` policy:
-        - `IGNORE`: Return an IGNORE decision with no emitted content.
-        - `EMIT_GROUPING`: Emit one top-level `GroupingDecision`.
-        - `EMIT_LEAF`: Emit one top-level `LeafDecision`.
-        - `EMIT_GROUPING_AND_LEAF`: Emit both one grouping and one leaf.
-        - `EMIT_TABLE_ROWS`: Delegate table translation to `_translate_table_rows()`,
-            which produces row-level decisions from the matched table segment.
-
-    NB:
-
-    1. The returned decision is anchored to the **primary** matched segment
-        (`matched.segment.segment_id`), even when `additional_segments` were merged into
-        the text.
-    2. `context_groupings` come from ancestor curriculum skeleton nodes, while
-        `groupings` and `leaves` describe what this matched node itself emits.
-    3. For table-emitting nodes, this function does not parse rows directly; it passes
-        the work to `_translate_table_rows()`.
-    4. The practical difference between EMIT_GROUPING and EMIT_GROUPING_AND_LEAF is:
-        Suppose the matched heading is: Palier 1 — Communication orale. If we use
-        EMIT_GROUPING, then we are saying: “This heading is only structural. Make a
-        substage node for Palier 1, but do not treat the heading text itself as a
-        standard.”. If we use EMIT_GROUPING_AND_LEAF, then we are saying: “This heading
-        is structural, but it also carries a real curriculum expectation that we want
-        preserved as a leaf.”
-
-    Examples
-    --------
-    1. IGNORE
-        This is used when the matched segment should be consumed so it does not remain
-        unmatched, but it should not create any canonical content. The function returns
-        decision_type=IGNORE with empty context_groupings, groupings, leaves, and rows.
-
-        * Source heading: APPRENTISSAGES PONCTUELS
-        * Why ignore it: It is just a repeated document heading, not a curriculum node
-            or standard.
-        * Output shape:
-            SegmentDecision(
-                decision_type=IGNORE,
-                context_groupings=[],
-                groupings=[],
-                leaves=[],
-                rows=[],
-            )
-
-    2. EMIT_GROUPING
-        This is used when the matched segment is a structural container like a section,
-        strand, or unit, and we want it to become a node in the canonical IR hierarchy,
-        but we do not want the matched text itself to become a standard/expectation
-        leaf. The function emits one top-level GroupingDecision and no leaves.
-
-        * Source heading: 1.2 Tableau de planification des apprentissages
-        * Intended meaning: Create a section node called “Planification des
-            apprentissages du CE1”
-        * Output shape:
-            SegmentDecision(
-                decision_type=EMIT_GROUPINGS_ONLY,
-                context_groupings=[...],
-                groupings=[
-                    GroupingDecision(
-                        role="section",
-                        title="Planification des apprentissages du CE1",
-                    )
-                ],
-                leaves=[],
-                rows=[],
-            )
-
-        This is the right choice when the heading is just a container and the real
-        curricular content lives underneath it in child tables or child statements. For
-        example, in the Senegal reading curriculum skeleton, nodes like
-        schema-integrateur and planification-oral-lecture are set up this way.
-
-    3. EMIT_LEAF
-        This is used when the matched segment is a statement only. It should produce a
-        LeafDecision, but it should not create a new grouping node. The function emits
-        decision_type=EMIT_LEAVES_ONLY, no top-level groupings, and one
-        LeafDecision(body=combined_text).
-
-        * Source paragraph: The learner identifies vowels and consonants in simple
-            words.
-        * Intended meaning: This is directly a standard/expectation statement, not a
-            new container.
-        * Output shape:
-            SegmentDecision(
-                decision_type=EMIT_LEAVES_ONLY,
-                context_groupings=[...],   # e.g. Grade 1 > Literacy > Phonics
-                groupings=[],
-                leaves=[
-                    LeafDecision(
-                        role="expectation",
-                        body="The learner identifies vowels and consonants in simple words.",
-                    )
-                ],
-                rows=[],
-            )
-
-    4. EMIT_GROUPING_AND_LEAF1
-        This is used when the matched segment is doing two jobs at once: it names a
-        structural grouping and the heading itself carries a meaningful curriculum
-        statement. The function emits one GroupingDecision plus one
-        LeafDecision(body=combined_text).
-
-        * Source heading: Palier 1 — Production d’écrits : production de textes
-            narratifs
-        * Intended meaning: Create a substage grouping for Palier 1 and also preserve
-            the actual expectation text carried by that heading
-        * Output shape:
-            SegmentDecision(
-                decision_type=EMIT_GROUPINGS_AND_LEAVES,
-                context_groupings=[...],
-                groupings=[
-                    GroupingDecision(
-                        role="substage",
-                        title="Palier 1 — Production d'écrits",
-                    )
-                ],
-                leaves=[
-                    LeafDecision(
-                        role="expectation",
-                        body="Palier 1 ... production de textes narratifs",
-                    )
-                ],
-                rows=[],
-            )
-
-    5. EMIT_TABLE_ROWS
-        This is used when the matched segment is a table and the content should be
-        interpreted row by row rather than as one big leaf.
-        `translate_matched_segment()` does not parse the table itself in this case; it
-        hands off to `_translate_table_rows()`, which uses the curriculum skeleton’s
-        `column_mappings` to build RowDecision[]. Those row decisions may contain
-        row-level groupings and leaves, and the overall decision type is chosen based
-        on what the rows actually produced.
-
-        * Source table caption: Tableau 1.6.1 — Outils de langue, Palier 1
-            Table columns:
-                Outils de langue -> grouping subtopic
-                Objectif spécifique -> leaf expectation
-                Contenus -> leaf guidance
-                Durée -> leaf descriptor
-        * Output shape:
-            SegmentDecision(
-                decision_type=EMIT_GROUPINGS_AND_LEAVES,   # Assuming rows produce both
-                context_groupings=[...],
-                groupings=[],   # Maybe a segment-level grouping, maybe not
-                leaves=[],
-                rows=[
-                    RowDecision(
-                        row_index=0,
-                        groupings=[GroupingDecision(role="subtopic", title="Vocabulaire")],
-                        leaves=[
-                            LeafDecision(role="expectation", body="..."),
-                            LeafDecision(role="guidance", body="..."),
-                            LeafDecision(role="descriptor", body="30 min"),
-                        ],
-                    ),
-                    ...
-                ],
-            )
-
-    Parameters
-    ----------
-    context_groupings_role_order
-        Optional custom role ordering used when sorting `context_groupings`.
-    doc_key
-        Stable document key used to build the deterministic decision ID.
-    matched
-        The successful match produced by the curriculum matching engine. This includes
-        the matched curriculum skeleton node, the primary matched segment, its
-        ancestry, and any additional continuation segments.
-
-    Returns
-    -------
-    SegmentDecision
-        The canonical decision corresponding to this matched segment and curriculum
-        skeleton node.
-
-    Raises
-    ------
-    ValueError
-        If the matched node uses an emit policy that this function does not handle.
-    """
-
-    node = matched.node
-    segment = matched.segment
-    context = build_context_groupings(
-        ancestry=matched.ancestry,
-        context_groupings_role_order=context_groupings_role_order,
-        matched_node=node,
-    )
-    decision_id = f"curriculum_skeleton:{doc_key}:{segment.segment_id}"
-    block_type = BlockType(segment.block_type) if segment.block_type else None
-
-    # Combine text from bilingual pairs.
-    all_texts = [segment.text or ""] + [
-        extra.text for extra in matched.additional_segments if extra.text
-    ]
-    combined_text = "\n\n".join(t for t in all_texts if t.strip())
-
-    # IGNORE.
-    if node.emit == CurriculumEmitPolicy.IGNORE:
-        return SegmentDecision(
-            block_type=block_type,
-            confidence=1.0,
-            context_groupings=[],
-            decision_id=decision_id,
-            decision_type=SegmentDecisionType.IGNORE,
-            groupings=[],
-            leaves=[],
-            rationale=f"Curriculum skeleton IGNORE: '{node.id}'.",
-            rows=[],
-            segment_id=segment.segment_id,
-            segment_kind=segment.segment_kind,
-        )
-
-    # EMIT_GROUPING.
-    if node.emit == CurriculumEmitPolicy.EMIT_GROUPING:
-        return SegmentDecision(
-            block_type=block_type,
-            confidence=1.0,
-            context_groupings=context,
-            decision_id=decision_id,
-            decision_type=SegmentDecisionType.EMIT_GROUPINGS_ONLY,
-            groupings=[
-                GroupingDecision(
-                    local_code=node.local_code,
-                    preserve_if_empty=node.preserve_if_empty,
-                    role=node.grouping_role,
-                    source_label=node.source_label,
-                    title=node.canonical_name.primary,
-                )
-            ],
-            leaves=[],
-            rationale=(
-                f"Curriculum skeleton EMIT_GROUPING: '{node.id}' "
-                f"-> {node.grouping_role.value}."
-            ),
-            rows=[],
-            segment_id=segment.segment_id,
-            segment_kind=segment.segment_kind,
-        )
-
-    # EMIT_LEAF.
-    if node.emit == CurriculumEmitPolicy.EMIT_LEAF:
-        return SegmentDecision(
-            block_type=block_type,
-            confidence=1.0,
-            context_groupings=context,
-            decision_id=decision_id,
-            decision_type=SegmentDecisionType.EMIT_LEAVES_ONLY,
-            groupings=[],
-            leaves=[
-                LeafDecision(
-                    body=combined_text,
-                    role=node.leaf_role,
-                    source_label=node.source_label,
-                )
-            ],
-            rationale=(
-                f"Curriculum skeleton EMIT_LEAF: '{node.id}' → {node.leaf_role.value}."
-            ),
-            rows=[],
-            segment_id=segment.segment_id,
-            segment_kind=segment.segment_kind,
-        )
-
-    # EMIT_GROUPING_AND_LEAF.
-    if node.emit == CurriculumEmitPolicy.EMIT_GROUPING_AND_LEAF:
-        return SegmentDecision(
-            block_type=block_type,
-            confidence=1.0,
-            context_groupings=context,
-            decision_id=decision_id,
-            decision_type=SegmentDecisionType.EMIT_GROUPINGS_AND_LEAVES,
-            groupings=[
-                GroupingDecision(
-                    local_code=node.local_code,
-                    preserve_if_empty=node.preserve_if_empty,
-                    role=node.grouping_role,
-                    source_label=node.source_label,
-                    title=node.canonical_name.primary,
-                )
-            ],
-            leaves=[
-                LeafDecision(
-                    body=combined_text,
-                    role=node.leaf_role,
-                    source_label=node.source_label,
-                )
-            ],
-            rationale=f"Curriculum skeleton EMIT_GROUPING_AND_LEAF: '{node.id}'.",
-            rows=[],
-            segment_id=segment.segment_id,
-            segment_kind=segment.segment_kind,
-        )
-
-    # EMIT_TABLE_ROWS.
-    if node.emit == CurriculumEmitPolicy.EMIT_TABLE_ROWS:
-        return _translate_table_rows(
-            context=context,
-            context_groupings_role_order=context_groupings_role_order,
-            decision_id=decision_id,
-            node=node,
-            seg=segment,
-        )
-
-    raise ValueError(f"Unhandled emit policy: {node.emit}")
-
-
 def translate_segments(
     *,
     context_groupings_role_order: list[NodeRole] | None,
@@ -4535,7 +4590,7 @@ def translate_segments(
     segment_decisions: list[SegmentDecision] = []
 
     for matched_seg in curriculum_match_results.matched:
-        decision = translate_matched_segment(
+        decision = _translate_matched_segment(
             context_groupings_role_order=context_groupings_role_order,
             doc_key=doc_key,
             matched=matched_seg,
@@ -4543,7 +4598,7 @@ def translate_segments(
         segment_decisions.append(decision)
 
     for unmatched_seg in curriculum_match_results.unmatched:
-        decision = translate_unmatched(doc_key=doc_key, seg=unmatched_seg)
+        decision = _translate_unmatched(doc_key=doc_key, seg=unmatched_seg)
         segment_decisions.append(decision)
 
     # Sort by document order for consistency.
@@ -4571,62 +4626,3 @@ def translate_segments(
     logger.success(f"Saved segment decisions to: {segment_decisions_fp}")
 
     return segment_decision_set
-
-
-def translate_unmatched(
-    *, doc_key: str, seg: CurriculumMatchableSegment
-) -> SegmentDecision:
-    """Convert an unmatched segment into a SegmentDecision.
-
-    Bound caption blocks (whose text was transferred to a table's caption_text field)
-    are marked IGNORE--they were intentionally neutralized and are not missing content.
-
-    All other unmatched segments are marked UNRESOLVED so they surface in the canonical
-    IR's `unresolved` list for human review. This prevents genuine curriculum content
-    that the curriculum skeleton failed to match from being silently dropped.
-
-    Parameters
-    ----------
-    doc_key
-        Document key for decision ID generation.
-    seg
-        The unmatched `CurriculumMatchableSegment`.
-
-    Returns
-    -------
-    SegmentDecision
-        An IGNORE decision for bound captions, or an UNRESOLVED decision for genuinely
-        unmatched segments.
-    """
-
-    # Bound captions are intentionally neutralized; they are not missing content and can
-    # be (safely) silently ignored.
-    if seg.is_bound_caption:
-        return SegmentDecision(
-            block_type=BlockType(seg.block_type) if seg.block_type else None,
-            confidence=1.0,
-            context_groupings=[],
-            decision_id=f"curriculum_skeleton:{doc_key}:{seg.segment_id}:bound_caption",
-            decision_type=SegmentDecisionType.IGNORE,
-            groupings=[],
-            leaves=[],
-            rationale="Bound caption block; text transferred to table caption_text.",
-            rows=[],
-            segment_id=seg.segment_id,
-            segment_kind=seg.segment_kind,
-        )
-
-    # Genuinely unmatched segment--flag for human review.
-    return SegmentDecision(
-        block_type=BlockType(seg.block_type) if seg.block_type else None,
-        confidence=1.0,
-        context_groupings=[],
-        decision_id=f"curriculum_skeleton:{doc_key}:{seg.segment_id}:unmatched",
-        decision_type=SegmentDecisionType.UNRESOLVED,
-        groupings=[],
-        leaves=[],
-        rationale="No curriculum skeleton node matched this segment; flagged for human review.",
-        rows=[],
-        segment_id=seg.segment_id,
-        segment_kind=seg.segment_kind,
-    )
