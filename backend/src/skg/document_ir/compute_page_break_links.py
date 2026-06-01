@@ -19,8 +19,8 @@ from skg.page_ir_extraction.schemas import Block, ListItem, PageIR, Table, TextU
 from skg.page_ir_verification.utils import EdgeVerdictRecord, is_artifact
 from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
 
-ItemKey = tuple[int, int]
-RejectionReason = Literal[
+_ItemKey = tuple[int, int]
+_RejectionReason = Literal[
     "blocked_by_intervening_content", "no_compatible_partner", "outside_edge_window"
 ]
 
@@ -31,7 +31,7 @@ def _append_rejected_warnings(
     items: list[tuple[int, Block | Table]],
     page_ir: PageIR,
     rejected_indices: list[int],
-    rejection_reasons: dict[int, RejectionReason],
+    rejection_reasons: dict[int, _RejectionReason],
     warnings: list[str],
 ) -> None:
     """Append warnings for rejected candidates using precise rejection reasons.
@@ -284,7 +284,7 @@ def _apply_verification_verdict(
     next_page_items: list[tuple[int, Block | Table]],
     page_pair_debug: list[dict[str, Any]],
     prev_page_items: list[tuple[int, Block | Table]],
-) -> dict[ItemKey, ItemKey]:
+) -> dict[_ItemKey, _ItemKey]:
     """Attempt to create a stitching link from a high-confidence verification verdict.
 
     NB: This is called only when edge_record.verdict.confidence >= threshold and
@@ -348,7 +348,7 @@ def _apply_verification_verdict(
 
     Returns
     -------
-    dict[ItemKey, ItemKey]
+    dict[_ItemKey, _ItemKey]
         A single-entry link dict `{(prev_page, prev_item) : (next_page, next_item)}`.
     """
 
@@ -472,8 +472,8 @@ def _apply_verification_verdict(
         next_item.repeats_header = verdict.set_next_table_repeats_header
 
     # Create the direct link.
-    link_key: ItemKey = (prev_page_index, prev_idx)
-    link_val: ItemKey = (next_page_index, next_idx)
+    link_key: _ItemKey = (prev_page_index, prev_idx)
+    link_val: _ItemKey = (next_page_index, next_idx)
 
     link_debug.append(
         {
@@ -856,10 +856,10 @@ def _find_paired_candidates(
 ) -> tuple[
     list[int],
     list[int],
-    dict[int, RejectionReason],
+    dict[int, _RejectionReason],
     list[int],
     list[int],
-    dict[int, RejectionReason],
+    dict[int, _RejectionReason],
 ]:
     """Discover paired candidates across a page boundary with explicit rejection
     reasons.
@@ -882,7 +882,7 @@ def _find_paired_candidates(
 
     Returns
     -------
-    tuple[list[int], list[int], dict[int, RejectionReason], list[int], list[int], dict[int, RejectionReason]]
+    tuple[list[int], list[int], dict[int, _RejectionReason], list[int], list[int], dict[int, _RejectionReason]]
         A tuple containing:
             - Rejected previous-page candidate indices.
             - Valid previous-page candidate indices.
@@ -916,7 +916,7 @@ def _find_paired_candidates(
     next_signal = [index for index in next_signal_all if index in next_edge]
 
     prev_valid: list[int] = []
-    prev_rejection_reasons: dict[int, RejectionReason] = {
+    prev_rejection_reasons: dict[int, _RejectionReason] = {
         i: "outside_edge_window" for i in prev_signal_all if i not in prev_edge
     }
     prev_rejected: list[int] = list(prev_rejection_reasons.keys())
@@ -945,7 +945,7 @@ def _find_paired_candidates(
             prev_rejection_reasons[index] = "blocked_by_intervening_content"
 
     next_valid: list[int] = []
-    next_rejection_reasons: dict[int, RejectionReason] = {
+    next_rejection_reasons: dict[int, _RejectionReason] = {
         i: "outside_edge_window" for i in next_signal_all if i not in next_edge
     }
     next_rejected: list[int] = list(next_rejection_reasons.keys())

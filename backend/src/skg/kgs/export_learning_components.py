@@ -51,7 +51,7 @@ _INLINE_BULLET_CHARS = r"[\u2022\u00b7•·\*]"
 _LINE_BULLET_CHARS = r"[\u2022\u00b7•·\-\–\—\*]"
 
 # Primary-language map for common BCP-47 tags seen in primary-school curricula.
-LANG_PRIMARY_CODE_TO_NAME: dict[str, str] = {
+_LANG_PRIMARY_CODE_TO_NAME: dict[str, str] = {
     "ar": "Arabic",
     "en": "English",
     "es": "Spanish",
@@ -62,7 +62,7 @@ LANG_PRIMARY_CODE_TO_NAME: dict[str, str] = {
     "wo": "Wolof",
 }
 
-SUPPORTS = "supports"
+_SUPPORTS = "supports"
 
 
 @dataclass
@@ -256,8 +256,8 @@ def _build_lc_graph_bundle(
     relationships: list[dict[str, Any]] = []
 
     for r in supports_relationships:
-        if r.relationship_type != SUPPORTS:
-            raise ValueError(f"{r.relationship_type} is not '{SUPPORTS}'")
+        if r.relationship_type != _SUPPORTS:
+            raise ValueError(f"{r.relationship_type} is not '{_SUPPORTS}'")
 
         relationships.append(
             {
@@ -997,7 +997,7 @@ def _emit_supports(
             "supporting_sfi_case_uuid": str(sfi.case_identifier_uuid),
         },
         provider=str(fw_metadata["provider"]),
-        relationship_type=SUPPORTS,
+        relationship_type=_SUPPORTS,
         source_entity="LearningComponent",
         source_entity_key="identifier",
         source_entity_value=str(lc.identifier),
@@ -1241,7 +1241,7 @@ def _format_language_for_prompt(tag: str | None) -> str:
     # Normalize tag formatting but preserve the original for display.
     tag_norm = raw.replace("_", "-")
     primary = tag_norm.split("-")[0].lower().strip()
-    name = LANG_PRIMARY_CODE_TO_NAME.get(primary)
+    name = _LANG_PRIMARY_CODE_TO_NAME.get(primary)
 
     if not name:
         lang = (
@@ -2380,6 +2380,123 @@ def _resolve_prompt_display_text(sfi: StandardsFrameworkItem) -> str:
     return display_text or fallback_text
 
 
+def _select_lc_source_sfis(
+    *, config: CreateKGConfig, sfis: Iterable[StandardsFrameworkItem]
+) -> list[LearningComponentsSourceDecision]:
+    """Decide which StandardsFrameworkItems are eligible LC-generation sources.
+
+    This is intentionally separate from Academic Standards export. Broad competencies
+    may remain valid StandardsFrameworkItems while being excluded from
+    LearningComponent generation through config.
+
+    Parameters
+    ----------
+    config
+        The CreateKGConfig containing the LC source filtering criteria.
+    sfis
+        The iterable of StandardsFrameworkItems to evaluate for LC source eligibility.
+
+    Returns
+    -------
+    list[LearningComponentsSourceDecision]
+        A list of decisions, one per input SFI, indicating whether it is eligible as an
+        LC source and the reasons for exclusion if not eligible.
+    """
+
+    allowed_normalized_types = set(config.lc_source_normalized_statement_types or [])
+    roles_inc = _config_value_set(config.lc_source_roles_include)
+    roles_exc = _config_value_set(config.lc_source_roles_exclude)
+    stmt_types_inc = _config_value_set(config.lc_source_statement_types_include)
+    stmt_types_exc = _config_value_set(config.lc_source_statement_types_exclude)
+    labels_inc = _config_value_set(config.lc_source_labels_include)
+    labels_exc = _config_value_set(config.lc_source_labels_exclude)
+    decisions: list[LearningComponentsSourceDecision] = []
+
+    for sfi in sfis:
+        fields = _lc_source_fields(sfi)
+        reasons: list[str] = []
+        norm_type = fields["normalized_statement_type"]
+        role = _clean_lc_source_filter_value(fields["role"])
+        stmt_type = _clean_lc_source_filter_value(fields["statement_type"])
+        label = _clean_lc_source_filter_value(fields["source_label"])
+
+        if allowed_normalized_types and norm_type not in allowed_normalized_types:
+            reasons.append("excluded_normalized_statement_type")
+
+        set_checks = [
+            (
+                role,
+                roles_inc,
+                "excluded_role_not_in_include",
+                roles_exc,
+                "excluded_role",
+            ),
+            (
+                stmt_type,
+                stmt_types_inc,
+                "excluded_statement_type_not_in_include",
+                stmt_types_exc,
+                "excluded_statement_type",
+            ),
+            (
+                label,
+                labels_inc,
+                "excluded_source_label_not_in_include",
+                labels_exc,
+                "excluded_source_label",
+            ),
+        ]
+
+        for val, inc_set, inc_reason, exc_set, exc_reason in set_checks:
+            if inc_set and val not in inc_set:
+                reasons.append(inc_reason)
+
+            if exc_set and val in exc_set:
+                reasons.append(exc_reason)
+
+        path_key = str(fields["canonical_path_key"] or "")
+        path_pattern = str(fields["path_pattern"] or "")
+
+        if config.lc_source_path_patterns_include and not _lc_source_path_matches_any(
+            path_key=path_key,
+            path_pattern=path_pattern,
+            patterns=config.lc_source_path_patterns_include,
+        ):
+            reasons.append("excluded_path_pattern_not_in_include")
+
+        if config.lc_source_path_patterns_exclude and _lc_source_path_matches_any(
+            path_key=path_key,
+            path_pattern=path_pattern,
+            patterns=config.lc_source_path_patterns_exclude,
+        ):
+            reasons.append("excluded_path_pattern")
+
+        depth = int(fields["path_depth"] or 0)
+
+        if (
+            config.lc_source_min_path_depth is not None
+            and depth < config.lc_source_min_path_depth
+        ):
+            reasons.append("excluded_path_depth_below_min")
+
+        if (
+            config.lc_source_max_path_depth is not None
+            and depth > config.lc_source_max_path_depth
+        ):
+            reasons.append("excluded_path_depth_above_max")
+
+        decisions.append(
+            LearningComponentsSourceDecision(
+                eligible=not reasons,
+                fields=fields,
+                reasons=reasons or ["eligible"],
+                sfi=sfi,
+            )
+        )
+
+    return decisions
+
+
 def _select_lc_source_sfis_for_export(
     *, config: CreateKGConfig, sfis: Iterable[StandardsFrameworkItem]
 ) -> tuple[list[StandardsFrameworkItem], dict[str, Any]]:
@@ -2401,7 +2518,7 @@ def _select_lc_source_sfis_for_export(
         considered SFIs, suitable for JSON serialization and export as a QA artifact.
     """
 
-    decisions = select_lc_source_sfis(config=config, sfis=sfis)
+    decisions = _select_lc_source_sfis(config=config, sfis=sfis)
     report = _build_lc_source_eligibility_report(decisions)
     eligible_sfis = [decision.sfi for decision in decisions if decision.eligible]
 
@@ -2899,7 +3016,7 @@ def _validate_lc_export_integrity(
         supports targets reference unknown StandardsFrameworkItems.
     """
 
-    if any(rel.relationship_type != SUPPORTS for rel in rels):
+    if any(rel.relationship_type != _SUPPORTS for rel in rels):
         raise ValueError(
             "Non-supports relationship found in Learning Components export."
         )
@@ -3397,120 +3514,3 @@ def load_or_export_learning_components(
         )
 
     return learning_components, lc_reused
-
-
-def select_lc_source_sfis(
-    *, config: CreateKGConfig, sfis: Iterable[StandardsFrameworkItem]
-) -> list[LearningComponentsSourceDecision]:
-    """Decide which StandardsFrameworkItems are eligible LC-generation sources.
-
-    This is intentionally separate from Academic Standards export. Broad competencies
-    may remain valid StandardsFrameworkItems while being excluded from
-    LearningComponent generation through config.
-
-    Parameters
-    ----------
-    config
-        The CreateKGConfig containing the LC source filtering criteria.
-    sfis
-        The iterable of StandardsFrameworkItems to evaluate for LC source eligibility.
-
-    Returns
-    -------
-    list[LearningComponentsSourceDecision]
-        A list of decisions, one per input SFI, indicating whether it is eligible as an
-        LC source and the reasons for exclusion if not eligible.
-    """
-
-    allowed_normalized_types = set(config.lc_source_normalized_statement_types or [])
-    roles_inc = _config_value_set(config.lc_source_roles_include)
-    roles_exc = _config_value_set(config.lc_source_roles_exclude)
-    stmt_types_inc = _config_value_set(config.lc_source_statement_types_include)
-    stmt_types_exc = _config_value_set(config.lc_source_statement_types_exclude)
-    labels_inc = _config_value_set(config.lc_source_labels_include)
-    labels_exc = _config_value_set(config.lc_source_labels_exclude)
-    decisions: list[LearningComponentsSourceDecision] = []
-
-    for sfi in sfis:
-        fields = _lc_source_fields(sfi)
-        reasons: list[str] = []
-        norm_type = fields["normalized_statement_type"]
-        role = _clean_lc_source_filter_value(fields["role"])
-        stmt_type = _clean_lc_source_filter_value(fields["statement_type"])
-        label = _clean_lc_source_filter_value(fields["source_label"])
-
-        if allowed_normalized_types and norm_type not in allowed_normalized_types:
-            reasons.append("excluded_normalized_statement_type")
-
-        set_checks = [
-            (
-                role,
-                roles_inc,
-                "excluded_role_not_in_include",
-                roles_exc,
-                "excluded_role",
-            ),
-            (
-                stmt_type,
-                stmt_types_inc,
-                "excluded_statement_type_not_in_include",
-                stmt_types_exc,
-                "excluded_statement_type",
-            ),
-            (
-                label,
-                labels_inc,
-                "excluded_source_label_not_in_include",
-                labels_exc,
-                "excluded_source_label",
-            ),
-        ]
-
-        for val, inc_set, inc_reason, exc_set, exc_reason in set_checks:
-            if inc_set and val not in inc_set:
-                reasons.append(inc_reason)
-
-            if exc_set and val in exc_set:
-                reasons.append(exc_reason)
-
-        path_key = str(fields["canonical_path_key"] or "")
-        path_pattern = str(fields["path_pattern"] or "")
-
-        if config.lc_source_path_patterns_include and not _lc_source_path_matches_any(
-            path_key=path_key,
-            path_pattern=path_pattern,
-            patterns=config.lc_source_path_patterns_include,
-        ):
-            reasons.append("excluded_path_pattern_not_in_include")
-
-        if config.lc_source_path_patterns_exclude and _lc_source_path_matches_any(
-            path_key=path_key,
-            path_pattern=path_pattern,
-            patterns=config.lc_source_path_patterns_exclude,
-        ):
-            reasons.append("excluded_path_pattern")
-
-        depth = int(fields["path_depth"] or 0)
-
-        if (
-            config.lc_source_min_path_depth is not None
-            and depth < config.lc_source_min_path_depth
-        ):
-            reasons.append("excluded_path_depth_below_min")
-
-        if (
-            config.lc_source_max_path_depth is not None
-            and depth > config.lc_source_max_path_depth
-        ):
-            reasons.append("excluded_path_depth_above_max")
-
-        decisions.append(
-            LearningComponentsSourceDecision(
-                eligible=not reasons,
-                fields=fields,
-                reasons=reasons or ["eligible"],
-                sfi=sfi,
-            )
-        )
-
-    return decisions

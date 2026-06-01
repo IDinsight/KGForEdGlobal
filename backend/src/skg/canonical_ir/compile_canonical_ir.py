@@ -43,8 +43,8 @@ from skg.utils.constants import (
 )
 from skg.utils.general import write_to_json
 
-HAS_CHILD = "hasChild"
-QUOTES_TRANSLATION = str.maketrans(
+_HAS_CHILD = "hasChild"
+_QUOTES_TRANSLATION = str.maketrans(
     {
         "“": '"',
         "”": '"',
@@ -893,7 +893,7 @@ def _emit_edge(
     # Edge key includes `rel` to match CanonicalEdge identity semantics. This tuple is
     # the identity of the edge. If the same parent -> child relation comes thru again,
     # it is treated as the same edge rather than a new one.
-    key = (parent_id, child_id, HAS_CHILD)
+    key = (parent_id, child_id, _HAS_CHILD)
 
     # If edge already exists, merge provenance into the first-emitted edge instead of
     # creating a new one.
@@ -2443,7 +2443,7 @@ def _normalize_text(text: Optional[str]) -> str:
         return ""
 
     text = unicodedata.normalize("NFKC", text)
-    text = text.translate(QUOTES_TRANSLATION)
+    text = text.translate(_QUOTES_TRANSLATION)
     text = DASH_RE.sub("-", text)
     text = WS_RE.sub(" ", text).strip()
 
@@ -2628,7 +2628,7 @@ def _prune_empty_groupings(
 
         for e in edges:
             # CanonicalEdge.rel is always HAS_CHILD, but keep this check just in case.
-            if e.rel == HAS_CHILD and e.parent_id in out_degree:
+            if e.rel == _HAS_CHILD and e.parent_id in out_degree:
                 out_degree[e.parent_id] += 1
 
         # Identify empty grouping nodes (0 children), excluding root.
@@ -2707,7 +2707,7 @@ def _prune_unreachable_nodes(
     children_by_parent: dict[str, list[str]] = {}
 
     for e in edges:
-        if e.rel != HAS_CHILD:
+        if e.rel != _HAS_CHILD:
             continue
 
         children_by_parent.setdefault(e.parent_id, []).append(e.child_id)
@@ -3073,7 +3073,7 @@ def _reindex_order_indices_postpass(
     edges_by_parent: dict[str, list["CanonicalEdge"]] = {}
 
     for e in edges:
-        if e.rel != HAS_CHILD:
+        if e.rel != _HAS_CHILD:
             continue
 
         edges_by_parent.setdefault(e.parent_id, []).append(e)

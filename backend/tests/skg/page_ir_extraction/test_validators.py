@@ -19,10 +19,10 @@ from skg.page_ir_extraction.schemas import (
     TextUnit,
 )
 from skg.page_ir_extraction.validators import (
-    NonArtifacts,
     PageIRExtractionQualityCtx,
     QualityError,
     _is_full_page_bbox,
+    _NonArtifacts,
     _validate_table_cells_text_en,
     _validate_table_collapse_by_header_body,
     _validate_table_has_any_text,
@@ -530,7 +530,7 @@ def test_non_artifacts_snapshot() -> None:
     Validates that every entry is a unique, lowercase, stripped string.
     """
 
-    assert NonArtifacts == {
+    assert _NonArtifacts == {
         "abbreviations and acronyms",
         "acknowledgements",
         "acknowledgments",
@@ -545,7 +545,7 @@ def test_non_artifacts_snapshot() -> None:
     }
 
     # Keep matching data normalized.
-    for s in NonArtifacts:
+    for s in _NonArtifacts:
         assert isinstance(s, str)
         assert s == s.strip()
         assert s == s.lower()

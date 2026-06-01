@@ -25,7 +25,7 @@ from typing import Any
 from skg.page_ir_extraction.schemas import PageIR, TextUnit
 from skg.utils.constants import BlockType, FigureKind, ItemBoundary, PageBoundaryState
 
-NonArtifacts = {
+_NonArtifacts = {
     "abbreviations and acronyms",
     "acknowledgements",
     "acknowledgments",
@@ -415,7 +415,7 @@ def validate_artifacts_are_true_artifacts(ctx: PageIRExtractionQualityCtx) -> No
             )
 
         # Common structural section labels.
-        if text in NonArtifacts:
+        if text in _NonArtifacts:
             raise QualityError(
                 f"Item {i} is block_type={BlockType.ARTIFACT.value} but text='{text}'. "
                 f"Section titles must be {BlockType.HEADING.value}."

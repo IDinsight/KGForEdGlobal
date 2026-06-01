@@ -32,9 +32,9 @@ from skg.schemas import CreateKGConfig
 from skg.utils.constants import NodeRole, StatementRole
 from skg.utils.general import open_json_type, write_to_json
 
-AUX_ROLES: set[str] = {StatementRole.DESCRIPTOR.value, StatementRole.GUIDANCE.value}
-HAS_CHILD = "hasChild"
-ROMAN_MAP = {
+_AUX_ROLES: set[str] = {StatementRole.DESCRIPTOR.value, StatementRole.GUIDANCE.value}
+_HAS_CHILD = "hasChild"
+_ROMAN_MAP = {
     "I": 1,
     "II": 2,
     "III": 3,
@@ -51,7 +51,7 @@ ROMAN_MAP = {
     "XIV": 14,
     "XV": 15,
 }
-STATEMENT_ROLE_VALUES: set[str] = {item.value for item in StatementRole}
+_STATEMENT_ROLE_VALUES: set[str] = {item.value for item in StatementRole}
 
 
 @dataclass
@@ -291,7 +291,7 @@ def _attach_child_layout_aux_nodes(
 
             child_role = ctx.nodes_by_id[child_id]["role"]
 
-            if child_role not in AUX_ROLES or not _is_attachable(
+            if child_role not in _AUX_ROLES or not _is_attachable(
                 config=config, role=child_role
             ):
                 continue
@@ -414,7 +414,7 @@ def _attach_sibling_layout_aux_nodes(
             else ctx.nodes_by_id[parent_id]["role"]
         )
 
-        if parent_role in STATEMENT_ROLE_VALUES:
+        if parent_role in _STATEMENT_ROLE_VALUES:
             continue
 
         attached, orphans = _process_sibling_group(
@@ -566,7 +566,7 @@ def _build_academic_standards_graph_bundle(
         props = r.model_dump(mode="json")
         order_index = order_index_by_edge.get((start_id, end_id))
 
-        if r.relationship_type != HAS_CHILD:
+        if r.relationship_type != _HAS_CHILD:
             raise ValueError(
                 f"Unexpected relationship type '{r.relationship_type}' "
                 f"in Academic Standards export bundle."
@@ -1333,7 +1333,7 @@ def _compute_export_children(
             aux_before = sum(
                 1
                 for cid in ordered_emitted_kids
-                if ctx.nodes_by_id[cid]["role"] in AUX_ROLES
+                if ctx.nodes_by_id[cid]["role"] in _AUX_ROLES
                 and _is_attachable(config=config, role=ctx.nodes_by_id[cid]["role"])
             )
 
@@ -1353,7 +1353,7 @@ def _compute_export_children(
             orphan_ids_in_batch = {
                 cid
                 for cid in new_kids
-                if ctx.nodes_by_id[cid]["role"] in AUX_ROLES
+                if ctx.nodes_by_id[cid]["role"] in _AUX_ROLES
                 and _is_attachable(config=config, role=ctx.nodes_by_id[cid]["role"])
             }
             sibling_aux_reparented_count += aux_before - len(orphan_ids_in_batch)
@@ -1384,7 +1384,7 @@ def _compute_export_children(
                     cid
                     for cid in new_kids
                     if not (
-                        ctx.nodes_by_id[cid]["role"] in AUX_ROLES
+                        ctx.nodes_by_id[cid]["role"] in _AUX_ROLES
                         and _is_attachable(
                             config=config, role=ctx.nodes_by_id[cid]["role"]
                         )
@@ -1770,7 +1770,7 @@ def _emit_has_child(
         license=config.as_license,
         metadata=relationship_metadata,
         provider=config.as_provider,
-        relationship_type=HAS_CHILD,
+        relationship_type=_HAS_CHILD,
         source_entity=source_entity,
         source_entity_key="case_identifier_uuid",
         source_entity_value=str(parent_uuid),
@@ -2340,7 +2340,7 @@ def _is_grouping_role(*, config: CreateKGConfig, role: str) -> bool:
         True if the role is a grouping role, False otherwise.
     """
 
-    if role == NodeRole.FRAMEWORK.value or role in STATEMENT_ROLE_VALUES:
+    if role == NodeRole.FRAMEWORK.value or role in _STATEMENT_ROLE_VALUES:
         return False
 
     if config.as_grouping_role_policy == "loose":
@@ -2407,7 +2407,7 @@ def _normalized_statement_type(*, config: CreateKGConfig, role: str) -> str:
     if role == StatementRole.EXPECTATION.value:
         return "Standard"
 
-    if role in AUX_ROLES:
+    if role in _AUX_ROLES:
         return "Other"
 
     if _is_grouping_role(config=config, role=role):
@@ -2633,7 +2633,7 @@ def _parse_ordinal(label: str) -> tuple[int | None, int | None]:
         )
 
     # Otherwise try roman numerals anywhere in the string.
-    romans = [ROMAN_MAP.get(m.group(1).upper()) for m in ROMAN_RE.finditer(s_norm)]
+    romans = [_ROMAN_MAP.get(m.group(1).upper()) for m in ROMAN_RE.finditer(s_norm)]
     romans_int: list[int] = [r for r in romans if r is not None]
 
     if romans_int:
@@ -2787,7 +2787,7 @@ def _process_sibling_group(
             last_expectation = cid
             continue
 
-        if role not in AUX_ROLES:
+        if role not in _AUX_ROLES:
             continue
 
         # Only aux roles configured for attachment participate in orphan tracking.
@@ -3406,7 +3406,7 @@ def _reparent_aux_nodes_under_expectations(
 
                 child_role = ctx.nodes_by_id[child_id]["role"]
 
-                if child_role in AUX_ROLES and _attach_aux_node(
+                if child_role in _AUX_ROLES and _attach_aux_node(
                     aux_node_id=child_id, target_expectation_id=cid
                 ):
                     child_aux_consumed += 1
@@ -3414,7 +3414,7 @@ def _reparent_aux_nodes_under_expectations(
             continue
 
         # Sibling layout: aux node following an expectation in sibling order.
-        if role in AUX_ROLES and last_expectation:
+        if role in _AUX_ROLES and last_expectation:
             _attach_aux_node(aux_node_id=cid, target_expectation_id=last_expectation)
             continue
 
@@ -3770,7 +3770,7 @@ def _should_emit_node_with_reason(
     if (
         config.as_grouping_role_policy == "whitelist"
         and role != NodeRole.FRAMEWORK.value
-        and role not in STATEMENT_ROLE_VALUES
+        and role not in _STATEMENT_ROLE_VALUES
         and not _is_grouping_role(config=config, role=role)
     ):
         if config.as_non_grouping_role_handling == "drop":
@@ -4232,8 +4232,8 @@ def _to_int_or_roman(s: str) -> int | str:
 
     u = s.upper()
 
-    if u in ROMAN_MAP:
-        return ROMAN_MAP[u]
+    if u in _ROMAN_MAP:
+        return _ROMAN_MAP[u]
     return s
 
 
@@ -4347,7 +4347,7 @@ def _verify_standards_export(
     rel_children_by_parent: DefaultDict[str, list[str]] = defaultdict(list)
 
     for r in relationships:
-        if r.relationship_type == HAS_CHILD:
+        if r.relationship_type == _HAS_CHILD:
             rel_children_by_parent[r.source_entity_value].append(r.target_entity_value)
 
     for parent, kids in rel_children_by_parent.items():
@@ -4363,7 +4363,7 @@ def _verify_standards_export(
     adj: DefaultDict[str, list[str]] = defaultdict(list)
 
     for r in relationships:
-        if r.relationship_type == HAS_CHILD:
+        if r.relationship_type == _HAS_CHILD:
             adj[r.source_entity_value].append(r.target_entity_value)
 
     stack: list[str] = [fw_id]

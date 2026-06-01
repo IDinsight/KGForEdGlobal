@@ -25,12 +25,12 @@ from pydantic import Field, field_validator, model_validator
 from skg.page_ir_extraction.schemas import TextUnit
 from skg.schemas import BaseSchema, LanguageField, validate_bbox_order
 
-AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo"}
-AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
-MetadataT = dict[str, Any]
-NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
-ProgressionSubtype = Literal["developmental_prerequisite", "recurring_practice"]
-ValidationLevel = Literal["error", "info"]
+_AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo"}
+_AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
+_MetadataT = dict[str, Any]
+_NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
+_ProgressionSubtype = Literal["developmental_prerequisite", "recurring_practice"]
+_ValidationLevel = Literal["error", "info"]
 
 
 def _strip_and_require_non_empty_str(v: str) -> str:
@@ -278,7 +278,7 @@ class ProgressionEdge(BaseSchema):
         ge=0.0,
         le=1.0,
     )
-    progression_subtype: Optional[ProgressionSubtype] = Field(
+    progression_subtype: Optional[_ProgressionSubtype] = Field(
         default=None,
         description=(
             "For Phase 1 within-level buildsTowards only: "
@@ -466,7 +466,7 @@ class StandardsFramework(_CaseIdentifierMixin, _DateValidationMixin, BaseSchema)
             "a conservative placeholder."
         ),
     )
-    metadata: MetadataT = Field(
+    metadata: _MetadataT = Field(
         default_factory=dict,
         description=(
             "Free-form metadata for pipeline/internal use (e.g., doc_key, source PDF name, "
@@ -601,7 +601,7 @@ class StandardsFrameworkItem(_CaseIdentifierMixin, _DateValidationMixin, BaseSch
         ),
     )
 
-    metadata: MetadataT = Field(
+    metadata: _MetadataT = Field(
         default_factory=dict,
         description=(
             "Free-form metadata for pipeline/internal use (e.g., canonical node id, "
@@ -633,7 +633,7 @@ class StandardsFrameworkItem(_CaseIdentifierMixin, _DateValidationMixin, BaseSch
             "a conservative placeholder when the original license is unknown."
         ),
     )
-    normalized_statement_type: NormalizedStatementType = Field(
+    normalized_statement_type: _NormalizedStatementType = Field(
         description=(
             "Normalized LC statement classification. Typical values include: "
             "'Standard' for normative expectations, 'Standard Grouping' for organizational "
@@ -857,7 +857,7 @@ class LearningComponent(_DateValidationMixin, BaseSchema):
             "conservative placeholder when the original license is unknown."
         ),
     )
-    metadata: MetadataT = Field(
+    metadata: _MetadataT = Field(
         default_factory=dict,
         description=(
             "Free-form metadata for pipeline/internal use (e.g., canonical node ids, "
@@ -947,7 +947,7 @@ class Relationship(_DateValidationMixin, BaseSchema):
             "dataset license (e.g., a CC BY URL)."
         ),
     )
-    metadata: MetadataT = Field(
+    metadata: _MetadataT = Field(
         default_factory=dict,
         description=(
             "Free-form metadata for pipeline/internal use (e.g., inference provenance pointers). "
@@ -1139,16 +1139,16 @@ class Relationship(_DateValidationMixin, BaseSchema):
             If any common schema constraints are violated.
         """
 
-        if self.relationship_type not in AllowedRelationshipTypes:
+        if self.relationship_type not in _AllowedRelationshipTypes:
             raise ValueError(
                 f"Unsupported relationshipType: {self.relationship_type}\n"
-                f"Valid relationship types are: {AllowedRelationshipTypes}"
+                f"Valid relationship types are: {_AllowedRelationshipTypes}"
             )
 
-        if self.source_entity_key not in AllowedEntityKeys:
+        if self.source_entity_key not in _AllowedEntityKeys:
             raise ValueError(f"Invalid sourceEntityKey: {self.source_entity_key}")
 
-        if self.target_entity_key not in AllowedEntityKeys:
+        if self.target_entity_key not in _AllowedEntityKeys:
             raise ValueError(f"Invalid targetEntityKey: {self.target_entity_key}")
 
     def _validate_data_integrity(self) -> None:
@@ -1365,7 +1365,7 @@ class GraphValidationIssue(BaseSchema):
 
     code: str
     context: dict[str, Any] = Field(default_factory=dict)
-    level: ValidationLevel
+    level: _ValidationLevel
     message: str
 
 
@@ -1382,7 +1382,7 @@ class GraphValidationReport(BaseSchema):
         *,
         code: str,
         context: Optional[dict[str, Any]] = None,
-        level: ValidationLevel,
+        level: _ValidationLevel,
         message: str,
     ) -> None:
         """Add a validation issue.

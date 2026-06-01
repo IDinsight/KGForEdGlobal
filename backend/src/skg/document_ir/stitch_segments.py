@@ -42,7 +42,7 @@ from skg.regexes import ALPHA_RE, DIGIT_RE
 from skg.schemas import StitchingConfig
 from skg.utils.constants import BlockType
 
-ChainItem = tuple[int, int, Block | Table]
+_ChainItem = tuple[int, int, Block | Table]
 
 
 def _are_items_compatible_for_segment_stitching(
@@ -89,7 +89,7 @@ def _build_continuation_chain(
     start_item: Block | Table,
     start_key: ItemKey,
     warnings: list[str],
-) -> list[ChainItem]:
+) -> list[_ChainItem]:
     """Follow page-break links to build one logical continuation chain.
 
     The walker is intentionally defensive:
@@ -131,7 +131,7 @@ def _build_continuation_chain(
 
     Returns
     -------
-    list[ChainItem]
+    list[_ChainItem]
         A list of (page_index, item_index, item) tuples representing the chain of
         continuation items.
 
@@ -142,7 +142,7 @@ def _build_continuation_chain(
         segment materialization.
     """
 
-    chain: list[ChainItem] = []
+    chain: list[_ChainItem] = []
     current_page_index, current_item_index = start_key
     current_item = start_item
     seen_keys: set[ItemKey] = set()
@@ -1044,7 +1044,7 @@ def _join_text_unit_texts(
 
 def _materialize_segment(
     *,
-    chain: list[ChainItem],
+    chain: list[_ChainItem],
     doc_key: str,
     item_index: int,
     page_index: int,
@@ -2071,7 +2071,7 @@ def _strip_local_code(local_code: Optional[str]) -> Optional[str]:
     return s if s else None
 
 
-def _summarize_chain_items(chain: list[ChainItem]) -> str:
+def _summarize_chain_items(chain: list[_ChainItem]) -> str:
     """Create a compact, human-readable summaries for a stitched chain (for
     warnings/debug).
 

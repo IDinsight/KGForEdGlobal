@@ -58,16 +58,16 @@ from skg.schemas import CreateKGConfig
 from skg.utils.constants import NodeRole
 from skg.utils.general import open_json_type, write_to_json
 
-BUILDS_TOWARDS = "buildsTowards"
-CROSS_LEVEL_INFERENCE_TYPES: set[str] = {
+_BUILDS_TOWARDS = "buildsTowards"
+_CROSS_LEVEL_INFERENCE_TYPES: set[str] = {
     "cross_level_builds_towards",
     "cross_level_relates_to",
     "cross_stage_builds_towards",
     "cross_stage_relates_to",
 }
-RELATES_TO = "relatesTo"
-SFIContextScope = Literal["cross_level", "within_level"]
-WITHIN_LEVEL_INFERENCE_TYPES: set[str] = {
+_RELATES_TO = "relatesTo"
+_SFIContextScope = Literal["cross_level", "within_level"]
+_WITHIN_LEVEL_INFERENCE_TYPES: set[str] = {
     "within_level_builds_towards",
     "within_level_cross_thread_relates_to",
 }
@@ -179,7 +179,7 @@ def _accumulate_phase2_base_metrics_and_buckets(
     phase2_rows = [
         row
         for row in provenance_rows or []
-        if int(row.get("phase") or 0) == 2 and row.get("rel_type") == BUILDS_TOWARDS
+        if int(row.get("phase") or 0) == 2 and row.get("rel_type") == _BUILDS_TOWARDS
     ]
     disposition_counts = Counter(
         str(row.get("disposition", "unknown")) for row in phase2_rows
@@ -269,7 +269,7 @@ def _accumulate_phase4_provenance_stats(
     rows_by_subject: dict[str, Counter[str]] = defaultdict(Counter)
 
     for row in provenance_rows or []:
-        if int(row.get("phase") or 0) == 4 and row.get("rel_type") == RELATES_TO:
+        if int(row.get("phase") or 0) == 4 and row.get("rel_type") == _RELATES_TO:
             candidate_edges += 1
             disposition = str(row.get("disposition", "unknown"))
             inf_type = str(row.get("inference_type") or "unknown")
@@ -1451,7 +1451,7 @@ def _build_relates_to_work_items(
 
 
 def _build_scoped_sfi_index(
-    *, by_level: dict[str, list[dict[str, Any]]], scope: SFIContextScope
+    *, by_level: dict[str, list[dict[str, Any]]], scope: _SFIContextScope
 ) -> dict[str, dict[str, Any]]:
     """Build an SFI UUID -> context index for one LP bucket semantics scope.
 
@@ -1824,7 +1824,7 @@ def _canon_disposition_key(
         `(a, b)` is canonicalized for undirected relationship types.
     """
 
-    if rel_type == RELATES_TO:
+    if rel_type == _RELATES_TO:
         a, b = canon_str_pair(source, target)
         return rel_type, a, b
 
@@ -2806,7 +2806,7 @@ def _dedupe_edges(
     groups: dict[tuple[str, str, str], list[CandidateEdge]] = defaultdict(list)
 
     for edge in edges:
-        if edge.rel_type not in {BUILDS_TOWARDS, RELATES_TO}:
+        if edge.rel_type not in {_BUILDS_TOWARDS, _RELATES_TO}:
             raise ValueError(
                 f"Unsupported LP candidate relationship type: {edge.rel_type!r}"
             )
@@ -2815,7 +2815,7 @@ def _dedupe_edges(
         source_uuid = edge.source_sfi_uuid
         target_uuid = edge.target_sfi_uuid
 
-        if edge.rel_type == RELATES_TO:
+        if edge.rel_type == _RELATES_TO:
             str_source = str(source_uuid)
             str_target = str(target_uuid)
             canonical_source, canonical_target = canon_str_pair(str_source, str_target)
@@ -3499,9 +3499,9 @@ def _emit_relationship(
         missing required contexts for the candidate's source or target SFIs.
     """
 
-    if candidate.inference_type in WITHIN_LEVEL_INFERENCE_TYPES:
-        inference_context_scope: Optional[SFIContextScope] = "within_level"
-    elif candidate.inference_type in CROSS_LEVEL_INFERENCE_TYPES:
+    if candidate.inference_type in _WITHIN_LEVEL_INFERENCE_TYPES:
+        inference_context_scope: Optional[_SFIContextScope] = "within_level"
+    elif candidate.inference_type in _CROSS_LEVEL_INFERENCE_TYPES:
         inference_context_scope = "cross_level"
     else:
         raise ValueError(
@@ -3510,7 +3510,7 @@ def _emit_relationship(
         )
 
     def _select_sfi_inference_context(
-        *, context: Optional[dict[str, Any]], scope: Optional[SFIContextScope]
+        *, context: Optional[dict[str, Any]], scope: Optional[_SFIContextScope]
     ) -> Optional[dict[str, Any]]:
         """Select the scoped SFI context used by the candidate's inference phase.
 
@@ -4571,6 +4571,148 @@ def _get_or_create_bucket(
     return bucket
 
 
+def _group_standards_for_learning_progressions(
+    *,
+    academic_standards: AcademicStandardsExport,
+    config: CreateKGConfig,
+    include_provenance: bool = True,
+    kg_dirs: KGDirs,
+) -> dict[str, Any]:
+    """Build learning progression buckets for the LLM.
+
+    Uses config-driven bucketing as follows:
+
+    1. **LP source eligibility** checked via normalized statement type plus
+        `config.lp_source_statement_types_include`/`config.lp_source_statement_types_exclude`.
+    2. **Level bounds** resolved from `progression_context` ordinals when present, with
+        a fallback to `config.lp_level_label_map`.
+    3. **Subject label** resolved via `config.lp_subject_role`.
+    4. **Within-level bucket key** computed via `config.lp_within_level_bucket_roles`,
+        with optional `config.lp_within_level_fallback_fields` when hierarchy roles are
+        missing.
+    5. **Cross-level thread key** computed via `config.lp_cross_level_thread_roles`, or
+        from `progression_context.thread_key` when that config is None.
+
+    Parameters
+    ----------
+    academic_standards
+        The exported Academic Standards KG artifacts.
+    config
+        The KG creation config with LP-specific fields that drive the bucketing logic
+        in `_process_single_standard`.
+    include_provenance
+        Whether to include provenance metadata in the payload for each standard item,
+        which the LLM can use as signals when deciding buildsTowards relationships.
+    kg_dirs
+        The knowledge graph run directories.
+
+    Returns
+    -------
+    dict[str, Any]
+        A dictionary containing grouped standards by level and thread, as well as any
+        dropped items due to ineligible or unmapped source data.
+    """
+
+    # level label -> effective bucket/thread key -> bucket. Keep within-level and
+    # cross-level structures separate because the correct grouping granularity can
+    # differ by inference scope.
+    within_level_buckets: DefaultDict[str, DefaultDict[str, dict[str, Any]]] = (
+        defaultdict(lambda: defaultdict(dict))
+    )
+    cross_level_buckets: DefaultDict[str, DefaultDict[str, dict[str, Any]]] = (
+        defaultdict(lambda: defaultdict(dict))
+    )
+
+    # Track dropped standards for reporting. Each key corresponds to a specific reason
+    # for dropping, and the value is a list of dictionaries containing relevant
+    # information about each dropped standard item.
+    drops: dict[str, list[dict[str, Any]]] = {
+        "lp_statement_type_excluded": [],
+        "lp_statement_type_not_included": [],
+        "missing_level_key": [],
+        "non_standard_item": [],
+        "unmapped_level_key": [],
+    }
+
+    # Precompute level-label fallback mappings once per run instead of rebuilding them
+    # for every SFI. Keys are normalized with the same helper used in
+    # `_resolve_level_ordinals()`.
+    normalized_level_label_map: dict[str, int] = {
+        norm_k: v
+        for k, v in (config.lp_level_label_map or {}).items()
+        if (norm_k := _normalize_level_label_key(k))
+    }
+
+    # Build canonical-node-id -> sibling order index. Prefer Academic Standards
+    # hasChild relationship metadata because it covers grouping ancestors as well as
+    # leaf SFIs; supplement from SFI progression metadata when needed.
+    order_index_lookup: dict[str, int] = {}
+
+    # Populate from hasChild relationships.
+    for rel in academic_standards.relationships:
+        metadata = rel.metadata if isinstance(rel.metadata, dict) else {}
+        child_id = str(metadata.get("canonical_child_id") or "").strip()
+
+        if rel.relationship_type != "hasChild" or not child_id:
+            continue
+
+        order_idx = metadata.get("export_order_index")
+
+        if not isinstance(order_idx, int):
+            order_idx = metadata.get("canonical_order_index")
+
+        if isinstance(order_idx, int):
+            order_index_lookup[child_id] = order_idx
+
+    # Supplement from item progression context (using setdefault to respect
+    # relationships).
+    for sfi in academic_standards.items:
+        metadata = sfi.metadata if isinstance(sfi.metadata, dict) else {}
+        node_id = str(metadata.get("canonical_node_id") or "").strip()
+        prog_ctx = metadata.get("progression_context")
+
+        if not node_id or not isinstance(prog_ctx, dict):
+            continue
+
+        order_idx = prog_ctx.get("order_index_within_parent")
+
+        if not isinstance(order_idx, int):
+            order_idx = prog_ctx.get("canonical_order_index_within_parent")
+
+        if isinstance(order_idx, int):
+            order_index_lookup.setdefault(node_id, order_idx)
+
+    for sfi in academic_standards.items:
+        _process_single_standard(
+            cross_level_buckets=cross_level_buckets,
+            config=config,
+            drops=drops,
+            include_provenance=include_provenance,
+            normalized_level_label_map=normalized_level_label_map,
+            order_index_lookup=order_index_lookup,
+            sfi=sfi,
+            within_level_buckets=within_level_buckets,
+        )
+
+    by_within_level, by_within_bucket_key = _finalize_bucket_store(within_level_buckets)
+    by_cross_level, by_cross_thread_key = _finalize_bucket_store(cross_level_buckets)
+    lp_buckets = {
+        "by_cross_thread_key": by_cross_thread_key,
+        "by_cross_level": by_cross_level,
+        "by_within_bucket_key": by_within_bucket_key,
+        "by_within_level": by_within_level,
+        "drops": drops,
+    }
+
+    # Write the buckets artifact for debugging.
+    write_to_json(
+        fp=kg_dirs.learning_progressions / "learning_progressions_buckets.json",
+        json_info=lp_buckets,
+    )
+
+    return lp_buckets
+
+
 def _group_threads_by_level_and_subject(
     *, by_level: dict[str, list[dict[str, Any]]], config: CreateKGConfig
 ) -> dict[str, dict[str, list[dict[str, Any]]]]:
@@ -4826,7 +4968,7 @@ def _infer_cross_level_builds_towards(
                     "upper_level_label": hi_label,
                     "upper_level_low": hi_lo,
                 },
-                rel_type=BUILDS_TOWARDS,
+                rel_type=_BUILDS_TOWARDS,
                 source_sfi_uuid=source_uuid,
                 target_sfi_uuid=target_uuid,
             )
@@ -5125,7 +5267,7 @@ def _infer_cross_level_relates_to(
                     "upper_source_item_count": upper_dict.get("source_item_count"),
                     "upper_source_thread_keys": upper_dict.get("source_thread_keys"),
                 },
-                rel_type=RELATES_TO,
+                rel_type=_RELATES_TO,
                 source_sfi_uuid=_uuid(a),
                 target_sfi_uuid=_uuid(b),
             )
@@ -5278,7 +5420,7 @@ def _infer_within_level_builds_towards(
                     "topic_path_examples": bucket.get("topic_path_examples"),
                     "topic_path_keys": bucket.get("topic_path_keys"),
                 },
-                rel_type=BUILDS_TOWARDS,
+                rel_type=_BUILDS_TOWARDS,
                 source_sfi_uuid=_uuid(edge.source_sfi_uuid),
                 target_sfi_uuid=_uuid(edge.target_sfi_uuid),
             )
@@ -5541,7 +5683,7 @@ def _infer_within_level_relates_to(
                     "thread_a_path": thread_a_path or subject_a,
                     "thread_b_path": thread_b_path or subject_b,
                 },
-                rel_type=RELATES_TO,
+                rel_type=_RELATES_TO,
                 source_sfi_uuid=_uuid(u_a),
                 target_sfi_uuid=_uuid(u_b),
             )
@@ -6609,8 +6751,8 @@ def _process_and_filter_candidates(
         candidates
     )
 
-    builds_towards_candidates = [e for e in candidates if e.rel_type == BUILDS_TOWARDS]
-    relates_to_candidates = [e for e in candidates if e.rel_type == RELATES_TO]
+    builds_towards_candidates = [e for e in candidates if e.rel_type == _BUILDS_TOWARDS]
+    relates_to_candidates = [e for e in candidates if e.rel_type == _RELATES_TO]
 
     # Filter by confidence thresholds.
     builds_kept = [
@@ -8416,7 +8558,7 @@ def _summarize_phase1_within_level_builds_towards(
         for row in provenance_rows or []
         if int(row.get("phase") or 0) == 1
         and row.get("inference_type") == "within_level_builds_towards"
-        and row.get("rel_type") == BUILDS_TOWARDS
+        and row.get("rel_type") == _BUILDS_TOWARDS
     ]
     disposition_counts = Counter(
         str(row.get("disposition", "unknown")) for row in phase1_rows
@@ -9358,7 +9500,7 @@ def export_learning_progressions(
     # Group standards into learning progression buckets, which are the basis for
     # candidate generation. This step also enriches each SFI with metadata used for
     # inference and provenance, such as resolved level ordinals and subject labels.
-    lp_buckets = group_standards_for_learning_progressions(
+    lp_buckets = _group_standards_for_learning_progressions(
         academic_standards=academic_standards,
         config=config,
         include_provenance=True,
@@ -9459,148 +9601,6 @@ def export_learning_progressions(
         provenance_rows=provenance_rows,
         relates_rels=relates_rels,
     )
-
-
-def group_standards_for_learning_progressions(
-    *,
-    academic_standards: AcademicStandardsExport,
-    config: CreateKGConfig,
-    include_provenance: bool = True,
-    kg_dirs: KGDirs,
-) -> dict[str, Any]:
-    """Build learning progression buckets for the LLM.
-
-    Uses config-driven bucketing as follows:
-
-    1. **LP source eligibility** checked via normalized statement type plus
-        `config.lp_source_statement_types_include`/`config.lp_source_statement_types_exclude`.
-    2. **Level bounds** resolved from `progression_context` ordinals when present, with
-        a fallback to `config.lp_level_label_map`.
-    3. **Subject label** resolved via `config.lp_subject_role`.
-    4. **Within-level bucket key** computed via `config.lp_within_level_bucket_roles`,
-        with optional `config.lp_within_level_fallback_fields` when hierarchy roles are
-        missing.
-    5. **Cross-level thread key** computed via `config.lp_cross_level_thread_roles`, or
-        from `progression_context.thread_key` when that config is None.
-
-    Parameters
-    ----------
-    academic_standards
-        The exported Academic Standards KG artifacts.
-    config
-        The KG creation config with LP-specific fields that drive the bucketing logic
-        in `_process_single_standard`.
-    include_provenance
-        Whether to include provenance metadata in the payload for each standard item,
-        which the LLM can use as signals when deciding buildsTowards relationships.
-    kg_dirs
-        The knowledge graph run directories.
-
-    Returns
-    -------
-    dict[str, Any]
-        A dictionary containing grouped standards by level and thread, as well as any
-        dropped items due to ineligible or unmapped source data.
-    """
-
-    # level label -> effective bucket/thread key -> bucket. Keep within-level and
-    # cross-level structures separate because the correct grouping granularity can
-    # differ by inference scope.
-    within_level_buckets: DefaultDict[str, DefaultDict[str, dict[str, Any]]] = (
-        defaultdict(lambda: defaultdict(dict))
-    )
-    cross_level_buckets: DefaultDict[str, DefaultDict[str, dict[str, Any]]] = (
-        defaultdict(lambda: defaultdict(dict))
-    )
-
-    # Track dropped standards for reporting. Each key corresponds to a specific reason
-    # for dropping, and the value is a list of dictionaries containing relevant
-    # information about each dropped standard item.
-    drops: dict[str, list[dict[str, Any]]] = {
-        "lp_statement_type_excluded": [],
-        "lp_statement_type_not_included": [],
-        "missing_level_key": [],
-        "non_standard_item": [],
-        "unmapped_level_key": [],
-    }
-
-    # Precompute level-label fallback mappings once per run instead of rebuilding them
-    # for every SFI. Keys are normalized with the same helper used in
-    # `_resolve_level_ordinals()`.
-    normalized_level_label_map: dict[str, int] = {
-        norm_k: v
-        for k, v in (config.lp_level_label_map or {}).items()
-        if (norm_k := _normalize_level_label_key(k))
-    }
-
-    # Build canonical-node-id -> sibling order index. Prefer Academic Standards
-    # hasChild relationship metadata because it covers grouping ancestors as well as
-    # leaf SFIs; supplement from SFI progression metadata when needed.
-    order_index_lookup: dict[str, int] = {}
-
-    # Populate from hasChild relationships.
-    for rel in academic_standards.relationships:
-        metadata = rel.metadata if isinstance(rel.metadata, dict) else {}
-        child_id = str(metadata.get("canonical_child_id") or "").strip()
-
-        if rel.relationship_type != "hasChild" or not child_id:
-            continue
-
-        order_idx = metadata.get("export_order_index")
-
-        if not isinstance(order_idx, int):
-            order_idx = metadata.get("canonical_order_index")
-
-        if isinstance(order_idx, int):
-            order_index_lookup[child_id] = order_idx
-
-    # Supplement from item progression context (using setdefault to respect
-    # relationships).
-    for sfi in academic_standards.items:
-        metadata = sfi.metadata if isinstance(sfi.metadata, dict) else {}
-        node_id = str(metadata.get("canonical_node_id") or "").strip()
-        prog_ctx = metadata.get("progression_context")
-
-        if not node_id or not isinstance(prog_ctx, dict):
-            continue
-
-        order_idx = prog_ctx.get("order_index_within_parent")
-
-        if not isinstance(order_idx, int):
-            order_idx = prog_ctx.get("canonical_order_index_within_parent")
-
-        if isinstance(order_idx, int):
-            order_index_lookup.setdefault(node_id, order_idx)
-
-    for sfi in academic_standards.items:
-        _process_single_standard(
-            cross_level_buckets=cross_level_buckets,
-            config=config,
-            drops=drops,
-            include_provenance=include_provenance,
-            normalized_level_label_map=normalized_level_label_map,
-            order_index_lookup=order_index_lookup,
-            sfi=sfi,
-            within_level_buckets=within_level_buckets,
-        )
-
-    by_within_level, by_within_bucket_key = _finalize_bucket_store(within_level_buckets)
-    by_cross_level, by_cross_thread_key = _finalize_bucket_store(cross_level_buckets)
-    lp_buckets = {
-        "by_cross_thread_key": by_cross_thread_key,
-        "by_cross_level": by_cross_level,
-        "by_within_bucket_key": by_within_bucket_key,
-        "by_within_level": by_within_level,
-        "drops": drops,
-    }
-
-    # Write the buckets artifact for debugging.
-    write_to_json(
-        fp=kg_dirs.learning_progressions / "learning_progressions_buckets.json",
-        json_info=lp_buckets,
-    )
-
-    return lp_buckets
 
 
 def load_learning_progressions_export(kg_dirs: KGDirs) -> LearningProgressionsExport:

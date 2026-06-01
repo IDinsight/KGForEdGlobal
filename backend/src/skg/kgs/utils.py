@@ -252,6 +252,44 @@ def _compute_base_piece(node: dict[str, Any]) -> str:
     return f"{role}:{code}:{label}" if code else f"{role}:{label}"
 
 
+def _create_kg_dirs(output_dir: Path) -> KGDirs:
+    """Create KG directories for a given KG run.
+
+    Parameters
+    ----------
+    output_dir
+        The output directory root.
+
+    Returns
+    -------
+    KGDirs
+        The created KG directories.
+    """
+
+    root = output_dir
+    academic_standards = root / "academic_standards"
+    learning_components = root / "learning_components"
+    learning_progressions = root / "learning_progressions"
+    combined = root / "combined"
+
+    for p in [
+        root,
+        academic_standards,
+        learning_components,
+        learning_progressions,
+        combined,
+    ]:
+        make_dir(p)
+
+    return KGDirs(
+        root=root,
+        academic_standards=academic_standards,
+        learning_components=learning_components,
+        learning_progressions=learning_progressions,
+        combined=combined,
+    )
+
+
 def _detect_sibling_collisions(ctx: ExportContext) -> set[tuple[str, str]]:
     """Detect sibling nodes that may require order disambiguation.
 
@@ -614,44 +652,6 @@ def canon_str_pair(a: str, b: str) -> tuple[str, str]:
     return (a, b) if a <= b else (b, a)
 
 
-def create_kg_dirs(*, output_dir: Path) -> KGDirs:
-    """Create KG directories for a given KG run.
-
-    Parameters
-    ----------
-    output_dir
-        The output directory root.
-
-    Returns
-    -------
-    KGDirs
-        The created KG directories.
-    """
-
-    root = output_dir
-    academic_standards = root / "academic_standards"
-    learning_components = root / "learning_components"
-    learning_progressions = root / "learning_progressions"
-    combined = root / "combined"
-
-    for p in [
-        root,
-        academic_standards,
-        learning_components,
-        learning_progressions,
-        combined,
-    ]:
-        make_dir(p)
-
-    return KGDirs(
-        root=root,
-        academic_standards=academic_standards,
-        learning_components=learning_components,
-        learning_progressions=learning_progressions,
-        combined=combined,
-    )
-
-
 def cross_check_canonical_ir_run(
     *,
     canonical_ir_fp: Path,
@@ -977,7 +977,7 @@ def persist_kg_run(
         The created KG directories and persisted KG run metadata.
     """
 
-    kg_dirs = create_kg_dirs(output_dir=output_dir)
+    kg_dirs = _create_kg_dirs(output_dir)
     exclude_keys = {"overwrite"}
     extra = {
         k: v for k, v in config.model_dump(mode="json").items() if k not in exclude_keys

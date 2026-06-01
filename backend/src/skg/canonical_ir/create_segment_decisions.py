@@ -48,11 +48,11 @@ from skg.utils.constants import (
 from skg.utils.general import open_json_type, write_to_json
 
 # (caption_segment, caption_text, caption_kind, caption_page_index, segment_index).
-PendingCaption = tuple[BlockSegment, str, CaptionKind, int, int]
+_PendingCaption = tuple[BlockSegment, str, CaptionKind, int, int]
 
 # Sentinel value returned by _process_column_cell when a skip_row override fires. Using
 # a dedicated constant avoids returning a misleading tuple with decision=None.
-SKIP_ROW_SENTINEL = "SKIP_ROW"
+_SKIP_ROW_SENTINEL = "SKIP_ROW"
 
 
 @dataclass
@@ -1005,7 +1005,7 @@ def _create_decision_from_role(
 
 
 def _decision_signature(
-    *, decision: GroupingDecision | LeafDecision
+    decision: GroupingDecision | LeafDecision,
 ) -> tuple[str, str, str | None, str]:
     """Return a stable intra-row signature for deduplicating emitted decisions.
 
@@ -1451,7 +1451,7 @@ def _extract_row_content(
         if decision is None:
             continue
 
-        signature = _decision_signature(decision=decision)
+        signature = _decision_signature(decision)
 
         if signature in seen_signatures:
             continue
@@ -1526,14 +1526,14 @@ def _extract_row_content_by_column(
             continue
 
         # Handle the early exit signal for 'skip_row'
-        if result is SKIP_ROW_SENTINEL:
+        if result is _SKIP_ROW_SENTINEL:
             return [], {}, {}, True
 
         assert not isinstance(result, str)
         decision, scope_key, col_index, _ = result
 
         # 2. Deduplicate based on signature and scope
-        signature = _decision_signature(decision=decision)
+        signature = _decision_signature(decision)
         if signature in seen_signatures_by_scope[scope_key]:
             continue
         seen_signatures_by_scope[scope_key].add(signature)
@@ -1784,10 +1784,10 @@ def _handle_pending_caption_binding(
     current_page_index: int,
     max_gap_segments: int,
     max_page_distance: int,
-    pending_caption: PendingCaption,
+    pending_caption: _PendingCaption,
     segment: Segment,
     warnings: list[str],
-) -> tuple[PendingCaption | None, bool]:
+) -> tuple[_PendingCaption | None, bool]:
     """Process a pending caption by either binding it to a table or expiring it.
 
     The function is evaluated against *every* subsequent segment after a caption is
@@ -1820,9 +1820,9 @@ def _handle_pending_caption_binding(
 
     Returns
     -------
-    tuple[PendingCaption | None, bool]
+    tuple[_ | None, bool]
         A tuple containing:
-            1. The updated pending_caption (`None` if bound or expired).
+            1. The updated `pending_caption` (`None` if bound or expired).
             2. A boolean `should_continue` indicating whether the main loop should
                skip further processing for this segment because it was consumed as the
                table target.
@@ -2158,7 +2158,7 @@ def _process_column_cell(
     effective_role = _resolve_effective_role(cell_text=cell_text, col_role=col_role)
 
     if effective_role.kind == "skip_row":
-        return SKIP_ROW_SENTINEL
+        return _SKIP_ROW_SENTINEL
 
     if effective_role.kind == "skip":
         return None
@@ -3784,7 +3784,7 @@ def build_caption_bindings(
 
     caption_bindings: dict[str, CaptionBinding] = {}
     warnings: list[str] = []
-    pending_caption: PendingCaption | None = None
+    pending_caption: _PendingCaption | None = None
 
     for index, segment in enumerate(document_ir.segments):
         assert segment.slices, f"Segment {segment.segment_id} has no slices."
