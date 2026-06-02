@@ -1,0 +1,52 @@
+name: Deploy Docs
+on:
+  workflow_dispatch:
+  release:
+    types: [released]
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: echo "cache_id=$(date --utc '+%V')" >> $GITHUB_ENV
+
+      - uses: actions/cache@v4
+        with:
+          key: mkdocs-material-${{ env.cache_id }}
+          path: .cache
+          restore-keys: |
+            mkdocs-material-
+
+      - name: Install uv
+        run: |
+          pip install uv
+
+      - name: Create venv and install docs dependencies
+        working-directory: backend
+        run: |
+          uv venv
+          source .venv/bin/activate
+          uv pip install ".[docs]"
+
+      - name: Build and push docs version
+        working-directory: backend
+        run: |
+          .venv/bin/mkdocs gh-deploy --config-file ../mkdocs.yml --force
+
+#      - name: Add CNAME
+#        run: |
+#          git switch gh-pages
+#          echo "docs.senegal-kg.com" >> CNAME
+#          git add CNAME
+#          git commit -m "Add CNAME"
+#          git push -f origin gh-pages
