@@ -1861,11 +1861,6 @@ def _stitch_table_chain(
 ) -> TableSegment:
     """Stitch a chain of table slices.
 
-    DISCLAIMER: Listen, I'm not gonna lie---this function is complicated. If you don't
-    understand what is going on here even after reading through all the docstrings and
-    comments, then just ask Tony (he'll have no choice but to explain wth he wrote such
-    a piece of code to begin with).
-
     This function is where a linked chain of page-level Table items turns into one
     stitched TableSegment, with both raw stitched rows and derived structural views. It
     does not decide the links itself. By the time this runs, the chain is already known
