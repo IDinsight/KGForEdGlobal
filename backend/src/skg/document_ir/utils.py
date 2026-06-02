@@ -224,6 +224,34 @@ def assert_page_items_consumed_exactly_once(
     )
 
 
+def canonicalize_local_code_for_compare(local_code: Optional[str]) -> Optional[str]:
+    """Canonicalize a local code into a comparison-safe key.
+
+    This function preserves the existing raw local_code storage policy while making
+    comparisons robust to recognized caption-prefix variants. For example, recognized
+    table prefixes such as `Table`, `Tab.`, and `Tableau` all normalize through
+    `extract_table_or_figure_local_code` before whitespace and case normalization are
+    applied. Unrecognized codes still fall back to plain local-code normalization.
+
+    Parameters
+    ----------
+    local_code
+        The raw local code, caption label, or caption-leading text to canonicalize.
+
+    Returns
+    -------
+    Optional[str]
+        A comparison-safe local-code key, or None if the input is empty.
+    """
+
+    if not local_code or not local_code.strip():
+        return None
+
+    canonical_local_code = extract_table_or_figure_local_code(text=local_code)
+    local_code_for_compare = canonical_local_code or local_code
+    return normalize_local_code(local_code_for_compare)
+
+
 def compatible_kinds_for_stitch(
     *, next_item: Block | Table, prev_item: Block | Table
 ) -> bool:
@@ -283,8 +311,8 @@ def compatible_kinds_for_stitch(
 
     # Allow CAPTION <-> CAPTION *only* when strongly anchored.
     if prev_type == BlockType.CAPTION and next_type == BlockType.CAPTION:
-        next_code = normalize_local_code(next_item.local_code)
-        prev_code = normalize_local_code(prev_item.local_code)
+        next_code = canonicalize_local_code_for_compare(next_item.local_code)
+        prev_code = canonicalize_local_code_for_compare(prev_item.local_code)
 
         # Short-circuit early to avoid text extraction overhead if possible.
         if next_code and prev_code and next_code == prev_code:
@@ -297,16 +325,11 @@ def compatible_kinds_for_stitch(
             prev_item.text.text.strip() if isinstance(prev_item.text, TextUnit) else ""
         )
 
-        next_ext_code = extract_table_or_figure_local_code(next_text)
-        prev_ext_code = extract_table_or_figure_local_code(prev_text)
+        next_ext_code = canonicalize_local_code_for_compare(next_text)
+        prev_ext_code = canonicalize_local_code_for_compare(prev_text)
 
         # Return the boolean result of the text match directly.
-        return bool(
-            next_ext_code
-            and prev_ext_code
-            and normalize_local_code(next_ext_code)
-            == normalize_local_code(prev_ext_code)
-        )
+        return bool(next_ext_code and prev_ext_code and next_ext_code == prev_ext_code)
 
     # Final catch-all: Exact type match OR Paragraph/List fallback.
     paragraph_list_types = {BlockType.LIST, BlockType.PARAGRAPH}

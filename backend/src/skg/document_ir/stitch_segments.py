@@ -23,8 +23,8 @@ from skg.document_ir.schemas import (
 )
 from skg.document_ir.utils import (
     ItemKey,
+    canonicalize_local_code_for_compare,
     compatible_kinds_for_stitch,
-    normalize_local_code,
     normalize_text,
     row_signature,
 )
@@ -1296,20 +1296,19 @@ def _process_next_table_slice(
     # 1.
     next_local_code = _strip_local_code(next_item.local_code)
 
-    if (
-        next_local_code
-        and current_local_code
-        and normalize_local_code(next_local_code)
-        != normalize_local_code(current_local_code)
-    ):
-        msg = (
-            f"Conflicting local_code in table chain {segment_id}: "
-            f"{current_local_code!r} vs. {next_local_code!r} "
-            f"(page={next_page_index}, item_index={next_item_index}). "
-            f"Keeping {current_local_code!r}."
-        )
-        logger.warning(msg)
-        warnings.append(msg)
+    if next_local_code and current_local_code:
+        current_code_key = canonicalize_local_code_for_compare(current_local_code)
+        next_code_key = canonicalize_local_code_for_compare(next_local_code)
+
+        if current_code_key and next_code_key and current_code_key != next_code_key:
+            msg = (
+                f"Conflicting local_code in table chain {segment_id}: "
+                f"{current_local_code!r} vs. {next_local_code!r} "
+                f"(page={next_page_index}, item_index={next_item_index}). "
+                f"Keeping {current_local_code!r}."
+            )
+            logger.warning(msg)
+            warnings.append(msg)
 
     # Carry forward the segment code; only adopt the next code if missing.
     slice_local_code = current_local_code or next_local_code
@@ -1511,7 +1510,9 @@ def _repair_short_rows_missing_trailing_cols_as_colspan(
             continue
 
         missing = n_cols - colsum
-        new_last = last.model_copy(update={"col_span": last.col_span + missing})
+        new_last_payload = last.model_dump(mode="python")
+        new_last_payload["col_span"] = last.col_span + missing
+        new_last = TableCell.model_validate(obj=new_last_payload)
         new_row = TableRow(cells=cells[:-1] + [new_last])
 
         msg = (
@@ -2034,14 +2035,16 @@ def _stitch_table_chain(
             table_filldown_group_cols_max=table_filldown_group_cols_max,
         )
 
-    return table_segment.model_copy(
-        update={
+    table_segment_payload = table_segment.model_dump(mode="python")
+    table_segment_payload.update(
+        {
             "grid_sources": grid_sources,
             "row_provenance": row_provenance,
             "rows_filldown": rows_filldown,
             "rows_grid": rows_grid,
         }
     )
+    return TableSegment.model_validate(table_segment_payload)
 
 
 def _strip_local_code(local_code: Optional[str]) -> Optional[str]:

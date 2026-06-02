@@ -10,9 +10,8 @@ from loguru import logger
 
 # Package Library
 from skg.document_ir.utils import (
+    canonicalize_local_code_for_compare,
     compatible_kinds_for_stitch,
-    extract_table_or_figure_local_code,
-    normalize_local_code,
     row_signature,
 )
 from skg.page_ir_extraction.schemas import Block, ListItem, PageIR, Table, TextUnit
@@ -232,18 +231,32 @@ def _apply_page_boundary_state_guardrails(
     # caption local_code is weaker evidence than a matching table local_code--captions
     # are short, frequently duplicated, and less likely to represent true cross-page
     # continuations when neither page claims boundary continuity.
-    prev_codes = {
-        normalize_local_code(prev_page_items[prev_index][1].local_code)
-        for prev_index in prev_candidate_indices
-        if isinstance(prev_page_items[prev_index][1], Table)
-        and normalize_local_code(prev_page_items[prev_index][1].local_code)
-    }
-    next_codes = {
-        normalize_local_code(next_page_items[next_index][1].local_code)
-        for next_index in next_candidate_indices
-        if isinstance(next_page_items[next_index][1], Table)
-        and normalize_local_code(next_page_items[next_index][1].local_code)
-    }
+    prev_codes: set[str] = set()
+
+    for prev_index in prev_candidate_indices:
+        prev_item = prev_page_items[prev_index][1]
+
+        if not isinstance(prev_item, Table):
+            continue
+
+        prev_code = canonicalize_local_code_for_compare(prev_item.local_code)
+
+        if prev_code:
+            prev_codes.add(prev_code)
+
+    next_codes: set[str] = set()
+
+    for next_index in next_candidate_indices:
+        next_item = next_page_items[next_index][1]
+
+        if not isinstance(next_item, Table):
+            continue
+
+        next_code = canonicalize_local_code_for_compare(next_item.local_code)
+
+        if next_code:
+            next_codes.add(next_code)
+
     common_codes = prev_codes & next_codes
 
     if not common_codes:
@@ -263,13 +276,15 @@ def _apply_page_boundary_state_guardrails(
         pidx
         for pidx in prev_candidate_indices
         if isinstance(prev_page_items[pidx][1], Table)
-        and normalize_local_code(prev_page_items[pidx][1].local_code) in common_codes
+        and canonicalize_local_code_for_compare(prev_page_items[pidx][1].local_code)
+        in common_codes
     ]
     filtered_next = [
         nidx
         for nidx in next_candidate_indices
         if isinstance(next_page_items[nidx][1], Table)
-        and normalize_local_code(next_page_items[nidx][1].local_code) in common_codes
+        and canonicalize_local_code_for_compare(next_page_items[nidx][1].local_code)
+        in common_codes
     ]
 
     return filtered_prev, filtered_next, True
@@ -657,21 +672,18 @@ def _caption_anchor(item: Block) -> str:
         The caption anchor.
     """
 
-    # Strongest anchor: local_code (already canonicalized upstream).
+    # Strongest anchor: local_code. The stored value may be raw, so canonicalize it for
+    # comparison instead of assuming upstream canonicalization.
     if item.local_code and item.local_code.strip():
-        return normalize_local_code(item.local_code) or ""
+        return canonicalize_local_code_for_compare(item.local_code) or ""
 
     # Fallback: parse prefix like "Table 4"/"Figure 2" from caption text.
     text_or_none = item.text
     text = (
         (text_or_none.text or "").strip() if isinstance(text_or_none, TextUnit) else ""
     )
-    code = extract_table_or_figure_local_code(text)
 
-    if not code:
-        return ""
-
-    return normalize_local_code(code) or ""
+    return canonicalize_local_code_for_compare(text) or ""
 
 
 def _column_signature(*, mode: str, table: Table) -> str:
@@ -749,9 +761,9 @@ def _debug_features_for_pair(
 
     # local_code signal (works for both blocks and tables if present).
     if prev_item.local_code and next_item.local_code:
-        output["same_local_code"] = normalize_local_code(
+        output["same_local_code"] = canonicalize_local_code_for_compare(
             prev_item.local_code
-        ) == normalize_local_code(next_item.local_code)
+        ) == canonicalize_local_code_for_compare(next_item.local_code)
 
     # Column signature signals (tables only). Mirrors _score_table_match: strong first,
     # weak fallback.
@@ -1728,13 +1740,12 @@ def _score_block_match(
         return score
 
     # Generic local code match.
-    if (
-        prev_item.local_code
-        and next_item.local_code
-        and normalize_local_code(prev_item.local_code)
-        == normalize_local_code(next_item.local_code)
-    ):
-        score += 1
+    if prev_item.local_code and next_item.local_code:
+        prev_local_code = canonicalize_local_code_for_compare(prev_item.local_code)
+        next_local_code = canonicalize_local_code_for_compare(next_item.local_code)
+
+        if prev_local_code and next_local_code and prev_local_code == next_local_code:
+            score += 1
 
     return score
 
@@ -1801,8 +1812,12 @@ def _score_table_match(
 
     score = 0.0
 
-    prev_local_code = normalize_local_code(prev_item.local_code)
-    next_local_code = normalize_local_code(next_item.local_code)
+    prev_local_code = canonicalize_local_code_for_compare(
+        local_code=prev_item.local_code
+    )
+    next_local_code = canonicalize_local_code_for_compare(
+        local_code=next_item.local_code
+    )
 
     # Strong textual/schema signals.
     if prev_local_code and next_local_code and prev_local_code == next_local_code:
