@@ -1,11 +1,11 @@
 <h1 style="
   text-align: center;
-  font-size: 2.5rem;
+  font-size: 1.5rem;
   font-weight: 700;
   color: #5480cb;
   margin: 1rem 0 0.25rem 0;
 ">
-  An open-source pipeline for transforming primary-school curriculum documents into Learning Commons-aligned knowledge graphs for educators, ministries, and education partners.
+Transforming primary-school curricula into knowledge graphs for educators, ministries, and education partners
 </h1>
 
 <hr style="
@@ -17,8 +17,9 @@
   border-radius: 6px;
 ">
 
-<strong>Senegal Knowledge Graph</strong> helps teams extract structure from curricula, 
-align it to the Learning Commons ontology, and turn it into reusable data for education tools.
+<strong>Senegal Knowledge Graph</strong> helps teams extract structure from curricula,
+align it to the [Learning Commons ontology](https://docs.learningcommons.org/knowledge-graph/understanding-knowledge-graph/introduction),
+and turn it into reusable data for education tools.
 
 !!! info
     You can follow the setup instructions [here](./development/local-setup.md) to run
@@ -27,15 +28,14 @@ align it to the Learning Commons ontology, and turn it into reusable data for ed
 ---
 
 <br>
-[Architecture (three agents) :octicons-arrow-right-24:](./architecture.md){ .md-button .md-button--secondary }
+[Architecture :octicons-arrow-right-24:](./architecture.md){ .md-button .md-button--secondary }
 <br>
 <br>
 !!! question "Looking for other features?"
-    If you are a developing country government, NGO or a social/education sector 
-    organisation, we'd love to hear what features you'd like to see. Raise an issue in 
-    our repo with `[FEATURE REQUEST]` before the title to start the conversation!
-
-## Acknowledgements
+    If you are a developing country government, NGO, or a social/education sector
+    organisation, we'd love to hear what features you'd like to see. Raise an issue in
+    our [repo](https://github.com/IDinsight/SenegalKG) with `[FEATURE REQUEST]` before
+    the title to start the conversation!
 
 <img src="./images/idi_dark.png#only-light" alt="idi_org" width=200 style="margin-left:-25px" /><img src="./images/idi_light.png#only-dark" alt="idi_org" width=200 style="margin-left:-25px" /><br>
 Built and powered by IDinsight.
