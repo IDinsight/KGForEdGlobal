@@ -114,7 +114,7 @@ class KGRunInputs:
 
 
 def _build_run_manifest(kg_run_inputs: KGRunInputs) -> dict[str, Any]:
-    """Build a lightweight run manifest for the KG creation preflight stage.
+    """Build a run manifest for the KG creation prep stage.
 
     Parameters
     ----------
@@ -154,7 +154,7 @@ def _build_run_manifest(kg_run_inputs: KGRunInputs) -> dict[str, Any]:
         "pdf_name": document_ir.pdf_name,
         "primary_language": document_profile.primary_language,
         "segment_counts": kg_run_inputs.segment_counts,
-        "status": "preflight_complete",
+        "status": "prep_complete",
         "subject": document_profile.subject,
         "table_columns_signature_counts": kg_run_inputs.table_columns_signature_counts,
         "table_selection_match_counts": kg_run_inputs.table_selection_match_counts,
@@ -563,14 +563,14 @@ def load_and_validate_inputs(
     Returns
     -------
     KGRunInputs
-        Validated inputs and preflight summaries.
+        Validated inputs and prep summaries.
 
     Raises
     ------
     FileExistsError
         If the run manifest already exists and overwrite is False.
     ValueError
-        If the profile or DocumentIR fails preflight validation.
+        If the DocumentProfile or DocumentIR fails prep validation.
     """
 
     # Validate the DocumentIR and DocumentProfile objects.

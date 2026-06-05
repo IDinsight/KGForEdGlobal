@@ -1910,29 +1910,12 @@ class DocumentProfile(BaseSchema):
     has_stable_codes: bool = False
 
     # Table selection policy.
-    target_table_columns_signatures: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Column signatures that identify table segments eligible for SFI extraction. "
-            "When provided, table-window creation should only target tables whose "
-            "DocumentIR.columns_signature is in this allow-list, unless a later "
-            "profile rule explicitly expands the selection."
-        ),
-    )
     excluded_table_columns_signatures: list[str] = Field(
         default_factory=list,
         description=(
             "Column signatures that should never be sent through the SFI extraction "
             "path, even if they otherwise look table-like. Use this for front matter, "
             "scope-and-sequence, panel-member tables, or other non-standards tables."
-        ),
-    )
-    target_table_section_patterns: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Regex patterns over nearby heading/section-path text that can include "
-            "tables in the SFI extraction set when column signatures alone are not "
-            "sufficient."
         ),
     )
     excluded_table_section_patterns: list[str] = Field(
@@ -1949,6 +1932,23 @@ class DocumentProfile(BaseSchema):
             "Minimum total number of observed table segments that must match "
             "target_table_columns_signatures during KG preflight when target signatures "
             "are configured. Set to 0 to disable this preflight guardrail."
+        ),
+    )
+    target_table_columns_signatures: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Column signatures that identify table segments eligible for SFI extraction. "
+            "When provided, table-window creation should only target tables whose "
+            "DocumentIR.columns_signature is in this allow-list, unless a later "
+            "profile rule explicitly expands the selection."
+        ),
+    )
+    target_table_section_patterns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Regex patterns over nearby heading/section-path text that can include "
+            "tables in the SFI extraction set when column signatures alone are not "
+            "sufficient."
         ),
     )
 

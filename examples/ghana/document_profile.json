@@ -15,7 +15,7 @@
 	],
 	"license": "unknown",
 	"primary_language": "en",
-	"provider": "Learning Commons KG extraction pipeline",
+	"provider": "Senegal KG extraction pipeline",
 	"subject": "Mathematics",
 	"code_parent_rules": [
 		{
@@ -33,6 +33,14 @@
 		"indicator": "Indicator"
 	},
 	"has_stable_codes": true,
+	"excluded_table_columns_signatures": [],
+	"excluded_table_section_patterns": [],
+	"minimum_target_table_signature_matches": 30,
+	"target_table_columns_signatures": [
+		"content standards|indicators and exemplars|subject specific practices and core competencies",
+		"content standard|indicators and exemplars|subject specific practices and core competencies"
+	],
+	"target_table_section_patterns": [],
 	"include_block_windows": true,
 	"max_rows_per_table_window": 20,
 	"row_overlap": 1,
