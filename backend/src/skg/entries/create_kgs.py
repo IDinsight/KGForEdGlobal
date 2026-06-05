@@ -1,27 +1,35 @@
-"""This module contains the entry point for exporting Learning Commons knowledge graphs
-from a canonical IR JSON file. This is step 5.
+"""This module contains the entry point for creating Learning Commons KG-ready
+extraction artifacts from a stitched DocumentIR.
 
-Step 5 does the following:
+This module implements the first step of the simplified KG creation pipeline:
 
-1. Builds the knowledge graph export context.
-2. Exports academic standards to the knowledge graphs.
-3. Exports Learning Components KG and writes combined Standards + Learning Components
-    graph bundle.
-4. Optionally exports Learning Progressions KG and writes combined Standards +
-    Learning Components + Learning Progressions graph bundle.
-5. Builds reporting and validation artifacts, writes to disk, and logs console summary.
+1. Load and validate a country/document-specific ``DocumentProfile``.
+2. Load and validate the corresponding stitched ``DocumentIR``.
+3. Cross-check that the profile is compatible with the DocumentIR.
+4. Create the KG run output directory.
+5. Persist a lightweight ``run_manifest.json`` for audit/debugging.
+
+Later steps will build extraction windows, run LLM-based SFI candidate extraction,
+compile final SFIs, generate LearningComponents, and export KG schema objects.
 
 Invoke from the backend directory via:
 
-python src/skg/entries/create_kgs.py ../examples/tanzania/config.json
+python src/skg/entries/create_kgs.py \
+    ../examples/ghana/document_ir.json \
+    ../examples/ghana/document_profile.json \
+    ../examples/ghana/output
 """
 
 # Standard Library
+import re
 import sys
 import traceback
 
+from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Optional
 
 # Third Party Library
 import typer
@@ -38,307 +46,619 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.canonical_ir.schemas import CanonicalIR
-from skg.kgs.export_academic_standards import load_or_export_academic_standards
-from skg.kgs.export_learning_components import load_or_export_learning_components
-from skg.kgs.export_learning_progressions import load_or_export_learning_progressions
-from skg.kgs.llm import KGUsageTracker
-from skg.kgs.reporting import (
-    build_entity_provenance_export,
-    build_policy_coverage_report,
-    log_console_summary,
-    validate_graph,
-    write_reports,
-)
-from skg.kgs.utils import (
-    KGDirs,
-    build_kg_export_context,
-    cross_check_canonical_ir_run,
-    get_page_image_dims,
-    merge_graph_bundles,
-    persist_kg_run,
-)
-from skg.schemas import CreateKGConfig, RunConfig, RunCtx
-from skg.utils.general import open_json_type, write_to_json
-from skg.utils.pdf import compute_doc_key
+from skg.document_ir.schemas import DocumentIR
+from skg.kgs.schemas import DocumentProfile
+from skg.page_ir_extraction.schemas import TableCell, TextUnit
+from skg.utils.general import make_dir, open_json_type, write_to_json
 
 # Instantiate typer apps for the command line interface.
 cli = typer.Typer(no_args_is_help=True)
 
 
-def create_kgs(
-    *,
-    canonical_ir: CanonicalIR,
-    config: CreateKGConfig,
-    kg_dirs: KGDirs,
-    provenance_context: dict | None = None,
-    usage_tracker: KGUsageTracker,
-) -> None:
-    """Create Learning Commons knowledge graphs from a single CanonicalIR.
-
-    Each export phase checks whether its sentinel bundle file already exists on disk.
-    When `config.overwrite` is `False` and the sentinel exists, the prior export is
-    loaded from disk instead of being re-generated. This enables cheap incremental
-    re-runs: for example, re-running only Learning Progressions after tuning thresholds
-    while reusing the (expensive) Academic Standards and Learning Components exports.
-
-    The process is as follows:
-
-    1. Build the knowledge graph export context.
-    2. Export (or load) academic standards.
-    3. Export (or load) Learning Components KG and write combined Standards + Learning
-        Components graph bundle.
-    4. Optionally export (or load) Learning Progressions KG and write combined
-        Standards + Learning Components + Learning Progressions graph bundle.
-    5. Build reporting and validation artifacts, write to disk, and log console summary.
+@dataclass(frozen=True)
+class KGRunDirs:
+    """Dataclass for KG creation run directories.
 
     Parameters
     ----------
-    canonical_ir
-        The CanonicalIR object loaded from the canonical IR JSON file.
-    config
-        The knowledge graph run configuration.
+    root
+        Root directory for the KG creation run artifacts.
+    """
+
+    root: Path
+
+
+@dataclass(frozen=True)
+class KGRunInputs:
+    """Validated inputs for a KG creation run.
+
+    Parameters
+    ----------
+    code_pattern_match_counts
+        Match counts for each configured profile code pattern.
+    document_ir
+        The validated stitched DocumentIR.
+    document_ir_fp
+        Path to the source DocumentIR JSON file.
     kg_dirs
-        The knowledge graph run directories.
-    provenance_context
-        An optional dictionary containing provenance context information to be included
-        in the knowledge graphs.
-    usage_tracker
-        Tracker to accumulate token usage across all KG generation and validation calls.
+        Output directories for this KG creation run.
+    observed_languages
+        Language tags observed in DocumentIR text units.
+    profile
+        The validated country/document-specific DocumentProfile.
+    profile_fp
+        Path to the source DocumentProfile JSON file.
+    segment_counts
+        Counts of DocumentIR segment kinds.
+    table_columns_signature_counts
+        Counts of table column signatures observed in table segments.
+    warnings
+        Non-fatal warnings.
+    """
+
+    code_pattern_match_counts: dict[str, dict[str, int]]
+    document_ir: DocumentIR
+    document_ir_fp: Path
+    document_profile: DocumentProfile
+    document_profile_fp: Path
+    kg_dirs: KGRunDirs
+    observed_languages: list[str]
+    segment_counts: dict[str, int]
+    table_columns_signature_counts: dict[str, int]
+    warnings: list[str]
+
+
+def _build_run_manifest(kg_run_inputs: KGRunInputs) -> dict[str, Any]:
+    """Build a lightweight run manifest for the KG creation preflight stage.
+
+    Parameters
+    ----------
+    kg_run_inputs
+        Validated KG run inputs and prep summaries.
+
+    Returns
+    -------
+    dict[str, Any]
+        JSON-serializable run manifest.
+    """
+
+    document_ir = kg_run_inputs.document_ir
+    document_profile = kg_run_inputs.document_profile
+    counts: Counter[str] = Counter()
+
+    for segment in document_ir.segments:
+        if segment.kind != "block":
+            continue
+
+        counts[str(getattr(segment.block_type, "value", segment.block_type))] += 1
+
+    return {
+        "block_type_counts": dict(sorted(counts.items())),
+        "code_pattern_match_counts": kg_run_inputs.code_pattern_match_counts,
+        "completed_at": None,
+        "country": document_profile.country,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "doc_key": document_ir.doc_key,
+        "document_ir_fp": str(kg_run_inputs.document_ir_fp),
+        "document_profile_fp": str(kg_run_inputs.document_profile_fp),
+        "framework_title": document_profile.framework_title,
+        "has_stable_codes": document_profile.has_stable_codes,
+        "kg_run_dir": str(kg_run_inputs.kg_dirs.root),
+        "observed_languages": kg_run_inputs.observed_languages,
+        "page_count": document_ir.page_count,
+        "pdf_name": document_ir.pdf_name,
+        "primary_language": document_profile.primary_language,
+        "segment_counts": kg_run_inputs.segment_counts,
+        "status": "preflight_complete",
+        "subject": document_profile.subject,
+        "table_columns_signature_counts": kg_run_inputs.table_columns_signature_counts,
+        "warnings": kg_run_inputs.warnings,
+    }
+
+
+def _count_code_pattern_matches(
+    *, document_ir: DocumentIR, document_profile: DocumentProfile
+) -> dict[str, dict[str, int]]:
+    """Count configured code pattern matches in the DocumentIR.
+
+    Parameters
+    ----------
+    document_ir
+        The stitched DocumentIR to scan.
+    document_profile
+        The validated DocumentProfile containing regex code patterns.
+
+    Returns
+    -------
+    dict[str, dict[str, int]]
+        Mapping of pattern name to total and unique match counts.
 
     Raises
     ------
     ValueError
-        If the CanonicalIR JSON is invalid or if any part of the knowledge graph export
-        process fails.
+        If a segment kind is unrecognized.
     """
 
-    # 1.
-    kg_export_ctx = build_kg_export_context(canonical_ir=canonical_ir, config=config)
+    # 1. Extract text from block segments and table cells.
+    texts: list[str] = []
 
-    # 2.
-    academic_standards, as_reused = load_or_export_academic_standards(
-        canonical_ir_created_at=canonical_ir.created_at,
-        config=config,
-        ctx=kg_export_ctx,
-        decision_set_id=canonical_ir.decision_set_id,
-        kg_dirs=kg_dirs,
-        provenance_context=provenance_context,
-    )
+    for segment in document_ir.segments:
+        if segment.kind == "block":
+            text = segment.combined_text
 
-    # 3.
-    learning_components, lc_reused = load_or_export_learning_components(
-        academic_standards=academic_standards,
-        config=config,
-        ctx=kg_export_ctx,
-        kg_dirs=kg_dirs,
-        usage_tracker=usage_tracker,
-    )
+            if text is None and segment.text:
+                text = segment.text.text
 
-    # Sentinels needed for combined bundles.
-    as_sentinel = kg_dirs.academic_standards / "academic_standards_kg.json"
-    lc_sentinel = kg_dirs.learning_components / "learning_components_kg.json"
-    lp_sentinel = kg_dirs.learning_progressions / "learning_progressions_kg.json"
-
-    # Combined Academic Standards + Learning Components bundle.
-    combined_as_lc_fp = (
-        kg_dirs.combined / "academic_standards_plus_learning_components_kg.json"
-    )
-
-    if combined_as_lc_fp.exists() and as_reused and lc_reused:
-        logger.info(
-            "Combined Academic Standards and Learning Components bundle already exists "
-            "(both components reused)--skipping."
-        )
-    else:
-        as_bundle = open_json_type(as_sentinel)
-        lc_bundle = open_json_type(lc_sentinel)
-        combined_bundle = merge_graph_bundles(
-            bundles=[as_bundle, lc_bundle],
-            doc_key=kg_export_ctx.doc_key,
-            export_dialect=config.as_export_dialect,
-        )
-        write_to_json(fp=combined_as_lc_fp, json_info=combined_bundle)
-
-    # 4.
-    learning_progressions = None
-
-    if config.generate_learning_progressions is True:
-        learning_progressions, lp_reused = load_or_export_learning_progressions(
-            academic_standards=academic_standards,
-            config=config,
-            ctx=kg_export_ctx,
-            kg_dirs=kg_dirs,
-            usage_tracker=usage_tracker,
-        )
-
-        # Combined Academic Standards + Learning Components + Learning Progressions
-        # bundle.
-        combined_all_fp = (
-            kg_dirs.combined
-            / "academic_standards_plus_learning_components_plus_learning_progressions_kg.json"
-        )
-
-        if combined_all_fp.exists() and as_reused and lc_reused and lp_reused:
-            logger.info(
-                "Combined Academic Standards, Learning Components, and Learning Progressions "
-                "bundle already exists (all components reused)--skipping."
-            )
+            if text and (clean_text := str(text).strip()):
+                texts.append(clean_text)
+        elif segment.kind == "table":
+            for row in segment.rows:
+                for cell in row.cells:
+                    if cell_text := _extract_cell_text(cell):
+                        texts.append(cell_text)
         else:
-            as_bundle = open_json_type(as_sentinel)
-            lc_bundle = open_json_type(lc_sentinel)
-            lp_bundle = open_json_type(lp_sentinel)
-            combined_bundle = merge_graph_bundles(
-                bundles=[as_bundle, lc_bundle, lp_bundle],
-                doc_key=kg_export_ctx.doc_key,
-                export_dialect=config.as_export_dialect,
-            )
-            write_to_json(fp=combined_all_fp, json_info=combined_bundle)
+            raise ValueError(f"Unrecognized segment kind: {segment.kind}")
 
-    # 5.
-    policy_report = build_policy_coverage_report(
-        academic_standards=academic_standards,
-        ctx=kg_export_ctx,
-        learning_components=learning_components,
-        learning_progressions=learning_progressions,
-    )
-    entity_provenance = build_entity_provenance_export(
-        academic_standards=academic_standards,
-        ctx=kg_export_ctx,
-        learning_components=learning_components,
-    )
-    validation_report = validate_graph(
-        academic_standards=academic_standards,
-        ctx=kg_export_ctx,
-        learning_components=learning_components,
-        learning_progressions=learning_progressions,
-    )
-    write_reports(
-        entity_provenance=entity_provenance,
-        kg_dirs=kg_dirs,
-        policy_report=policy_report,
-        validation_report=validation_report,
-    )
-    log_console_summary(
-        policy_report=policy_report, validation_report=validation_report
+    # 2. Join extracted text and scan for code patterns.
+    all_text = "\n".join(texts)
+    counts: dict[str, dict[str, int]] = {}
+
+    for name, pattern in document_profile.code_patterns.items():
+        matches = [match.group(0) for match in re.finditer(pattern, all_text)]
+        counts[name] = {"total": len(matches), "unique": len(set(matches))}
+
+    return counts
+
+
+def _count_table_columns_signatures(document_ir: DocumentIR) -> dict[str, int]:
+    """Count table column signatures in DocumentIR table segments.
+
+    Parameters
+    ----------
+    document_ir
+        The stitched DocumentIR to summarize.
+
+    Returns
+    -------
+    dict[str, int]
+        Counts keyed by `columns_signature`, using `<missing>` when absent.
+    """
+
+    counts: Counter[str] = Counter()
+
+    for segment in document_ir.segments:
+        if segment.kind != "table":
+            continue
+
+        columns_signature = segment.columns_signature or "<missing>"
+        counts[columns_signature] += 1
+
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def _create_kg_run_dirs(*, doc_key: str, output_dir: Path) -> KGRunDirs:
+    """Create KG creation run directories for a stitched document.
+
+    Parameters
+    ----------
+    doc_key
+        Deterministic document key from the stitched DocumentIR.
+    output_dir
+        Output directory root supplied by the caller.
+
+    Returns
+    -------
+    KGRunDirs
+        The created KG run directories.
+    """
+
+    root = output_dir / doc_key / "kgs"
+
+    for p in [root]:
+        make_dir(p)
+
+    return KGRunDirs(root=root)
+
+
+def _extract_cell_text(cell: TableCell) -> Optional[str]:
+    """Extract text from a table cell-like object.
+
+    Parameters
+    ----------
+    cell
+        A table cell object from a DocumentIR table row.
+
+    Returns
+    -------
+    Optional[str]
+        The cell text when present and non-empty, otherwise None.
+    """
+
+    text_unit = cell.text
+
+    if text_unit is None:
+        return None
+
+    text = text_unit.text
+
+    if text is None:
+        return None
+
+    return str(text).strip() or None
+
+
+def _extract_observed_languages(document_ir: DocumentIR) -> list[str]:
+    """Extract a sorted list of unique languages observed in the DocumentIR.
+
+    Parameters
+    ----------
+    document_ir
+        The stitched DocumentIR to scan for language tags.
+
+    Returns
+    -------
+    list[str]
+        A sorted list of unique language tags found in the document's text units.
+    """
+
+    observed_languages_set: set[str] = set()
+
+    for segment in document_ir.segments:
+        if segment.kind == "block":
+            if language := _extract_text_unit_language(segment.text):
+                observed_languages_set.add(language)
+        elif segment.kind == "table":
+            for row in segment.rows:
+                for cell in row.cells:
+                    if language := _extract_text_unit_language(cell.text):
+                        observed_languages_set.add(language)
+
+    return sorted(observed_languages_set)
+
+
+def _extract_text_unit_language(text_unit: TextUnit | None) -> Optional[str]:
+    """Extract language from a TextUnit object.
+
+    Parameters
+    ----------
+    text_unit
+        A TextUnit object from a DocumentIR block or table cell.
+
+    Returns
+    -------
+    Optional[str]
+        The language tag when present and non-empty, otherwise None.
+    """
+
+    if text_unit is None:
+        return None
+
+    language = str(text_unit.language).strip()
+    assert (
+        language
+    ), f"Expected non-empty language tag in TextUnit, got: '{text_unit.language}'"
+    return language
+
+
+def _language_base(language: str) -> str:
+    """Return the base language subtag for loose language-overlap checks.
+
+    Parameters
+    ----------
+    language
+        A BCP-47-ish language tag.
+
+    Returns
+    -------
+    str
+        The lowercased base language subtag.
+    """
+
+    return language.replace("_", "-").split("-")[0].casefold()
+
+
+def _validate_document_ir(document_ir_fp: Path) -> DocumentIR:
+    """Validate basic DocumentIR assumptions required by KG creation.
+
+    Parameters
+    ----------
+    document_ir_fp
+        The file path to the stitched DocumentIR JSON.
+
+    Raises
+    ------
+    ValueError
+        If required document-level fields or segment identifiers are missing.
+    """
+
+    document_ir = DocumentIR.model_validate(open_json_type(document_ir_fp))
+
+    if not document_ir.doc_key.strip():
+        raise ValueError("DocumentIR.doc_key must be non-empty.")
+
+    if not document_ir.pages:
+        raise ValueError("DocumentIR.pages must be non-empty.")
+
+    if not document_ir.segments:
+        raise ValueError("DocumentIR.segments must be non-empty.")
+
+    segment_ids = [segment.segment_id for segment in document_ir.segments]
+    duplicate_segment_ids = sorted(
+        segment_id for segment_id, count in Counter(segment_ids).items() if count > 1
     )
 
-    if validation_report.has_errors():
+    if duplicate_segment_ids:
         raise ValueError(
-            f"Graph validation failed with {len(validation_report.errors())} error(s). "
-            f"See graph_validation_report.json for details."
+            f"DocumentIR contains duplicate segment_id values: "
+            f"{duplicate_segment_ids[:10]}"
         )
+
+    return document_ir
+
+
+def _validate_document_profile_compatibility(
+    *,
+    code_pattern_match_counts: dict[str, dict[str, int]],
+    document_profile: DocumentProfile,
+    observed_languages: list[str],
+    segment_counts: dict[str, int],
+) -> list[str]:
+    """Cross-check document profile assumptions against the stitched DocumentIR.
+
+    Parameters
+    ----------
+    code_pattern_match_counts
+        Match counts for each configured code pattern.
+    document_profile
+        The validated DocumentProfile.
+    observed_languages
+        Language tags observed in the DocumentIR.
+    segment_counts
+        Counts of segment kinds in the DocumentIR.
+
+    Returns
+    -------
+    list[str]
+        Non-fatal compatibility warnings.
+
+    Raises
+    ------
+    ValueError
+        If a strict compatibility check fails.
+    """
+
+    warnings: list[str] = []
+
+    document_profile_language_bases = {
+        _language_base(language) for language in document_profile.languages
+    }
+    observed_language_bases = {
+        _language_base(language) for language in observed_languages if language
+    }
+
+    if observed_language_bases and not (
+        document_profile_language_bases & observed_language_bases
+    ):
+        warnings.append(
+            f"Document profile languages do not overlap with languages observed in the "
+            f"DocumentIR: Document Profile languages: {sorted(document_profile.languages)}, "
+            f"DocumentIR languages: {observed_languages}."
+        )
+
+    if document_profile.has_stable_codes and not document_profile.code_patterns:
+        raise ValueError(
+            "DocumentProfile.has_stable_codes is true, but no code_patterns were configured."
+        )
+
+    if document_profile.has_stable_codes:
+        total_code_matches = sum(
+            match_counts["total"] for match_counts in code_pattern_match_counts.values()
+        )
+
+        if total_code_matches == 0:
+            message = (
+                "DocumentProfile.has_stable_codes is true, but none of the configured "
+                "code_patterns matched text in the DocumentIR."
+            )
+            raise ValueError(message)
+
+    if (
+        document_profile.table_window_mode in {"row_chunks", "whole_table"}
+        and segment_counts.get("table", 0) == 0
+    ):
+        warnings.append(
+            "Profile table_window_mode expects table segments, but the DocumentIR "
+            "contains no table segments."
+        )
+
+    if document_profile.row_overlap >= document_profile.max_rows_per_table_window:
+        raise ValueError(
+            "DocumentProfile.row_overlap must be smaller than max_rows_per_table_window."
+        )
+
+    return warnings
+
+
+def load_and_validate_inputs(
+    *,
+    document_ir_fp: Path,
+    document_profile_fp: Path,
+    output_dir: Path,
+    overwrite: bool,
+) -> KGRunInputs:
+    """Load, validate, and prep KG creation run inputs.
+
+    Parameters
+    ----------
+    document_ir_fp
+        Path to the stitched DocumentIR JSON file.
+    document_profile_fp
+        Path to the country/document-specific DocumentProfile JSON file.
+    output_dir
+        Output directory root for KG creation artifacts.
+    overwrite
+        Whether an existing run manifest may be overwritten.
+
+    Returns
+    -------
+    KGRunInputs
+        Validated inputs and preflight summaries.
+
+    Raises
+    ------
+    FileExistsError
+        If the run manifest already exists and overwrite is False.
+    ValueError
+        If the profile or DocumentIR fails preflight validation.
+    """
+
+    # Validate the DocumentIR and DocumentProfile objects.
+    document_ir = _validate_document_ir(document_ir_fp)
+    document_profile = DocumentProfile.model_validate(
+        open_json_type(document_profile_fp)
+    )
+
+    # Create directories for the KG run.
+    kg_dirs = _create_kg_run_dirs(doc_key=document_ir.doc_key, output_dir=output_dir)
+    kg_manifest_fp = kg_dirs.root / "kg_run_manifest.json"
+
+    if kg_manifest_fp.exists() and not overwrite:
+        raise FileExistsError(
+            f"KG run manifest already exists at: {kg_manifest_fp}. "
+            f"Pass --overwrite to replace it."
+        )
+
+    # Count code pattern matches in the document IR.
+    code_pattern_match_counts = _count_code_pattern_matches(
+        document_ir=document_ir, document_profile=document_profile
+    )
+
+    # Extract unique languages observed in the DocumentIR.
+    observed_languages = _extract_observed_languages(document_ir=document_ir)
+
+    # Count segment kinds.
+    segment_counts = Counter(segment.kind for segment in document_ir.segments)
+    segment_counts = dict(sorted(segment_counts.items()))
+
+    # Count table signatures.
+    table_columns_signature_counts = _count_table_columns_signatures(document_ir)
+
+    # Check compatibility.
+    warnings = _validate_document_profile_compatibility(
+        code_pattern_match_counts=code_pattern_match_counts,
+        document_profile=document_profile,
+        observed_languages=observed_languages,
+        segment_counts=segment_counts,
+    )
+
+    return KGRunInputs(
+        code_pattern_match_counts=code_pattern_match_counts,
+        document_ir=document_ir,
+        document_ir_fp=document_ir_fp,
+        document_profile=document_profile,
+        document_profile_fp=document_profile_fp,
+        kg_dirs=kg_dirs,
+        observed_languages=observed_languages,
+        segment_counts=segment_counts,
+        table_columns_signature_counts=table_columns_signature_counts,
+        warnings=warnings,
+    )
 
 
 @cli.command()
 def create(
-    config_fp: Path = typer.Argument(
+    document_ir_fp: Path = typer.Argument(
         ...,
         dir_okay=False,
         exists=True,
         file_okay=True,
-        help="The file path to the global config file for the pipeline.",
+        help="The file path to the stitched DocumentIR JSON.",
         readable=True,
         resolve_path=True,
-    )
+    ),
+    document_profile_fp: Path = typer.Argument(
+        ...,
+        dir_okay=False,
+        exists=True,
+        file_okay=True,
+        help="The file path to the country/document-specific DocumentProfile JSON.",
+        readable=True,
+        resolve_path=True,
+    ),
+    output_dir: Path = typer.Argument(
+        ...,
+        dir_okay=True,
+        file_okay=False,
+        help="The output directory root for KG creation artifacts.",
+        resolve_path=True,
+    ),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite",
+        help="Overwrite an existing KG run manifest.",
+    ),
 ) -> None:
-    """Create LC KGs from the CanonicalIR JSON.
+    """Create the initial KG run manifest from a profile and stitched DocumentIR.
 
     The process is as follows:
 
-    1. Load config and validate extraction run existence.
-    2. Cross-check canonical IR run results.
-    3. Persist KG creation run metadata.
-    4. Create a usage tracker to accumulate token costs across all KG generation and
-        validation calls.
-    5. Create Learning Commons knowledge graphs.
+    1. Load and validate the DocumentProfile JSON.
+    2. Load and validate the stitched DocumentIR JSON.
+    3. Cross-check basic profile/document compatibility.
+    4. Create the KG run output directory.
+    5. Persist a run_manifest.json file for audit/debugging.
 
     Parameters
     ----------
-    config_fp
-        The file path to the global config file for the pipeline.
+    document_ir_fp
+        The file path to the stitched DocumentIR JSON.
+    document_profile_fp
+        The file path to the country/document-specific DocumentProfile JSON.
+    output_dir
+        The output directory root for KG creation artifacts.
+    overwrite
+        Whether to overwrite an existing KG run manifest.
 
     Raises
     ------
     Exception
-        If any part of the knowledge graph creation process fails.
+        If any error occurs during knowledge graph creation.
     """
 
-    # 1.
-    run_config = RunConfig.model_validate(open_json_type(config_fp))
-    config = run_config.kgs
-    extraction_config = run_config.page_ir_extraction
-    computed_doc_key = compute_doc_key(n_hex=64, pdf_fp=extraction_config.pdf_fp)
-    extraction_run_results_dir = (
-        extraction_config.output_dir / computed_doc_key / "extraction"
-    )
-    canonical_ir_fp = (
-        extraction_config.output_dir
-        / computed_doc_key
-        / "canonical"
-        / "canonical_ir"
-        / "canonical_ir.json"
-    )
-    extraction_run_config = RunCtx.model_validate(
-        open_json_type(extraction_run_results_dir / "extraction_run.json")
-    )
-    expected_doc_key = extraction_run_config.extra["doc_key"]
-
-    # 2.
-    canonical_ir = cross_check_canonical_ir_run(
-        canonical_ir_fp=canonical_ir_fp,
-        computed_doc_key=computed_doc_key,
-        expected_doc_key=expected_doc_key,
-        extraction_config=extraction_config,
-        kg_config=config,
-    )
-
-    # 3.
-    kg_results_dir = extraction_config.output_dir / expected_doc_key / "kgs"
-    kg_dirs, kg_run = persist_kg_run(config=config, output_dir=kg_results_dir)
-
-    # 4.
-    usage_tracker = KGUsageTracker()
+    kg_run_manifest: dict[str, Any] | None = None
+    kg_run_manifest_fp: Path | None = None
 
     try:
-        # 5.
         logger.info(
-            f"Starting KG creation process using canonical IR JSON: {canonical_ir_fp}"
+            f"Starting KG creation prep using DocumentIR: {document_ir_fp} and "
+            f"document profile: {document_profile_fp} "
         )
 
-        create_kgs(
-            canonical_ir=canonical_ir,
-            config=config,
-            kg_dirs=kg_dirs,
-            provenance_context={
-                "bbox": {
-                    "coord_space": "px",
-                    "format": "[x0, y0, x1, y1]",
-                    "note": (
-                        "BBox coords are absolute pixels in rendered page images. "
-                        "Use page_index+width_px/height_px for normalization when available."
-                    ),
-                    "origin": "top_left",
-                    "page_images": get_page_image_dims(extraction_run_results_dir),
-                    "render_dpi": extraction_config.dpi,
-                }
-            },
-            usage_tracker=usage_tracker,
+        kg_run_inputs = load_and_validate_inputs(
+            document_ir_fp=document_ir_fp,
+            document_profile_fp=document_profile_fp,
+            output_dir=output_dir,
+            overwrite=overwrite,
         )
-        kg_run.extra["status"] = "success"
+        kg_run_manifest = _build_run_manifest(kg_run_inputs)
+        kg_run_manifest_fp = kg_run_inputs.kg_dirs.root / "kg_run_manifest.json"
+        write_to_json(fp=kg_run_manifest_fp, json_info=kg_run_manifest)
 
-        logger.success("KG creation completed successfully!")
+        logger.success(f"KG creation prep completed successfully: {kg_run_manifest_fp}")
     except Exception as e:  # pylint: disable=broad-except
-        kg_run.extra["status"] = "error"
-        kg_run.extra["error"] = {
-            "message": str(e),
-            "traceback": traceback.format_exc(limit=30),
-            "type": e.__class__.__name__,
-        }
+        logger.error(f"KG creation prep failed: {e.__class__.__name__}: {str(e)}")
+
+        if kg_run_manifest is not None and kg_run_manifest_fp is not None:
+            kg_run_manifest["completed_at"] = datetime.now(timezone.utc).isoformat()
+            kg_run_manifest["error"] = {
+                "message": str(e),
+                "traceback": traceback.format_exc(limit=20),
+                "type": e.__class__.__name__,
+            }
+            kg_run_manifest["status"] = "error"
+            write_to_json(fp=kg_run_manifest_fp, json_info=kg_run_manifest)
+
         raise
-    finally:
-        kg_run.completed_at = datetime.now(timezone.utc)
-        write_to_json(fp=kg_dirs.root / "kg_run.json", json_info=kg_run)
 
 
 if __name__ == "__main__":

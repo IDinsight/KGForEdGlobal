@@ -1,0 +1,54 @@
+{
+	"adoption_status": "Adopted",
+	"attribution_statement": "Source curriculum published by NaCCA, Ministry of Education, Republic of Ghana, September 2019.",
+	"author": "NaCCA, Ministry of Education",
+	"country": "Ghana",
+	"framework_title": "Mathematics Curriculum for Primary Schools (Basic 4 - 6)",
+	"grades_or_stages": [
+		"Basic 4",
+		"Basic 5",
+		"Basic 6"
+	],
+	"jurisdiction": "Ghana",
+	"languages": [
+		"en"
+	],
+	"license": "unknown",
+	"primary_language": "en",
+	"provider": "Learning Commons KG extraction pipeline",
+	"subject": "Mathematics",
+	"code_parent_rules": [
+		{
+			"child": "indicator",
+			"parent": "content_standard",
+			"method": "drop_last_dot_component"
+		}
+	],
+	"code_patterns": {
+		"content_standard": "\\bB[456]\\.\\d+\\.\\d+\\.\\d+(?!\\.\\d)\\b",
+		"indicator": "\\bB[456]\\.\\d+\\.\\d+\\.\\d+\\.\\d+(?!\\.\\d)\\b"
+	},
+	"code_statement_types": {
+		"content_standard": "Content Standard",
+		"indicator": "Indicator"
+	},
+	"has_stable_codes": true,
+	"include_block_windows": true,
+	"max_rows_per_table_window": 20,
+	"row_overlap": 1,
+	"table_window_mode": "row_chunks",
+	"bilingual_pair_policy": null,
+	"repeated_statement_policy": "Merge same official code when text is compatible. Same official code with materially conflicting text should become a conflict bucket.",
+	"synthetic_merge_key_fields": [
+		"country",
+		"subject",
+		"grade_level",
+		"normalized_statement_type",
+		"statement_type",
+		"hierarchy_context",
+		"normalized_text"
+	],
+	"duplicate_review_instructions": "Decide whether candidates in the bucket are the same Ghana curriculum item. Same official statement code with compatible text should merge. Same official statement code with conflicting text should be marked conflict. Similar text with different official codes should usually remain distinct.",
+	"learning_component_instructions": "Decompose each final Ghana Mathematics Standard SFI into one or more atomic mathematical skills or concepts. Do not create activities, examples, or assessment tasks as LearningComponents.",
+	"sfi_extraction_instructions": "Extract Ghana Mathematics SFI candidates. BASIC 4, BASIC 5, and BASIC 6 are Standard Grouping SFIs. Strand and Sub-Strand headings are Standard Grouping SFIs. Content Standards with codes like B4.1.1.1 are Standard SFIs. Indicators with codes like B4.1.1.1.1 are Standard SFIs. Exemplars beginning with E.g. are auxiliary examples, not SFIs. Core competency text is auxiliary guidance, not an SFI. Repeated table headers are not SFIs."
+}

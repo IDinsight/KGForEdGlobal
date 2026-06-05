@@ -13,6 +13,8 @@ These models are intentionally **non-US-centric**:
 from __future__ import annotations
 
 # Standard Library
+import re
+
 from datetime import datetime
 from typing import Any, Literal, Optional
 from urllib.parse import urlparse
@@ -1882,3 +1884,95 @@ class PolicyCoverageReport(BaseSchema):
         default=False,
         description="Whether drop_details was truncated because it exceeded the limit.",
     )
+
+
+class DocumentProfile(BaseSchema):
+    # Framework metadata.
+    adoption_status: str | None = None
+    attribution_statement: str
+    author: str
+    country: str
+    framework_title: str
+    grades_or_stages: list[str] = Field(default_factory=list)
+    jurisdiction: str
+    languages: list[str]
+    license: str
+    primary_language: str
+    provider: str
+    subject: str
+
+    # Code handling.
+    code_parent_rules: list[dict[str, str]] = Field(default_factory=list)
+    code_patterns: dict[str, str] = Field(default_factory=dict)
+    code_statement_types: dict[str, str] = Field(default_factory=dict)
+    has_stable_codes: bool = False
+
+    # Windowing.
+    include_block_windows: bool = True
+    max_rows_per_table_window: int = Field(default=20, ge=1)
+    row_overlap: int = Field(default=1, ge=0)
+    table_window_mode: Literal["whole_table", "row_chunks"] = "row_chunks"
+
+    # Duplication behavior.
+    bilingual_pair_policy: str | None = None
+    repeated_statement_policy: str = ""
+    synthetic_merge_key_fields: list[str] = Field(
+        default_factory=lambda: [
+            "country",
+            "subject",
+            "grade_level",
+            "normalized_statement_type",
+            "statement_type",
+            "hierarchy_context",
+            "normalized_text",
+        ]
+    )
+
+    # LLM instructions.
+    duplicate_review_instructions: str
+    learning_component_instructions: str
+    sfi_extraction_instructions: str
+
+    # All other metadata.
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("code_patterns")
+    @classmethod
+    def validate_code_patterns(cls, v: dict[str, str]) -> dict[str, str]:
+        for name, pattern in v.items():
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f"Invalid regex for code_patterns[{name!r}]: {exc}"
+                ) from exc
+        return v
+
+    @model_validator(mode="after")
+    def validate_parent_rules(self) -> "DocumentProfile":
+        known = set(self.code_patterns.keys())
+
+        for idx, rule in enumerate(self.code_parent_rules):
+            child = rule.get("child")
+            parent = rule.get("parent")
+            method = rule.get("method")
+
+            if child not in known:
+                raise ValueError(
+                    f"code_parent_rules[{idx}] unknown child pattern: {child!r}"
+                )
+            if parent not in known:
+                raise ValueError(
+                    f"code_parent_rules[{idx}] unknown parent pattern: {parent!r}"
+                )
+            if method not in {"drop_last_dot_component", "regex_substitution"}:
+                raise ValueError(f"code_parent_rules[{idx}] invalid method: {method!r}")
+
+            if method == "regex_substitution":
+                if "regex" not in rule or "replacement" not in rule:
+                    raise ValueError(
+                        f"code_parent_rules[{idx}] regex_substitution requires regex and replacement"
+                    )
+                re.compile(rule["regex"])
+
+        return self
