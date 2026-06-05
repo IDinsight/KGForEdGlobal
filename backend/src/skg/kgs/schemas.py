@@ -2263,6 +2263,137 @@ class DocumentProfile(BaseSchema):
 
         return cleaned
 
+    def _validate_stable_codes(self) -> None:
+        """Ensure stable codes have associated code patterns.
+
+        Raises
+        ------
+        ValueError
+            If has_stable_codes is true but no code_patterns were configured.
+        """
+
+        if self.has_stable_codes and not self.code_patterns:
+            raise ValueError(
+                "DocumentProfile.has_stable_codes is true, but no code_patterns were configured."
+            )
+
+    def _validate_windowing(self) -> None:
+        """Ensure row windowing configuration is internally consistent.
+
+        Raises
+        ------
+        ValueError
+            If row_overlap is not smaller than max_rows_per_table_window.
+        """
+
+        if self.row_overlap >= self.max_rows_per_table_window:
+            raise ValueError(
+                "DocumentProfile.row_overlap must be smaller than max_rows_per_table_window."
+            )
+
+    @staticmethod
+    def _validate_code_parent_rule(
+        idx: int, rule: dict[str, Any], known: set[str]
+    ) -> None:
+        """Validate a single code parent rule.
+
+        Parameters
+        ----------
+        idx
+            Index of the rule (for error messages).
+        rule
+            The code parent rule mapping to validate.
+        known
+            Set of known code pattern names.
+
+        Raises
+        ------
+        ValueError
+            If the rule references unknown patterns, uses an invalid method, or is
+            missing required regex_substitution fields.
+        """
+
+        child = rule.get("child")
+        parent = rule.get("parent")
+        method = rule.get("method")
+
+        if child not in known:
+            raise ValueError(
+                f"code_parent_rules[{idx}] unknown child pattern: {child!r}"
+            )
+
+        if parent not in known:
+            raise ValueError(
+                f"code_parent_rules[{idx}] unknown parent pattern: {parent!r}"
+            )
+
+        if method not in {"drop_last_dot_component", "regex_substitution"}:
+            raise ValueError(f"code_parent_rules[{idx}] invalid method: {method!r}")
+
+        if method == "regex_substitution":
+            if "regex" not in rule or "replacement" not in rule:
+                raise ValueError(
+                    f"code_parent_rules[{idx}] regex_substitution requires regex and replacement"
+                )
+
+            re.compile(rule["regex"])
+
+    def _validate_code_parent_rules(self, known: set[str]) -> None:
+        """Validate all configured code parent rules.
+
+        Parameters
+        ----------
+        known
+            Set of known code pattern names.
+        """
+
+        for idx, rule in enumerate(self.code_parent_rules):
+            self._validate_code_parent_rule(idx, rule, known)
+
+    def _validate_statement_type_keys(self, known: set[str]) -> None:
+        """Ensure code_statement_types keys are a subset of code_patterns.
+
+        Parameters
+        ----------
+        known
+            Set of known code pattern names.
+
+        Raises
+        ------
+        ValueError
+            If code_statement_types contains keys absent from code_patterns.
+        """
+
+        unknown_statement_type_keys = sorted(
+            set(self.code_statement_types.keys()) - known
+        )
+
+        if unknown_statement_type_keys:
+            raise ValueError(
+                f"DocumentProfile.code_statement_types contains keys not present in "
+                f"code_patterns: {unknown_statement_type_keys}"
+            )
+
+    def _validate_table_signature_policy(self) -> None:
+        """Ensure table-selection policy does not both target and exclude columns.
+
+        Raises
+        ------
+        ValueError
+            If any columns_signature appears in both target and excluded sets.
+        """
+
+        overlapping_table_signatures = sorted(
+            set(self.target_table_columns_signatures)
+            & set(self.excluded_table_columns_signatures)
+        )
+
+        if overlapping_table_signatures:
+            raise ValueError(
+                "DocumentProfile table-selection policy cannot target and exclude the "
+                f"same columns_signature values: {overlapping_table_signatures}"
+            )
+
     @model_validator(mode="after")
     def validate_profile_configuration(self) -> DocumentProfile:
         """Validate cross-field DocumentProfile configuration.
@@ -2278,60 +2409,10 @@ class DocumentProfile(BaseSchema):
             If code handling, parent rules, or windowing configuration is invalid.
         """
 
-        if self.has_stable_codes and not self.code_patterns:
-            raise ValueError(
-                "DocumentProfile.has_stable_codes is true, but no code_patterns were configured."
-            )
-
-        if self.row_overlap >= self.max_rows_per_table_window:
-            raise ValueError(
-                "DocumentProfile.row_overlap must be smaller than max_rows_per_table_window."
-            )
-
         known = set(self.code_patterns.keys())
-
-        for idx, rule in enumerate(self.code_parent_rules):
-            child = rule.get("child")
-            parent = rule.get("parent")
-            method = rule.get("method")
-
-            if child not in known:
-                raise ValueError(
-                    f"code_parent_rules[{idx}] unknown child pattern: {child!r}"
-                )
-            if parent not in known:
-                raise ValueError(
-                    f"code_parent_rules[{idx}] unknown parent pattern: {parent!r}"
-                )
-            if method not in {"drop_last_dot_component", "regex_substitution"}:
-                raise ValueError(f"code_parent_rules[{idx}] invalid method: {method!r}")
-
-            if method == "regex_substitution":
-                if "regex" not in rule or "replacement" not in rule:
-                    raise ValueError(
-                        f"code_parent_rules[{idx}] regex_substitution requires regex and replacement"
-                    )
-                re.compile(rule["regex"])
-
-        unknown_statement_type_keys = sorted(
-            set(self.code_statement_types.keys()) - known
-        )
-
-        if unknown_statement_type_keys:
-            raise ValueError(
-                f"DocumentProfile.code_statement_types contains keys not present in "
-                f"code_patterns: {unknown_statement_type_keys}"
-            )
-
-        overlapping_table_signatures = sorted(
-            set(self.target_table_columns_signatures)
-            & set(self.excluded_table_columns_signatures)
-        )
-
-        if overlapping_table_signatures:
-            raise ValueError(
-                "DocumentProfile table-selection policy cannot target and exclude the "
-                f"same columns_signature values: {overlapping_table_signatures}"
-            )
-
+        self._validate_stable_codes()
+        self._validate_windowing()
+        self._validate_code_parent_rules(known)
+        self._validate_statement_type_keys(known)
+        self._validate_table_signature_policy()
         return self
