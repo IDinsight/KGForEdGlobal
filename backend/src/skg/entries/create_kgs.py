@@ -3,14 +3,15 @@ extraction artifacts from a stitched DocumentIR.
 
 This module implements the first step of the simplified KG creation pipeline:
 
-1. Load and validate a country/document-specific ``DocumentProfile``.
-2. Load and validate the corresponding stitched ``DocumentIR``.
+1. Load and validate a country/document-specific `DocumentProfile`.
+2. Load and validate the corresponding stitched `DocumentIR`.
 3. Cross-check that the profile is compatible with the DocumentIR.
 4. Create the KG run output directory.
-5. Persist a lightweight ``run_manifest.json`` for audit/debugging.
+5. Persist a `kg_run_manifest.json` for audit/debugging.
 
 Later steps will build extraction windows, run LLM-based SFI candidate extraction,
-compile final SFIs, generate LearningComponents, and export KG schema objects.
+compile final SFIs, generate LearningComponents, infer LearningProgressions, and
+export KG schema objects.
 
 Invoke from the backend directory via:
 
@@ -92,6 +93,9 @@ class KGRunInputs:
         Counts of DocumentIR segment kinds.
     table_columns_signature_counts
         Counts of table column signatures observed in table segments.
+    table_selection_match_counts
+        Counts showing how the observed table signatures match the DocumentProfile
+        table-selection policy.
     warnings
         Non-fatal warnings.
     """
@@ -105,6 +109,7 @@ class KGRunInputs:
     observed_languages: list[str]
     segment_counts: dict[str, int]
     table_columns_signature_counts: dict[str, int]
+    table_selection_match_counts: dict[str, Any]
     warnings: list[str]
 
 
@@ -152,6 +157,14 @@ def _build_run_manifest(kg_run_inputs: KGRunInputs) -> dict[str, Any]:
         "status": "preflight_complete",
         "subject": document_profile.subject,
         "table_columns_signature_counts": kg_run_inputs.table_columns_signature_counts,
+        "table_selection_match_counts": kg_run_inputs.table_selection_match_counts,
+        "table_selection_policy": {
+            "excluded_table_columns_signatures": document_profile.excluded_table_columns_signatures,
+            "excluded_table_section_patterns": document_profile.excluded_table_section_patterns,
+            "minimum_target_table_signature_matches": document_profile.minimum_target_table_signature_matches,
+            "target_table_columns_signatures": document_profile.target_table_columns_signatures,
+            "target_table_section_patterns": document_profile.target_table_section_patterns,
+        },
         "warnings": kg_run_inputs.warnings,
     }
 
@@ -234,6 +247,48 @@ def _count_table_columns_signatures(document_ir: DocumentIR) -> dict[str, int]:
         counts[columns_signature] += 1
 
     return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def _count_table_selection_matches(
+    *, document_ir: DocumentIR, document_profile: DocumentProfile
+) -> dict[str, Any]:
+    """Count how observed table signatures match the profile table-selection policy.
+
+    Parameters
+    ----------
+    document_ir
+        The stitched DocumentIR to inspect.
+    document_profile
+        The validated DocumentProfile containing table-selection rules.
+
+    Returns
+    -------
+    dict[str, Any]
+        Summary counts for target and excluded table column signatures.
+    """
+
+    observed_counts: Counter[str] = Counter()
+
+    for segment in document_ir.segments:
+        if segment.kind != "table":
+            continue
+
+        observed_counts[segment.columns_signature or "<missing>"] += 1
+
+    excluded_signature_counts = {
+        signature: observed_counts.get(signature, 0)
+        for signature in document_profile.excluded_table_columns_signatures
+    }
+    target_signature_counts = {
+        signature: observed_counts.get(signature, 0)
+        for signature in document_profile.target_table_columns_signatures
+    }
+    return {
+        "excluded_table_signature_match_total": sum(excluded_signature_counts.values()),
+        "excluded_table_signature_counts": excluded_signature_counts,
+        "target_table_signature_match_total": sum(target_signature_counts.values()),
+        "target_table_signature_counts": target_signature_counts,
+    }
 
 
 def _create_kg_run_dirs(*, doc_key: str, output_dir: Path) -> KGRunDirs:
@@ -402,6 +457,7 @@ def _validate_document_profile_compatibility(
     document_profile: DocumentProfile,
     observed_languages: list[str],
     segment_counts: dict[str, int],
+    table_selection_match_counts: dict[str, Any],
 ) -> list[str]:
     """Cross-check document profile assumptions against the stitched DocumentIR.
 
@@ -415,6 +471,8 @@ def _validate_document_profile_compatibility(
         Language tags observed in the DocumentIR.
     segment_counts
         Counts of segment kinds in the DocumentIR.
+    table_selection_match_counts
+        Counts showing how observed table signatures match the table-selection policy.
 
     Returns
     -------
@@ -465,6 +523,19 @@ def _validate_document_profile_compatibility(
             "Profile table_window_mode expects table segments, but the DocumentIR "
             "contains no table segments."
         )
+
+    if document_profile.target_table_columns_signatures:
+        target_match_total = table_selection_match_counts[
+            "target_table_signature_match_total"
+        ]
+
+        if target_match_total < document_profile.minimum_target_table_signature_matches:
+            raise ValueError(
+                f"DocumentProfile configured target_table_columns_signatures, but "
+                f"too few matching table segments were observed in the DocumentIR. "
+                f"Observed {target_match_total}; expected at least "
+                f"{document_profile.minimum_target_table_signature_matches}."
+            )
 
     return warnings
 
@@ -534,12 +605,18 @@ def load_and_validate_inputs(
     # Count table signatures.
     table_columns_signature_counts = _count_table_columns_signatures(document_ir)
 
+    # Count matches against the profile table-selection policy.
+    table_selection_match_counts = _count_table_selection_matches(
+        document_ir=document_ir, document_profile=document_profile
+    )
+
     # Check compatibility.
     warnings = _validate_document_profile_compatibility(
         code_pattern_match_counts=code_pattern_match_counts,
         document_profile=document_profile,
         observed_languages=observed_languages,
         segment_counts=segment_counts,
+        table_selection_match_counts=table_selection_match_counts,
     )
 
     return KGRunInputs(
@@ -552,6 +629,7 @@ def load_and_validate_inputs(
         observed_languages=observed_languages,
         segment_counts=segment_counts,
         table_columns_signature_counts=table_columns_signature_counts,
+        table_selection_match_counts=table_selection_match_counts,
         warnings=warnings,
     )
 
