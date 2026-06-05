@@ -1,0 +1,81 @@
+{
+  "block_type_counts": {
+    "caption": 1,
+    "figure": 18,
+    "heading": 81,
+    "list": 16,
+    "paragraph": 81
+  },
+  "code_pattern_match_counts": {
+    "content_standard": {
+      "total": 168,
+      "unique": 71
+    },
+    "indicator": {
+      "total": 175,
+      "unique": 170
+    }
+  },
+  "completed_at": null,
+  "country": "Ghana",
+  "created_at": "2026-06-05T20:51:15.014958+00:00",
+  "doc_key": "4b4439306ad2fafc07f92ca6061dcbfbde63975549177fde3c69393faf4a427c",
+  "document_ir_fp": "/Users/tzz/Projects/private/idi/SenegalKG/examples/ghana/document_ir.json",
+  "document_profile_fp": "/Users/tzz/Projects/private/idi/SenegalKG/examples/ghana/document_profile.json",
+  "framework_title": "Mathematics Curriculum for Primary Schools (Basic 4 - 6)",
+  "has_stable_codes": true,
+  "kg_run_dir": "/Users/tzz/Projects/private/idi/SenegalKG/examples/ghana/output/4b4439306ad2fafc07f92ca6061dcbfbde63975549177fde3c69393faf4a427c/kgs",
+  "observed_languages": [
+    "en",
+    "mul"
+  ],
+  "page_count": 183,
+  "pdf_name": "ghana.pdf",
+  "primary_language": "en",
+  "segment_counts": {
+    "block": 197,
+    "table": 53
+  },
+  "status": "prep_complete",
+  "subject": "Mathematics",
+  "table_columns_signature_counts": {
+    "content standards|indicators and exemplars|subject specific practices and core competencies": 24,
+    "content standard|indicators and exemplars|subject specific practices and core competencies": 11,
+    "number of students|1|2|3|4|5|?|||cost of lunch in cedis|3|6|9|12|15|90": 2,
+    "outcome|number of throws": 2,
+    "14765|round up|round down|round off": 1,
+    "214765|round up|round down|round off": 1,
+    "<missing>": 1,
+    "generating / possibilities|this is the skill of exploring all the options, possibilities and alternatives beyond the obvious or preferred one.|||evaluating|this is the skill of assessing the reasonableness, accuracy and quality of information, processes or ideas. this is also the skill of assessing the quality and feasibility of objects.|||designing|this is the skill of visualizing and drawing new objects or gargets from imagination": 1,
+    "name|age|favourite subject|worst subject|important subject|shoe size|favourite mineral|daily bus fare (cedis)": 1,
+    "name|institution": 1,
+    "number of tables|number of chairs": 1,
+    "number of triangles|1|2|3|4|5|6|7|8|9|||match sticks|7|12|||||||": 1,
+    "numbers|factors|number of factors": 1,
+    "properties|rectangle|square|rhombuses|trapezoids|parallelograms": 1,
+    "strands|sub-strands|b4|b5|b6": 1,
+    "strands|sub-strands||||||b4|b5|b6": 1,
+    "term/input|1|2|3|4|5|6|rule for n in words|rule for n in algebra": 1,
+    "term/input|1|2|3|4|5|rule for n in words|rule for n in algebra": 1
+  },
+  "table_selection_match_counts": {
+    "excluded_table_signature_match_total": 0,
+    "excluded_table_signature_counts": {},
+    "target_table_signature_match_total": 35,
+    "target_table_signature_counts": {
+      "content standards|indicators and exemplars|subject specific practices and core competencies": 24,
+      "content standard|indicators and exemplars|subject specific practices and core competencies": 11
+    }
+  },
+  "table_selection_policy": {
+    "excluded_table_columns_signatures": [],
+    "excluded_table_section_patterns": [],
+    "minimum_target_table_signature_matches": 30,
+    "target_table_columns_signatures": [
+      "content standards|indicators and exemplars|subject specific practices and core competencies",
+      "content standard|indicators and exemplars|subject specific practices and core competencies"
+    ],
+    "target_table_section_patterns": []
+  },
+  "warnings": []
+}
