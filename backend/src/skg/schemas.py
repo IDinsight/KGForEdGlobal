@@ -508,38 +508,6 @@ class StitchingConfig(BaseSchema):
     )
 
 
-class CreateCanonicalConfig(BaseSchema):
-    """Configuration for canonical IR creation from document IR."""
-
-    bind_unknown_caption: bool = Field(
-        True,
-        description="Whether to bind captions whose kind cannot be confidently classified during deterministic caption→table binding.",
-    )
-    caption_max_gap_segments: int = Field(
-        2,
-        description="Maximum number of non-table segments allowed between a caption block and the table it binds to.",
-        ge=0,
-    )
-    caption_max_page_distance: int = Field(
-        1,
-        description="Maximum page distance allowed between a caption block and the table it binds to.",
-        ge=0,
-    )
-    curriculum_skeleton_fp: FilePath = Field(
-        ...,
-        description="Filesystem path to the CurriculumSkeleton JSON used for deterministic segment decisions.",
-    )
-    max_skip_distance: int = Field(
-        2,
-        description="Maximum number of curriculum skeleton nodes to probe ahead during forward-only matching.",
-        ge=1,
-    )
-    overwrite: bool = Field(
-        False,
-        description="Overwrite existing canonical IR artifacts on disk (e.g., segment decisions/canonical IR JSON).",
-    )
-
-
 class AcademicStandardsDefaultLevelContext(BaseSchema):
     """Document-level fallback level context for Academic Standards export.
 
@@ -865,6 +833,10 @@ class CreateKGConfig(BaseSchema):
     as_prune_empty_groupings: bool = Field(
         default=True,
         description="If true, drop grouping StandardsFrameworkItems that have zero exported children after filtering and after reattachment hoists children of dropped nodes to their nearest surviving ancestor, repeating to a fixpoint.",
+    )
+    document_profile_fp: FilePath = Field(
+        ...,
+        description="Filesystem path to the DocumentProfile JSON for the curriculum.",
     )
     generate_learning_progressions: bool = Field(
         default=True,
@@ -1601,10 +1573,6 @@ class RunConfig(BaseSchema):
     )
     document_ir: StitchingConfig = Field(
         description="Configuration for stitching verified page IRs into a single document IR."
-    )
-    canonical_ir: Optional[CreateCanonicalConfig] = Field(
-        default=None,
-        description="Configuration for canonical IR creation. If None, the canonical IR step is skipped.",
     )
     kgs: Optional[CreateKGConfig] = Field(
         default=None,

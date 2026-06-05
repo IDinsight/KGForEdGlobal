@@ -445,11 +445,6 @@ def _validate_document_profile_compatibility(
             f"DocumentIR languages: {observed_languages}."
         )
 
-    if document_profile.has_stable_codes and not document_profile.code_patterns:
-        raise ValueError(
-            "DocumentProfile.has_stable_codes is true, but no code_patterns were configured."
-        )
-
     if document_profile.has_stable_codes:
         total_code_matches = sum(
             match_counts["total"] for match_counts in code_pattern_match_counts.values()
@@ -469,11 +464,6 @@ def _validate_document_profile_compatibility(
         warnings.append(
             "Profile table_window_mode expects table segments, but the DocumentIR "
             "contains no table segments."
-        )
-
-    if document_profile.row_overlap >= document_profile.max_rows_per_table_window:
-        raise ValueError(
-            "DocumentProfile.row_overlap must be smaller than max_rows_per_table_window."
         )
 
     return warnings
@@ -537,8 +527,9 @@ def load_and_validate_inputs(
     observed_languages = _extract_observed_languages(document_ir=document_ir)
 
     # Count segment kinds.
-    segment_counts = Counter(segment.kind for segment in document_ir.segments)
-    segment_counts = dict(sorted(segment_counts.items()))
+    segment_counts = dict(
+        sorted(Counter(segment.kind for segment in document_ir.segments).items())
+    )
 
     # Count table signatures.
     table_columns_signature_counts = _count_table_columns_signatures(document_ir)
@@ -625,7 +616,7 @@ def create(
         If any error occurs during knowledge graph creation.
     """
 
-    kg_run_manifest: dict[str, Any] | None = None
+    kg_run_manifest: dict[str, Any] = {}
     kg_run_manifest_fp: Path | None = None
 
     try:
@@ -648,7 +639,7 @@ def create(
     except Exception as e:  # pylint: disable=broad-except
         logger.error(f"KG creation prep failed: {e.__class__.__name__}: {str(e)}")
 
-        if kg_run_manifest is not None and kg_run_manifest_fp is not None:
+        if kg_run_manifest_fp is not None:
             kg_run_manifest["completed_at"] = datetime.now(timezone.utc).isoformat()
             kg_run_manifest["error"] = {
                 "message": str(e),

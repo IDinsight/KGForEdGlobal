@@ -33,6 +33,7 @@
 		"table_filldown_group_cols_max": 1,
 		"verification_auto_stitch_confidence": 0.7
 	},
-	"canonical_ir": null,
-	"kgs": null
+	"kgs": {
+		"document_profile_fp": "/Users/tzz/Projects/private/idi/SenegalKG/examples/ghana/document_profile.json"
+	}
 }

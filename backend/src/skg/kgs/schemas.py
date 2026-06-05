@@ -1887,6 +1887,8 @@ class PolicyCoverageReport(BaseSchema):
 
 
 class DocumentProfile(BaseSchema):
+    """Country/document-specific profile for KG extraction."""
+
     # Framework metadata.
     adoption_status: str | None = None
     attribution_statement: str
@@ -1936,20 +1938,220 @@ class DocumentProfile(BaseSchema):
     # All other metadata.
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator(
+        "attribution_statement",
+        "author",
+        "country",
+        "duplicate_review_instructions",
+        "framework_title",
+        "jurisdiction",
+        "learning_component_instructions",
+        "license",
+        "primary_language",
+        "provider",
+        "sfi_extraction_instructions",
+        "subject",
+        mode="before",
+    )
+    @classmethod
+    def _strip_and_require_non_empty(cls, v: str) -> str:
+        """Strip whitespace and require non-empty strings for required fields.
+
+        Parameters
+        ----------
+        v
+            The input string value to validate.
+
+        Returns
+        -------
+        str
+            The validated and stripped string value.
+        """
+
+        return _strip_and_require_non_empty_str(v)
+
+    @field_validator("adoption_status", "bilingual_pair_policy", mode="before")
+    @classmethod
+    def _strip_optional_strings(cls, v: str | None) -> str | None:
+        """Strip optional string fields and normalize blank strings to None.
+
+        Parameters
+        ----------
+        v
+            The input optional string value.
+
+        Returns
+        -------
+        str | None
+            The stripped string, or None for blank/None values.
+
+        Raises
+        ------
+        TypeError
+            If the input is not a string or None.
+        """
+
+        if v is None:
+            return None
+
+        if not isinstance(v, str):
+            raise TypeError("Expected a string or None")
+
+        v2 = v.strip()
+        return v2 if v2 else None
+
     @field_validator("code_patterns")
     @classmethod
     def validate_code_patterns(cls, v: dict[str, str]) -> dict[str, str]:
+        """Validate that all configured code patterns compile as regular expressions.
+
+        Parameters
+        ----------
+        v
+            Mapping of code pattern name to regular expression string.
+
+        Returns
+        -------
+        dict[str, str]
+            The original pattern mapping.
+
+        Raises
+        ------
+        TypeError
+            If a code pattern value is not a string.
+        ValueError
+            If a code pattern is empty or cannot be compiled.
+        """
+
         for name, pattern in v.items():
+            if not isinstance(pattern, str):
+                raise TypeError(
+                    f"code_patterns[{name!r}] must be a string. "
+                    f"Got {type(pattern).__name__}."
+                )
+
+            if not pattern.strip():
+                raise ValueError(f"code_patterns[{name!r}] must be non-empty.")
+
             try:
                 re.compile(pattern)
             except re.error as exc:
                 raise ValueError(
                     f"Invalid regex for code_patterns[{name!r}]: {exc}"
                 ) from exc
+
         return v
 
+    @field_validator("languages")
+    @classmethod
+    def validate_languages(cls, v: list[str]) -> list[str]:
+        """Validate profile languages are present, non-empty, and de-duplicated.
+
+        Parameters
+        ----------
+        v
+            Language tags configured for the profile.
+
+        Returns
+        -------
+        list[str]
+            Cleaned language tags in stable order.
+        """
+
+        if not v:
+            raise ValueError(
+                "DocumentProfile.languages must contain at least one value."
+            )
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for language in v:
+            if not isinstance(language, str):
+                raise TypeError("DocumentProfile.languages must contain only strings.")
+
+            language_clean = language.strip()
+
+            if not language_clean:
+                continue
+
+            if language_clean not in seen:
+                cleaned.append(language_clean)
+                seen.add(language_clean)
+
+        if not cleaned:
+            raise ValueError(
+                "DocumentProfile.languages must contain at least one non-empty value."
+            )
+
+        return cleaned
+
+    @field_validator("synthetic_merge_key_fields")
+    @classmethod
+    def validate_synthetic_merge_key_fields(cls, v: list[str]) -> list[str]:
+        """Validate synthetic merge key fields are non-empty strings.
+
+        Parameters
+        ----------
+        v
+            Configured synthetic merge key field names.
+
+        Returns
+        -------
+        list[str]
+            Cleaned and de-duplicated field names in stable order.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for field_name in v or []:
+            if not isinstance(field_name, str):
+                raise TypeError(
+                    "DocumentProfile.synthetic_merge_key_fields must contain only strings."
+                )
+
+            field_name_clean = field_name.strip()
+
+            if not field_name_clean:
+                continue
+
+            if field_name_clean not in seen:
+                cleaned.append(field_name_clean)
+                seen.add(field_name_clean)
+
+        if not cleaned:
+            raise ValueError(
+                "DocumentProfile.synthetic_merge_key_fields must contain at least one value."
+            )
+
+        return cleaned
+
     @model_validator(mode="after")
-    def validate_parent_rules(self) -> "DocumentProfile":
+    def validate_profile_configuration(self) -> DocumentProfile:
+        """Validate cross-field DocumentProfile configuration.
+
+        Returns
+        -------
+        DocumentProfile
+            The validated profile.
+
+        Raises
+        ------
+        ValueError
+            If code handling, parent rules, or windowing configuration is invalid.
+        """
+
+        if self.has_stable_codes and not self.code_patterns:
+            raise ValueError(
+                "DocumentProfile.has_stable_codes is true, but no code_patterns were configured."
+            )
+
+        if self.row_overlap >= self.max_rows_per_table_window:
+            raise ValueError(
+                "DocumentProfile.row_overlap must be smaller than max_rows_per_table_window."
+            )
+
         known = set(self.code_patterns.keys())
 
         for idx, rule in enumerate(self.code_parent_rules):
@@ -1974,5 +2176,15 @@ class DocumentProfile(BaseSchema):
                         f"code_parent_rules[{idx}] regex_substitution requires regex and replacement"
                     )
                 re.compile(rule["regex"])
+
+        unknown_statement_type_keys = sorted(
+            set(self.code_statement_types.keys()) - known
+        )
+
+        if unknown_statement_type_keys:
+            raise ValueError(
+                f"DocumentProfile.code_statement_types contains keys not present in "
+                f"code_patterns: {unknown_statement_type_keys}"
+            )
 
         return self
