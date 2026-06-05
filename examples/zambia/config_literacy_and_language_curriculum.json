@@ -1,15 +1,14 @@
 {
 	"page_ir_extraction": {
-		"country": "Senegal",
+		"country": "Zambia",
 		"dpi": 250,
 		"end_page": null,
 		"languages": [
-			"fr",
-			"wo"
+			"en"
 		],
 		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results/kg_for_ed",
 		"overwrite": false,
-		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/senegal/math_wolof_OA_fixed.pdf",
+		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/zambia/literacy_and_language.pdf",
 		"start_page": 0,
 		"use_extracted_hints": true,
 		"year": 2024
