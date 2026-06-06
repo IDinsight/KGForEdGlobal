@@ -42,16 +42,34 @@ if __name__ == "__main__":
 
 # Package Library
 from skg.kgs.utils import (
+    KGRunDirs,
     build_run_manifest,
     cross_check_stitching_run,
     load_and_validate_inputs,
+    persist_kg_run,
 )
-from skg.schemas import RunConfig
+from skg.schemas import CreateKGConfig, RunConfig
 from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key
 
 # Instantiate typer apps for the command line interface.
 cli = typer.Typer(no_args_is_help=True)
+
+
+def build_kgs(
+    *, config: CreateKGConfig, document_ir_fp: Path, kg_dirs: KGRunDirs
+) -> None:
+    kg_run_inputs = load_and_validate_inputs(
+        document_ir_fp=document_ir_fp,
+        document_profile_fp=config.document_profile_fp,
+        kg_dirs=kg_dirs,
+        overwrite=config.overwrite,
+    )
+
+    # 6.
+    kg_run_manifest = build_run_manifest(kg_run_inputs)
+    kg_run_manifest_fp = kg_dirs.root / "kg_run_manifest.json"
+    write_to_json(fp=kg_run_manifest_fp, json_info=kg_run_manifest)
 
 
 @cli.command()
@@ -66,15 +84,15 @@ def create(
         resolve_path=True,
     )
 ) -> None:
-    """Create the initial KG run manifest from the global runtime config.
+    """Create the initial KG run artifacts from the global runtime config.
 
     The process is as follows:
 
     1. Load the global run config and resolve KG, extraction, and stitching paths.
     2. Cross-check stitching run results.
-    3. Load and validate the DocumentProfile and stitched DocumentIR.
-    4. Cross-check basic profile/document compatibility.
-    5. Create the KG run output directory.
+    3. Persist KG run metadata.
+    4. Load and validate the DocumentProfile and stitched DocumentIR.
+    5. Cross-check basic profile/document compatibility.
     6. Persist a kg_run_manifest.json file for audit/debugging.
 
     Parameters
@@ -87,9 +105,9 @@ def create(
     Exception
         If any error occurs during knowledge graph creation.
     ValueError
-        If any error occurs during knowledge graph creation.
+        If the runtime config does not contain a kgs section.
     FileNotFoundError
-        If the extraction run metadata file does not exist.
+        If the required upstream extraction/stitching artifacts do not exist.
     """
 
     # 1.
@@ -110,52 +128,44 @@ def create(
         computed_doc_key=computed_doc_key, extraction_config=extraction_config
     )
 
+    # 3.
+    kg_results_dir = extraction_config.output_dir / computed_doc_key / "kgs"
+    kg_dirs, kg_run = persist_kg_run(config=config, output_dir=kg_results_dir)
+
     kg_run_manifest: dict[str, Any] = {}
     kg_run_manifest_fp: Path | None = None
 
     try:
-        document_profile_fp = config.document_profile_fp
-        output_dir = extraction_config.output_dir
-
         logger.info(
             f"Starting KG creation prep using runtime config: {config_fp}; "
-            f"DocumentIR: {document_ir_fp}; document profile: {document_profile_fp}"
+            f"DocumentIR: {document_ir_fp}; document profile: {config.document_profile_fp}"
         )
 
-        # 3-5.
-        kg_run_inputs = load_and_validate_inputs(
-            document_ir_fp=document_ir_fp,
-            document_profile_fp=document_profile_fp,
-            output_dir=output_dir,
-            overwrite=config.overwrite,
-        )
+        # 4-5.
+        build_kgs()
 
-        # 6.
-        kg_run_manifest = build_run_manifest(kg_run_inputs)
-        kg_run_manifest["config_fp"] = str(config_fp)
-        kg_run_manifest["computed_doc_key"] = computed_doc_key
-        kg_run_manifest["extraction_run_fp"] = str(extraction_run_fp)
-        kg_run_manifest["generate_learning_progressions"] = (
-            config.generate_learning_progressions
-        )
-        kg_run_manifest_fp = kg_run_inputs.kg_dirs.root / "kg_run_manifest.json"
-        write_to_json(fp=kg_run_manifest_fp, json_info=kg_run_manifest)
+        kg_run.extra["status"] = "success"
+        kg_run.extra["kg_run_manifest_fp"] = str(kg_run_manifest_fp)
 
-        logger.success(f"KG creation prep completed successfully: {kg_run_manifest_fp}")
+        logger.success(f"KG creation completed successfully: {kg_run_manifest_fp}")
     except Exception as e:  # pylint: disable=broad-except
-        logger.error(f"KG creation prep failed: {e.__class__.__name__}: {str(e)}")
+        kg_run.extra["status"] = "error"
+        kg_run.extra["error"] = {
+            "message": str(e),
+            "traceback": traceback.format_exc(limit=20),
+            "type": e.__class__.__name__,
+        }
 
         if kg_run_manifest_fp is not None:
             kg_run_manifest["completed_at"] = datetime.now(timezone.utc).isoformat()
-            kg_run_manifest["error"] = {
-                "message": str(e),
-                "traceback": traceback.format_exc(limit=20),
-                "type": e.__class__.__name__,
-            }
+            kg_run_manifest["error"] = kg_run.extra["error"]
             kg_run_manifest["status"] = "error"
             write_to_json(fp=kg_run_manifest_fp, json_info=kg_run_manifest)
 
         raise
+    finally:
+        kg_run.completed_at = datetime.now(timezone.utc)
+        write_to_json(fp=kg_dirs.root / "kg_run.json", json_info=kg_run)
 
 
 if __name__ == "__main__":

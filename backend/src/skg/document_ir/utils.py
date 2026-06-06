@@ -74,7 +74,7 @@ class ParsedCaptionCode:
     prefix_raw: str
 
 
-def _create_document_ir_dirs(*, output_dir: Path) -> DocumentIRDirs:
+def _create_document_ir_dirs(output_dir: Path) -> DocumentIRDirs:
     """Create document IR directories for a given stitching run.
 
     Parameters
@@ -627,7 +627,7 @@ def persist_stitching_run(
         The created stitching directories and persisted stitching run metadata.
     """
 
-    stitching_dirs = _create_document_ir_dirs(output_dir=output_dir)
+    stitching_dirs = _create_document_ir_dirs(output_dir)
     exclude_keys = {"overwrite"}
     stitching_run = RunCtx(
         extra={

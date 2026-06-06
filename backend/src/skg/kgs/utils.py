@@ -2,6 +2,7 @@
 
 # Standard Library
 import re
+import uuid
 
 from collections import Counter
 from dataclasses import dataclass
@@ -9,12 +10,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+# Third Party Library
+from loguru import logger
+
 # Package Library
 from skg.document_ir.schemas import DocumentIR
 from skg.kgs.schemas import DocumentProfile
 from skg.page_ir_extraction.schemas import TableCell, TextUnit
-from skg.schemas import ExtractionConfig, RunCtx
-from skg.utils.general import make_dir, open_json_type
+from skg.schemas import CreateKGConfig, ExtractionConfig, RunCtx
+from skg.utils.general import make_dir, open_json_type, write_to_json
 
 
 @dataclass(frozen=True)
@@ -196,15 +200,13 @@ def _count_table_selection_matches(
     }
 
 
-def _create_kg_run_dirs(*, doc_key: str, output_dir: Path) -> KGRunDirs:
-    """Create KG creation run directories for a stitched document.
+def _create_kg_dirs(output_dir: Path) -> KGRunDirs:
+    """Create KG creation run directories.
 
     Parameters
     ----------
-    doc_key
-        Deterministic document key from the stitched DocumentIR.
     output_dir
-        Output directory root supplied by the caller.
+        The output directory root.
 
     Returns
     -------
@@ -212,7 +214,7 @@ def _create_kg_run_dirs(*, doc_key: str, output_dir: Path) -> KGRunDirs:
         The created KG run directories.
     """
 
-    root = output_dir / doc_key / "kgs"
+    root = output_dir
 
     for p in [root]:
         make_dir(p)
@@ -587,7 +589,7 @@ def load_and_validate_inputs(
     *,
     document_ir_fp: Path,
     document_profile_fp: Path,
-    output_dir: Path,
+    kg_dirs: KGRunDirs,
     overwrite: bool,
 ) -> KGRunInputs:
     """Load, validate, and prep KG creation run inputs.
@@ -598,8 +600,8 @@ def load_and_validate_inputs(
         Path to the stitched DocumentIR JSON file.
     document_profile_fp
         Path to the country/document-specific DocumentProfile JSON file.
-    output_dir
-        Output directory root for KG creation artifacts.
+    kg_dirs
+        Directories for storing KG run artifacts.
     overwrite
         Whether an existing run manifest may be overwritten.
 
@@ -622,8 +624,7 @@ def load_and_validate_inputs(
         open_json_type(document_profile_fp)
     )
 
-    # Create directories for the KG run.
-    kg_dirs = _create_kg_run_dirs(doc_key=document_ir.doc_key, output_dir=output_dir)
+    # Check whether the KG run manifest can be written.
     kg_manifest_fp = kg_dirs.root / "kg_run_manifest.json"
 
     if kg_manifest_fp.exists() and not overwrite:
@@ -675,3 +676,39 @@ def load_and_validate_inputs(
         table_selection_match_counts=table_selection_match_counts,
         warnings=warnings,
     )
+
+
+def persist_kg_run(
+    *, config: CreateKGConfig, output_dir: Path
+) -> tuple[KGRunDirs, RunCtx]:
+    """Persist KG run metadata.
+
+    Parameters
+    ----------
+    config
+        The KG creation run configuration.
+    output_dir
+        The output directory for the KG run results.
+
+    Returns
+    -------
+    tuple[KGRunDirs, RunCtx]
+        The created KG directories and persisted KG run metadata.
+    """
+
+    kg_dirs = _create_kg_dirs(output_dir=output_dir)
+    exclude_keys = {"overwrite"}
+    kg_run = RunCtx(
+        extra={
+            k: v
+            for k, v in config.model_dump(mode="json").items()
+            if k not in exclude_keys
+        },
+        run_id=str(uuid.uuid4()),
+        started_at=datetime.now(timezone.utc),
+    )
+    write_to_json(fp=kg_dirs.root / "kg_run.json", json_info=kg_run)
+
+    logger.info(f"Saving KG results to: {kg_dirs.root}")
+
+    return kg_dirs, kg_run
