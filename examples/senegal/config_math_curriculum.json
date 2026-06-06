@@ -34,6 +34,121 @@
 		"table_filldown_group_cols_max": 1,
 		"verification_auto_stitch_confidence": 0.7
 	},
-	"canonical_ir": null,
-	"kgs": null
+	"kgs": {
+		"document_profile_fp": "/Users/tzz/Projects/private/idi/SenegalKG/examples/senegal/document_profile_math.json",
+		"generate_learning_progressions": true,
+		"overwrite": false,
+		"as_academic_subject_default": "Langue et Communication",
+		"as_adoption_status": "Adopted",
+		"as_attribution_statement": "© RÉPUBLIQUE DU SÉNÉGAL, Ministère de l’Éducation nationale, 2024. Source: Referentiel bilingue (wolof-français), Langue et Communication, 2eme etape (CE1).",
+		"as_author": "Ministère de l’Éducation nationale",
+		"as_aux_statement_parenting": "under_expectation",
+		"as_case_uri_base": "urn:lc:case:",
+		"as_default_level_context": {
+			"apply_to_roles": [
+				"expectation"
+			],
+			"apply_when_missing_only": true,
+			"kind": "grade_level",
+			"label": "CE1",
+			"ordinal_high": 1,
+			"ordinal_low": 1,
+			"source": "config: Référentiel bilingue (wolof-français), Langue et Communication, 2ème étape (CE1)"
+		},
+		"as_description_text_policy": "source",
+		"as_descriptor_handling": "attach_to_expectation_metadata",
+		"as_export_dialect": "global_relaxed",
+		"as_framework_name": "Référentiel bilingue (wolof-français), Langue et Communication, 2ème étape (CE1)",
+		"as_grouping_role_policy": "whitelist",
+		"as_grouping_roles_whitelist": [
+			"stage",
+			"section",
+			"strand",
+			"substage",
+			"week",
+			"subtopic"
+		],
+		"as_guidance_handling": "attach_to_expectation_metadata",
+		"as_jurisdiction_default": "Sénégal",
+		"as_language_default": "mul",
+		"as_license": "All rights reserved (source PDF)",
+		"as_non_grouping_role_handling": "drop",
+		"as_non_standard_columns_signature": [],
+		"as_non_standard_decision_types": [
+			"ignore",
+			"unresolved"
+		],
+		"as_non_standard_segment_drop_policy": [
+			"by_decision_type"
+		],
+		"as_provider": "IDinsight | Learning Commons",
+		"as_prune_empty_groupings": true,
+		"lc_atomic_skills_batch_size": 3,
+		"lc_atomic_skills_include_aux_statements": false,
+		"lc_atomic_skills_include_topic_context": true,
+		"lc_atomic_skills_min_per_sfi": 1,
+		"lc_atomic_skills_require_rationale": true,
+		"lc_max_splits_per_standard": 10,
+		"lc_output_language_policy": "source",
+		"lc_output_language_tag": null,
+		"lc_policy": "llm_atomic_skills",
+		"lc_source_labels_exclude": [],
+		"lc_source_labels_include": [],
+		"lc_source_max_path_depth": null,
+		"lc_source_min_path_depth": null,
+		"lc_source_normalized_statement_types": [
+			"Standard"
+		],
+		"lc_source_path_patterns_exclude": [],
+		"lc_source_path_patterns_include": [],
+		"lc_source_roles_exclude": [],
+		"lc_source_roles_include": [
+			"expectation"
+		],
+		"lc_source_statement_types_exclude": [
+			"Compétence / libellé structurel",
+			"Compétence de base — Lecture-Écriture",
+			"Compétence de base — Récitation",
+			"Compétence de base — Expression orale",
+			"Compétence de base — Production d'écrits",
+			"expectation"
+		],
+		"lc_source_statement_types_include": [],
+		"lp_builds_towards_min_confidence": 0.75,
+		"lp_cross_level_builds_towards": false,
+		"lp_cross_level_relates_to": false,
+		"lp_cross_level_relates_to_max_items_per_subject": 10,
+		"lp_cross_level_thread_roles": [
+			"strand",
+			"substage"
+		],
+		"lp_cross_stage_builds_towards": false,
+		"lp_cross_stage_relates_to": false,
+		"lp_excluded_subject_labels": [
+			"UNSPECIFIED_SUBJECT"
+		],
+		"lp_relates_to_max_edges_per_sfi": 2,
+		"lp_relates_to_min_confidence": 0.9,
+		"lp_source_statement_types_exclude": [
+			"Compétence / libellé structurel",
+			"Compétence de base — Lecture-Écriture",
+			"Compétence de base — Récitation",
+			"Compétence de base — Expression orale",
+			"Compétence de base — Production d'écrits",
+			"expectation"
+		],
+		"lp_source_statement_types_include": [],
+		"lp_subject_role": "strand",
+		"lp_within_level_allow_banded_levels": false,
+		"lp_within_level_bucket_roles": [
+			"strand",
+			"subtopic"
+		],
+		"lp_within_level_builds_towards": true,
+		"lp_within_level_fallback_fields": [
+			"statement_type"
+		],
+		"lp_within_level_relates_to": true,
+		"lp_within_level_relates_to_max_items_per_subject": 20
+	}
 }

@@ -34,15 +34,8 @@
 		"table_filldown_group_cols_max": 1,
 		"verification_auto_stitch_confidence": 0.7
 	},
-	"canonical_ir": {
-		"bind_unknown_caption": false,
-		"caption_max_gap_segments": 1,
-		"caption_max_page_distance": 1,
-		"curriculum_skeleton_fp": "/Users/tzz/Projects/private/idi/SenegalKG/examples/senegal/curriculum_skeleton_reading.json",
-		"max_skip_distance": 5,
-		"overwrite": true
-	},
 	"kgs": {
+		"document_profile_fp": "/Users/tzz/Projects/private/idi/SenegalKG/examples/senegal/document_profile_reading.json",
 		"generate_learning_progressions": true,
 		"overwrite": false,
 		"as_academic_subject_default": "Langue et Communication",
