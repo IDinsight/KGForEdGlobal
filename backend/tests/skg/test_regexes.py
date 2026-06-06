@@ -12,10 +12,8 @@ from skg.regexes import (
     _CAPTION_ROMAN_NUMERAL_RE,
     ALPHA_RE,
     CAPTION_IDENTIFIER_RE,
-    DASH_RE,
     DIGIT_RE,
     FIGURE_PREFIX_PATTERN,
-    ROMAN_RE,
     TABLE_CODE_RE,
     TABLE_PREFIX_PATTERN,
     TOKEN_RE,
@@ -253,47 +251,6 @@ class TestCaptionIdentifierRe:
         assert _compile_identifier().fullmatch(text) is None
 
 
-class TestDashRe:
-    """Tests for `DASH_RE`, consecutive dash-like characters."""
-
-    @PARAM(
-        "text,expected",
-        [
-            ("hello-world", "-"),
-            ("a–b", "–"),
-            ("a—b", "—"),
-            ("a−b", "−"),
-            ("a‒b", "‒"),
-            ("a--—–b", "--—–"),
-        ],
-        ids=[
-            "hyphen",
-            "en_dash",
-            "em_dash",
-            "minus",
-            "figure_dash",
-            "mixed_consecutive",
-        ],
-    )
-    def test_matches_dash_variants(self, *, expected: str, text: str) -> None:
-        """Verify that various dash characters and consecutive runs match.
-
-        Parameters
-        ----------
-        expected
-            The substring the match should equal.
-        text
-            String to search.
-        """
-
-        _assert_search_match(expected=expected, pattern=DASH_RE, text=text)
-
-    def test_no_match_without_dashes(self) -> None:
-        """Verify that strings without dashes produce no match."""
-
-        _assert_no_match(pattern=DASH_RE, text="hello world 123")
-
-
 class TestDigitRe:
     """Tests for `DIGIT_RE`, single digit matcher."""
 
@@ -367,46 +324,6 @@ class TestFigurePrefixRe:
 
         for prefix in CaptionFigurePrefixes:
             _assert_full_match(pattern=pattern, text=prefix)
-
-
-class TestRomanRe:
-    """Tests for `ROMAN_RE`,  Roman numerals I–XV as whole words."""
-
-    @PARAM(
-        "text,expected",
-        [
-            ("I", "I"),
-            ("iv", "iv"),
-            ("Chapter XV done", "XV"),
-            ("Grade xii exam", "xii"),
-        ],
-    )
-    def test_matches_valid_roman_numerals(self, *, expected: str, text: str) -> None:
-        """Verify that Roman numerals I–XV match as whole words, case-insensitively.
-
-        Parameters
-        ----------
-        expected
-            Substring the match should equal.
-        text
-            String to search.
-        """
-
-        _assert_search_match(expected=expected, pattern=ROMAN_RE, text=text)
-
-    def test_no_match_for_xvi(self) -> None:
-        """Verify that XVI (16) does not fully match since it exceeds the hardcoded
-        range.
-        """
-
-        # XVI should not match as a *whole* token equal to XVI.
-        m = ROMAN_RE.fullmatch("XVI")
-        assert m is None
-
-    def test_word_boundary_prevents_partial(self) -> None:
-        """Verify that `\\b` prevents matching inside longer words."""
-
-        _assert_no_match(pattern=ROMAN_RE, text="MIXING")
 
 
 class TestTablePrefixPattern:

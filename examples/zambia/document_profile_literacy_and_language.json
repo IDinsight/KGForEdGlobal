@@ -1,0 +1,87 @@
+{
+	"adoption_status": "Unknown",
+	"attribution_statement": "Content derived from Zambia Ministry of Education, Literacy and Language, English Language Lower Primary Syllabus for Grades 1-3.",
+	"author": "Ministry of Education, Republic of Zambia",
+	"country": "Zambia",
+	"framework_title": "Literacy and Language: English Language Lower Primary Syllabus (Grades 1-3)",
+	"grades_or_stages": [
+		"Lower Primary",
+		"Grade 1",
+		"Grade 2",
+		"Grade 3"
+	],
+	"jurisdiction": "Zambia",
+	"languages": [
+		"en"
+	],
+	"license": "Unknown; source curriculum issued by the Ministry of Education, Republic of Zambia.",
+	"primary_language": "en",
+	"provider": "SKG KG extraction pipeline",
+	"subject": "English Language",
+	"code_parent_rules": [
+		{
+			"child_pattern": "specific_competence_code",
+			"parent_pattern": "subtopic_code",
+			"rule": "drop_last_dot_component"
+		},
+		{
+			"child_pattern": "subtopic_code",
+			"parent_pattern": "topic_code",
+			"rule": "drop_last_dot_component"
+		}
+	],
+	"code_patterns": {
+		"topic_code": "(?<![\\d.])\\d+\\.\\d+(?![\\d.])",
+		"subtopic_code": "(?<![\\d.])\\d+\\.\\d+\\.\\d+(?![\\d.])",
+		"specific_competence_code": "(?<![\\d.])\\d+\\.\\d+\\.\\d+\\.\\d+(?![\\d.])"
+	},
+	"code_statement_types": {
+		"topic_code": "Topic",
+		"subtopic_code": "Sub-topic",
+		"specific_competence_code": "Specific Competence"
+	},
+	"has_stable_codes": true,
+	"excluded_table_columns_signatures": [
+		"s/n|competence|descriptors"
+	],
+	"excluded_table_section_patterns": [
+		"(?i)KEY\\s+COMPETENCES\\s+TO\\s+BE\\s+DEVELOPED",
+		"(?i)\\bINTRODUCTION\\b",
+		"(?i)Suggested\\s+Teaching\\s+Methodology",
+		"(?i)\\bAssessment\\b",
+		"(?i)Time\\s+Allocation"
+	],
+	"minimum_target_table_signature_matches": 9,
+	"target_table_columns_signatures": [
+		"listening and speaking|||||||topic|sub-topic|specific competences|learning activities|expected standard",
+		"reading|||||||topic|sub-topic|specific competences|learning activities|expected standard",
+		"writing|||||||topic|sub-topic|specific competences|learning activities|expected standard",
+		"writing||||||||topic|sub-topic|specific competences|learning activities|expected standard|",
+		"listening and speaking||||||||topic|sub-topic|specific competences|learning activities|expected standard|"
+	],
+	"target_table_section_patterns": [
+		"(?i)GRADE\\s+[123]\\s*:\\s*ENGLISH\\s+LANGUAGE",
+		"(?i)LISTENING\\s+AND\\s+SPEAKING",
+		"(?i)\\bREADING\\b",
+		"(?i)\\bWRITING\\b"
+	],
+	"include_block_windows": true,
+	"max_rows_per_table_window": 15,
+	"row_overlap": 2,
+	"table_window_mode": "row_chunks",
+	"bilingual_pair_policy": null,
+	"repeated_statement_policy": "For coded Zambia syllabus items, merge candidates with the same stable statement_code and same source statement type. Merge repeated candidates caused by row-span or fill-down table layout when they refer to the same code. Do not merge distinct specific competences that have different four-part codes, even when their text is similar across grades or components.",
+	"synthetic_merge_key_fields": [
+		"country",
+		"subject",
+		"grade_level",
+		"normalized_statement_type",
+		"statement_type",
+		"statement_code",
+		"hierarchy_context",
+		"normalized_text"
+	],
+	"duplicate_review_instructions": "Review possible duplicate Zambia Literacy and Language candidates conservatively. Stable official codes are primary: the same code and statement type should normally merge with combined provenance; different specific competence codes should remain distinct. Treat repeated rows created by table continuation, row spans, or fill-down as layout duplicates when the code and statement text are the same. Do not merge similar skills across Grade 1, Grade 2, and Grade 3 unless they are clearly the same source item repeated by extraction.",
+	"learning_component_instructions": "Create LearningComponents primarily from leaf Specific Competence SFIs. Use the source English text as-is. Prefer a 1-to-1 component when the competence is already atomic. Split only when one specific competence clearly contains multiple distinct language skills. Do not create LearningComponents from Topic or Sub-topic grouping nodes, Learning Activities, Expected Standard benchmarks, methodology prose, or the Key Competences table unless a later profile explicitly marks them as LC sources.",
+	"sfi_extraction_instructions": "Extract Zambia Literacy and Language StandardsFrameworkItem candidates from the English Language lower-primary syllabus tables. Use the grade heading as grade context: Grade 1, Grade 2, or Grade 3. Treat Listening and Speaking, Reading, and Writing as component/strand grouping SFIs. In syllabus tables with columns Topic, Sub-topic, Specific Competences, Learning Activities, and Expected Standard, extract Topic and Sub-topic as Standard Grouping SFIs using their stable codes. Extract Specific Competences as the main leaf Standard SFIs and preserve the four-part statement_code. Treat Expected Standard as a descriptor or benchmark attached to the corresponding Specific Competence, not as a standalone Standard unless it is the only clear normative expectation in the row. Treat Learning Activities as guidance only, not SFIs for v0. Ignore front-matter tables such as Key Competences to be Developed for SFI extraction. Use rows_filldown for interpreting row-span context, but preserve raw row/cell text and provenance. Always retain page indices, table segment id, row order, source column, statement code, grade, component, topic, and sub-topic context."
+}

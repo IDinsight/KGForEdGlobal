@@ -1,0 +1,64 @@
+{
+	"adoption_status": "Unknown",
+	"attribution_statement": "Content derived from the République du Sénégal, Ministère de l'Éducation nationale, Référentiel bilingue (wolof-français), Mathématiques, deuxième étape (CE1-CE2).",
+	"author": "Ministère de l'Éducation nationale, République du Sénégal",
+	"country": "Senegal",
+	"framework_title": "Référentiel bilingue (wolof-français), Mathématiques, deuxième étape (CE1-CE2)",
+	"grades_or_stages": [
+		"CE1",
+		"CE2",
+		"2ème étape",
+		"Étape 2"
+	],
+	"jurisdiction": "Senegal",
+	"languages": [
+		"wo",
+		"fr",
+		"mul"
+	],
+	"license": "Unknown; source curriculum issued by the République du Sénégal, Ministère de l'Éducation nationale.",
+	"primary_language": "mul",
+	"provider": "SKG KG extraction pipeline",
+	"subject": "Mathématiques",
+	"code_parent_rules": [],
+	"code_patterns": {},
+	"code_statement_types": {},
+	"has_stable_codes": false,
+	"excluded_table_columns_signatures": [],
+	"excluded_table_section_patterns": [],
+	"minimum_target_table_signature_matches": 1,
+	"target_table_columns_signatures": [
+		"kenug xayma / activités numériques|yëngute xam-xamu dénd / activités géométriques|yëngute xam-xamu natt / activités de mesure|tekkim caxu xayma / activités rés. de problèmes|||manoore mi lalu / compétence de base|manoore mi lalu / compétence de base|manoore mi lalu / compétence de base|manoore mi lalu / compétence de base",
+		"semaine / palier|yëngute ci lim / activités numériques|yëngute ci tekkim caxu xayma / activités résolution de problèmes",
+		"objectif d'apprentissage|objectif spécifique|contenus|durée",
+		"objectif d’apprentissage|objectif spécifique|contenus|durée"
+	],
+	"target_table_section_patterns": [
+		"(?i)compétences de base",
+		"(?i)planification des apprentissages",
+		"(?i)apprentissages ponctuels",
+		"(?i)activités numériques|activités géométriques|activités de mesure|résolution de problèmes",
+		"(?i)palier\\s+\\d+|jéego\\s+\\d+"
+	],
+	"include_block_windows": true,
+	"max_rows_per_table_window": 12,
+	"row_overlap": 2,
+	"table_window_mode": "row_chunks",
+	"bilingual_pair_policy": "Preserve Wolof/French paired statements as one mixed-language candidate when they express the same competency or objective; do not create separate SFIs solely because the same item appears in both languages.",
+	"repeated_statement_policy": "Merge repeated no-code statements only when the source role, domain/activity area, stage or level, palier context, and normalized bilingual text match. Keep recurring week-level objectives distinct when they occur under different weeks or paliers.",
+	"synthetic_merge_key_fields": [
+		"country",
+		"subject",
+		"grade_level",
+		"normalized_statement_type",
+		"statement_type",
+		"activity_domain",
+		"stage_or_level",
+		"palier",
+		"hierarchy_context",
+		"normalized_text"
+	],
+	"duplicate_review_instructions": "Review possible duplicate Senegal Math candidates conservatively. Treat Wolof and French text in the same cell or adjacent paired statements as one bilingual/mixed-language item when they express the same competency or objective. Merge repeated fill-down artifacts that repeat the same competency/palier/objective in the same domain context. Do not merge items that occur under different paliers, CE levels, activity domains, or week sequence positions unless they are clearly the same source statement repeated for table layout reasons.",
+	"learning_component_instructions": "Create LearningComponents from leaf normative math objectives, especially Objectif spécifique rows. Use the source language text as-is; do not translate for v0. Prefer a 1-to-1 component when the objective is already atomic. Split only when one objective clearly contains multiple distinct mathematical skills. Do not create LearningComponents from Durée, Contenus alone, integration/checkpoint labels, or broad domain/palier groupings unless the profile later marks them as LC sources.",
+	"sfi_extraction_instructions": "Extract Senegal Math StandardsFrameworkItem candidates from the bilingual Wolof/French curriculum without assuming stable official standard codes. Preserve original Wolof/French source text and language tags. Treat the framework, stage (Étape 2 / CE1-CE2), activity domains (Activités numériques, Activités géométriques, Activités de mesure, Résolution de problèmes), CE levels, paliers/jéego, and weeks as grouping or sequencing context. In the competency-frame table, extract Compétence de cycle, Compétence de l'étape, and Compétences de base as high-level standards/groupings according to context. In planning tables, use Semaine/Palier rows to capture sequence context; PALIER/Jéego statements may be grouping standards or broader expectations, while weekly rows usually describe sequenced learning objectives. In detailed apprentissages ponctuels tables, treat Objectif spécifique as the main leaf Standard SFI. Treat Objectif d'apprentissage as grouping/context unless it is itself the only normative objective for a row. Treat Contenus as descriptor/metadata/guidance attached to the objective, not as a standalone Standard unless explicitly normative. Treat Durée as metadata only. Ignore pure integration/evaluation/checkpoint rows as standards unless they contain a clear learning objective. Always retain provenance, page indices, table local_code, row order, section context, and whether the text came from raw rows, rows_grid, or rows_filldown."
+}

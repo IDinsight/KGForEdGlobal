@@ -88,18 +88,6 @@ def test_block_type_enum_snapshot() -> None:
     )
 
 
-def test_caption_kind_literal_snapshot() -> None:
-    """Snapshot test for the `CaptionKind` type alias.
-
-    Ensures the alias remains a `Literal` with the exact allowed values.
-    """
-
-    origin: type | None = t.get_origin(constants.CaptionKind)
-    args: tuple[t.Any, ...] = t.get_args(constants.CaptionKind)
-    assert origin is t.Literal
-    assert args == ("figure", "table", "unknown")
-
-
 def test_caption_prefix_tuples_snapshot() -> None:
     """Snapshot test for `CaptionFigurePrefixes` and `CaptionTablePrefixes`.
 
@@ -134,22 +122,6 @@ def test_caption_prefix_tuples_snapshot() -> None:
             assert isinstance(p, str)
             assert p == p.strip()
             assert p == p.lower()
-
-
-def test_curriculum_emit_policy_enum_snapshot() -> None:
-    """Snapshot test for the `CurriculumEmitPolicy` string enum."""
-
-    _assert_str_enum_snapshot(
-        enum_cls=constants.CurriculumEmitPolicy,
-        expected=(
-            ("CONTAINER_ONLY", "container_only"),
-            ("EMIT_GROUPING", "emit_grouping"),
-            ("EMIT_GROUPING_AND_LEAF", "emit_grouping_and_leaf"),
-            ("EMIT_LEAF", "emit_leaf"),
-            ("EMIT_TABLE_ROWS", "emit_table_rows"),
-            ("IGNORE", "ignore"),
-        ),
-    )
 
 
 def test_default_context_groupings_role_order_snapshot() -> None:
@@ -302,23 +274,5 @@ def test_statement_role_enum_snapshot() -> None:
             ("EXPECTATION", "expectation"),
             ("DESCRIPTOR", "descriptor"),
             ("GUIDANCE", "guidance"),
-        ),
-    )
-
-
-def test_unresolved_reason_enum_snapshot() -> None:
-    """Snapshot test for the `UnresolvedReason` string enum."""
-
-    _assert_str_enum_snapshot(
-        enum_cls=constants.UnresolvedReason,
-        expected=(
-            ("DECISION_UNRESOLVED", "decision_unresolved"),
-            ("FLAGGED_UNRESOLVED", "flagged_unresolved"),
-            (
-                "LOW_CONFIDENCE_DECISION_NOT_MATERIALIZED",
-                "low_confidence_decision_not_materialized",
-            ),
-            ("UNMATCHED_BLOCK", "unmatched_block"),
-            ("UNMATCHED_TABLE", "unmatched_table"),
         ),
     )

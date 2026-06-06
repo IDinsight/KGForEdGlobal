@@ -4,7 +4,6 @@ constants should be scoped to the module.
 
 # Standard Library
 from enum import Enum
-from typing import Literal
 
 
 # Enums for various constant types.
@@ -29,27 +28,6 @@ class BlockType(str, Enum):
     HEADING = "heading"
     LIST = "list"
     PARAGRAPH = "paragraph"
-
-
-class CurriculumEmitPolicy(str, Enum):
-    """Controls what the curriculum skeleton matching engine does when a segment
-    matches a node.
-
-    Policies include:
-        - CONTAINER_ONLY: Structural-only node--no document segment to match.
-        - EMIT_GROUPING: Node becomes a grouping in the SegmentDecision
-        - EMIT_GROUPING_AND_LEAF: Node produces BOTH a grouping AND leaves.
-        - EMIT_LEAF: Node's matched content is emitted as a leaf statement.
-        - EMIT_TABLE_ROWS: Node is a table container; rows become RowDecision[].
-        - IGNORE: Matched segment is consumed but not emitted.
-    """
-
-    CONTAINER_ONLY = "container_only"
-    EMIT_GROUPING = "emit_grouping"
-    EMIT_GROUPING_AND_LEAF = "emit_grouping_and_leaf"
-    EMIT_LEAF = "emit_leaf"
-    EMIT_TABLE_ROWS = "emit_table_rows"
-    IGNORE = "ignore"
 
 
 class FigureKind(str, Enum):
@@ -156,18 +134,6 @@ class StatementRole(str, Enum):
     GUIDANCE = "guidance"  # Pedagogical guidance (activities/resources/teacher notes)
 
 
-class UnresolvedReason(str, Enum):
-    """Reasons why a segment decision could not be resolved."""
-
-    DECISION_UNRESOLVED = "decision_unresolved"
-    FLAGGED_UNRESOLVED = "flagged_unresolved"
-    LOW_CONFIDENCE_DECISION_NOT_MATERIALIZED = (
-        "low_confidence_decision_not_materialized"
-    )
-    UNMATCHED_BLOCK = "unmatched_block"
-    UNMATCHED_TABLE = "unmatched_table"
-
-
 # Literals/sets/etc. for various constant types.
 CaptionFigurePrefixes: tuple[str, ...] = (
     "diagramme",
@@ -178,7 +144,6 @@ CaptionFigurePrefixes: tuple[str, ...] = (
     "mchoro",
     "schéma",
 )
-CaptionKind = Literal["figure", "table", "unknown"]
 CaptionTablePrefixes: tuple[str, ...] = (
     "jedwali",
     "tab",
