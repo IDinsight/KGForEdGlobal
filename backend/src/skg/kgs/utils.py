@@ -22,7 +22,7 @@ from skg.utils.general import make_dir, open_json_type, write_to_json
 
 
 @dataclass(frozen=True)
-class KGRunDirs:
+class KGDirs:
     """Dataclass for KG creation run directories.
 
     Parameters
@@ -35,7 +35,7 @@ class KGRunDirs:
 
 
 @dataclass(frozen=True)
-class KGRunInputs:
+class KGInputs:
     """Validated inputs for a KG creation run.
 
     Parameters
@@ -70,7 +70,7 @@ class KGRunInputs:
     document_ir_fp: Path
     document_profile: DocumentProfile
     document_profile_fp: Path
-    kg_dirs: KGRunDirs
+    kg_dirs: KGDirs
     observed_languages: list[str]
     segment_counts: dict[str, int]
     table_columns_signature_counts: dict[str, int]
@@ -200,7 +200,7 @@ def _count_table_selection_matches(
     }
 
 
-def _create_kg_dirs(output_dir: Path) -> KGRunDirs:
+def _create_kg_dirs(output_dir: Path) -> KGDirs:
     """Create KG creation run directories.
 
     Parameters
@@ -219,7 +219,7 @@ def _create_kg_dirs(output_dir: Path) -> KGRunDirs:
     for p in [root]:
         make_dir(p)
 
-    return KGRunDirs(root=root)
+    return KGDirs(root=root)
 
 
 def _extract_cell_text(cell: TableCell) -> Optional[str]:
@@ -447,7 +447,7 @@ def _validate_document_profile_compatibility(
     return warnings
 
 
-def build_run_manifest(kg_run_inputs: KGRunInputs) -> dict[str, Any]:
+def build_run_manifest(kg_run_inputs: KGInputs) -> dict[str, Any]:
     """Build a run manifest for the KG creation prep stage.
 
     Parameters
@@ -505,7 +505,7 @@ def build_run_manifest(kg_run_inputs: KGRunInputs) -> dict[str, Any]:
 
 def cross_check_stitching_run(
     *, computed_doc_key: str, extraction_config: ExtractionConfig
-) -> tuple[Path, Path]:
+) -> Path:
     """Cross-check that the extraction/stitching outputs match the source PDF.
 
     KG creation depends on the stitched DocumentIR produced for the same PDF bytes
@@ -526,8 +526,8 @@ def cross_check_stitching_run(
 
     Returns
     -------
-    tuple[Path, Path]
-        The extraction run metadata path and the stitched DocumentIR JSON path.
+    Path
+        The stitched DocumentIR JSON path.
 
     Raises
     ------
@@ -582,16 +582,16 @@ def cross_check_stitching_run(
             f"Run document IR stitching before KG creation."
         )
 
-    return extraction_run_fp, document_ir_fp
+    return document_ir_fp
 
 
 def load_and_validate_inputs(
     *,
     document_ir_fp: Path,
     document_profile_fp: Path,
-    kg_dirs: KGRunDirs,
+    kg_dirs: KGDirs,
     overwrite: bool,
-) -> KGRunInputs:
+) -> KGInputs:
     """Load, validate, and prep KG creation run inputs.
 
     Parameters
@@ -607,7 +607,7 @@ def load_and_validate_inputs(
 
     Returns
     -------
-    KGRunInputs
+    KGInputs
         Validated inputs and prep summaries.
 
     Raises
@@ -663,7 +663,7 @@ def load_and_validate_inputs(
         table_selection_match_counts=table_selection_match_counts,
     )
 
-    return KGRunInputs(
+    return KGInputs(
         code_pattern_match_counts=code_pattern_match_counts,
         document_ir=document_ir,
         document_ir_fp=document_ir_fp,
@@ -680,7 +680,7 @@ def load_and_validate_inputs(
 
 def persist_kg_run(
     *, config: CreateKGConfig, output_dir: Path
-) -> tuple[KGRunDirs, RunCtx]:
+) -> tuple[KGDirs, RunCtx]:
     """Persist KG run metadata.
 
     Parameters
@@ -692,7 +692,7 @@ def persist_kg_run(
 
     Returns
     -------
-    tuple[KGRunDirs, RunCtx]
+    tuple[KGDirs, RunCtx]
         The created KG directories and persisted KG run metadata.
     """
 
