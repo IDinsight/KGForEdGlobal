@@ -15,10 +15,7 @@ export KG schema objects.
 
 Invoke from the backend directory via:
 
-python src/skg/entries/create_kgs.py \
-    ../examples/ghana/document_ir.json \
-    ../examples/ghana/document_profile.json \
-    ../examples/ghana/output
+python src/skg/entries/create_kgs.py ../examples/ghana/config_math_curriculum.json
 """
 
 # Standard Library
@@ -50,7 +47,9 @@ if __name__ == "__main__":
 from skg.document_ir.schemas import DocumentIR
 from skg.kgs.schemas import DocumentProfile
 from skg.page_ir_extraction.schemas import TableCell, TextUnit
+from skg.schemas import RunConfig, RunCtx
 from skg.utils.general import make_dir, open_json_type, write_to_json
+from skg.utils.pdf import compute_doc_key
 
 # Instantiate typer apps for the command line interface.
 cli = typer.Typer(no_args_is_help=True)
@@ -636,80 +635,126 @@ def load_and_validate_inputs(
 
 @cli.command()
 def create(
-    document_ir_fp: Path = typer.Argument(
+    config_fp: Path = typer.Argument(
         ...,
         dir_okay=False,
         exists=True,
         file_okay=True,
-        help="The file path to the stitched DocumentIR JSON.",
+        help="The file path to the global runtime config file for the pipeline.",
         readable=True,
         resolve_path=True,
-    ),
-    document_profile_fp: Path = typer.Argument(
-        ...,
-        dir_okay=False,
-        exists=True,
-        file_okay=True,
-        help="The file path to the country/document-specific DocumentProfile JSON.",
-        readable=True,
-        resolve_path=True,
-    ),
-    output_dir: Path = typer.Argument(
-        ...,
-        dir_okay=True,
-        file_okay=False,
-        help="The output directory root for KG creation artifacts.",
-        resolve_path=True,
-    ),
-    overwrite: bool = typer.Option(
-        False,
-        "--overwrite",
-        help="Overwrite an existing KG run manifest.",
-    ),
+    )
 ) -> None:
-    """Create the initial KG run manifest from a profile and stitched DocumentIR.
+    """Create the initial KG run manifest from the global runtime config.
 
     The process is as follows:
 
-    1. Load and validate the DocumentProfile JSON.
-    2. Load and validate the stitched DocumentIR JSON.
-    3. Cross-check basic profile/document compatibility.
-    4. Create the KG run output directory.
-    5. Persist a run_manifest.json file for audit/debugging.
+    1. Load the global runtime config and resolve KG, extraction, and stitching paths.
+    2. Compute and cross-check the PDF doc_key from the configured source PDF.
+    3. Resolve the stitched DocumentIR JSON path and configured DocumentProfile path.
+    4. Load and validate the DocumentProfile and stitched DocumentIR.
+    5. Cross-check basic profile/document compatibility.
+    6. Create the KG run output directory.
+    7. Persist a kg_run_manifest.json file for audit/debugging.
 
     Parameters
     ----------
-    document_ir_fp
-        The file path to the stitched DocumentIR JSON.
-    document_profile_fp
-        The file path to the country/document-specific DocumentProfile JSON.
-    output_dir
-        The output directory root for KG creation artifacts.
-    overwrite
-        Whether to overwrite an existing KG run manifest.
+    config_fp
+        The file path to the global runtime config file for the pipeline.
 
     Raises
     ------
     Exception
         If any error occurs during knowledge graph creation.
+    ValueError
+        If any error occurs during knowledge graph creation.
+    FileNotFoundError
+        If the extraction run metadata file does not exist.
     """
 
     kg_run_manifest: dict[str, Any] = {}
     kg_run_manifest_fp: Path | None = None
 
     try:
-        logger.info(
-            f"Starting KG creation prep using DocumentIR: {document_ir_fp} and "
-            f"document profile: {document_profile_fp} "
+        # 1.
+        run_config = RunConfig.model_validate(open_json_type(config_fp))
+
+        if run_config.kgs is None:
+            raise ValueError(
+                "RunConfig.kgs is required for KG creation, but the runtime config "
+                "does not contain a kgs section."
+            )
+
+        config = run_config.kgs
+        extraction_config = run_config.page_ir_extraction
+
+        # 2.
+        computed_doc_key = compute_doc_key(n_hex=64, pdf_fp=extraction_config.pdf_fp)
+        extraction_run_results_dir = (
+            extraction_config.output_dir / computed_doc_key / "extraction"
+        )
+        extraction_run_fp = extraction_run_results_dir / "extraction_run.json"
+
+        if not extraction_run_fp.exists():
+            raise FileNotFoundError(
+                f"Expected extraction run metadata at {extraction_run_fp}. "
+                f"Run page IR extraction before KG creation."
+            )
+
+        extraction_run_config = RunCtx.model_validate(open_json_type(extraction_run_fp))
+        expected_doc_key = extraction_run_config.extra.get("doc_key")
+
+        if not isinstance(expected_doc_key, str) or not expected_doc_key.strip():
+            raise ValueError(
+                f"Extraction run metadata at {extraction_run_fp} does not contain "
+                f"a non-empty extra['doc_key'] value."
+            )
+
+        if expected_doc_key != computed_doc_key:
+            raise ValueError(
+                f"Runtime config PDF doc_key mismatch. Computed {computed_doc_key} "
+                f"from {extraction_config.pdf_fp}, but extraction_run.json records "
+                f"{expected_doc_key}."
+            )
+
+        # 3.
+        document_ir_fp = (
+            extraction_config.output_dir
+            / expected_doc_key
+            / "stitching"
+            / "document_ir.json"
         )
 
+        if not document_ir_fp.exists():
+            raise FileNotFoundError(
+                f"Expected stitched DocumentIR JSON at {document_ir_fp}. "
+                f"Run document IR stitching before KG creation."
+            )
+
+        document_profile_fp = config.document_profile_fp
+        output_dir = extraction_config.output_dir
+
+        logger.info(
+            f"Starting KG creation prep using runtime config: {config_fp}; "
+            f"DocumentIR: {document_ir_fp}; document profile: {document_profile_fp}"
+        )
+
+        # 4-6.
         kg_run_inputs = load_and_validate_inputs(
             document_ir_fp=document_ir_fp,
             document_profile_fp=document_profile_fp,
             output_dir=output_dir,
-            overwrite=overwrite,
+            overwrite=config.overwrite,
         )
+
+        # 7.
         kg_run_manifest = _build_run_manifest(kg_run_inputs)
+        kg_run_manifest["config_fp"] = str(config_fp)
+        kg_run_manifest["computed_doc_key"] = computed_doc_key
+        kg_run_manifest["extraction_run_fp"] = str(extraction_run_fp)
+        kg_run_manifest["generate_learning_progressions"] = (
+            config.generate_learning_progressions
+        )
         kg_run_manifest_fp = kg_run_inputs.kg_dirs.root / "kg_run_manifest.json"
         write_to_json(fp=kg_run_manifest_fp, json_info=kg_run_manifest)
 
