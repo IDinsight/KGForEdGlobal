@@ -1,5 +1,5 @@
 {
-	"adoption_status": "Unknown",
+	"adoption_status": "Adopted",
 	"attribution_statement": "Content derived from Zambia Ministry of Education, Literacy and Language, English Language Lower Primary Syllabus for Grades 1-3.",
 	"author": "Ministry of Education, Republic of Zambia",
 	"country": "Zambia",
@@ -20,14 +20,14 @@
 	"subject": "English Language",
 	"code_parent_rules": [
 		{
-			"child_pattern": "specific_competence_code",
-			"parent_pattern": "subtopic_code",
-			"rule": "drop_last_dot_component"
+			"child": "specific_competence_code",
+			"parent": "subtopic_code",
+			"method": "drop_last_dot_component"
 		},
 		{
-			"child_pattern": "subtopic_code",
-			"parent_pattern": "topic_code",
-			"rule": "drop_last_dot_component"
+			"child": "subtopic_code",
+			"parent": "topic_code",
+			"method": "drop_last_dot_component"
 		}
 	],
 	"code_patterns": {
