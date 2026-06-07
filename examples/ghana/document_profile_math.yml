@@ -1,0 +1,260 @@
+## Document profile for Ghana Mathematics Curriculum for Primary Schools (Basic 4 - 6)
+# For Ghana, the intended flow is:
+#   1. Create one `StandardsFramework` using `framework_title`, `subject`,
+#     `jurisdiction`, `author`, `attribution_statement`, `license`, `provider`,
+#     `language`, and `adoption` status.
+#   2. Select standards tables using `target_table_columns_signatures`.
+#   3. Extract grouping SFIs from Basic/Strand/Sub-Strand headings using
+#     `sfi_extraction_instructions` and eventually deterministic heading rules.
+#   4. Extract content-standard SFIs using `code_patterns.content_standard`.
+#   5. Extract indicator SFIs using `code_patterns.indicator`.
+#   6. Build `hasChild` edges using `grades_or_stages`, heading hierarchy, and
+#     `code_parent_rules`.
+#   7. Merge duplicates using `repeated_statement_policy`, official codes, and fallback
+#     synthetic keys.
+#   8. Generate `LearningComponents` from final standard SFIs using
+#     `learning_component_instructions`.
+#   9. Create `supports` relationships from each `LearningComponent` to its source SFI.
+#   10. Generate conservative `buildsTowards`/`relatesTo` candidates using grade order,
+#     code order, hierarchy, and document order.
+
+## Framework metadata fields
+# These fields mostly populate the root `StandardsFramework` and are inherited by
+# `StandardsFrameworkItem`, `LearningComponent`, and `Relationship` objects where
+# appropriate. The KG schemas require metadata like subject, language, jurisdiction,
+# license, provider, attribution, and author on exported entities/relationships.
+
+# Purpose: States the official status of the curriculum/framework.
+# Uses:
+#   1. Populates `StandardsFramework.adoption_status`. Useful for filtering draft vs.
+#     adopted frameworks.
+adoption_status: Adopted
+
+# Purpose: Human-readable source credit.
+# Uses:
+#   1. Propagates to framework/items/components/relationships so every KG object
+#     preserves source attribution.
+attribution_statement: Source curriculum published by NaCCA, Ministry of Education, Republic of Ghana, September 2019.
+
+# Purpose: Source owner/authoring institution.
+# Uses:
+#   1. Populates `author` fields on KG objects.
+#   2. Helps distinguish Ghana NaCCA content from other publishers.
+author: NaCCA, Ministry of Education
+
+# Purpose: Pipeline-level country label.
+# Uses:
+#   1. Used in manifests, profile compatibility checks, provenance, synthetic merge
+#     keys, and possibly relaxed jurisdiction metadata.
+country: Ghana
+
+# Purpose: Human-readable title for the source framework.
+# Uses:
+#   1. Becomes the root `StandardsFramework.name` or a strong input to it. Also useful
+#     in run manifests and provenance.
+framework_title: Mathematics Curriculum for Primary Schools (Basic 4 - 6)
+
+# Purpose: Declares the covered levels.
+# Uses:
+#   1. Helps create grade grouping SFIs and `grade_level` tags on child SFIs. Also
+#     bounds progression generation to B4-B6.
+grades_or_stages:
+- Basic 4
+- Basic 5
+- Basic 6
+
+# Purpose: Issuing jurisdiction.
+# Uses:
+#   1. Populates `jurisdiction` on framework and SFIs. Important for non-US LC KG shape
+#     preservation.
+jurisdiction: Ghana
+
+# Purpose: All expected source languages.
+# Uses:
+#   1. Used for profile/DocumentIR compatibility checks and language metadata on
+#     extracted items.
+languages:
+- en
+
+# Purpose: Source license status.
+# Uses:
+#   1. Required by KG schemas even if unknown. This is a conservative placeholder.
+license: unknown
+
+# Purpose: Main document language.
+# Uses:
+#   1. Used as default `in_language` for extracted framework/items/components when
+#     source text is English.
+primary_language: en
+
+# Purpose: Names the dataset/export provider.
+# Uses:
+#   1. Populates `provider` on KG objects.
+provider: IDinsight
+
+# Purpose: Academic subject.
+# Uses:
+#   1. Populates `academic_subject`/subject metadata and helps build subject-level
+#     context, LC generation prompts, and progression scoping.
+subject: Mathematics
+
+## Code-handling fields
+# These fields are crucial for Ghana because Ghana has stable official codes. They let
+# Python do deterministic extraction and parent-child reconstruction instead of relying
+# on the LLM.
+
+# Purpose: Defines deterministic code hierarchy.
+# Uses:
+#   1. Builds hasChild edges: B4.1.1.1 -> B4.1.1.1.1, without LLM inference.
+code_parent_rules:
+- child: indicator
+  parent: content_standard
+  method: drop_last_dot_component
+
+code_patterns:
+  # Purpose: Matches Ghana content-standard codes like B4.1.1.1.
+  # Uses:
+  #   1. Finds parent standard candidates and supports deterministic `statement_code`
+  #     assignment.
+  content_standard: \bB[456]\.\d+\.\d+\.\d+(?!\.\d)\b
+
+  # Purpose: Matches Ghana indicator codes like B4.1.1.1.1.
+  # Uses:
+  #   1. Finds indicator candidates, which become child SFIs under content standards.
+  indicator: \bB[456]\.\d+\.\d+\.\d+\.\d+(?!\.\d)\b
+code_statement_types:
+  # Purpose: Maps the internal code bucket to the source statement type.
+  # Uses:
+  #   1. Populates `StandardsFrameworkItem.statement_type`, preserving Ghana’s source
+  #     semantics.
+  content_standard: Content Standard
+
+  # Purpose: Same as above, for indicators.
+  # Uses:
+  #   1. Lets the KG distinguish source “Indicator” from source “Content Standard” even
+  #     though both may normalize to LC "Standard".
+  indicator: Indicator
+
+# Purpose: Declares that official statement codes are present and meaningful.
+# Uses:
+#   1. Triggers stricter prep checks: if code patterns match nothing, the
+#     profile/document pairing is probably wrong. Also tells the builder to prefer
+#     code-based IDs and merges.
+has_stable_codes: true
+
+## Table-selection fields
+# These fields decide which `DocumentIR` table segments are eligible for SFI
+# extraction. This matters because the PDF contains front matter, explanatory tables,
+# and standards tables; only the standards tables should produce standards/items.
+
+# Purpose Explicit table-shape deny-list.
+# Uses:
+#   1. Currently unused for Ghana. Later useful if a non-standards table accidentally
+#     shares a similar structure.
+excluded_table_columns_signatures: []
+
+# Purpose: Regex deny-list based on section/headings.
+# Uses:
+#   1. Currently unused. Would exclude front matter, appendices, panel-member tables,
+#     etc.
+excluded_table_section_patterns: []
+
+# Purpose: Indicators and exemplars
+# Uses:
+#   1. Subject specific practices and core competencies, and singular content standard.
+target_table_columns_signatures:
+- content standards|indicators and exemplars|subject specific practices and core competencies
+- content standard|indicators and exemplars|subject specific practices and core competencies
+
+# Purpose: Regex allow-list based on nearby section/headings.
+# Uses:
+#   1. Currently unused. Useful when table headers alone are insufficient, especially
+#     for Senegal/Zambia.
+target_table_section_patterns: []
+
+## Windowing fields
+# These fields control how the selected `DocumentIR` content gets chunked into
+# LLM/Python extraction payloads.
+
+# Purpose: Allows non-table block segments to enter extraction windows.
+# Uses:
+#   1. Intended to capture grouping headings like `BASIC 4`, `STRAND 1`, and
+#     `Sub-strand....` Risk: if broad, it may also include front-matter prose.
+include_block_windows: true
+
+# Purpose: Maximum rows per table window.
+# Uses:
+#   1. Prevents oversized extraction windows. Good default for large tables.
+max_rows_per_table_window: 20
+
+# Purpose: Repeats one row between adjacent row chunks.
+# Uses:
+#   1. Protects against boundary loss when a standard or indicator crosses a window
+#     boundary. The merge step should collapse duplicates created by overlap.
+row_overlap: 1
+
+# Purpose: Splits tables into row chunks instead of whole-table windows.
+# Uses:
+#   1. Keeps prompts bounded for long stitched tables. Also helps standardize
+#     extraction across larger curricula.
+table_window_mode: row_chunks
+
+## Bilingual/multilingual policy fields
+
+# Purpose: Describes how paired bilingual statements should be handled.
+# Uses:
+#   1. Not needed for Ghana because the profile language is English. This will matter
+#     for Senegal Wolof/French curricula where two language versions may represent the
+#     same standard.
+bilingual_pair_policy: null
+
+## Merge and duplicate-control fields
+# These fields guide the global candidate registry and merge phase. That phase is
+# important because windowing, repeated table context, and stitched continuations can
+# produce duplicate candidates.
+
+# Purpose: Human-readable policy for merging repeated candidates.
+# Uses:
+#   1. Tells deterministic and/or LLM review logic how to handle repeated codes. For
+#     Ghana, same code + compatible text should merge provenance, not create duplicate
+#     SFIs.
+repeated_statement_policy: Merge same official code when text is compatible. Same official code with materially conflicting text should become a conflict bucket.
+
+# Purpose: Fields used to merge no-code or weak-code candidates.
+# Uses:
+#   1. Less important for Ghana because stable codes exist, but still useful for
+#     grouping nodes like Basic/Strand/Sub-strand or any extracted item without a code.
+synthetic_merge_key_fields:
+- country
+- subject
+- grade_level
+- normalized_statement_type
+- statement_type
+- hierarchy_context
+- normalized_text
+
+## LLM instruction fields
+# These fields are prompt-policy fields. They should not be the only logic, but they
+# are valuable because they tell the LLM the source-specific meaning of Ghana table
+# content.
+
+# Purpose: Instructions for LLM review of uncertain duplicate buckets.
+# Uses:
+#   1. Prevents bad merges: same official code with compatible text merges; conflicting
+#     text becomes conflict; similar text with different official codes usually stays
+#     distinct.
+#   2. Supports clean final SFI registry before KG IDs and relationships are minted.
+duplicate_review_instructions: Decide whether candidates in the bucket are the same Ghana curriculum item. Same official statement code with compatible text should merge. Same official statement code with conflicting text should be marked conflict. Similar text with different official codes should usually remain distinct.
+
+# Purpose: Tells the LC extractor how to create LearningComponents.
+# Uses:
+#   1. Prevents activity/example/assessment material from becoming
+#     `LearningComponents`. It pushes LC generation toward atomic math skills/concepts.
+learning_component_instructions: Decompose each final Ghana Mathematics Standard SFI into one or more atomic mathematical skills or concepts. Do not create activities, examples, or assessment tasks as LearningComponents.
+
+# Purpose: Tells the extractor what to emit as SFIs vs. auxiliary material.
+# Uses:
+#   1. Directly controls Academic Standards extraction: Basic/Strand/Sub-Strand become
+#     "Standard Grouping" SFIs; Content Standards and Indicators become "Standard"
+#     SFIs; exemplars/core competencies/repeated headers do not become SFIs.
+sfi_extraction_instructions: Extract Ghana Mathematics SFI candidates. BASIC 4, BASIC 5, and BASIC 6 are Standard Grouping SFIs. Strand and Sub-Strand headings are Standard Grouping SFIs. Content Standards with codes like B4.1.1.1 are Standard SFIs. Indicators with codes like B4.1.1.1.1 are Standard SFIs. Exemplars beginning with E.g. are auxiliary examples, not SFIs. Core competency text is auxiliary guidance, not an SFI. Repeated table headers are not SFIs.

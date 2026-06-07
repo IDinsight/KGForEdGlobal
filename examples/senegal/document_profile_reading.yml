@@ -1,0 +1,181 @@
+## Document profile for Senegal's reading curriculum for grade CE1.
+# The Senegal reading profile is more complex than Ghana/Zambia because it is
+# bilingual, mostly no-code, and progression is driven by document structure,
+# paliers/jéego, weeks, and repeated planning tables, not official alphanumeric
+# standard codes.
+#
+# The resulting hierarchy should look roughly like:
+#
+# StandardsFramework
+#   -> CE1/Étape 2
+#     -> Schéma intégrateur
+#       -> Compétence de cycle
+#       -> Compétence de l’étape
+#       -> Sous-domaine: Communication orale
+#       -> Sous-domaine: Communication écrite
+#     -> Activité: Expression orale
+#       -> Palier/Jéego 1
+#         -> Objectif d’apprentissage
+#           -> Objectif spécifique
+#     -> Activité: Récitation
+#       -> Palier/Jéego 1
+#         -> Objectif spécifique
+#     -> Activité: Lecture
+#       -> Palier/Jéego 1
+#         -> Objectif spécifique
+#     -> Production d’écrits/Outils de langue/Copie
+#       -> Palier/Jéego
+#         -> Objectif spécifique
+#
+# Then:
+#
+# LearningComponent
+#   supports -> leaf Standard SFI
+#
+# Progression evidence should mostly come from:
+#   - Palier/Jéego order
+#   - Week/Semaine order
+#   - Planning table order
+#   - Activity/domain continuity
+#   - Narratif -> descriptif -> injonctif progression
+#
+# But buildsTowards should stay conservative. Weekly repetition often means recurring
+# practice, not prerequisite progression.
+
+# NB: For fields without comments, see Ghana's `document_profile_math.yml` for their
+# explanations.
+
+## Framework metadata fields
+
+adoption_status: Adopted
+attribution_statement: Content derived from the République du Sénégal, Ministère de l’Éducation nationale, Référentiel bilingue (wolof-français), Langue et Communication, 2ème étape (CE1), Curriculum bilingue de l’éducation de base (CBEB).
+author: Ministère de l’Éducation nationale, République du Sénégal
+country: Senegal
+framework_title: Référentiel bilingue (wolof-français), Langue et Communication, 2ème étape (CE1) — Curriculum bilingue de l’éducation de base (CBEB)
+grades_or_stages:
+- CE1
+- 2ème étape
+- Étape 2
+jurisdiction: Senegal
+languages:
+- wo
+- fr
+- mul
+license: Unknown; source curriculum issued by the République du Sénégal, Ministère de l’Éducation nationale.
+primary_language: mul
+provider: IDinsight
+subject: Langue et Communication
+
+## Code-handling fields
+# NB: Senegal's reading curriculum is configured as a no-stable-code curriculum.
+
+# Purpose: No code-derived hierarchy.
+# Uses:
+#   1. Parent-child edges must be built from document structure: framework -> stage ->
+#     subdomain/activity -> palier/jéego/week/objective context -> leaf expectation.
+code_parent_rules: []
+
+# Purpose: No official code regexes.
+# Uses:
+#   1. Avoids false extraction from table numbers like `1.1.1` or `1.3.1`, which are
+#     table labels, not stable standard codes.
+code_patterns: {}
+
+# Purpose: No code bucket -> statement type mapping.
+# Uses:
+#   1. This is correct because there are no stable statement-code categories.
+code_statement_types: {}
+
+# Purpose: Declares that official statement codes should not drive extraction or IDs.
+# Uses:
+#   1. Prevents the pipeline from requiring code matches during prep checks. It also
+#     tells the builder to use context/text/provenance-based synthetic IDs.
+has_stable_codes: false
+
+## Table-selection fields
+# NB: For Senegal reading, table structures vary a lot across the document.
+
+excluded_table_columns_signatures: []
+excluded_table_section_patterns:
+- (?i)\b(page\s+de\s+garde|cover)\b
+
+# Purpose: Allow-list of table shapes to extract from.
+# Uses:
+#   1. Selects framework tables, competence tables, weekly planning tables, and dense
+#     activity/objective tables as candidate sources.
+target_table_columns_signatures:
+- manooreb diirub njàng mi / compétence de cycle|
+- 'manoore yi lalu / compétences de base||||||jokkoo ci wax / communication orale|jokkoo ci wax / communication orale|jokkoo ci mbind / communication écrite|jokkoo ci mbind / communication écrite|||activité : expression orale|activité : récitation|activité : lecture-écriture|activité : production d’écrits'
+- activités|waxinu làmmiñ / expression orale|tari / récitation|njàng / lecture
+- nisaru njàng mi / objectif d’apprentissage|nisaru jukki bi / objectifs spécifiques|këmb / contenus|diir / durées
+- nisaru njàng mi / objectif d’apprentissage|nisaru jukki bi / objectif spécifique|këmb / contenus|diir / durée
+- 'jokkoo ci mbind / communication écrite|||||||||manoore gi lalu : boole mooñ baataan gi yell, maana màndarga yi, tëgginu sàrti roofoogi-baat yi ci cëslaayu nasum mbind nettali meloo, digle,yëgle waxtaan ak taalif. cb : intégrer le vocabulaire adéquat, les indices significatifs, des structures et des règles syntaxiques dans des situations de production de textes narratifs, descriptifs, injonctifs, informatifs, dialogués et poétiques.|||||||||jéego 1: boole mooñ baataan gi yell, maana màndarga yi, tëgginu sàrti roofoogi-baat yi ci cëslaayu nasum mbind. palier 1 : intégrer le vocabulaire adéquat, les indices significatifs et des structures et des règles syntaxiques dans des situations de production de textes narratifs.|||||||||njàngum jumtukaayi làkk / etude des outils de la langue|||||||||bés / semaines|baataan / vocabulaire|roofoo-gi-baat / grammaire|demalinu waxe / conjugaison|tëralinu mbind / orthographe|mbindin / sotti / ecriture / copie|nasum mbind / production d''écrits'
+- 'jokkoo ci mbind / communication écrite|||||||||manoore gi lalu : boole mooñ baataan gi yell, maana màndarga yi, tëgginu sàrti roofoogi-baat yi, ci cëslaayu nasum mbind nettali meloo, digle, yëgle waxtaan ak taalif. cb : intégrer le vocabulaire adéquat, les indices significatifs, des structures et des règles syntaxiques dans des situations de production de textes narratifs, descriptifs, injonctifs, informatifs, dialogués et poétiques.|||||||||jéego 2 : boole mooñ baataan gi yell, maana màndarga yi, tëgginu sàrti roofoogi-baat yi, ci cëslaayu nasum mbind, nettali ak meloo. palier 2 : intégrer le vocabulaire adéquat, les indices significatifs et des règles syntaxiques dans des situations de production de textes narratifs et descriptifs.|||||||||njàngum jumtukaayi làkk / etude des outils de la langue|||||||||bés / semaines|baataan / vocabulaire|roofoo-gi-baat / grammaire|demalinu waxe / conjugaison|tëralinu mbind / orthographe|mbindin / sotti / ecriture / copie (mettre en œuvre en l1 ou en
+  l2 )|nasum mbind / production d''écrits'
+- 'jokkoo ci mbind / communication écrite|||||||||manoore gi lalu : boole mooñ baataan gi yell, maana màndarga yi, tëgginu sàrti roofoogi-baat yi, ci cëslaayu nasum mbind nettali meloo, digle, yëgle waxtaan ak taalif. cb : intégrer le vocabulaire adéquat, les indices significatifs, des structures et des règles syntaxiques dans des situations de production de textes narratifs, descriptifs, injonctifs, informatifs, dialogués et poétiques.|||||||||jéego 3 : boole mooñ baataan gi yell, maana màndarga yi, tëgginu sàrti roofoogi-baat yi, ci cëslaayu nasum mbind, nettali, meloo ak digle. palier 3 : intégrer le vocabulaire adéquat, les indices significatifs et des règles syntaxiques dans des situations de production de textes narratifs, descriptifs et injonctifs.|||||||||njàngum jumtukaayi làkk / etude des outils de la langue|||||||||bés / semaines|baataan / vocabulaire|roofoo-gi-baat / grammaire|demalinu waxe / conjugaison|tëralinu mbind / orthographe|mbindin / sotti / ecriture / copie (mettre
+  en œuvre en l1 ou l2)|nasum mbind / production d''écrits'
+- jumtukaayi làkk / outils de langue|nisaru jukki bi / objectifs spécifiques|limu ëmb / contenus|diir / durées
+- nisaru jukki bi / objectifs spécifiques|limu ëmb / contenus|diir / durées
+- nisaru jukki bi / objectifs spécifiques|limu ëmb / contenus (mettre en œuvre en l1 ou en l2 )|diir / durées
+- jumtukaayi làk / outils de langue|nisaru jukki bi / objectifs spécifiques|limu ëmb / contenus|diir / durées
+
+# Purpose: Section allow-list.
+# Uses:
+#   1. Helps select tables by nearby headings/context when exact column signatures are
+#     brittle.
+target_table_section_patterns:
+- (?i)\bSCH[ÉE]MA INT[ÉE]GRATEUR\b
+- (?i)\bTABLEAU DE PLANIFICATION DES APPRENTISSAGES\b
+- (?i)\bActivit[ée]s?\s*-\s*Oral\b
+- (?i)\bActivit[ée]s?\s*-\s*Lecture\b
+- (?i)\bComp[ée]tences Communication [ÉE]crite\b
+- (?i)\bActivit[ée]s de Production d['’]?[ée]crits\b
+- (?i)\bAPPRENTISSAGES PONCTUELS\b
+- (?i)\bPALIER\s*[1-3]\b
+- (?i)\bJ[ée]ego\s*[1-3]\b|JEEGO\s*[1-3]\b|SUMB\s*[1-3]\b
+
+## Windowing fields
+
+# Purpose: Allows headings and prose blocks to be included.
+# Uses:
+#   1. Important here because headings like `Activités - Oral - Paliers 1-3`,
+#     `JEEGO 1/NIVEAU 1`, `PALIER 1`, etc. are critical hierarchy/context.
+include_block_windows: true
+
+max_rows_per_table_window: 12
+row_overlap: 2
+table_window_mode: row_chunks
+
+## Bilingual/multilingual policy fields
+# NB: For Senegal reading, the source repeatedly gives a Wolof statement followed by a
+# French restatement, especially in the competence tables and activity tables. Treating
+# them as separate nodes would inflate the KG and break the curriculum’s intended
+# bilingual pairing.
+
+# Purpose: Defines how to handle paired Wolof/French content.
+# Uses:
+#   1. Prevents duplicate SFIs where Wolof and French restate the same competency.
+#     Keeps `in_language="mul"` and preserves original source text.
+bilingual_pair_policy: Preserve Wolof/French paired statements as a single mixed-language candidate when they express the same competency or objective; do not translate for v0; keep original text and language tags.
+
+## Merge and duplicate-control fields
+# NB: Because there are no stable codes, these fields are especially important.
+
+repeated_statement_policy: For no-code rows, merge exact or near-exact repeated Wolof/French statements only when they share the same source role, activity/domain, palier/jéego, and objective context. Do not merge recurring weekly practice items merely because wording is similar.
+synthetic_merge_key_fields:
+- country
+- subject
+- grade_level
+- source_activity
+- palier_or_jeego
+- objective_context
+- statement_type
+- normalized_statement_type
+- normalized_text
+
+## LLM instruction fields
+
+duplicate_review_instructions: Review Senegal CE1 bilingual Wolof/French candidates conservatively. Treat a Wolof paragraph followed by a French paragraph as one bilingual/mixed-language item when the French restates the Wolof. Merge duplicates caused by table row filldown or repeated headers. Keep separate candidates when they occur in different activities, paliers/jéego, weeks, or objective contexts, unless they are clearly the same curriculum item repeated for layout reasons.
+learning_component_instructions: Generate LearningComponents only from final leaf expectation SFIs, especially Objectifs spécifiques / Nisaru jukki bi and clear learning objectives under Oral, Lecture, Communication écrite, Production d’écrits, Outils de langue, and Copie. Do not generate LearningComponents from durations, week numbers, integration/evaluation rows, table captions, or generic section headings. Preserve original Wolof/French wording for v0; no English translation is required.
+sfi_extraction_instructions: This is a no-stable-code Senegal CE1 bilingual Wolof/French language-and-communication curriculum. Extract StandardsFrameworkItems from normative curriculum statements, not from pedagogical directions alone. Create Standard Grouping SFIs for the framework, CE1/Étape 2, subdomains/activities such as Communication orale, Lecture, Communication écrite, Production d’écrits, Outils de langue, Récitation, paliers/jéego/niveaux, and table/objective contexts when they organize leaf expectations. Create Standard SFIs for Compétence de cycle, Compétence de l’étape, Compétences de sous-domaines, Compétences de base, Objectif d’apprentissage / Nisaru njàng, and Objectifs spécifiques / Nisaru jukki bi when they state what learners are expected to integrate, understand, produce, read, copy, or demonstrate. Treat Contenus / Këmb / Limu ëmb, Outils de langue / Jumtukaayi làkk details, Durée / Diir, week labels, INTÉGRATION, and EVALUATION rows as metadata, descriptors, guidance,
+  or sequencing evidence unless the row itself contains a clear normative objective. Use rows_filldown for interpreting implied palier/week/objective context, but cite raw rows/cells for source fidelity. Do not create a new SFI just because a filldown value repeats across multiple rows. When a cell contains Wolof followed by French conveying the same item, keep them together as one mixed-language candidate with in_language='mul'.
