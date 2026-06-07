@@ -17,7 +17,7 @@
   ],
   "license": "Unknown; source curriculum issued by the République du Sénégal, Ministère de l’Éducation nationale.",
   "primary_language": "mul",
-  "provider": "SKG KG extraction pipeline",
+	"provider": "IDinsight",
   "subject": "Langue et Communication",
   "code_parent_rules": [],
   "code_patterns": {},
@@ -27,7 +27,6 @@
   "excluded_table_section_patterns": [
     "(?i)\\b(page\\s+de\\s+garde|cover)\\b"
   ],
-  "minimum_target_table_signature_matches": 1,
   "target_table_columns_signatures": [
     "manooreb diirub njàng mi / compétence de cycle|",
     "manoore yi lalu / compétences de base||||||jokkoo ci wax / communication orale|jokkoo ci wax / communication orale|jokkoo ci mbind / communication écrite|jokkoo ci mbind / communication écrite|||activité : expression orale|activité : récitation|activité : lecture-écriture|activité : production d’écrits",

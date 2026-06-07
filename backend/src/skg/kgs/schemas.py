@@ -1925,15 +1925,6 @@ class DocumentProfile(BaseSchema):
             "from SFI extraction, even if their column signature is otherwise eligible."
         ),
     )
-    minimum_target_table_signature_matches: int = Field(
-        default=1,
-        ge=0,
-        description=(
-            "Minimum total number of observed table segments that must match "
-            "target_table_columns_signatures during KG preflight when target signatures "
-            "are configured. Set to 0 to disable this preflight guardrail."
-        ),
-    )
     target_table_columns_signatures: list[str] = Field(
         default_factory=list,
         description=(

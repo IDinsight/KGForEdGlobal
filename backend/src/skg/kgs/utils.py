@@ -436,12 +436,10 @@ def _validate_document_profile_compatibility(
             "target_table_signature_match_total"
         ]
 
-        if target_match_total < document_profile.minimum_target_table_signature_matches:
+        if target_match_total == 0:
             raise ValueError(
-                f"DocumentProfile configured target_table_columns_signatures, but "
-                f"too few matching table segments were observed in the DocumentIR. "
-                f"Observed {target_match_total}; expected at least "
-                f"{document_profile.minimum_target_table_signature_matches}."
+                "DocumentProfile configured target_table_columns_signatures, but no "
+                "matching table segments were observed in the DocumentIR. "
             )
 
     return warnings
@@ -495,7 +493,6 @@ def build_run_manifest(kg_run_inputs: KGInputs) -> dict[str, Any]:
         "table_selection_policy": {
             "excluded_table_columns_signatures": document_profile.excluded_table_columns_signatures,
             "excluded_table_section_patterns": document_profile.excluded_table_section_patterns,
-            "minimum_target_table_signature_matches": document_profile.minimum_target_table_signature_matches,
             "target_table_columns_signatures": document_profile.target_table_columns_signatures,
             "target_table_section_patterns": document_profile.target_table_section_patterns,
         },

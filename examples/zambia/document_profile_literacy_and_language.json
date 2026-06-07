@@ -16,7 +16,7 @@
 	],
 	"license": "Unknown; source curriculum issued by the Ministry of Education, Republic of Zambia.",
 	"primary_language": "en",
-	"provider": "SKG KG extraction pipeline",
+	"provider": "IDinsight",
 	"subject": "English Language",
 	"code_parent_rules": [
 		{
@@ -51,7 +51,6 @@
 		"(?i)\\bAssessment\\b",
 		"(?i)Time\\s+Allocation"
 	],
-	"minimum_target_table_signature_matches": 9,
 	"target_table_columns_signatures": [
 		"listening and speaking|||||||topic|sub-topic|specific competences|learning activities|expected standard",
 		"reading|||||||topic|sub-topic|specific competences|learning activities|expected standard",

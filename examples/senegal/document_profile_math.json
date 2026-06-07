@@ -18,7 +18,7 @@
 	],
 	"license": "Unknown; source curriculum issued by the République du Sénégal, Ministère de l'Éducation nationale.",
 	"primary_language": "mul",
-	"provider": "SKG KG extraction pipeline",
+	"provider": "IDinsight",
 	"subject": "Mathématiques",
 	"code_parent_rules": [],
 	"code_patterns": {},
@@ -26,7 +26,6 @@
 	"has_stable_codes": false,
 	"excluded_table_columns_signatures": [],
 	"excluded_table_section_patterns": [],
-	"minimum_target_table_signature_matches": 1,
 	"target_table_columns_signatures": [
 		"kenug xayma / activités numériques|yëngute xam-xamu dénd / activités géométriques|yëngute xam-xamu natt / activités de mesure|tekkim caxu xayma / activités rés. de problèmes|||manoore mi lalu / compétence de base|manoore mi lalu / compétence de base|manoore mi lalu / compétence de base|manoore mi lalu / compétence de base",
 		"semaine / palier|yëngute ci lim / activités numériques|yëngute ci tekkim caxu xayma / activités résolution de problèmes",
