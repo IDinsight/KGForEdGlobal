@@ -1,15 +1,15 @@
-# Academic Standards KG v0: Session Instructions
+# Session Instructions for the Creation of Academic Standards KG Artifacts v0
 
 ## Purpose of this file
 
-Use this file at the start of the coding session to re-establish the shared context quickly and begin implementation without re-reviewing the full curriculum mapping background.
+Use this file at the start of the coding session to (re)establish the shared context quickly and begin implementation without re-reviewing the full curriculum mapping background.
 
 The immediate goal is **not** to build the full Learning Commons KG pipeline end-to-end. The immediate goal is to implement a focused v0 slice:
 
 ```text
 stitched DocumentIR
-  -> extraction windows
-  -> SFI candidates
+  -> LLM-ready extraction windows
+  -> LLM-extracted SFI candidates
   -> merged final SFI records
   -> StandardsFramework
   -> StandardsFrameworkItem
@@ -19,6 +19,25 @@ stitched DocumentIR
 
 LearningComponents and LearningProgressions remain important downstream goals, but they should come after the Academic Standards hierarchy is stable.
 
+Academic Standards KG creation is an **LLM extraction pipeline**. Python prepares source-faithful windows, adds profile/context/code hints, validates structured responses, merges duplicates, mints deterministic IDs, resolves relationships, and exports artifacts. The LLM performs the semantic extraction from each window into SFI candidates and hierarchy/parent hints. Deterministic rules are guardrails and helpers, not a replacement for LLM extraction.
+
+---
+
+## Starting Files for This Session
+
+Files available:
+1. Python files:
+    - `create_kgs.py`: the main entry point for creating the KGs from the document IR and document profile JSON files
+    - `schemas.py`: schemas for the KG pipeline
+    - `utils.py`: utility functions for the KG pipeline
+    - `run_config_schemas.py`: contains the run config schemas (renamed to avoid conflict)
+    - `constants.py`: contains constants used in other parts of the code base
+    - `regexes.py`: contains regex expressions used in other parts of the code base
+2. JSON files:
+    - `config_math_curriculum.json`: the runtime config parameters (note that some parameters for the KG pipeline are outdated/unused and can probably be removed if not useful)
+    - `document_ir.json`: the stitched DocumentIR output for Ghana's math curriculum PDF
+    - `document_profile_math.yml`: the DocumentProfile for Ghana's math curriculum PDF with comments (the actual document profile file will be the same except in JSON format)
+   
 ---
 
 ## Big-picture objective
@@ -27,7 +46,7 @@ We are building a reusable pipeline that maps primary-school curriculum PDFs fro
 
 The initial countries/documents include Zambia, Uganda, Tanzania, Ghana, Senegal Math, and Senegal Reading. Some have stable alphanumeric codes, such as Ghana and Zambia. Others, especially Senegal Math and Senegal Reading, rely more on section headings, paliers, weeks, table local codes, row order, and bilingual content than on stable standard codes.
 
-The pipeline must preserve the LC KG ontology shape without forcing non-US documents into a US CASE import model.
+The pipeline must preserve the Learning Commons KG ontology shape without forcing non-US documents into a US CASE import model.
 
 For v0, the Academic Standards output should include:
 
@@ -50,7 +69,7 @@ Relationship(relatesTo)
 
 ## Current architecture
 
-The pipeline has three conceptual layers.
+The overall pipeline has three conceptual layers. Layers A and B are already implemented. Layer C is the next implementation target.
 
 ### Layer A: PageIR extraction
 
@@ -68,18 +87,18 @@ Important: the DocumentIR is still layout/source material. It does **not** yet k
 
 The document IR stitcher is intentionally layout-oriented. It loads verified PageIRs, normalizes items, links cross-page continuations, merges cross-page tables/text/list blocks, verifies that normalized items were consumed exactly once, and saves `document_ir.json` plus a stitch report. It does not infer semantic hierarchy, assign statement roles, create LC KG IDs, or export KG nodes/edges.
 
-### Layer C: KG creation
+### Layer C: Knowledge Graph creation
 
 This is the next layer to implement.
 
-The KG creation layer takes a stitched `DocumentIR` plus a country/document-specific `DocumentProfile` and turns the source material into validated KG-shaped artifacts.
+The KG creation layer takes a stitched `DocumentIR` plus a country/document-specific `DocumentProfile` and uses LLM-driven semantic extraction, followed by deterministic validation/merge/export, to turn the source material into validated KG-shaped artifacts.
 
 For v0, this layer should focus on Academic Standards only:
 
 ```text
 DocumentIR + DocumentProfile
-  -> candidate extraction windows
-  -> SFI candidates
+  -> LLM-ready extraction windows
+  -> LLM-extracted SFI candidates
   -> global registry
   -> merge/dedup
   -> deterministic final SFI IDs
@@ -111,7 +130,7 @@ The next coding work should extend `build_kgs(...)` after the manifest prep rema
 
 ### 1. Keep v0 small
 
-The first complete product should be an Academic Standards KG artifact bundle. Do not implement LearningComponents or LearningProgressions until the SFI hierarchy is working on at least Ghana and Zambia, and preferably one no-code/bilingual Senegal document.
+The first complete product should be an Academic Standards KG artifact bundle. Do not implement LearningComponents or LearningProgressions until the SFI hierarchy is working on at least Ghana, Zambia, and Senegal Math and Senegal Reading curricula.
 
 ### 2. Profile-driven, not country-hardcoded
 
@@ -157,7 +176,38 @@ Senegal Reading:
   Contenus/Outils de langue/Durees -> descriptor/guidance/metadata depending section
 ```
 
-### 3. No-code support is mandatory
+### 3. Academic Standards extraction is LLM-driven by design
+
+The Academic Standards KG should be created through an LLM extraction stage, not by trying to make Python fully understand every curriculum layout semantically.
+
+Python should do the deterministic orchestration work:
+
+```text
+select eligible source segments
+build stable LLM prompt windows
+provide profile-derived hints and constraints
+preserve raw source text/provenance
+validate the LLM response schema
+merge duplicates globally
+mint deterministic IDs
+resolve/validate hasChild edges
+compile schema-valid KG artifacts
+```
+
+The LLM should do the semantic extraction work inside each window:
+
+```text
+identify grouping SFI candidates
+identify normative expectation SFI candidates
+separate expectations from descriptors/guidance/activities/examples
+interpret dense table cells using profile rules
+handle no-code and bilingual/native-language curricula
+return parent/context hints when the hierarchy is visible in the window
+```
+
+Deterministic code patterns, table header mappings, and code parent rules are still useful, but in v0 they should be treated mainly as prompt inputs, hints, validators, and merge/ID aids. They should not replace the LLM extraction step.
+
+### 4. No-code support is mandatory
 
 No downstream candidate, merge, ID, or relationship step may assume `statement_code` exists.
 
@@ -165,13 +215,13 @@ For coded curricula, stable source codes are valuable and should be used for mer
 
 No-code synthetic keys should be based on source-derived material, not LLM paraphrases.
 
-### 4. Preserve original language and provenance
+### 5. Preserve original language and provenance
 
 For v0, translation is not required. Preserve original text, language tags, source page/cell/row provenance, and optional `text_en` when already available.
 
 For non-English or bilingual curricula, keep source-language content. Use `mul` for mixed-language content when appropriate.
 
-### 5. Treat table helper views as helpful but optional
+### 6. Treat table helper views as helpful but optional
 
 For table-heavy curricula, extraction windows should include both source-fidelity and interpretation-friendly views when available:
 
@@ -185,15 +235,15 @@ row_provenance    -> row/cell provenance
 
 However, the KG stage should not fail just because `rows_grid` or `rows_filldown` is missing. Use them when present; fall back to raw rows, headers, section path, and provenance when not present.
 
-### 6. Use candidates before final KG nodes
+### 7. Use candidates before final KG nodes
 
-The LLM and deterministic extractors should emit candidates, not final KG nodes.
+The LLM extraction stage should emit candidates, not final KG nodes. Deterministic code may add hints or pre/post-validation, but final KG nodes should not be minted directly from a single window response.
 
 This prevents duplicate KG nodes from overlapping extraction windows, filldown repetition, repeated codes, or bilingual duplicates.
 
 Final SFI IDs should be minted only after global merge/dedup.
 
-### 7. Deterministic IDs only
+### 8. Deterministic IDs only
 
 Never use random UUIDs for stable KG entities or relationships.
 
@@ -210,7 +260,7 @@ lc:curriculum:{doc_key}:rel:hasChild:{source_uuid}:{target_uuid}
 
 For stable-code items, avoid overdepending on text hashes. Use the stable source code plus context when possible. For no-code items, use normalized source context plus normalized source-text hash.
 
-### 8. Relationship endpoint rules
+### 9. Relationship endpoint rules
 
 For Academic Standards v0, only `hasChild` is required.
 
@@ -223,7 +273,7 @@ StandardsFrameworkItem   --hasChild--> StandardsFrameworkItem
 
 The relationship schema expects `hasChild` endpoints to use `case_identifier_uuid` for both source and target when applicable. For simplicity in v0, set each exported framework/item's `identifier` equal to `case_identifier_uuid` unless there is a strong reason not to.
 
-### 9. Validation is part of the product
+### 10. Validation is part of the product
 
 Do not treat validation as a later cleanup step. The v0 product should include schema validation, relationship endpoint validation, coverage checks, and an explicit validation report.
 
@@ -271,19 +321,23 @@ Output artifact candidate:
 selected_extraction_segments.json
 ```
 
-### Step 2. Build extraction windows
+### Step 2. Build LLM-ready extraction windows
 
 Add a function such as:
 
 ```python
-build_extraction_windows(selected_segments, document_profile) -> list[ExtractionWindow]
+build_llm_extraction_windows(selected_segments, document_profile) -> list[ExtractionWindow]
 ```
 
 Purpose:
 
 ```text
-Cut selected DocumentIR content into stable prompt-sized windows for deterministic and/or LLM extraction.
+Cut selected DocumentIR content into stable prompt-sized windows for LLM-based Academic Standards extraction.
 ```
+
+This step should produce the inputs that will be sent to the LLM. It is not merely a chunking utility; it is where Python packages the exact source text, table structure, context spine, profile instructions, and provenance needed for reliable LLM extraction. 
+
+Step 2 is the LLM prompt-payload construction stage; Step 4 is the LLM call and structured-response validation stage.
 
 Each window should include:
 
@@ -300,7 +354,11 @@ rows_filldown when available
 grid_sources when available
 row_provenance/page provenance
 profile extraction instructions
+LLM task instructions that ask for SFI candidates, auxiliary candidates, and parent/context hints
+output schema name/version expected from the LLM
 ```
+
+Each window should be treated as an LLM prompt payload. Python may precompute deterministic hints such as code matches, candidate parent-code suggestions, table-header role hints, and normalized context strings, but the window's purpose is to give the LLM enough source material to extract Academic Standards candidates faithfully.
 
 For tables, v0 can use row chunks or whole-table windows based on the profile. Do not implement a separate logical-row assembly layer yet; use `rows_filldown` plus downstream dedup/merge.
 
@@ -314,40 +372,48 @@ extraction_windows.jsonl
 
 Each line should validate against an intermediate `ExtractionWindow` schema once that schema is added.
 
-This artifact should be inspectable without running the LLM. It is the primary debugging surface for, "What did we ask the extractor to inspect?"
+This artifact should be inspectable without running the LLM. It is the primary debugging surface for, "What did we ask the LLM extractor to inspect?"
 
-### Step 4. Extract SFI candidates
+### Step 4. Run LLM extraction to create SFI candidates
 
 Add a function such as:
 
 ```python
-extract_sfi_candidates(windows, document_profile) -> list[SFIExtractionResult]
+extract_sfi_candidates_with_llm(windows, document_profile) -> list[SFIExtractionResult]
 ```
 
 Purpose:
 
 ```text
-Convert each extraction window into candidate StandardsFrameworkItems and auxiliary records.
+Use the LLM to convert each extraction window into candidate StandardsFrameworkItems and auxiliary records, guided by the DocumentProfile and the window's source/provenance payload.
 ```
 
-Use deterministic extraction first where possible:
+Use the LLM as the primary semantic extractor for Academic Standards v0. The LLM should return candidates that validate against the SFI extraction response schema. Deterministic code should not bypass this LLM candidate-extraction stage except for mechanical framework-root creation and later validation/export bookkeeping.
+
+The LLM should identify:
 
 ```text
-stable code patterns
-code statement type rules
-code parent rules
-table header role mappings
-section/context spine
+structural grouping SFI candidates
+normative expectation SFI candidates
+descriptor/guidance/activity/auxiliary records that should not become Standard SFIs by default
+source-language text and language tags
+statement codes when visible
+parent/context hints visible in the window
+uncertainties or unresolved cases
 ```
 
-Use the LLM for:
+Use deterministic logic around the LLM call for:
 
 ```text
-ambiguous role interpretation
-no-code curricula
-dense cells
-bilingual/native-language table content
-cases where deterministic parsing is insufficient
+prompt construction
+stable code-pattern hints
+code statement type hints
+code parent-rule hints
+table header role hints
+section/context spine hints
+schema validation of LLM responses
+retry/repair when the response fails validation
+post-extraction normalization and merge/ID support
 ```
 
 The output is candidates, not final KG nodes.
@@ -637,7 +703,7 @@ Ensure the Academic Standards KG bundle is schema-valid, internally consistent, 
 Validation checks:
 
 ```text
-All objects validate against schemas_kg.py.
+All objects validate against schemas.py.
 Every hasChild source/target exists.
 Every StandardsFrameworkItem is reachable from the StandardsFramework root.
 No hasChild self-loops.
@@ -666,7 +732,7 @@ unresolved_items.json
 The final success condition for v0a:
 
 ```text
-A user can run create_kgs.py on a stitched DocumentIR and receive a validated Academic Standards KG artifact bundle containing one StandardsFramework, many StandardsFrameworkItems, and valid hasChild relationships, with deterministic IDs and provenance.
+A user can run create_kgs.py on a stitched DocumentIR and receive a validated Academic Standards KG artifact bundle created from LLM-extracted SFI candidates, containing one StandardsFramework, many StandardsFrameworkItems, and valid hasChild relationships, with deterministic IDs and provenance.
 ```
 
 ---
@@ -702,13 +768,13 @@ A practical first coding target is:
 
 ```text
 select_extraction_segments()
-build_extraction_windows()
+build_llm_extraction_windows()
 write extraction_windows.jsonl
 ```
 
-This gives an inspectable artifact before adding LLM extraction.
+This gives an inspectable artifact before running the LLM and makes prompt/debug review possible.
 
-A good second coding target is deterministic candidate extraction for Ghana/Zambia-style stable-code tables. That will test the registry, merge, ID, and hasChild machinery before the more difficult Senegal no-code/bilingual path.
+A good second coding target is LLM-based SFI candidate extraction for one relatively structured document, such as Ghana or Zambia, using deterministic code/table/header hints in the prompt and validating the LLM response against the new intermediate schemas. That will test the registry, merge, ID, and hasChild machinery before the more difficult Senegal no-code/bilingual path.
 
 Do not begin with LearningComponents or LearningProgressions. Those should be behind later flags and should consume final SFIs, not candidates.
 
@@ -748,4 +814,4 @@ A run that produces zero extraction windows or zero final SFIs should fail by de
 
 Use this prompt to restart the next chat session:
 
-> We are implementing Academic Standards Knowledge Graph v0 from a stitched DocumentIR. The current `create_kgs.py` only writes `kg_run_manifest.json`. Please use `academic_standards_kg_v0_instructions.md` as the source of truth and start by implementing the first three steps: select extraction segments, build extraction windows, and write `extraction_windows.jsonl`, keeping no-code support and optional table helper fields in mind.
+> We are implementing Academic Standards Knowledge Graph v0 from a stitched DocumentIR. The current `create_kgs.py` only writes `kg_run_manifest.json`. Please use `academic_standards_kg_v0_instructions.md` as the source of truth and start by implementing the first three steps: select extraction segments, build LLM-ready extraction windows, and write `extraction_windows.jsonl`, keeping no-code support, optional table helper fields, and the later LLM SFI extraction contract in mind.
