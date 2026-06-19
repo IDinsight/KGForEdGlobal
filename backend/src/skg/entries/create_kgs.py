@@ -28,6 +28,10 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
+from skg.kgs.create_extraction_windows import (
+    build_llm_extraction_windows,
+    select_extraction_segments,
+)
 from skg.kgs.utils import (
     KGDirs,
     build_run_manifest,
@@ -46,20 +50,16 @@ cli = typer.Typer(no_args_is_help=True)
 def build_kgs(*, config: CreateKGConfig, document_ir_fp: Path, kg_dirs: KGDirs) -> Path:
     """Build the initial KG artifacts for a stitched DocumentIR.
 
-    This function is intentionally the KG-stage equivalent of
-    ``stitch_document_ir(...)`` in the document IR pipeline: the CLI entry point is
-    responsible for loading the global runtime config, cross-checking upstream run
-    outputs, and persisting the run context; this function performs the stage-specific
-    work.
-
-    Current v0 behavior is limited to prep/validation artifacts:
+    The process is as follows:
 
     1. Load and validate the stitched DocumentIR and DocumentProfile.
-    2. Cross-check basic profile/document compatibility.
-    3. Build and persist ``kg_run_manifest.json``.
+    2. Build and persist `kg_run_manifest.json`.
+    3. Select source DocumentIR segments for Academic Standards (SFI) extraction.
+    4. Build LLM-ready extraction windows.
 
-    Later KG-building steps should be added here in sequence, after the manifest
-    prep remains successful.
+    Later KG-building steps should consume these extraction windows to run LLM SFI
+    candidate extraction, merge candidates, mint deterministic IDs, resolve hasChild
+    edges, and export Academic Standards KG artifacts.
 
     Parameters
     ----------
@@ -73,18 +73,39 @@ def build_kgs(*, config: CreateKGConfig, document_ir_fp: Path, kg_dirs: KGDirs) 
     Returns
     -------
     Path
-        The path to the persisted ``kg_run_manifest.json`` artifact.
+        The path to the persisted `kg_run_manifest.json` artifact.
     """
 
+    # 1.
     kg_run_inputs = load_and_validate_inputs(
         document_ir_fp=document_ir_fp,
         document_profile_fp=config.document_profile_fp,
         kg_dirs=kg_dirs,
         overwrite=config.overwrite,
     )
+
+    # 2.
     kg_run_manifest = build_run_manifest(kg_run_inputs)
     kg_run_manifest_fp = kg_dirs.root / "kg_run_manifest.json"
     write_to_json(fp=kg_run_manifest_fp, json_info=kg_run_manifest)
+
+    # 3.
+    selected_segments = select_extraction_segments(
+        document_ir=kg_run_inputs.document_ir,
+        document_profile=kg_run_inputs.document_profile,
+        save_fp=kg_dirs.root / "selected_extraction_segments.json",
+    )
+
+    # 4.
+    extraction_windows = build_llm_extraction_windows(
+        document_ir=kg_run_inputs.document_ir,
+        document_profile=kg_run_inputs.document_profile,
+        save_fp=kg_dirs.root / "extraction_windows.jsonl",
+        selected_segments=selected_segments,
+    )
+
+    logger.debug(f"{extraction_windows = }")
+
     return kg_run_manifest_fp
 
 
@@ -107,9 +128,7 @@ def create(
     1. Load the global run config and resolve KG, extraction, and stitching paths.
     2. Cross-check stitching run results.
     3. Persist KG run metadata.
-    4. Load and validate the DocumentProfile and stitched DocumentIR.
-    5. Cross-check basic profile/document compatibility.
-    6. Persist a kg_run_manifest.json file for audit/debugging.
+    4. Build the knowledge graphs.
 
     Parameters
     ----------
@@ -154,7 +173,7 @@ def create(
             f"DocumentIR: {document_ir_fp}; document profile: {config.document_profile_fp}"
         )
 
-        # 4-6.
+        # 4.
         kg_run_manifest_fp = build_kgs(
             config=config, document_ir_fp=document_ir_fp, kg_dirs=kg_dirs
         )

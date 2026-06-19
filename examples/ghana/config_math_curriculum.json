@@ -35,8 +35,8 @@
 	},
 	"kgs": {
 		"document_profile_fp": "/Users/tzz/Projects/private/idi/SenegalKG/examples/ghana/document_profile_math.json",
+		"overwrite": true,
 		"generate_learning_progressions": true,
-		"overwrite": false,
 		"as_academic_subject_default": "Langue et Communication",
 		"as_adoption_status": "Adopted",
 		"as_attribution_statement": "© RÉPUBLIQUE DU SÉNÉGAL, Ministère de l’Éducation nationale, 2024. Source: Referentiel bilingue (wolof-français), Langue et Communication, 2eme etape (CE1).",

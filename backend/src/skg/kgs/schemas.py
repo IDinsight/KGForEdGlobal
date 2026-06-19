@@ -15,8 +15,9 @@ from __future__ import annotations
 # Standard Library
 import re
 
+from collections import Counter
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Self, Sequence
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -35,6 +36,1346 @@ _ProgressionSubtype = Literal["developmental_prerequisite", "recurring_practice"
 _ValidationLevel = Literal["error", "info"]
 
 
+def unique_clean_strings(values: Sequence[str]) -> list[str]:
+    """Clean and de-duplicate strings while preserving order.
+
+    Parameters
+    ----------
+    values
+        Raw string values.
+
+    Returns
+    -------
+    list[str]
+        Cleaned unique strings.
+    """
+
+    cleaned: list[str] = []
+    seen: set[str] = set()
+
+    for value in values:
+        value_clean = str(value).strip()
+
+        if not value_clean or value_clean in seen:
+            continue
+
+        cleaned.append(value_clean)
+        seen.add(value_clean)
+
+    return cleaned
+
+
+# Schemas for document profile.
+class ContextHeadingRule(BaseSchema):
+    """Profile rule for deriving structured window context from heading text.
+
+    The window builder applies these rules to heading-like DocumentIR segments in
+    document order. Matches update the active structured context that is attached to
+    extraction windows. The rule describes the *grammar* of the curriculum document;
+    it does not hardcode page numbers, segment IDs, or row ranges.
+    """
+
+    label_template: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional Python-format template for the display label. Regex capture "
+            "groups are available as {1}, {2}, etc. If omitted, use the matched text."
+        ),
+    )
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    name: str = Field(description="Stable profile-local rule name.")
+    normalized_statement_type: _NormalizedStatementType = Field(
+        default="Standard Grouping",
+        description="Expected normalized statement type for groupings created from this context.",
+    )
+    pattern: str = Field(
+        description=(
+            "Regex pattern applied to heading text. Inline flags such as (?im) are "
+            "allowed. For multi-line headings, the window builder may apply the same "
+            "rule to each line and/or to the full heading text."
+        )
+    )
+    priority: int = Field(
+        default=0,
+        description="Higher priority rules win if multiple rules match the same heading fragment.",
+    )
+    role: str = Field(
+        description="Context role emitted by this rule, e.g. grade_level, strand, substrand.",
+    )
+    statement_type: str = Field(
+        description="Source-facing SFI statement type to use if this context becomes a grouping SFI.",
+    )
+
+    @field_validator("name", "pattern", "role", "statement_type", mode="before")
+    @classmethod
+    def _strip_and_require_non_empty(cls, v: str) -> str:
+        """Strip whitespace and require non-empty strings for required fields.
+
+        Parameters
+        ----------
+        v
+            The input string value to validate.
+
+        Returns
+        -------
+        str
+            The validated and stripped string value.
+        """
+
+        return _strip_and_require_non_empty_str(v)
+
+    @field_validator("label_template", mode="before")
+    @classmethod
+    def _strip_optional_template(cls, v: Optional[str]) -> Optional[str]:
+        """Strip the optional label template, coercing blanks to None.
+
+        Parameters
+        ----------
+        v
+            The label template value to validate, or None.
+
+        Returns
+        -------
+        Optional[str]
+            The stripped template, or None if the input was None or blank.
+
+        Raises
+        ------
+        TypeError
+            If the input is neither a string nor None.
+        """
+
+        if v is None:
+            return None
+
+        if not isinstance(v, str):
+            raise TypeError("label_template must be a string or None")
+
+        v2 = v.strip()
+        return v2 if v2 else None
+
+    @field_validator("pattern")
+    @classmethod
+    def _validate_pattern(cls, v: str) -> str:
+        """Validate that the heading pattern is a compilable regular expression.
+
+        Parameters
+        ----------
+        v
+            The regex pattern applied to heading text.
+
+        Returns
+        -------
+        str
+            The validated regex pattern.
+
+        Raises
+        ------
+        ValueError
+            If the pattern is not a valid regular expression.
+        """
+
+        try:
+            re.compile(v)
+        except re.error as exc:
+            raise ValueError(
+                f"Invalid context heading regex pattern: {v!r}: {exc}"
+            ) from exc
+        return v
+
+
+class ContextResetRule(BaseSchema):
+    """Profile rule for clearing lower-level context when a higher-level role changes."""
+
+    on_role: str = Field(
+        description="When this role is updated, clear all roles listed in reset_roles."
+    )
+    reset_roles: list[str] = Field(default_factory=list)
+
+    @field_validator("on_role", mode="before")
+    @classmethod
+    def _strip_on_role(cls, v: str) -> str:
+        """Strip whitespace and require a non-empty on_role value.
+
+        Parameters
+        ----------
+        v
+            The on_role string value to validate.
+
+        Returns
+        -------
+        str
+            The validated and stripped on_role value.
+        """
+
+        return _strip_and_require_non_empty_str(v)
+
+    @field_validator("reset_roles")
+    @classmethod
+    def _validate_reset_roles(cls, v: list[str]) -> list[str]:
+        """Clean and de-duplicate reset_roles, dropping blanks.
+
+        Parameters
+        ----------
+        v
+            The list of role names to clear when on_role updates.
+
+        Returns
+        -------
+        list[str]
+            Cleaned, non-empty role names in stable order with duplicates removed.
+
+        Raises
+        ------
+        TypeError
+            If any element is not a string.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for role in v or []:
+            if not isinstance(role, str):
+                raise TypeError(
+                    "ContextResetRule.reset_roles must contain only strings"
+                )
+
+            role_clean = role.strip()
+
+            if not role_clean:
+                continue
+
+            if role_clean not in seen:
+                cleaned.append(role_clean)
+                seen.add(role_clean)
+
+        return cleaned
+
+
+class ContextSpineConfig(BaseSchema):
+    """Document-profile configuration for structured extraction-window context.
+
+    For Ghana, this should generally recognize grade -> strand -> sub-strand from
+    headings. Row-local standards, such as content standards and learning indicators,
+    should still be extracted from table cells rather than treated as window-level
+    context.
+    """
+
+    description: Optional[str] = None
+    heading_rules: list[ContextHeadingRule] = Field(default_factory=list)
+    include_nearby_headings: bool = Field(
+        default=True,
+        description="Whether windows should also carry raw nearby headings for debug/fallback.",
+    )
+    max_nearby_headings: int = Field(default=8, ge=0)
+    reset_rules: list[ContextResetRule] = Field(default_factory=list)
+    role_order: list[str] = Field(default_factory=list)
+    split_multiline_headings: bool = Field(
+        default=True,
+        description="Apply heading rules to individual lines in multi-line heading blocks.",
+    )
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _strip_optional_description(cls, v: Optional[str]) -> Optional[str]:
+        """Strip the optional description, coercing blanks to None.
+
+        Parameters
+        ----------
+        v
+            The description value to validate, or None.
+
+        Returns
+        -------
+        Optional[str]
+            The stripped description, or None if the input was None or blank.
+
+        Raises
+        ------
+        TypeError
+            If the input is neither a string nor None.
+        """
+
+        if v is None:
+            return None
+
+        if not isinstance(v, str):
+            raise TypeError("description must be a string or None")
+
+        v2 = v.strip()
+        return v2 if v2 else None
+
+    @field_validator("role_order")
+    @classmethod
+    def _validate_role_order(cls, v: list[str]) -> list[str]:
+        """Clean and de-duplicate role_order, dropping blanks.
+
+        Parameters
+        ----------
+        v
+            The ordered list of context role names.
+
+        Returns
+        -------
+        list[str]
+            Cleaned, non-empty role names in stable order with duplicates removed.
+
+        Raises
+        ------
+        TypeError
+            If any element is not a string.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for role in v or []:
+            if not isinstance(role, str):
+                raise TypeError(
+                    "ContextSpineConfig.role_order must contain only strings"
+                )
+
+            role_clean = role.strip()
+
+            if not role_clean:
+                continue
+
+            if role_clean not in seen:
+                cleaned.append(role_clean)
+                seen.add(role_clean)
+
+        return cleaned
+
+    @model_validator(mode="after")
+    def _validate_context_references(self) -> ContextSpineConfig:
+        """Validate that reset rules reference known context roles.
+
+        Returns
+        -------
+        ContextSpineConfig
+            The validated context spine configuration.
+
+        Raises
+        ------
+        ValueError
+            If a reset rule's on_role or any of its reset_roles are not produced by the
+            configured heading_rules or role_order.
+        """
+
+        known_roles = {rule.role for rule in self.heading_rules} | set(self.role_order)
+
+        for reset_rule in self.reset_rules:
+            if reset_rule.on_role not in known_roles:
+                raise ValueError(
+                    f"Context reset rule references unknown on_role: {reset_rule.on_role!r}"
+                )
+
+            unknown_reset_roles = sorted(set(reset_rule.reset_roles) - known_roles)
+
+            if unknown_reset_roles:
+                raise ValueError(
+                    f"Context reset rule for {reset_rule.on_role!r} references unknown reset_roles: "
+                    f"{unknown_reset_roles}"
+                )
+
+        return self
+
+
+class SFIHierarchyRole(BaseSchema):
+    """Profile declaration of a final SFI hierarchy role.
+
+    This separates the window-level context spine from row-local SFI roles. For Ghana,
+    grade/strand/sub-strand are context-derived groupings, while content standards and
+    learning indicators are row-local standards extracted from table cells/codes.
+    """
+
+    normalized_statement_type: _NormalizedStatementType
+    parent_role: Optional[str] = None
+    role: str
+    source: Literal["context", "row", "framework"] = "row"
+    statement_type: str
+
+    @field_validator("role", "statement_type", mode="before")
+    @classmethod
+    def _strip_required_strings(cls, v: str) -> str:
+        """Strip whitespace and require non-empty strings for required fields.
+
+        Parameters
+        ----------
+        v
+            The input string value to validate.
+
+        Returns
+        -------
+        str
+            The validated and stripped string value.
+        """
+
+        return _strip_and_require_non_empty_str(v)
+
+    @field_validator("parent_role", mode="before")
+    @classmethod
+    def _strip_optional_parent_role(cls, v: Optional[str]) -> Optional[str]:
+        """Strip the optional parent_role, coercing blanks to None.
+
+        Parameters
+        ----------
+        v
+            The parent_role value to validate, or None.
+
+        Returns
+        -------
+        Optional[str]
+            The stripped parent_role, or None if the input was None or blank.
+
+        Raises
+        ------
+        TypeError
+            If the input is neither a string nor None.
+        """
+
+        if v is None:
+            return None
+
+        if not isinstance(v, str):
+            raise TypeError("parent_role must be a string or None")
+
+        v2 = v.strip()
+        return v2 if v2 else None
+
+
+class DocumentProfile(BaseSchema):
+    """Country/document-specific profile for KG extraction."""
+
+    # Framework metadata.
+    adoption_status: str | None = None
+    attribution_statement: str
+    author: str
+    country: str
+    framework_title: str
+    grades_or_stages: list[str] = Field(default_factory=list)
+    context_spine: ContextSpineConfig = Field(
+        default_factory=ContextSpineConfig,
+        description=(
+            "Profile-driven rules for deriving structured extraction-window context "
+            "from headings (for Ghana: grade_level -> strand -> substrand)."
+        ),
+    )
+    jurisdiction: str
+    languages: list[str]
+    license: str
+    primary_language: str
+    provider: str
+    subject: str
+
+    # Code handling.
+    code_parent_rules: list[dict[str, str]] = Field(default_factory=list)
+    code_patterns: dict[str, str] = Field(default_factory=dict)
+    code_statement_types: dict[str, str] = Field(default_factory=dict)
+    has_stable_codes: bool = False
+    sfi_hierarchy_roles: list[SFIHierarchyRole] = Field(
+        default_factory=list,
+        description=(
+            "Final KG hierarchy roles expected for this document. This includes both "
+            "context-derived grouping roles and row-local standard roles."
+        ),
+    )
+
+    # Table selection policy.
+    excluded_table_columns_signatures: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Column signatures that should never be sent through the SFI extraction "
+            "path, even if they otherwise look table-like. Use this for front matter, "
+            "scope-and-sequence, panel-member tables, or other non-standards tables."
+        ),
+    )
+    excluded_table_section_patterns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Regex patterns over nearby heading/section-path text that exclude tables "
+            "from SFI extraction, even if their column signature is otherwise eligible."
+        ),
+    )
+    target_table_columns_signatures: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Column signatures that identify table segments eligible for SFI extraction. "
+            "When provided, table-window creation should only target tables whose "
+            "DocumentIR.columns_signature is in this allow-list, unless a later "
+            "profile rule explicitly expands the selection."
+        ),
+    )
+    target_table_section_patterns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Regex patterns over nearby heading/section-path text that can include "
+            "tables in the SFI extraction set when column signatures alone are not "
+            "sufficient."
+        ),
+    )
+
+    # Windowing.
+    include_block_windows: bool = True
+    max_rows_per_table_window: int = Field(default=20, ge=1)
+    row_overlap: int = Field(default=1, ge=0)
+    table_window_mode: Literal["whole_table", "row_chunks"] = "row_chunks"
+
+    # Duplication behavior.
+    bilingual_pair_policy: str | None = None
+    repeated_statement_policy: str = ""
+    synthetic_merge_key_fields: list[str] = Field(
+        default_factory=lambda: [
+            "country",
+            "subject",
+            "grade_level",
+            "normalized_statement_type",
+            "statement_type",
+            "hierarchy_context",
+            "normalized_text",
+        ]
+    )
+
+    # LLM instructions.
+    duplicate_review_instructions: str
+    learning_component_instructions: str
+    sfi_extraction_instructions: str
+
+    # All other metadata.
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator(
+        "attribution_statement",
+        "author",
+        "country",
+        "duplicate_review_instructions",
+        "framework_title",
+        "jurisdiction",
+        "learning_component_instructions",
+        "license",
+        "primary_language",
+        "provider",
+        "sfi_extraction_instructions",
+        "subject",
+        mode="before",
+    )
+    @classmethod
+    def _strip_and_require_non_empty(cls, v: str) -> str:
+        """Strip whitespace and require non-empty strings for required fields.
+
+        Parameters
+        ----------
+        v
+            The input string value to validate.
+
+        Returns
+        -------
+        str
+            The validated and stripped string value.
+        """
+
+        return _strip_and_require_non_empty_str(v)
+
+    @field_validator("adoption_status", "bilingual_pair_policy", mode="before")
+    @classmethod
+    def _strip_optional_strings(cls, v: str | None) -> str | None:
+        """Strip optional string fields and normalize blank strings to None.
+
+        Parameters
+        ----------
+        v
+            The input optional string value.
+
+        Returns
+        -------
+        str | None
+            The stripped string, or None for blank/None values.
+
+        Raises
+        ------
+        TypeError
+            If the input is not a string or None.
+        """
+
+        if v is None:
+            return None
+
+        if not isinstance(v, str):
+            raise TypeError("Expected a string or None")
+
+        v2 = v.strip()
+        return v2 if v2 else None
+
+    @field_validator(
+        "excluded_table_columns_signatures", "target_table_columns_signatures"
+    )
+    @classmethod
+    def validate_table_columns_signatures(cls, v: list[str]) -> list[str]:
+        """Validate table column signatures are non-empty and de-duplicated.
+
+        Parameters
+        ----------
+        v
+            Configured table column signatures.
+
+        Returns
+        -------
+        list[str]
+            Cleaned and de-duplicated signatures in stable order.
+
+        Raises
+        ------
+        TypeError
+            If any signature is not a string.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for signature in v or []:
+            if not isinstance(signature, str):
+                raise TypeError(
+                    "DocumentProfile table column signatures must contain only strings."
+                )
+
+            signature_clean = signature.strip()
+
+            if not signature_clean:
+                continue
+
+            if signature_clean not in seen:
+                cleaned.append(signature_clean)
+                seen.add(signature_clean)
+
+        return cleaned
+
+    @field_validator("excluded_table_section_patterns", "target_table_section_patterns")
+    @classmethod
+    def validate_table_section_patterns(cls, v: list[str]) -> list[str]:
+        """Validate table section-selection regex patterns.
+
+        Parameters
+        ----------
+        v
+            Configured section-context regex patterns.
+
+        Returns
+        -------
+        list[str]
+            Cleaned and de-duplicated regex patterns in stable order.
+
+        Raises
+        ------
+        TypeError
+            If any pattern is not a string.
+        ValueError
+            If any pattern is empty or does not compile.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for pattern in v or []:
+            if not isinstance(pattern, str):
+                raise TypeError(
+                    "DocumentProfile table section patterns must contain only strings."
+                )
+
+            pattern_clean = pattern.strip()
+
+            if not pattern_clean:
+                continue
+
+            try:
+                re.compile(pattern_clean)
+            except re.error as exc:
+                raise ValueError(
+                    f"Invalid table section-selection regex pattern: {pattern_clean!r}: {exc}"
+                ) from exc
+
+            if pattern_clean not in seen:
+                cleaned.append(pattern_clean)
+                seen.add(pattern_clean)
+
+        return cleaned
+
+    @field_validator("code_patterns")
+    @classmethod
+    def validate_code_patterns(cls, v: dict[str, str]) -> dict[str, str]:
+        """Validate that all configured code patterns compile as regular expressions.
+
+        Parameters
+        ----------
+        v
+            Mapping of code pattern name to regular expression string.
+
+        Returns
+        -------
+        dict[str, str]
+            The original pattern mapping.
+
+        Raises
+        ------
+        TypeError
+            If a code pattern value is not a string.
+        ValueError
+            If a code pattern is empty or cannot be compiled.
+        """
+
+        for name, pattern in v.items():
+            if not isinstance(pattern, str):
+                raise TypeError(
+                    f"code_patterns[{name!r}] must be a string. "
+                    f"Got {type(pattern).__name__}."
+                )
+
+            if not pattern.strip():
+                raise ValueError(f"code_patterns[{name!r}] must be non-empty.")
+
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f"Invalid regex for code_patterns[{name!r}]: {exc}"
+                ) from exc
+
+        return v
+
+    @field_validator("languages")
+    @classmethod
+    def validate_languages(cls, v: list[str]) -> list[str]:
+        """Validate profile languages are present, non-empty, and de-duplicated.
+
+        Parameters
+        ----------
+        v
+            Language tags configured for the profile.
+
+        Returns
+        -------
+        list[str]
+            Cleaned language tags in stable order.
+        """
+
+        if not v:
+            raise ValueError(
+                "DocumentProfile.languages must contain at least one value."
+            )
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for language in v:
+            if not isinstance(language, str):
+                raise TypeError("DocumentProfile.languages must contain only strings.")
+
+            language_clean = language.strip()
+
+            if not language_clean:
+                continue
+
+            if language_clean not in seen:
+                cleaned.append(language_clean)
+                seen.add(language_clean)
+
+        if not cleaned:
+            raise ValueError(
+                "DocumentProfile.languages must contain at least one non-empty value."
+            )
+
+        return cleaned
+
+    @field_validator("synthetic_merge_key_fields")
+    @classmethod
+    def validate_synthetic_merge_key_fields(cls, v: list[str]) -> list[str]:
+        """Validate synthetic merge key fields are non-empty strings.
+
+        Parameters
+        ----------
+        v
+            Configured synthetic merge key field names.
+
+        Returns
+        -------
+        list[str]
+            Cleaned and de-duplicated field names in stable order.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for field_name in v or []:
+            if not isinstance(field_name, str):
+                raise TypeError(
+                    "DocumentProfile.synthetic_merge_key_fields must contain only strings."
+                )
+
+            field_name_clean = field_name.strip()
+
+            if not field_name_clean:
+                continue
+
+            if field_name_clean not in seen:
+                cleaned.append(field_name_clean)
+                seen.add(field_name_clean)
+
+        if not cleaned:
+            raise ValueError(
+                "DocumentProfile.synthetic_merge_key_fields must contain at least one value."
+            )
+
+        return cleaned
+
+    def _validate_stable_codes(self) -> None:
+        """Ensure stable codes have associated code patterns.
+
+        Raises
+        ------
+        ValueError
+            If has_stable_codes is true but no code_patterns were configured.
+        """
+
+        if self.has_stable_codes and not self.code_patterns:
+            raise ValueError(
+                "DocumentProfile.has_stable_codes is true, but no code_patterns were configured."
+            )
+
+    def _validate_windowing(self) -> None:
+        """Ensure row windowing configuration is internally consistent.
+
+        Raises
+        ------
+        ValueError
+            If row_overlap is not smaller than max_rows_per_table_window.
+        """
+
+        if self.row_overlap >= self.max_rows_per_table_window:
+            raise ValueError(
+                "DocumentProfile.row_overlap must be smaller than max_rows_per_table_window."
+            )
+
+    @staticmethod
+    def _validate_code_parent_rule(
+        idx: int, rule: dict[str, Any], known: set[str]
+    ) -> None:
+        """Validate a single code parent rule.
+
+        Parameters
+        ----------
+        idx
+            Index of the rule (for error messages).
+        rule
+            The code parent rule mapping to validate.
+        known
+            Set of known code pattern names.
+
+        Raises
+        ------
+        ValueError
+            If the rule references unknown patterns, uses an invalid method, or is
+            missing required regex_substitution fields.
+        """
+
+        child = rule.get("child")
+        parent = rule.get("parent")
+        method = rule.get("method")
+
+        if child not in known:
+            raise ValueError(
+                f"code_parent_rules[{idx}] unknown child pattern: {child!r}"
+            )
+
+        if parent not in known:
+            raise ValueError(
+                f"code_parent_rules[{idx}] unknown parent pattern: {parent!r}"
+            )
+
+        if method not in {"drop_last_dot_component", "regex_substitution"}:
+            raise ValueError(f"code_parent_rules[{idx}] invalid method: {method!r}")
+
+        if method == "regex_substitution":
+            if "regex" not in rule or "replacement" not in rule:
+                raise ValueError(
+                    f"code_parent_rules[{idx}] regex_substitution requires regex and replacement"
+                )
+
+            re.compile(rule["regex"])
+
+    def _validate_code_parent_rules(self, known: set[str]) -> None:
+        """Validate all configured code parent rules.
+
+        Parameters
+        ----------
+        known
+            Set of known code pattern names.
+        """
+
+        for idx, rule in enumerate(self.code_parent_rules):
+            self._validate_code_parent_rule(idx, rule, known)
+
+    def _validate_statement_type_keys(self, known: set[str]) -> None:
+        """Ensure code_statement_types keys are a subset of code_patterns.
+
+        Parameters
+        ----------
+        known
+            Set of known code pattern names.
+
+        Raises
+        ------
+        ValueError
+            If code_statement_types contains keys absent from code_patterns.
+        """
+
+        unknown_statement_type_keys = sorted(
+            set(self.code_statement_types.keys()) - known
+        )
+
+        if unknown_statement_type_keys:
+            raise ValueError(
+                f"DocumentProfile.code_statement_types contains keys not present in "
+                f"code_patterns: {unknown_statement_type_keys}"
+            )
+
+    def _validate_table_signature_policy(self) -> None:
+        """Ensure table-selection policy does not both target and exclude columns.
+
+        Raises
+        ------
+        ValueError
+            If any columns_signature appears in both target and excluded sets.
+        """
+
+        overlapping_table_signatures = sorted(
+            set(self.target_table_columns_signatures)
+            & set(self.excluded_table_columns_signatures)
+        )
+
+        if overlapping_table_signatures:
+            raise ValueError(
+                "DocumentProfile table-selection policy cannot target and exclude the "
+                f"same columns_signature values: {overlapping_table_signatures}"
+            )
+
+    def _validate_sfi_hierarchy_roles(self) -> None:
+        """Validate final SFI hierarchy role declarations.
+
+        Raises
+        ------
+        ValueError
+            If role names are duplicated, parent roles are unknown, or context-sourced
+            roles are not produced by the configured context spine.
+        """
+
+        roles = [item.role for item in self.sfi_hierarchy_roles]
+        duplicate_roles = sorted(
+            role for role, count in Counter(roles).items() if count > 1
+        )
+        if duplicate_roles:
+            raise ValueError(
+                f"DocumentProfile.sfi_hierarchy_roles contains duplicate roles: {duplicate_roles}"
+            )
+
+        known_roles = set(roles)
+        for item in self.sfi_hierarchy_roles:
+            if item.parent_role and item.parent_role not in known_roles:
+                raise ValueError(
+                    f"SFI hierarchy role {item.role!r} references unknown parent_role: "
+                    f"{item.parent_role!r}"
+                )
+
+        context_roles = {rule.role for rule in self.context_spine.heading_rules}
+        missing_context_roles = sorted(
+            item.role
+            for item in self.sfi_hierarchy_roles
+            if item.source == "context" and item.role not in context_roles
+        )
+        if missing_context_roles:
+            raise ValueError(
+                "Context-sourced SFI hierarchy roles are not produced by "
+                f"context_spine.heading_rules: {missing_context_roles}"
+            )
+
+    @model_validator(mode="after")
+    def validate_profile_configuration(self) -> DocumentProfile:
+        """Validate cross-field DocumentProfile configuration.
+
+        Returns
+        -------
+        DocumentProfile
+            The validated profile.
+
+        Raises
+        ------
+        ValueError
+            If code handling, parent rules, or windowing configuration is invalid.
+        """
+
+        known = set(self.code_patterns.keys())
+        self._validate_stable_codes()
+        self._validate_windowing()
+        self._validate_code_parent_rules(known)
+        self._validate_statement_type_keys(known)
+        self._validate_table_signature_policy()
+        self._validate_sfi_hierarchy_roles()
+        return self
+
+
+# Schemas for extraction windows.
+class CodeMatch(BaseSchema):
+    """A document profile code regex match found in an extraction window."""
+
+    code_type: str = Field(
+        description="Document profile local code pattern key, such as 'content_standard'."
+    )
+    end_char: int = Field(
+        description="End character offset of the match within window source_text.", ge=0
+    )
+    start_char: int = Field(
+        description="Start character offset of the match within window source_text.",
+        ge=0,
+    )
+    statement_type: Optional[str] = Field(
+        default=None,
+        description="Document profile statement type associated with this code type, if any.",
+    )
+    value: str = Field(description="Matched source-code surface form.")
+
+    @model_validator(mode="after")
+    def validate_offsets(self) -> Self:
+        """Validate that `end_char` is not before `start_char`.
+
+        Returns
+        -------
+        Self
+            The validated code match.
+
+        Raises
+        ------
+        ValueError
+            If the end offset is smaller than the start offset.
+        """
+
+        if self.end_char < self.start_char:
+            raise ValueError("end_char must be >= start_char.")
+
+        return self
+
+
+class CodeParentHint(BaseSchema):
+    """A deterministic parent-code suggestion derived from document profile rules."""
+
+    child_code: str = Field(description="Matched child code.")
+    child_code_type: str = Field(description="Document profile local child code type.")
+    method: str = Field(
+        description="Document profile rule method used to derive parent_code."
+    )
+    parent_code: str = Field(description="Derived parent code.")
+    parent_code_type: str = Field(
+        description="Document profile local parent code type."
+    )
+    parent_statement_type: Optional[str] = Field(
+        default=None,
+        description="Document profile statement type associated with the parent code type, if any.",
+    )
+
+
+class ExtractionWindow(BaseSchema):
+    """LLM-ready prompt payload for one Academic Standards extraction window."""
+
+    block: Optional[dict[str, Any]] = Field(
+        default=None, description="Block-specific source payload for block windows."
+    )
+    code_matches: list[CodeMatch] = Field(
+        default_factory=list,
+        description="Document profile code matches found in source_text.",
+    )
+    code_parent_hints: list[CodeParentHint] = Field(
+        default_factory=list,
+        description="Document profile derived code parent hints for later extraction/validation.",
+    )
+    context_path_text: str = Field(
+        description="Readable context path assembled from nearby headings."
+    )
+    deterministic_hints: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Non-semantic deterministic hints for LLM extraction and merging.",
+    )
+    doc_key: str = Field(description="Source DocumentIR doc_key.")
+    framework_title: str = Field(description="DocumentProfile framework title.")
+    llm_task_instructions: str = Field(
+        description="Task instructions for the later SFI extraction LLM call."
+    )
+    nearby_headings: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Raw nearby heading references for debug/fallback context.",
+    )
+    pdf_name: Optional[str] = Field(default=None, description="Source PDF filename.")
+    primary_language: str = Field(description="DocumentProfile primary language.")
+    profile_extraction_instructions: str = Field(
+        description="DocumentProfile.sfi_extraction_instructions."
+    )
+    section_path: list[dict[str, Any]] = Field(
+        default_factory=list, description="Raw DocumentIR section_path for the window."
+    )
+    segment_kind: Literal["block", "table"] = Field(description="Source segment kind.")
+    source_provenance: list[dict[str, Any]] = Field(
+        default_factory=list, description="Segment/page provenance for the source."
+    )
+    source_segment_ids: list[str] = Field(
+        description="DocumentIR segment_id values included in this window.",
+        min_length=1,
+    )
+    source_text: str = Field(
+        description="Human-readable source text assembled from the window payload."
+    )
+    structured_context: list[StructuredContextItem] = Field(
+        default_factory=list,
+        description="Document profile derived structured context, if document profile rules are available.",
+    )
+    subject: str = Field(description="DocumentProfile subject.")
+    table: Optional[ExtractionWindowTablePayload] = Field(
+        default=None, description="Table-specific source payload for table windows."
+    )
+    window_id: str = Field(description="Deterministic extraction-window identifier.")
+    window_index: int = Field(
+        description="0-based index in extraction-window order.", ge=0
+    )
+    window_notes: list[str] = Field(
+        default_factory=list, description="Implementation/debug notes for this window."
+    )
+
+    @model_validator(mode="after")
+    def validate_payload_matches_segment_kind(self) -> Self:
+        """Validate that block/table payloads match segment_kind.
+
+        Returns
+        -------
+        Self
+            The validated extraction window.
+
+        Raises
+        ------
+        ValueError
+            If the payload does not match the declared segment kind.
+        """
+
+        if self.segment_kind == "block" and self.block is None:
+            raise ValueError("Block extraction windows require block payload.")
+
+        if self.segment_kind == "block" and self.table is not None:
+            raise ValueError("Block extraction windows must not include table payload.")
+
+        if self.segment_kind == "table" and self.table is None:
+            raise ValueError("Table extraction windows require table payload.")
+
+        if self.segment_kind == "table" and self.block is not None:
+            raise ValueError("Table extraction windows must not include block payload.")
+
+        return self
+
+
+class ExtractionWindowTablePayload(BaseSchema):
+    """Table-specific payload included in an extraction window."""
+
+    body_row_end_index_exclusive: int = Field(
+        description="Exclusive end index in the source table rows for body rows.", ge=0
+    )
+    body_row_start_index: int = Field(
+        description="Inclusive start index in the source table rows for body rows.",
+        ge=0,
+    )
+    columns_signature: Optional[str] = Field(
+        default=None, description="DocumentIR columns_signature for this table."
+    )
+    grid_sources: Optional[list[list[dict[str, Any]]]] = Field(
+        default=None,
+        description="Optional grid source-debug view aligned to selected row_indexes.",
+    )
+    header_row_count: int = Field(description="Number of source header rows.", ge=0)
+    header_rows: list[dict[str, Any]] = Field(
+        default_factory=list, description="Raw source table header rows."
+    )
+    header_rows_canonical: list[list[str]] = Field(
+        default_factory=list, description="Canonical header text rows from DocumentIR."
+    )
+    local_code: Optional[str] = Field(
+        default=None, description="Resolved table local_code, if present."
+    )
+    n_cols: int = Field(description="Maximum source table column count.", ge=1)
+    row_indexes: list[int] = Field(
+        default_factory=list,
+        description="Source table row indexes included in rows/rows_grid/rows_filldown.",
+    )
+    row_provenance: Optional[list[dict[str, Any]]] = Field(
+        default=None,
+        description="Optional row provenance aligned to selected row_indexes.",
+    )
+    rows: list[dict[str, Any]] = Field(
+        default_factory=list, description="Raw selected source rows/cells."
+    )
+    rows_filldown: Optional[list[dict[str, Any]]] = Field(
+        default=None,
+        description="Optional filldown rows aligned to selected row_indexes.",
+    )
+    rows_grid: Optional[list[dict[str, Any]]] = Field(
+        default=None,
+        description="Optional grid-normalized rows aligned to selected row_indexes.",
+    )
+    source_table_row_count: int = Field(
+        description="Total number of rows in the source TableSegment.", ge=0
+    )
+    table_window_mode: Literal["row_chunks", "whole_table"] = Field(
+        description="Profile table-window mode used for this table payload."
+    )
+
+    @model_validator(mode="after")
+    def validate_row_ranges(self) -> Self:
+        """Validate row-index and row-range consistency.
+
+        Returns
+        -------
+        Self
+            The validated table payload.
+
+        Raises
+        ------
+        ValueError
+            If the row range or aligned helper views are inconsistent.
+        """
+
+        if self.body_row_end_index_exclusive < self.body_row_start_index:
+            raise ValueError(
+                "body_row_end_index_exclusive must be >= body_row_start_index."
+            )
+
+        if self.body_row_end_index_exclusive > self.source_table_row_count:
+            raise ValueError(
+                "body_row_end_index_exclusive cannot exceed source_table_row_count."
+            )
+
+        if len(self.rows) != len(self.row_indexes):
+            raise ValueError("rows must be aligned to row_indexes.")
+
+        for helper_field_name in [
+            "grid_sources",
+            "row_provenance",
+            "rows_filldown",
+            "rows_grid",
+        ]:
+            helper_value = getattr(self, helper_field_name)
+
+            if helper_value is not None and len(helper_value) != len(self.row_indexes):
+                raise ValueError(
+                    f"{helper_field_name} must be aligned to row_indexes when present."
+                )
+
+        return self
+
+
+class SelectedExtractionSegment(BaseSchema):
+    """A DocumentIR segment selected for Academic Standards extraction."""
+
+    block_type: Optional[str] = Field(
+        default=None,
+        description="Block type for selected block segments; null for table segments.",
+    )
+    columns_signature: Optional[str] = Field(
+        default=None,
+        description="Table columns_signature for selected table segments; null for blocks.",
+    )
+    local_code: Optional[str] = Field(
+        default=None, description="DocumentIR local_code for the segment, if present."
+    )
+    row_count: Optional[int] = Field(
+        default=None,
+        description="Number of source table rows for table selections; null for blocks.",
+        ge=0,
+    )
+    section_path: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Raw DocumentIR section_path for the selected segment.",
+    )
+    segment_id: str = Field(description="DocumentIR segment_id.")
+    segment_kind: Literal["block", "table"] = Field(
+        description="Selected segment kind."
+    )
+    selection_id: str = Field(description="Deterministic selection identifier.")
+    selection_index: int = Field(description="0-based index in selected-segment order.")
+    selection_reasons: list[str] = Field(
+        default_factory=list,
+        description="Deterministic reasons this segment was selected.",
+    )
+    source_page_indexes: list[int] = Field(
+        default_factory=list,
+        description="Sorted unique 0-based source page indexes for this segment.",
+    )
+
+    @field_validator("selection_reasons")
+    @classmethod
+    def validate_selection_reasons(cls, v: list[str]) -> list[str]:
+        """Require at least one non-empty selection reason.
+
+        Parameters
+        ----------
+        v
+            Selection reasons.
+
+        Returns
+        -------
+        list[str]
+            Cleaned selection reasons.
+
+        Raises
+        ------
+        ValueError
+            If no non-empty reasons are provided.
+        """
+
+        cleaned = unique_clean_strings(v)
+
+        if not cleaned:
+            raise ValueError("SelectedExtractionSegment requires selection_reasons.")
+
+        return cleaned
+
+
+class SelectedExtractionSegmentsArtifact(BaseSchema):
+    """Artifact containing selected extraction segments and counts for inspection
+    purposes.
+    """
+
+    counts_by_reason: dict[str, int] = Field(default_factory=dict)
+    counts_by_segment_kind: dict[str, int] = Field(default_factory=dict)
+    selected_segments: list[SelectedExtractionSegment] = Field(default_factory=list)
+    total_selected_segments: int = Field(default=0, ge=0)
+
+
+class StructuredContextItem(BaseSchema):
+    """Document profile derived context item attached to an extraction window."""
+
+    label: str = Field(description="Display label derived from the matched heading.")
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    normalized_statement_type: str = Field(
+        description="Expected normalized SFI type if this context becomes a grouping."
+    )
+    role: str = Field(description="Context role, such as grade_level or strand.")
+    rule_name: str = Field(
+        description="Document profile context-heading rule that matched."
+    )
+    source_heading_item_index: int = Field(
+        description="Source PageIR item index for the heading reference.", ge=0
+    )
+    source_heading_page_index: int = Field(
+        description="Source page index for the heading reference.", ge=0
+    )
+    source_text: str = Field(description="Raw source heading text that matched.")
+    statement_type: str = Field(
+        description="Source-facing statement type if this context becomes a grouping."
+    )
+
+
+# CURRENTLY UNUSED #
 def _strip_and_require_non_empty_str(v: str) -> str:
     """Strip whitespace and require non-empty string for required fields.
 
@@ -1884,771 +3225,3 @@ class PolicyCoverageReport(BaseSchema):
         default=False,
         description="Whether drop_details was truncated because it exceeded the limit.",
     )
-
-
-
-
-class ContextHeadingRule(BaseSchema):
-    """Profile rule for deriving structured window context from heading text.
-
-    The window builder applies these rules to heading-like DocumentIR segments in
-    document order. Matches update the active structured context that is attached to
-    extraction windows. The rule describes the *grammar* of the curriculum document;
-    it does not hardcode page numbers, segment IDs, or row ranges.
-    """
-
-    label_template: Optional[str] = Field(
-        default=None,
-        description=(
-            "Optional Python-format template for the display label. Regex capture "
-            "groups are available as {1}, {2}, etc. If omitted, use the matched text."
-        ),
-    )
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    name: str = Field(description="Stable profile-local rule name.")
-    normalized_statement_type: _NormalizedStatementType = Field(
-        default="Standard Grouping",
-        description="Expected normalized statement type for groupings created from this context.",
-    )
-    pattern: str = Field(
-        description=(
-            "Regex pattern applied to heading text. Inline flags such as (?im) are "
-            "allowed. For multi-line headings, the window builder may apply the same "
-            "rule to each line and/or to the full heading text."
-        )
-    )
-    priority: int = Field(
-        default=0,
-        description="Higher priority rules win if multiple rules match the same heading fragment.",
-    )
-    role: str = Field(
-        description="Context role emitted by this rule, e.g. grade_level, strand, substrand.",
-    )
-    statement_type: str = Field(
-        description="Source-facing SFI statement type to use if this context becomes a grouping SFI.",
-    )
-
-    @field_validator("name", "pattern", "role", "statement_type", mode="before")
-    @classmethod
-    def _strip_and_require_non_empty(cls, v: str) -> str:
-        return _strip_and_require_non_empty_str(v)
-
-    @field_validator("label_template", mode="before")
-    @classmethod
-    def _strip_optional_template(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return None
-        if not isinstance(v, str):
-            raise TypeError("label_template must be a string or None")
-        v2 = v.strip()
-        return v2 if v2 else None
-
-    @field_validator("pattern")
-    @classmethod
-    def _validate_pattern(cls, v: str) -> str:
-        try:
-            re.compile(v)
-        except re.error as exc:
-            raise ValueError(f"Invalid context heading regex pattern: {v!r}: {exc}") from exc
-        return v
-
-
-class ContextResetRule(BaseSchema):
-    """Profile rule for clearing lower-level context when a higher-level role changes."""
-
-    on_role: str = Field(
-        description="When this role is updated, clear all roles listed in reset_roles."
-    )
-    reset_roles: list[str] = Field(default_factory=list)
-
-    @field_validator("on_role", mode="before")
-    @classmethod
-    def _strip_on_role(cls, v: str) -> str:
-        return _strip_and_require_non_empty_str(v)
-
-    @field_validator("reset_roles")
-    @classmethod
-    def _validate_reset_roles(cls, v: list[str]) -> list[str]:
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        for role in v or []:
-            if not isinstance(role, str):
-                raise TypeError("ContextResetRule.reset_roles must contain only strings")
-            role_clean = role.strip()
-            if not role_clean:
-                continue
-            if role_clean not in seen:
-                cleaned.append(role_clean)
-                seen.add(role_clean)
-        return cleaned
-
-
-class ContextSpineConfig(BaseSchema):
-    """Document-profile configuration for structured extraction-window context.
-
-    For Ghana, this should generally recognize grade -> strand -> sub-strand from
-    headings. Row-local standards, such as content standards and learning indicators,
-    should still be extracted from table cells rather than treated as window-level
-    context.
-    """
-
-    description: Optional[str] = None
-    heading_rules: list[ContextHeadingRule] = Field(default_factory=list)
-    include_nearby_headings: bool = Field(
-        default=True,
-        description="Whether windows should also carry raw nearby headings for debug/fallback.",
-    )
-    max_nearby_headings: int = Field(default=8, ge=0)
-    reset_rules: list[ContextResetRule] = Field(default_factory=list)
-    role_order: list[str] = Field(default_factory=list)
-    split_multiline_headings: bool = Field(
-        default=True,
-        description="Apply heading rules to individual lines in multi-line heading blocks.",
-    )
-
-    @field_validator("description", mode="before")
-    @classmethod
-    def _strip_optional_description(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return None
-        if not isinstance(v, str):
-            raise TypeError("description must be a string or None")
-        v2 = v.strip()
-        return v2 if v2 else None
-
-    @field_validator("role_order")
-    @classmethod
-    def _validate_role_order(cls, v: list[str]) -> list[str]:
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        for role in v or []:
-            if not isinstance(role, str):
-                raise TypeError("ContextSpineConfig.role_order must contain only strings")
-            role_clean = role.strip()
-            if not role_clean:
-                continue
-            if role_clean not in seen:
-                cleaned.append(role_clean)
-                seen.add(role_clean)
-        return cleaned
-
-    @model_validator(mode="after")
-    def _validate_context_references(self) -> ContextSpineConfig:
-        known_roles = {rule.role for rule in self.heading_rules} | set(self.role_order)
-        for reset_rule in self.reset_rules:
-            if reset_rule.on_role not in known_roles:
-                raise ValueError(
-                    f"Context reset rule references unknown on_role: {reset_rule.on_role!r}"
-                )
-            unknown_reset_roles = sorted(set(reset_rule.reset_roles) - known_roles)
-            if unknown_reset_roles:
-                raise ValueError(
-                    f"Context reset rule for {reset_rule.on_role!r} references unknown reset_roles: "
-                    f"{unknown_reset_roles}"
-                )
-        return self
-
-
-class SFIHierarchyRole(BaseSchema):
-    """Profile declaration of a final SFI hierarchy role.
-
-    This separates the window-level context spine from row-local SFI roles. For Ghana,
-    grade/strand/sub-strand are context-derived groupings, while content standards and
-    learning indicators are row-local standards extracted from table cells/codes.
-    """
-
-    normalized_statement_type: _NormalizedStatementType
-    parent_role: Optional[str] = None
-    role: str
-    source: Literal["context", "row", "framework"] = "row"
-    statement_type: str
-
-    @field_validator("role", "statement_type", mode="before")
-    @classmethod
-    def _strip_required_strings(cls, v: str) -> str:
-        return _strip_and_require_non_empty_str(v)
-
-    @field_validator("parent_role", mode="before")
-    @classmethod
-    def _strip_optional_parent_role(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return None
-        if not isinstance(v, str):
-            raise TypeError("parent_role must be a string or None")
-        v2 = v.strip()
-        return v2 if v2 else None
-
-class DocumentProfile(BaseSchema):
-    """Country/document-specific profile for KG extraction."""
-
-    # Framework metadata.
-    adoption_status: str | None = None
-    attribution_statement: str
-    author: str
-    country: str
-    framework_title: str
-    grades_or_stages: list[str] = Field(default_factory=list)
-    context_spine: ContextSpineConfig = Field(
-        default_factory=ContextSpineConfig,
-        description=(
-            "Profile-driven rules for deriving structured extraction-window context "
-            "from headings (for Ghana: grade_level -> strand -> substrand)."
-        ),
-    )
-    jurisdiction: str
-    languages: list[str]
-    license: str
-    primary_language: str
-    provider: str
-    subject: str
-
-    # Code handling.
-    code_parent_rules: list[dict[str, str]] = Field(default_factory=list)
-    code_patterns: dict[str, str] = Field(default_factory=dict)
-    code_statement_types: dict[str, str] = Field(default_factory=dict)
-    has_stable_codes: bool = False
-    sfi_hierarchy_roles: list[SFIHierarchyRole] = Field(
-        default_factory=list,
-        description=(
-            "Final KG hierarchy roles expected for this document. This includes both "
-            "context-derived grouping roles and row-local standard roles."
-        ),
-    )
-
-    # Table selection policy.
-    excluded_table_columns_signatures: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Column signatures that should never be sent through the SFI extraction "
-            "path, even if they otherwise look table-like. Use this for front matter, "
-            "scope-and-sequence, panel-member tables, or other non-standards tables."
-        ),
-    )
-    excluded_table_section_patterns: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Regex patterns over nearby heading/section-path text that exclude tables "
-            "from SFI extraction, even if their column signature is otherwise eligible."
-        ),
-    )
-    target_table_columns_signatures: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Column signatures that identify table segments eligible for SFI extraction. "
-            "When provided, table-window creation should only target tables whose "
-            "DocumentIR.columns_signature is in this allow-list, unless a later "
-            "profile rule explicitly expands the selection."
-        ),
-    )
-    target_table_section_patterns: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Regex patterns over nearby heading/section-path text that can include "
-            "tables in the SFI extraction set when column signatures alone are not "
-            "sufficient."
-        ),
-    )
-
-    # Windowing.
-    include_block_windows: bool = True
-    max_rows_per_table_window: int = Field(default=20, ge=1)
-    row_overlap: int = Field(default=1, ge=0)
-    table_window_mode: Literal["whole_table", "row_chunks"] = "row_chunks"
-
-    # Duplication behavior.
-    bilingual_pair_policy: str | None = None
-    repeated_statement_policy: str = ""
-    synthetic_merge_key_fields: list[str] = Field(
-        default_factory=lambda: [
-            "country",
-            "subject",
-            "grade_level",
-            "normalized_statement_type",
-            "statement_type",
-            "hierarchy_context",
-            "normalized_text",
-        ]
-    )
-
-    # LLM instructions.
-    duplicate_review_instructions: str
-    learning_component_instructions: str
-    sfi_extraction_instructions: str
-
-    # All other metadata.
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator(
-        "attribution_statement",
-        "author",
-        "country",
-        "duplicate_review_instructions",
-        "framework_title",
-        "jurisdiction",
-        "learning_component_instructions",
-        "license",
-        "primary_language",
-        "provider",
-        "sfi_extraction_instructions",
-        "subject",
-        mode="before",
-    )
-    @classmethod
-    def _strip_and_require_non_empty(cls, v: str) -> str:
-        """Strip whitespace and require non-empty strings for required fields.
-
-        Parameters
-        ----------
-        v
-            The input string value to validate.
-
-        Returns
-        -------
-        str
-            The validated and stripped string value.
-        """
-
-        return _strip_and_require_non_empty_str(v)
-
-    @field_validator("adoption_status", "bilingual_pair_policy", mode="before")
-    @classmethod
-    def _strip_optional_strings(cls, v: str | None) -> str | None:
-        """Strip optional string fields and normalize blank strings to None.
-
-        Parameters
-        ----------
-        v
-            The input optional string value.
-
-        Returns
-        -------
-        str | None
-            The stripped string, or None for blank/None values.
-
-        Raises
-        ------
-        TypeError
-            If the input is not a string or None.
-        """
-
-        if v is None:
-            return None
-
-        if not isinstance(v, str):
-            raise TypeError("Expected a string or None")
-
-        v2 = v.strip()
-        return v2 if v2 else None
-
-    @field_validator(
-        "excluded_table_columns_signatures", "target_table_columns_signatures"
-    )
-    @classmethod
-    def validate_table_columns_signatures(cls, v: list[str]) -> list[str]:
-        """Validate table column signatures are non-empty and de-duplicated.
-
-        Parameters
-        ----------
-        v
-            Configured table column signatures.
-
-        Returns
-        -------
-        list[str]
-            Cleaned and de-duplicated signatures in stable order.
-
-        Raises
-        ------
-        TypeError
-            If any signature is not a string.
-        """
-
-        cleaned: list[str] = []
-        seen: set[str] = set()
-
-        for signature in v or []:
-            if not isinstance(signature, str):
-                raise TypeError(
-                    "DocumentProfile table column signatures must contain only strings."
-                )
-
-            signature_clean = signature.strip()
-
-            if not signature_clean:
-                continue
-
-            if signature_clean not in seen:
-                cleaned.append(signature_clean)
-                seen.add(signature_clean)
-
-        return cleaned
-
-    @field_validator("excluded_table_section_patterns", "target_table_section_patterns")
-    @classmethod
-    def validate_table_section_patterns(cls, v: list[str]) -> list[str]:
-        """Validate table section-selection regex patterns.
-
-        Parameters
-        ----------
-        v
-            Configured section-context regex patterns.
-
-        Returns
-        -------
-        list[str]
-            Cleaned and de-duplicated regex patterns in stable order.
-
-        Raises
-        ------
-        TypeError
-            If any pattern is not a string.
-        ValueError
-            If any pattern is empty or does not compile.
-        """
-
-        cleaned: list[str] = []
-        seen: set[str] = set()
-
-        for pattern in v or []:
-            if not isinstance(pattern, str):
-                raise TypeError(
-                    "DocumentProfile table section patterns must contain only strings."
-                )
-
-            pattern_clean = pattern.strip()
-
-            if not pattern_clean:
-                continue
-
-            try:
-                re.compile(pattern_clean)
-            except re.error as exc:
-                raise ValueError(
-                    f"Invalid table section-selection regex pattern: {pattern_clean!r}: {exc}"
-                ) from exc
-
-            if pattern_clean not in seen:
-                cleaned.append(pattern_clean)
-                seen.add(pattern_clean)
-
-        return cleaned
-
-    @field_validator("code_patterns")
-    @classmethod
-    def validate_code_patterns(cls, v: dict[str, str]) -> dict[str, str]:
-        """Validate that all configured code patterns compile as regular expressions.
-
-        Parameters
-        ----------
-        v
-            Mapping of code pattern name to regular expression string.
-
-        Returns
-        -------
-        dict[str, str]
-            The original pattern mapping.
-
-        Raises
-        ------
-        TypeError
-            If a code pattern value is not a string.
-        ValueError
-            If a code pattern is empty or cannot be compiled.
-        """
-
-        for name, pattern in v.items():
-            if not isinstance(pattern, str):
-                raise TypeError(
-                    f"code_patterns[{name!r}] must be a string. "
-                    f"Got {type(pattern).__name__}."
-                )
-
-            if not pattern.strip():
-                raise ValueError(f"code_patterns[{name!r}] must be non-empty.")
-
-            try:
-                re.compile(pattern)
-            except re.error as exc:
-                raise ValueError(
-                    f"Invalid regex for code_patterns[{name!r}]: {exc}"
-                ) from exc
-
-        return v
-
-    @field_validator("languages")
-    @classmethod
-    def validate_languages(cls, v: list[str]) -> list[str]:
-        """Validate profile languages are present, non-empty, and de-duplicated.
-
-        Parameters
-        ----------
-        v
-            Language tags configured for the profile.
-
-        Returns
-        -------
-        list[str]
-            Cleaned language tags in stable order.
-        """
-
-        if not v:
-            raise ValueError(
-                "DocumentProfile.languages must contain at least one value."
-            )
-
-        cleaned: list[str] = []
-        seen: set[str] = set()
-
-        for language in v:
-            if not isinstance(language, str):
-                raise TypeError("DocumentProfile.languages must contain only strings.")
-
-            language_clean = language.strip()
-
-            if not language_clean:
-                continue
-
-            if language_clean not in seen:
-                cleaned.append(language_clean)
-                seen.add(language_clean)
-
-        if not cleaned:
-            raise ValueError(
-                "DocumentProfile.languages must contain at least one non-empty value."
-            )
-
-        return cleaned
-
-    @field_validator("synthetic_merge_key_fields")
-    @classmethod
-    def validate_synthetic_merge_key_fields(cls, v: list[str]) -> list[str]:
-        """Validate synthetic merge key fields are non-empty strings.
-
-        Parameters
-        ----------
-        v
-            Configured synthetic merge key field names.
-
-        Returns
-        -------
-        list[str]
-            Cleaned and de-duplicated field names in stable order.
-        """
-
-        cleaned: list[str] = []
-        seen: set[str] = set()
-
-        for field_name in v or []:
-            if not isinstance(field_name, str):
-                raise TypeError(
-                    "DocumentProfile.synthetic_merge_key_fields must contain only strings."
-                )
-
-            field_name_clean = field_name.strip()
-
-            if not field_name_clean:
-                continue
-
-            if field_name_clean not in seen:
-                cleaned.append(field_name_clean)
-                seen.add(field_name_clean)
-
-        if not cleaned:
-            raise ValueError(
-                "DocumentProfile.synthetic_merge_key_fields must contain at least one value."
-            )
-
-        return cleaned
-
-    def _validate_stable_codes(self) -> None:
-        """Ensure stable codes have associated code patterns.
-
-        Raises
-        ------
-        ValueError
-            If has_stable_codes is true but no code_patterns were configured.
-        """
-
-        if self.has_stable_codes and not self.code_patterns:
-            raise ValueError(
-                "DocumentProfile.has_stable_codes is true, but no code_patterns were configured."
-            )
-
-    def _validate_windowing(self) -> None:
-        """Ensure row windowing configuration is internally consistent.
-
-        Raises
-        ------
-        ValueError
-            If row_overlap is not smaller than max_rows_per_table_window.
-        """
-
-        if self.row_overlap >= self.max_rows_per_table_window:
-            raise ValueError(
-                "DocumentProfile.row_overlap must be smaller than max_rows_per_table_window."
-            )
-
-    @staticmethod
-    def _validate_code_parent_rule(
-        idx: int, rule: dict[str, Any], known: set[str]
-    ) -> None:
-        """Validate a single code parent rule.
-
-        Parameters
-        ----------
-        idx
-            Index of the rule (for error messages).
-        rule
-            The code parent rule mapping to validate.
-        known
-            Set of known code pattern names.
-
-        Raises
-        ------
-        ValueError
-            If the rule references unknown patterns, uses an invalid method, or is
-            missing required regex_substitution fields.
-        """
-
-        child = rule.get("child")
-        parent = rule.get("parent")
-        method = rule.get("method")
-
-        if child not in known:
-            raise ValueError(
-                f"code_parent_rules[{idx}] unknown child pattern: {child!r}"
-            )
-
-        if parent not in known:
-            raise ValueError(
-                f"code_parent_rules[{idx}] unknown parent pattern: {parent!r}"
-            )
-
-        if method not in {"drop_last_dot_component", "regex_substitution"}:
-            raise ValueError(f"code_parent_rules[{idx}] invalid method: {method!r}")
-
-        if method == "regex_substitution":
-            if "regex" not in rule or "replacement" not in rule:
-                raise ValueError(
-                    f"code_parent_rules[{idx}] regex_substitution requires regex and replacement"
-                )
-
-            re.compile(rule["regex"])
-
-    def _validate_code_parent_rules(self, known: set[str]) -> None:
-        """Validate all configured code parent rules.
-
-        Parameters
-        ----------
-        known
-            Set of known code pattern names.
-        """
-
-        for idx, rule in enumerate(self.code_parent_rules):
-            self._validate_code_parent_rule(idx, rule, known)
-
-    def _validate_statement_type_keys(self, known: set[str]) -> None:
-        """Ensure code_statement_types keys are a subset of code_patterns.
-
-        Parameters
-        ----------
-        known
-            Set of known code pattern names.
-
-        Raises
-        ------
-        ValueError
-            If code_statement_types contains keys absent from code_patterns.
-        """
-
-        unknown_statement_type_keys = sorted(
-            set(self.code_statement_types.keys()) - known
-        )
-
-        if unknown_statement_type_keys:
-            raise ValueError(
-                f"DocumentProfile.code_statement_types contains keys not present in "
-                f"code_patterns: {unknown_statement_type_keys}"
-            )
-
-    def _validate_table_signature_policy(self) -> None:
-        """Ensure table-selection policy does not both target and exclude columns.
-
-        Raises
-        ------
-        ValueError
-            If any columns_signature appears in both target and excluded sets.
-        """
-
-        overlapping_table_signatures = sorted(
-            set(self.target_table_columns_signatures)
-            & set(self.excluded_table_columns_signatures)
-        )
-
-        if overlapping_table_signatures:
-            raise ValueError(
-                "DocumentProfile table-selection policy cannot target and exclude the "
-                f"same columns_signature values: {overlapping_table_signatures}"
-            )
-
-
-    def _validate_sfi_hierarchy_roles(self) -> None:
-        """Validate final SFI hierarchy role declarations.
-
-        Raises
-        ------
-        ValueError
-            If role names are duplicated, parent roles are unknown, or context-sourced
-            roles are not produced by the configured context spine.
-        """
-
-        roles = [item.role for item in self.sfi_hierarchy_roles]
-        duplicate_roles = sorted(role for role, count in Counter(roles).items() if count > 1)
-        if duplicate_roles:
-            raise ValueError(
-                f"DocumentProfile.sfi_hierarchy_roles contains duplicate roles: {duplicate_roles}"
-            )
-
-        known_roles = set(roles)
-        for item in self.sfi_hierarchy_roles:
-            if item.parent_role and item.parent_role not in known_roles:
-                raise ValueError(
-                    f"SFI hierarchy role {item.role!r} references unknown parent_role: "
-                    f"{item.parent_role!r}"
-                )
-
-        context_roles = {rule.role for rule in self.context_spine.heading_rules}
-        missing_context_roles = sorted(
-            item.role
-            for item in self.sfi_hierarchy_roles
-            if item.source == "context" and item.role not in context_roles
-        )
-        if missing_context_roles:
-            raise ValueError(
-                "Context-sourced SFI hierarchy roles are not produced by "
-                f"context_spine.heading_rules: {missing_context_roles}"
-            )
-
-    @model_validator(mode="after")
-    def validate_profile_configuration(self) -> DocumentProfile:
-        """Validate cross-field DocumentProfile configuration.
-
-        Returns
-        -------
-        DocumentProfile
-            The validated profile.
-
-        Raises
-        ------
-        ValueError
-            If code handling, parent rules, or windowing configuration is invalid.
-        """
-
-        known = set(self.code_patterns.keys())
-        self._validate_stable_codes()
-        self._validate_windowing()
-        self._validate_code_parent_rules(known)
-        self._validate_statement_type_keys(known)
-        self._validate_table_signature_policy()
-        self._validate_sfi_hierarchy_roles()
-        return self
