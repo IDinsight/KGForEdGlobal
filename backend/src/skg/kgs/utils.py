@@ -472,7 +472,6 @@ def build_run_manifest(kg_run_inputs: KGInputs) -> dict[str, Any]:
     return {
         "block_type_counts": dict(sorted(counts.items())),
         "code_pattern_match_counts": kg_run_inputs.code_pattern_match_counts,
-        "completed_at": None,
         "country": document_profile.country,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "doc_key": document_ir.doc_key,
