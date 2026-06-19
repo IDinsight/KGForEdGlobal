@@ -626,33 +626,30 @@ def _collect_code_parent_hints(
 def _collect_nearby_heading_keys_for_tables(
     *, document_profile: DocumentProfile, table_segments: Sequence[Any]
 ) -> set[tuple[int, int]]:
-    """Collect heading keys from selected tables' nearby section paths.
+    """Collect source keys for table-adjacent context heading blocks.
 
-    This function runs after table selection but before block selection. It only sees
-    tables that already passed `_get_table_selection_reasons()`. The problem it's
-    trying to solve is the following: if the standards are mostly in tables, selecting
-    only the table may lose important hierarchy context that lives in nearby headings.
-    For example, for Ghana-style tables, the table body may contain content standards
-    and indicators, but the grade/strand/sub-strand context may sit above the table as
-    headings. Selecting those headings as block windows gives the later LLM extraction
-    stage and the debug artifacts more hierarchy evidence. So this function is a
-    context-preservation helper:
-
-        selected standards table
-            -> include its nearby headings as selected block segments too
+    This function runs after independent table selection and before the final
+    materialization pass. When `include_context_blocks_for_selected_tables` is true, it
+    looks at each selected table's bounded nearby heading refs and returns the
+    source-address keys for those headings. The final selection pass can then include
+    matching BlockSegments as context windows without treating those context windows as
+    direct block-extraction hits.
 
     Parameters
     ----------
     document_profile
         Country/document-specific KG extraction profile.
     table_segments
-        Selected table segments.
+        Already selected table segments.
 
     Returns
     -------
     set[tuple[int, int]]
         Set of `(page_index, item_index)` heading keys.
     """
+
+    if not document_profile.include_context_blocks_for_selected_tables:
+        return set()
 
     keys: set[tuple[int, int]] = set()
 
@@ -854,55 +851,119 @@ def _format_context_label(
         return match.group(0).strip()
 
 
-def _get_block_selection_reasons(
+def _get_block_context_selection_reasons(
     *,
+    context_heading_keys: set[tuple[int, int]],
     document_profile: DocumentProfile,
-    nearby_heading_keys: set[tuple[int, int]],
     segment: BlockSegment,
 ) -> list[str]:
-    """Return document profile-driven reasons for selecting a BlockSegment for Academic
-    Standards extraction.
+    """Return reasons for selecting a block only as context for selected tables.
 
-    The function first derives source text from the block payload. Blocks with no
-    usable source text are skipped. It then selects the block when at least one
-    conservative profile signal is present: the block text contains a configured
-    source-code match, the block text matches a context-spine heading rule, the block's
-    source address is one of the nearby heading keys collected from selected tables, or
-    the block's section-selection text matches a configured target section pattern.
-
-    For block segments, section-selection text includes the raw `section_path` heading
-    text, `local_code` when present, `columns_signature` when present, and the block's
-    own source text. This makes section-pattern matching broad: a pattern may match
-    inherited context or the block body itself.
-
-    This function does not perform semantic extraction and does not decide final
-    StandardsFrameworkItems. It only decides whether a source block should be packaged
-    into an extraction window for later LLM extraction. It also does not currently
-    apply block-specific exclusion rules; any matching positive signal selects the
-    block.
+    This is separate from direct block extraction. A block can be selected here when
+    its first source provenance key is one of the nearby heading keys collected from
+    already selected tables. Block exclusion policy still applies, so a noisy heading
+    can be suppressed by block type, block text, or nearby section context.
 
     Parameters
     ----------
+    context_heading_keys
+        Source-address keys collected from selected tables' nearby heading refs.
     document_profile
         Country/document-specific KG extraction profile.
-    nearby_heading_keys
-        Heading keys referenced by selected table windows.
     segment
         Candidate block segment.
 
     Returns
     -------
     list[str]
-        Selection reasons, empty when the block should not be selected.
+        Context-block selection reasons, empty when the block is not table context.
     """
+
+    if not document_profile.include_context_blocks_for_selected_tables:
+        return []
 
     source_text = _build_block_source_text(segment.model_dump(mode="json"))
 
     if not source_text:
         return []
 
-    section_text = _segment_section_text(segment)
+    section_text = _segment_selection_context_text(
+        document_profile=document_profile, include_block_text=False, segment=segment
+    )
+
+    if _is_block_excluded(
+        document_profile=document_profile,
+        section_text=section_text,
+        segment=segment,
+        source_text=source_text,
+    ):
+        return []
+
+    segment_heading_key = (
+        segment.segment_provenance[0].page_index,
+        segment.segment_provenance[0].item_index,
+    )
+
+    if segment_heading_key not in context_heading_keys:
+        return []
+
+    return ["block_is_context_heading_for_selected_table"]
+
+
+def _get_block_selection_reasons(
+    *, document_profile: DocumentProfile, segment: BlockSegment
+) -> list[str]:
+    """Return direct block-selection reasons for Academic Standards extraction.
+
+    Direct block selection is independent of table selection. It is enabled by
+    `DocumentProfile.include_block_windows` and can select block segments using block
+    type allow-lists, block text patterns, bounded section-context patterns, stable
+    source-code matches, or profile context-heading rules. Table-adjacent context
+    headings are handled separately by `_get_block_context_selection_reasons(...)`.
+
+    Exclusion rules are applied first. A block is not selected if its block type,
+    bounded section context, or own source text matches a configured block exclusion.
+    Section-context pattern checks use only bounded nearby headings plus segment
+    metadata, rather than the full raw `section_path`, to reduce stale-heading noise.
+
+    Parameters
+    ----------
+    document_profile
+        Country/document-specific KG extraction profile.
+    segment
+        Candidate block segment.
+
+    Returns
+    -------
+    list[str]
+        Direct block-selection reasons, empty when the block should not be selected.
+    """
+
+    if not document_profile.include_block_windows:
+        return []
+
+    source_text = _build_block_source_text(segment.model_dump(mode="json"))
+
+    if not source_text:
+        return []
+
+    section_text = _segment_selection_context_text(
+        document_profile=document_profile, include_block_text=False, segment=segment
+    )
+
+    if _is_block_excluded(
+        document_profile=document_profile,
+        section_text=section_text,
+        segment=segment,
+        source_text=source_text,
+    ):
+        return []
+
+    block_type = segment.block_type.value
     reasons: list[str] = []
+
+    if block_type is not None and block_type in document_profile.target_block_types:
+        reasons.append("block_type_target_match")
 
     if _collect_code_matches(
         document_profile=document_profile, source_text=source_text
@@ -919,18 +980,15 @@ def _get_block_selection_reasons(
     ):
         reasons.append("block_matches_context_heading_rule")
 
-    segment_heading_key = (
-        segment.segment_provenance[0].page_index,
-        segment.segment_provenance[0].item_index,
-    )
-
-    if segment_heading_key in nearby_heading_keys:
-        reasons.append("block_is_nearby_heading_for_selected_table")
+    if _matches_any_pattern(
+        patterns=document_profile.target_block_section_patterns, text=section_text
+    ):
+        reasons.append("block_section_target_pattern_match")
 
     if _matches_any_pattern(
-        patterns=document_profile.target_table_section_patterns, text=section_text
+        patterns=document_profile.target_block_text_patterns, text=source_text
     ):
-        reasons.append("block_matches_target_section_pattern")
+        reasons.append("block_text_target_pattern_match")
 
     return unique_clean_strings(reasons)
 
@@ -938,32 +996,14 @@ def _get_block_selection_reasons(
 def _get_table_selection_reasons(
     *, document_profile: DocumentProfile, segment: TableSegment
 ) -> list[str]:
-    """Return document profile driven table-selection reasons for a table segment.
+    """Return table-selection reasons for Academic Standards extraction.
 
-    The purpose of this function is to determine if a TableSegment is eligible for
-    later extraction windows. If so, then what is the reason for its eligibility?
-
-    Table selection is a document profile-driven eligibility check. For each
-    TableSegment, the function first builds a small selection context from the table's
-    normalized `columns_signature` and section context. Exclusion rules are applied
-    before inclusion rules: an excluded columns_signature or excluded section-pattern
-    match returns no selection reasons, even if the table would otherwise match a
-    target rule.
-
-    A table is selected when it matches either a configured target columns_signature or
-    a configured target section pattern. If the profile defines no target table
-    signatures and no target section patterns, the function falls back to selecting all
-    non-excluded tables and records "table_selected_no_target_policy_configured".
-
-    Note that section-pattern matching currently uses `_segment_section_text(...)`,
-    which is built from the segment's raw DocumentIR `section_path`, plus `local_code`
-    and `columns_signature` where present. `section_path` is semantic-light heading
-    context, not a guaranteed clean hierarchy. It can contain noisy or stale headings
-    from earlier document regions. Therefore, target/excluded section patterns should
-    be used carefully; precise `columns_signature` matches are preferred when
-    available. For messier/no-code documents, a future refinement should consider
-    matching section patterns against bounded nearby headings or profile-derived
-    structured context rather than the full raw section_path.
+    Table selection is independent of direct block selection. It is enabled by
+    `DocumentProfile.include_table_windows`, applies table exclusions first, and then
+    selects a table when its columns signature or bounded section context matches a
+    configured table target rule. Section-pattern matching uses nearby heading context
+    rather than the full raw `section_path`, which reduces over-selection from stale or
+    overly broad heading trails.
 
     Parameters
     ----------
@@ -975,11 +1015,16 @@ def _get_table_selection_reasons(
     Returns
     -------
     list[str]
-        Selection reasons, empty when the table should not be selected.
+        Table-selection reasons, empty when the table should not be selected.
     """
 
+    if not document_profile.include_table_windows:
+        return []
+
     columns_signature = segment.columns_signature or "<missing>"
-    section_text = _segment_section_text(segment)
+    section_text = _segment_selection_context_text(
+        document_profile=document_profile, include_block_text=False, segment=segment
+    )
 
     if columns_signature in document_profile.excluded_table_columns_signatures:
         return []
@@ -998,12 +1043,6 @@ def _get_table_selection_reasons(
         patterns=document_profile.target_table_section_patterns, text=section_text
     ):
         reasons.append("table_section_target_pattern_match")
-
-    if not (
-        document_profile.target_table_columns_signatures
-        or document_profile.target_table_section_patterns
-    ):
-        reasons.append("table_selected_no_target_policy_configured")
 
     return unique_clean_strings(reasons)
 
@@ -1067,6 +1106,47 @@ def _heading_match_candidates(
 
     candidates.sort(key=lambda item: (item[0], item[1]))
     return [item[2] for item in candidates]
+
+
+def _is_block_excluded(
+    *,
+    document_profile: DocumentProfile,
+    section_text: str,
+    segment: BlockSegment,
+    source_text: str,
+) -> bool:
+    """Return whether a block is removed by block exclusion policy.
+
+    Parameters
+    ----------
+    document_profile
+        Country/document-specific KG extraction profile.
+    section_text
+        Bounded nearby section-context text for the segment.
+    segment
+        Candidate block segment.
+    source_text
+        The block's own source text.
+
+    Returns
+    -------
+    bool
+        True when the block should be excluded from block/context selection.
+    """
+
+    block_type = segment.block_type.value
+
+    if block_type is not None and block_type in document_profile.excluded_block_types:
+        return True
+
+    if _matches_any_pattern(
+        patterns=document_profile.excluded_block_section_patterns, text=section_text
+    ):
+        return True
+
+    return _matches_any_pattern(
+        patterns=document_profile.excluded_block_text_patterns, text=source_text
+    )
 
 
 def _iter_row_chunks(
@@ -1334,15 +1414,11 @@ def _optional_model_dump_by_indexes(
 
 
 def _segment_section_text(segment: Segment) -> str:
-    """Build section-selection text for a segment.
+    """Build full raw section text for debug use.
 
-    For a table segment, the section text is basically: all `section_path` heading
-    texts + table `local_code` (if any) + table `columns_signature` (if any). It does
-    **not** include table row/cell content for table selection. In other words, for
-    table selection, section-pattern matching is not matching the actual table body; it
-    is matching the heading trail plus table metadata.
-
-    For a block segment, it also appends the block's own source text.
+    This helper preserves the earlier full-section-path behavior for diagnostics. New
+    selection policy should prefer `_segment_selection_context_text(...)`, which uses
+    bounded nearby headings and avoids stale section-path noise.
 
     Parameters
     ----------
@@ -1352,7 +1428,8 @@ def _segment_section_text(segment: Segment) -> str:
     Returns
     -------
     str
-        Segment section text, including local code and columns signature where present.
+        Full section-path text plus local code, columns signature, and block text when
+        present.
     """
 
     parts = [heading.text for heading in segment.section_path]
@@ -1364,6 +1441,53 @@ def _segment_section_text(segment: Segment) -> str:
         parts.append(str(segment.columns_signature))
 
     if segment.kind == "block":
+        parts.append(_build_block_source_text(segment.model_dump(mode="json")))
+
+    return "\n".join(part for part in parts if part)
+
+
+def _segment_selection_context_text(
+    *, document_profile: DocumentProfile, include_block_text: bool, segment: Segment
+) -> str:
+    """Build bounded context text for segment selection rules.
+
+    Selection-time section pattern matching intentionally uses the same bounded nearby
+    heading view that extraction windows expose for debug/fallback context. This avoids
+    matching every stale heading in a long raw `section_path`. The returned text also
+    includes segment-level metadata that is useful for profile rules, such as local
+    codes and table column signatures. Block source text is only included when the
+    caller explicitly asks for it; block text patterns should normally inspect source
+    text directly instead.
+
+    Parameters
+    ----------
+    document_profile
+        Country/document-specific KG extraction profile.
+    include_block_text
+        Whether to append a block segment's own source text.
+    segment
+        DocumentIR segment.
+
+    Returns
+    -------
+    str
+        Bounded selection context text.
+    """
+
+    parts = [
+        heading_ref.text
+        for heading_ref in _limit_nearby_headings(
+            document_profile=document_profile, section_path=segment.section_path
+        )
+    ]
+
+    if segment.local_code:
+        parts.append(str(segment.local_code))
+
+    if getattr(segment, "columns_signature", None):
+        parts.append(str(segment.columns_signature))
+
+    if include_block_text and segment.kind == "block":
         parts.append(_build_block_source_text(segment.model_dump(mode="json")))
 
     return "\n".join(part for part in parts if part)
@@ -1457,47 +1581,21 @@ def select_extraction_segments(
 ) -> list[SelectedExtractionSegment]:
     """Select DocumentIR segments eligible for Academic Standards extraction.
 
-    This function is a conservative source-selection stage, not an extraction stage. It
-    does not decide which rows/cells are final StandardsFrameworkItems, does not call
-    the LLM, and does not build extraction windows. Instead, it chooses which stitched
-    DocumentIR segments are eligible to be sent into later LLM-ready window
-    construction.
+    This is a conservative source-selection stage, not an extraction stage. It does not
+    decide final StandardsFrameworkItems, call the LLM, or build extraction windows. It
+    only decides which stitched DocumentIR segments should be packaged into later
+    LLM-ready extraction windows.
 
-    Table selection is driven by document profile target/excluded column signatures and
-    section patterns. Block selection only runs when `include_block_windows` is True
-    and is intentionally conservative: it selects blocks that contain document profile
-    code matches, match profile context-heading rules, match target section patterns,
-    or serve as nearby heading context for selected tables.
+    Table selection, direct block selection, and table-context block selection are
+    separate policies:
 
-    The process is as follows:
-
-    1. First pass over DocumentIR segments:
-       - Inspect only table segments.
-       - Run `_get_table_selection_reasons(...)`.
-       - Store selected table IDs + their table reasons.
-       - Keep the selected table segment objects for the next step.
-
-    2. Collect context-heading keys from selected tables:
-       - Look at each selected table’s limited nearby `section_path` headings.
-       - Convert those heading refs into `(page_index, item_index)` keys.
-       - These keys are later used to select matching block segments as context.
-
-    3. Second pass over all DocumentIR segments, in source order:
-       - If the segment is a table, reuse the table reasons from pass 1.
-       - If the segment is a block and `include_block_windows=True`, compute block
-            reasons via `_get_block_selection_reasons(...)`.
-       - If the segment has no reasons, skip it.
-       - If it has one or more reasons, create a `SelectedExtractionSegment` record
-            with source metadata, deterministic `selection_id`, `selection_index`,
-            provenance pages, section path, row count/table signature/block type where
-            applicable, and the selection reasons.
-
-    4. Final guard/persist:
-       - If no segments were selected, raise unless the profile explicitly allows zero
-            output.
-       - Optionally write `selected_extraction_segments.json`.
-       - Return the selected segment records for downstream extraction-window
-            construction.
+    1. Select table segments independently with `_get_table_selection_reasons(...)`.
+    2. Collect nearby heading keys from the selected tables, if configured.
+    3. Select block segments independently with `_get_block_selection_reasons(...)`.
+    4. Select additional block segments as table context with
+        `_get_block_context_selection_reasons(...)`.
+    5. Materialize selected tables and blocks in original DocumentIR order so that
+        selected-segment order and downstream extraction-window order remain stable.
 
     Parameters
     ----------
@@ -1521,11 +1619,6 @@ def select_extraction_segments(
         `metadata.allow_zero_extraction_segments`.
     """
 
-    # 1. Loop over every DocumentIR segment and process table segments first. This loop
-    # only decides which tables are selected and records their table selection reasons.
-    # This pass is needed because selected tables are needed to compute nearby heading
-    # keys. Those heading keys are then used when selecting blocks (i.e., block
-    # selection depends on table selection).
     selected_table_reasons: dict[str, list[str]] = {}
     selected_table_segments: list[TableSegment] = []
 
@@ -1537,58 +1630,51 @@ def select_extraction_segments(
             document_profile=document_profile, segment=segment
         )
 
-        if table_reasons:
-            selected_table_reasons[segment.segment_id] = table_reasons
-            selected_table_segments.append(segment)
+        if not table_reasons:
+            continue
 
-    nearby_heading_keys = _collect_nearby_heading_keys_for_tables(
+        selected_table_reasons[segment.segment_id] = table_reasons
+        selected_table_segments.append(segment)
+
+    context_heading_keys = _collect_nearby_heading_keys_for_tables(
         document_profile=document_profile, table_segments=selected_table_segments
     )
+    selected_block_reasons: dict[str, list[str]] = {}
 
-    # 2. This loop is the materialization pass. It walks the entire document again, in
-    # original DocumentIR order, and turns the selected tables + selected blocks into
-    # actual SelectedExtractionSegment records. In other words, this loop gives us a
-    # clean final output ordered exactly like the source document:
-    #
-    #   DocumentIR segment order
-    #     -> selected table/block order
-    #         -> selection_index order
-    #             -> later extraction window order
-    #
-    # This ordering is important because `build_llm_extraction_windows()` later
-    # consumes `selected_segments` in order and builds block/table windows from them.
+    for segment in document_ir.segments:
+        if segment.kind != "block":
+            continue
+
+        block_reasons = _get_block_selection_reasons(
+            document_profile=document_profile, segment=segment
+        )
+        context_reasons = _get_block_context_selection_reasons(
+            context_heading_keys=context_heading_keys,
+            document_profile=document_profile,
+            segment=segment,
+        )
+        selection_reasons = unique_clean_strings([*block_reasons, *context_reasons])
+
+        if selection_reasons:
+            selected_block_reasons[segment.segment_id] = selection_reasons
+
     selected_segments: list[SelectedExtractionSegment] = []
 
     for segment in document_ir.segments:
-        selection_reasons: list[str] = []
+        selection_reasons = []
 
-        if segment.kind == "table":
+        if segment.kind == "block":
+            selection_reasons = selected_block_reasons.get(segment.segment_id, [])
+        elif segment.kind == "table":
             selection_reasons = selected_table_reasons.get(segment.segment_id, [])
 
-        # Block selection only happens if the profile explicitly allows block windows.
-        # The block can be selected because it contains a profile code match, matches a
-        # context-heading rule, is a nearby heading for a selected table, or matches
-        # target section patterns.
-        elif segment.kind == "block" and document_profile.include_block_windows:
-            selection_reasons = _get_block_selection_reasons(
-                document_profile=document_profile,
-                nearby_heading_keys=nearby_heading_keys,
-                segment=segment,
-            )
-
-        # If neither table logic nor block logic produces reasons, the segment is
-        # ignored.
         if not selection_reasons:
             continue
 
-        block_type = getattr(segment, "block_type", None)
+        block_type = segment.block_type.value if segment.kind == "block" else None
         selected_segments.append(
             SelectedExtractionSegment(
-                block_type=(
-                    str(getattr(block_type, "value", block_type))
-                    if block_type is not None
-                    else None
-                ),
+                block_type=block_type,
                 columns_signature=getattr(segment, "columns_signature", None),
                 local_code=getattr(segment, "local_code", None),
                 row_count=len(segment.rows) if segment.kind == "table" else None,
@@ -1600,7 +1686,7 @@ def select_extraction_segments(
                 ),
                 selection_index=len(selected_segments),
                 selection_reasons=selection_reasons,
-                source_page_indexes=sorted(  # Debug: where did the segment come from?
+                source_page_indexes=sorted(
                     {
                         int(provenance.page_index)
                         for provenance in segment.segment_provenance

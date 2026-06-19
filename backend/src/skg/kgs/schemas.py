@@ -468,6 +468,49 @@ class DocumentProfile(BaseSchema):
     provider: str
     subject: str
 
+    # Block selection policy.
+    excluded_block_section_patterns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Regex patterns over bounded nearby heading/section text that exclude block "
+            "segments from direct block extraction and table-context block selection."
+        ),
+    )
+    excluded_block_text_patterns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Regex patterns over a block's own source text that exclude the block from "
+            "direct block extraction and table-context block selection."
+        ),
+    )
+    excluded_block_types: list[str] = Field(
+        default_factory=list,
+        description=(
+            "DocumentIR block_type values that should never be selected as block windows."
+        ),
+    )
+    target_block_section_patterns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Regex patterns over bounded nearby heading/section text that can select "
+            "block segments independently of table selection."
+        ),
+    )
+    target_block_text_patterns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Regex patterns over a block's own source text that can select block "
+            "segments independently of table selection."
+        ),
+    )
+    target_block_types: list[str] = Field(
+        default_factory=list,
+        description=(
+            "DocumentIR block_type values that should be selected as direct block "
+            "windows when include_block_windows is true."
+        ),
+    )
+
     # Code handling.
     code_parent_rules: list[dict[str, str]] = Field(default_factory=list)
     code_patterns: dict[str, str] = Field(default_factory=dict)
@@ -485,38 +528,48 @@ class DocumentProfile(BaseSchema):
     excluded_table_columns_signatures: list[str] = Field(
         default_factory=list,
         description=(
-            "Column signatures that should never be sent through the SFI extraction "
-            "path, even if they otherwise look table-like. Use this for front matter, "
-            "scope-and-sequence, panel-member tables, or other non-standards tables."
+            "Column signatures that should never be sent through the table SFI "
+            "extraction path, even if another table rule would otherwise include them."
         ),
     )
     excluded_table_section_patterns: list[str] = Field(
         default_factory=list,
         description=(
-            "Regex patterns over nearby heading/section-path text that exclude tables "
-            "from SFI extraction, even if their column signature is otherwise eligible."
+            "Regex patterns over bounded nearby heading/section text that exclude "
+            "tables from SFI extraction, even if their column signature is otherwise "
+            "eligible."
         ),
     )
     target_table_columns_signatures: list[str] = Field(
         default_factory=list,
         description=(
-            "Column signatures that identify table segments eligible for SFI extraction. "
-            "When provided, table-window creation should only target tables whose "
-            "DocumentIR.columns_signature is in this allow-list, unless a later "
-            "profile rule explicitly expands the selection."
+            "Column signatures that identify table segments eligible for SFI extraction."
         ),
     )
     target_table_section_patterns: list[str] = Field(
         default_factory=list,
         description=(
-            "Regex patterns over nearby heading/section-path text that can include "
-            "tables in the SFI extraction set when column signatures alone are not "
-            "sufficient."
+            "Regex patterns over bounded nearby heading/section text that can include "
+            "tables when column signatures alone are not sufficient."
         ),
     )
 
     # Windowing.
-    include_block_windows: bool = True
+    include_block_windows: bool = Field(
+        default=True,
+        description="Whether direct block-selection rules should create block windows.",
+    )
+    include_context_blocks_for_selected_tables: bool = Field(
+        default=True,
+        description=(
+            "Whether headings near selected tables should be selected as contextual "
+            "block windows. This is independent of direct block selection."
+        ),
+    )
+    include_table_windows: bool = Field(
+        default=True,
+        description="Whether table-selection rules should create table windows.",
+    )
     max_rows_per_table_window: int = Field(default=20, ge=1)
     row_overlap: int = Field(default=1, ge=0)
     table_window_mode: Literal["whole_table", "row_chunks"] = "row_chunks"
@@ -606,58 +659,18 @@ class DocumentProfile(BaseSchema):
         v2 = v.strip()
         return v2 if v2 else None
 
-    @field_validator(
-        "excluded_table_columns_signatures", "target_table_columns_signatures"
-    )
-    @classmethod
-    def validate_table_columns_signatures(cls, v: list[str]) -> list[str]:
-        """Validate table column signatures are non-empty and de-duplicated.
+    @staticmethod
+    def _clean_selection_pattern_list(
+        *, field_name: str, values: list[str]
+    ) -> list[str]:
+        """Clean, de-duplicate, and compile-check selection regex patterns.
 
         Parameters
         ----------
-        v
-            Configured table column signatures.
-
-        Returns
-        -------
-        list[str]
-            Cleaned and de-duplicated signatures in stable order.
-
-        Raises
-        ------
-        TypeError
-            If any signature is not a string.
-        """
-
-        cleaned: list[str] = []
-        seen: set[str] = set()
-
-        for signature in v or []:
-            if not isinstance(signature, str):
-                raise TypeError(
-                    "DocumentProfile table column signatures must contain only strings."
-                )
-
-            signature_clean = signature.strip()
-
-            if not signature_clean:
-                continue
-
-            if signature_clean not in seen:
-                cleaned.append(signature_clean)
-                seen.add(signature_clean)
-
-        return cleaned
-
-    @field_validator("excluded_table_section_patterns", "target_table_section_patterns")
-    @classmethod
-    def validate_table_section_patterns(cls, v: list[str]) -> list[str]:
-        """Validate table section-selection regex patterns.
-
-        Parameters
-        ----------
-        v
-            Configured section-context regex patterns.
+        field_name
+            Human-readable field name used in error messages.
+        values
+            Configured regex pattern strings.
 
         Returns
         -------
@@ -669,16 +682,16 @@ class DocumentProfile(BaseSchema):
         TypeError
             If any pattern is not a string.
         ValueError
-            If any pattern is empty or does not compile.
+            If any non-empty pattern does not compile.
         """
 
         cleaned: list[str] = []
         seen: set[str] = set()
 
-        for pattern in v or []:
+        for pattern in values or []:
             if not isinstance(pattern, str):
                 raise TypeError(
-                    "DocumentProfile table section patterns must contain only strings."
+                    f"DocumentProfile.{field_name} must contain only strings."
                 )
 
             pattern_clean = pattern.strip()
@@ -690,7 +703,7 @@ class DocumentProfile(BaseSchema):
                 re.compile(pattern_clean)
             except re.error as exc:
                 raise ValueError(
-                    f"Invalid table section-selection regex pattern: {pattern_clean!r}: {exc}"
+                    f"Invalid regex in DocumentProfile.{field_name}: {pattern_clean!r}: {exc}"
                 ) from exc
 
             if pattern_clean not in seen:
@@ -698,6 +711,102 @@ class DocumentProfile(BaseSchema):
                 seen.add(pattern_clean)
 
         return cleaned
+
+    @staticmethod
+    def _clean_selection_string_list(
+        *, field_name: str, values: list[str]
+    ) -> list[str]:
+        """Clean and de-duplicate profile selection string lists.
+
+        Parameters
+        ----------
+        field_name
+            Human-readable field name used in error messages.
+        values
+            Configured string values.
+
+        Returns
+        -------
+        list[str]
+            Cleaned and de-duplicated strings in stable order.
+
+        Raises
+        ------
+        TypeError
+            If any value is not a string.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for value in values or []:
+            if not isinstance(value, str):
+                raise TypeError(
+                    f"DocumentProfile.{field_name} must contain only strings."
+                )
+
+            value_clean = value.strip()
+
+            if not value_clean:
+                continue
+
+            if value_clean not in seen:
+                cleaned.append(value_clean)
+                seen.add(value_clean)
+
+        return cleaned
+
+    @field_validator(
+        "excluded_block_types",
+        "excluded_table_columns_signatures",
+        "target_block_types",
+        "target_table_columns_signatures",
+    )
+    @classmethod
+    def validate_selection_string_lists(cls, v: list[str]) -> list[str]:
+        """Validate non-regex selection string lists.
+
+        Parameters
+        ----------
+        v
+            Configured selection strings.
+
+        Returns
+        -------
+        list[str]
+            Cleaned and de-duplicated strings in stable order.
+        """
+
+        return cls._clean_selection_string_list(
+            field_name="selection string list", values=v
+        )
+
+    @field_validator(
+        "excluded_block_section_patterns",
+        "excluded_block_text_patterns",
+        "excluded_table_section_patterns",
+        "target_block_section_patterns",
+        "target_block_text_patterns",
+        "target_table_section_patterns",
+    )
+    @classmethod
+    def validate_selection_pattern_lists(cls, v: list[str]) -> list[str]:
+        """Validate regex-based selection pattern lists.
+
+        Parameters
+        ----------
+        v
+            Configured regex patterns.
+
+        Returns
+        -------
+        list[str]
+            Cleaned and de-duplicated regex patterns in stable order.
+        """
+
+        return cls._clean_selection_pattern_list(
+            field_name="selection pattern list", values=v
+        )
 
     @field_validator("code_patterns")
     @classmethod
@@ -937,19 +1046,29 @@ class DocumentProfile(BaseSchema):
                 f"code_patterns: {unknown_statement_type_keys}"
             )
 
-    def _validate_table_signature_policy(self) -> None:
-        """Ensure table-selection policy does not both target and exclude columns.
+    def _validate_selection_overlap_policy(self) -> None:
+        """Ensure selection policies do not both target and exclude the same value.
 
         Raises
         ------
         ValueError
-            If any columns_signature appears in both target and excluded sets.
+            If a table columns_signature or block_type appears in both its target and
+            excluded selection lists.
         """
 
+        overlapping_block_types = sorted(
+            set(self.target_block_types) & set(self.excluded_block_types)
+        )
         overlapping_table_signatures = sorted(
             set(self.target_table_columns_signatures)
             & set(self.excluded_table_columns_signatures)
         )
+
+        if overlapping_block_types:
+            raise ValueError(
+                "DocumentProfile block-selection policy cannot target and exclude the "
+                f"same block_type values: {overlapping_block_types}"
+            )
 
         if overlapping_table_signatures:
             raise ValueError(
@@ -1016,7 +1135,7 @@ class DocumentProfile(BaseSchema):
         self._validate_windowing()
         self._validate_code_parent_rules(known)
         self._validate_statement_type_keys(known)
-        self._validate_table_signature_policy()
+        self._validate_selection_overlap_policy()
         self._validate_sfi_hierarchy_roles()
         return self
 
