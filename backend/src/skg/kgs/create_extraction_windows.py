@@ -915,11 +915,12 @@ def _get_block_selection_reasons(
 ) -> list[str]:
     """Return direct block-selection reasons for Academic Standards extraction.
 
-    Direct block selection is independent of table selection. It is enabled by
-    `DocumentProfile.include_block_windows` and can select block segments using block
-    type allow-lists, block text patterns, bounded section-context patterns, stable
-    source-code matches, or profile context-heading rules. Table-adjacent context
-    headings are handled separately by `_get_block_context_selection_reasons(...)`.
+    Direct block selection is independent of table selection and is driven only by
+    explicit block target rules in the document profile. Source-code regexes and
+    context-heading rules can still select blocks, but only when their code types or
+    context rule names are listed in `target_block_code_match_types` or
+    `target_block_context_rule_names`. This keeps code patterns and context-spine rules
+    available as extraction hints without making them hidden block-window selectors.
 
     Exclusion rules are applied first. A block is not selected if its block type,
     bounded section context, or own source text matches a configured block exclusion.
@@ -938,9 +939,6 @@ def _get_block_selection_reasons(
     list[str]
         Direct block-selection reasons, empty when the block should not be selected.
     """
-
-    if not document_profile.include_block_windows:
-        return []
 
     source_text = _build_block_source_text(segment.model_dump(mode="json"))
 
@@ -965,20 +963,26 @@ def _get_block_selection_reasons(
     if block_type is not None and block_type in document_profile.target_block_types:
         reasons.append("block_type_target_match")
 
-    if _collect_code_matches(
-        document_profile=document_profile, source_text=source_text
-    ):
-        reasons.append("block_contains_profile_code_match")
-
-    if _heading_match_candidates(
-        document_profile=document_profile,
-        heading_ref=SectionHeadingRef(
-            item_index=segment.segment_provenance[0].item_index,
-            page_index=segment.segment_provenance[0].page_index,
-            text=source_text,
+    if _matches_any_code_type(
+        code_matches=_collect_code_matches(
+            document_profile=document_profile, source_text=source_text
         ),
+        target_code_types=document_profile.target_block_code_match_types,
     ):
-        reasons.append("block_matches_context_heading_rule")
+        reasons.append("block_code_match_type_target_match")
+
+    if _matches_any_context_rule_name(
+        context_items=_heading_match_candidates(
+            document_profile=document_profile,
+            heading_ref=SectionHeadingRef(
+                item_index=segment.segment_provenance[0].item_index,
+                page_index=segment.segment_provenance[0].page_index,
+                text=source_text,
+            ),
+        ),
+        target_rule_names=document_profile.target_block_context_rule_names,
+    ):
+        reasons.append("block_context_rule_name_target_match")
 
     if _matches_any_pattern(
         patterns=document_profile.target_block_section_patterns, text=section_text
@@ -998,9 +1002,9 @@ def _get_table_selection_reasons(
 ) -> list[str]:
     """Return table-selection reasons for Academic Standards extraction.
 
-    Table selection is independent of direct block selection. It is enabled by
-    `DocumentProfile.include_table_windows`, applies table exclusions first, and then
-    selects a table when its columns signature or bounded section context matches a
+    Table selection is independent of block selection and is driven only by explicit
+    table target rules in the document profile. Exclusions are applied first; then a
+    table is selected when its column signature or bounded section context matches a
     configured table target rule. Section-pattern matching uses nearby heading context
     rather than the full raw `section_path`, which reduces over-selection from stale or
     overly broad heading trails.
@@ -1017,9 +1021,6 @@ def _get_table_selection_reasons(
     list[str]
         Table-selection reasons, empty when the table should not be selected.
     """
-
-    if not document_profile.include_table_windows:
-        return []
 
     columns_signature = segment.columns_signature or "<missing>"
     section_text = _segment_selection_context_text(
@@ -1227,6 +1228,59 @@ def _limit_nearby_headings(
     return list(section_path[-max_nearby_headings:])
 
 
+def _matches_any_code_type(
+    *, code_matches: Sequence[CodeMatch], target_code_types: Sequence[str]
+) -> bool:
+    """Return whether any code match has a targeted code type.
+
+    Parameters
+    ----------
+    code_matches
+        Code matches found in a block's source text.
+    target_code_types
+        Explicit document-profile code types that can select direct block windows.
+
+    Returns
+    -------
+    bool
+        True when at least one code match uses a targeted code type.
+    """
+
+    if not target_code_types:
+        return False
+
+    target_code_type_set = set(target_code_types)
+    return any(
+        code_match.code_type in target_code_type_set for code_match in code_matches
+    )
+
+
+def _matches_any_context_rule_name(
+    *, context_items: Sequence[StructuredContextItem], target_rule_names: Sequence[str]
+) -> bool:
+    """Return whether any structured context item used a targeted rule name.
+
+    Parameters
+    ----------
+    context_items
+        Context candidates produced by applying context-spine heading rules.
+    target_rule_names
+        Explicit document-profile context rule names that can select direct block
+        windows.
+
+    Returns
+    -------
+    bool
+        True when at least one context candidate came from a targeted rule name.
+    """
+
+    if not target_rule_names:
+        return False
+
+    target_rule_name_set = set(target_rule_names)
+    return any(item.rule_name in target_rule_name_set for item in context_items)
+
+
 def _matches_any_pattern(*, patterns: Sequence[str], text: str) -> bool:
     """Return whether any regex pattern matches the given text.
 
@@ -1413,39 +1467,6 @@ def _optional_model_dump_by_indexes(
     return _model_dump_by_indexes(indexes=indexes, values=values)
 
 
-def _segment_section_text(segment: Segment) -> str:
-    """Build full raw section text for debug use.
-
-    This helper preserves the earlier full-section-path behavior for diagnostics. New
-    selection policy should prefer `_segment_selection_context_text(...)`, which uses
-    bounded nearby headings and avoids stale section-path noise.
-
-    Parameters
-    ----------
-    segment
-        DocumentIR segment.
-
-    Returns
-    -------
-    str
-        Full section-path text plus local code, columns signature, and block text when
-        present.
-    """
-
-    parts = [heading.text for heading in segment.section_path]
-
-    if segment.local_code:
-        parts.append(str(segment.local_code))
-
-    if getattr(segment, "columns_signature", None):
-        parts.append(str(segment.columns_signature))
-
-    if segment.kind == "block":
-        parts.append(_build_block_source_text(segment.model_dump(mode="json")))
-
-    return "\n".join(part for part in parts if part)
-
-
 def _segment_selection_context_text(
     *, document_profile: DocumentProfile, include_block_text: bool, segment: Segment
 ) -> str:
@@ -1491,6 +1512,91 @@ def _segment_selection_context_text(
         parts.append(_build_block_source_text(segment.model_dump(mode="json")))
 
     return "\n".join(part for part in parts if part)
+
+
+def _select_block_segments(
+    *,
+    context_heading_keys: set[tuple[int, int]],
+    document_ir: DocumentIR,
+    document_profile: DocumentProfile,
+) -> dict[str, list[str]]:
+    """Select block segments eligible for extraction and their selection reasons.
+
+    Parameters
+    ----------
+    context_heading_keys
+        Heading keys collected from selected tables, used to identify table-context
+        blocks.
+    document_ir
+        Validated stitched DocumentIR.
+    document_profile
+        Country/document-specific KG extraction profile.
+
+    Returns
+    -------
+    dict[str, list[str]]
+        A mapping of segment_id to merged selection reasons.
+    """
+
+    selected_block_reasons: dict[str, list[str]] = {}
+
+    for segment in document_ir.segments:
+        if segment.kind != "block":
+            continue
+
+        block_reasons = _get_block_selection_reasons(
+            document_profile=document_profile, segment=segment
+        )
+        context_reasons = _get_block_context_selection_reasons(
+            context_heading_keys=context_heading_keys,
+            document_profile=document_profile,
+            segment=segment,
+        )
+        selection_reasons = unique_clean_strings([*block_reasons, *context_reasons])
+
+        if selection_reasons:
+            selected_block_reasons[segment.segment_id] = selection_reasons
+
+    return selected_block_reasons
+
+
+def _select_table_segments(
+    *, document_ir: DocumentIR, document_profile: DocumentProfile
+) -> tuple[dict[str, list[str]], list[TableSegment]]:
+    """Select table segments eligible for extraction and their selection reasons.
+
+    Parameters
+    ----------
+    document_ir
+        Validated stitched DocumentIR.
+    document_profile
+        Country/document-specific KG extraction profile.
+
+    Returns
+    -------
+    tuple[dict[str, list[str]], list[TableSegment]]
+        A mapping of segment_id to selection reasons, and the ordered list of selected
+        table segments.
+    """
+
+    selected_table_reasons: dict[str, list[str]] = {}
+    selected_table_segments: list[TableSegment] = []
+
+    for segment in document_ir.segments:
+        if segment.kind != "table":
+            continue
+
+        table_reasons = _get_table_selection_reasons(
+            document_profile=document_profile, segment=segment
+        )
+
+        if not table_reasons:
+            continue
+
+        selected_table_reasons[segment.segment_id] = table_reasons
+        selected_table_segments.append(segment)
+
+    return selected_table_reasons, selected_table_segments
 
 
 def build_llm_extraction_windows(
@@ -1597,6 +1703,31 @@ def select_extraction_segments(
     5. Materialize selected tables and blocks in original DocumentIR order so that
         selected-segment order and downstream extraction-window order remain stable.
 
+    The process is as follows:
+
+    1. First pass over DocumentIR:
+        - Inspect table segments only
+        - Select tables via explicit table target/exclusion rules
+
+    2. Collect table-context heading keys:
+        - Only from selected tables
+        - Only if `include_context_blocks_for_selected_tables` is true
+
+    3. Second pass over DocumentIR:
+        - Inspect block segments only
+        - Compute direct block-selection reasons
+        - Compute table-context block-selection reasons
+        - Merge those reasons per block
+
+    4. Final materialization pass:
+        - Walk all DocumentIR segments in original order
+        - Emit selected blocks and tables as SelectedExtractionSegment records
+
+    5. Downstream:
+        - Selected block segments become block windows
+        - Selected table segments become table windows, using `row_chunks` or
+            `whole_table`
+
     Parameters
     ----------
     document_ir
@@ -1619,65 +1750,46 @@ def select_extraction_segments(
         `metadata.allow_zero_extraction_segments`.
     """
 
-    selected_table_reasons: dict[str, list[str]] = {}
-    selected_table_segments: list[TableSegment] = []
-
-    for segment in document_ir.segments:
-        if segment.kind != "table":
-            continue
-
-        table_reasons = _get_table_selection_reasons(
-            document_profile=document_profile, segment=segment
-        )
-
-        if not table_reasons:
-            continue
-
-        selected_table_reasons[segment.segment_id] = table_reasons
-        selected_table_segments.append(segment)
-
+    selected_table_reasons, selected_table_segments = _select_table_segments(
+        document_ir=document_ir, document_profile=document_profile
+    )
     context_heading_keys = _collect_nearby_heading_keys_for_tables(
         document_profile=document_profile, table_segments=selected_table_segments
     )
-    selected_block_reasons: dict[str, list[str]] = {}
-
-    for segment in document_ir.segments:
-        if segment.kind != "block":
-            continue
-
-        block_reasons = _get_block_selection_reasons(
-            document_profile=document_profile, segment=segment
-        )
-        context_reasons = _get_block_context_selection_reasons(
-            context_heading_keys=context_heading_keys,
-            document_profile=document_profile,
-            segment=segment,
-        )
-        selection_reasons = unique_clean_strings([*block_reasons, *context_reasons])
-
-        if selection_reasons:
-            selected_block_reasons[segment.segment_id] = selection_reasons
+    selected_block_reasons = _select_block_segments(
+        context_heading_keys=context_heading_keys,
+        document_ir=document_ir,
+        document_profile=document_profile,
+    )
 
     selected_segments: list[SelectedExtractionSegment] = []
 
     for segment in document_ir.segments:
-        selection_reasons = []
-
         if segment.kind == "block":
             selection_reasons = selected_block_reasons.get(segment.segment_id, [])
+
+            if not selection_reasons:
+                continue
+
+            block_type = segment.block_type.value
+            row_count = None
         elif segment.kind == "table":
             selection_reasons = selected_table_reasons.get(segment.segment_id, [])
 
-        if not selection_reasons:
+            if not selection_reasons:
+                continue
+
+            block_type = None
+            row_count = len(segment.rows)
+        else:
             continue
 
-        block_type = segment.block_type.value if segment.kind == "block" else None
         selected_segments.append(
             SelectedExtractionSegment(
                 block_type=block_type,
                 columns_signature=getattr(segment, "columns_signature", None),
                 local_code=getattr(segment, "local_code", None),
-                row_count=len(segment.rows) if segment.kind == "table" else None,
+                row_count=row_count,
                 section_path=_model_dump_list(segment.section_path),
                 segment_id=segment.segment_id,
                 segment_kind=segment.kind,

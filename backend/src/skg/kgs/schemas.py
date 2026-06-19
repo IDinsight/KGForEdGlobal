@@ -451,16 +451,16 @@ class DocumentProfile(BaseSchema):
     adoption_status: str | None = None
     attribution_statement: str
     author: str
-    country: str
-    framework_title: str
-    grades_or_stages: list[str] = Field(default_factory=list)
     context_spine: ContextSpineConfig = Field(
         default_factory=ContextSpineConfig,
         description=(
-            "Profile-driven rules for deriving structured extraction-window context "
+            "Document profile-driven rules for deriving structured extraction-window context "
             "from headings (for Ghana: grade_level -> strand -> substrand)."
         ),
     )
+    country: str
+    framework_title: str
+    grades_or_stages: list[str] = Field(default_factory=list)
     jurisdiction: str
     languages: list[str]
     license: str
@@ -489,6 +489,20 @@ class DocumentProfile(BaseSchema):
             "DocumentIR block_type values that should never be selected as block windows."
         ),
     )
+    target_block_code_match_types: list[str] = Field(
+        default_factory=list,
+        description=(
+            "DocumentProfile.code_patterns keys whose matches can select direct block "
+            "windows. Code patterns are otherwise only hints for extraction windows."
+        ),
+    )
+    target_block_context_rule_names: list[str] = Field(
+        default_factory=list,
+        description=(
+            "ContextSpineConfig.heading_rules names whose matches can select direct "
+            "block windows. Context rules are otherwise only structured-context hints."
+        ),
+    )
     target_block_section_patterns: list[str] = Field(
         default_factory=list,
         description=(
@@ -505,10 +519,7 @@ class DocumentProfile(BaseSchema):
     )
     target_block_types: list[str] = Field(
         default_factory=list,
-        description=(
-            "DocumentIR block_type values that should be selected as direct block "
-            "windows when include_block_windows is true."
-        ),
+        description="DocumentIR block_type values that should be selected as direct block windows.",
     )
 
     # Code handling.
@@ -555,20 +566,12 @@ class DocumentProfile(BaseSchema):
     )
 
     # Windowing.
-    include_block_windows: bool = Field(
-        default=True,
-        description="Whether direct block-selection rules should create block windows.",
-    )
     include_context_blocks_for_selected_tables: bool = Field(
         default=True,
         description=(
             "Whether headings near selected tables should be selected as contextual "
             "block windows. This is independent of direct block selection."
         ),
-    )
-    include_table_windows: bool = Field(
-        default=True,
-        description="Whether table-selection rules should create table windows.",
     )
     max_rows_per_table_window: int = Field(default=20, ge=1)
     row_overlap: int = Field(default=1, ge=0)
@@ -759,6 +762,8 @@ class DocumentProfile(BaseSchema):
     @field_validator(
         "excluded_block_types",
         "excluded_table_columns_signatures",
+        "target_block_code_match_types",
+        "target_block_context_rule_names",
         "target_block_types",
         "target_table_columns_signatures",
     )
@@ -1046,6 +1051,40 @@ class DocumentProfile(BaseSchema):
                 f"code_patterns: {unknown_statement_type_keys}"
             )
 
+    def _validate_explicit_block_target_references(self, known: set[str]) -> None:
+        """Validate explicit block targets that reference profile rule names.
+
+        Parameters
+        ----------
+        known
+            Set of known code pattern names.
+
+        Raises
+        ------
+        ValueError
+            If a targeted block code type is absent from code_patterns or a targeted
+            context rule name is absent from context_spine.heading_rules.
+        """
+
+        unknown_code_types = sorted(set(self.target_block_code_match_types) - known)
+
+        if unknown_code_types:
+            raise ValueError(
+                f"DocumentProfile.target_block_code_match_types contains values not "
+                f"present in code_patterns: {unknown_code_types}"
+            )
+
+        context_rule_names = {rule.name for rule in self.context_spine.heading_rules}
+        unknown_context_rule_names = sorted(
+            set(self.target_block_context_rule_names) - context_rule_names
+        )
+
+        if unknown_context_rule_names:
+            raise ValueError(
+                f"DocumentProfile.target_block_context_rule_names contains values not "
+                f"present in context_spine.heading_rules: {unknown_context_rule_names}"
+            )
+
     def _validate_selection_overlap_policy(self) -> None:
         """Ensure selection policies do not both target and exclude the same value.
 
@@ -1135,6 +1174,7 @@ class DocumentProfile(BaseSchema):
         self._validate_windowing()
         self._validate_code_parent_rules(known)
         self._validate_statement_type_keys(known)
+        self._validate_explicit_block_target_references(known)
         self._validate_selection_overlap_policy()
         self._validate_sfi_hierarchy_roles()
         return self
