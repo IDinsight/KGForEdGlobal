@@ -628,6 +628,19 @@ def _collect_nearby_heading_keys_for_tables(
 ) -> set[tuple[int, int]]:
     """Collect heading keys from selected tables' nearby section paths.
 
+    This function runs after table selection but before block selection. It only sees
+    tables that already passed `_get_table_selection_reasons()`. The problem it's
+    trying to solve is the following: if the standards are mostly in tables, selecting
+    only the table may lose important hierarchy context that lives in nearby headings.
+    For example, for Ghana-style tables, the table body may contain content standards
+    and indicators, but the grade/strand/sub-strand context may sit above the table as
+    headings. Selecting those headings as block windows gives the later LLM extraction
+    stage and the debug artifacts more hierarchy evidence. So this function is a
+    context-preservation helper:
+
+        selected standards table
+            -> include its nearby headings as selected block segments too
+
     Parameters
     ----------
     document_profile
@@ -847,7 +860,26 @@ def _get_block_selection_reasons(
     nearby_heading_keys: set[tuple[int, int]],
     segment: BlockSegment,
 ) -> list[str]:
-    """Return document profile driven block-selection reasons for a block segment.
+    """Return document profile-driven reasons for selecting a BlockSegment for Academic
+    Standards extraction.
+
+    The function first derives source text from the block payload. Blocks with no
+    usable source text are skipped. It then selects the block when at least one
+    conservative profile signal is present: the block text contains a configured
+    source-code match, the block text matches a context-spine heading rule, the block's
+    source address is one of the nearby heading keys collected from selected tables, or
+    the block's section-selection text matches a configured target section pattern.
+
+    For block segments, section-selection text includes the raw `section_path` heading
+    text, `local_code` when present, `columns_signature` when present, and the block's
+    own source text. This makes section-pattern matching broad: a pattern may match
+    inherited context or the block body itself.
+
+    This function does not perform semantic extraction and does not decide final
+    StandardsFrameworkItems. It only decides whether a source block should be packaged
+    into an extraction window for later LLM extraction. It also does not currently
+    apply block-specific exclusion rules; any matching positive signal selects the
+    block.
 
     Parameters
     ----------
@@ -907,6 +939,31 @@ def _get_table_selection_reasons(
     *, document_profile: DocumentProfile, segment: TableSegment
 ) -> list[str]:
     """Return document profile driven table-selection reasons for a table segment.
+
+    The purpose of this function is to determine if a TableSegment is eligible for
+    later extraction windows. If so, then what is the reason for its eligibility?
+
+    Table selection is a document profile-driven eligibility check. For each
+    TableSegment, the function first builds a small selection context from the table's
+    normalized `columns_signature` and section context. Exclusion rules are applied
+    before inclusion rules: an excluded columns_signature or excluded section-pattern
+    match returns no selection reasons, even if the table would otherwise match a
+    target rule.
+
+    A table is selected when it matches either a configured target columns_signature or
+    a configured target section pattern. If the profile defines no target table
+    signatures and no target section patterns, the function falls back to selecting all
+    non-excluded tables and records "table_selected_no_target_policy_configured".
+
+    Note that section-pattern matching currently uses `_segment_section_text(...)`,
+    which is built from the segment's raw DocumentIR `section_path`, plus `local_code`
+    and `columns_signature` where present. `section_path` is semantic-light heading
+    context, not a guaranteed clean hierarchy. It can contain noisy or stale headings
+    from earlier document regions. Therefore, target/excluded section patterns should
+    be used carefully; precise `columns_signature` matches are preferred when
+    available. For messier/no-code documents, a future refinement should consider
+    matching section patterns against bounded nearby headings or profile-derived
+    structured context rather than the full raw section_path.
 
     Parameters
     ----------
@@ -1093,6 +1150,12 @@ def _limit_nearby_headings(
 def _matches_any_pattern(*, patterns: Sequence[str], text: str) -> bool:
     """Return whether any regex pattern matches the given text.
 
+    Every configured section pattern is treated as a regex, matched case-insensitively
+    against the entire `section_text` string. If `patterns` is empty, it returns False.
+
+    NB: The DocumentProfile schema should validate that section patterns are valid
+    regexes.
+
     Parameters
     ----------
     patterns
@@ -1273,6 +1336,14 @@ def _optional_model_dump_by_indexes(
 def _segment_section_text(segment: Segment) -> str:
     """Build section-selection text for a segment.
 
+    For a table segment, the section text is basically: all `section_path` heading
+    texts + table `local_code` (if any) + table `columns_signature` (if any). It does
+    **not** include table row/cell content for table selection. In other words, for
+    table selection, section-pattern matching is not matching the actual table body; it
+    is matching the heading trail plus table metadata.
+
+    For a block segment, it also appends the block's own source text.
+
     Parameters
     ----------
     segment
@@ -1386,11 +1457,47 @@ def select_extraction_segments(
 ) -> list[SelectedExtractionSegment]:
     """Select DocumentIR segments eligible for Academic Standards extraction.
 
+    This function is a conservative source-selection stage, not an extraction stage. It
+    does not decide which rows/cells are final StandardsFrameworkItems, does not call
+    the LLM, and does not build extraction windows. Instead, it chooses which stitched
+    DocumentIR segments are eligible to be sent into later LLM-ready window
+    construction.
+
     Table selection is driven by document profile target/excluded column signatures and
     section patterns. Block selection only runs when `include_block_windows` is True
     and is intentionally conservative: it selects blocks that contain document profile
     code matches, match profile context-heading rules, match target section patterns,
     or serve as nearby heading context for selected tables.
+
+    The process is as follows:
+
+    1. First pass over DocumentIR segments:
+       - Inspect only table segments.
+       - Run `_get_table_selection_reasons(...)`.
+       - Store selected table IDs + their table reasons.
+       - Keep the selected table segment objects for the next step.
+
+    2. Collect context-heading keys from selected tables:
+       - Look at each selected table’s limited nearby `section_path` headings.
+       - Convert those heading refs into `(page_index, item_index)` keys.
+       - These keys are later used to select matching block segments as context.
+
+    3. Second pass over all DocumentIR segments, in source order:
+       - If the segment is a table, reuse the table reasons from pass 1.
+       - If the segment is a block and `include_block_windows=True`, compute block
+            reasons via `_get_block_selection_reasons(...)`.
+       - If the segment has no reasons, skip it.
+       - If it has one or more reasons, create a `SelectedExtractionSegment` record
+            with source metadata, deterministic `selection_id`, `selection_index`,
+            provenance pages, section path, row count/table signature/block type where
+            applicable, and the selection reasons.
+
+    4. Final guard/persist:
+       - If no segments were selected, raise unless the profile explicitly allows zero
+            output.
+       - Optionally write `selected_extraction_segments.json`.
+       - Return the selected segment records for downstream extraction-window
+            construction.
 
     Parameters
     ----------
@@ -1414,8 +1521,13 @@ def select_extraction_segments(
         `metadata.allow_zero_extraction_segments`.
     """
 
+    # 1. Loop over every DocumentIR segment and process table segments first. This loop
+    # only decides which tables are selected and records their table selection reasons.
+    # This pass is needed because selected tables are needed to compute nearby heading
+    # keys. Those heading keys are then used when selecting blocks (i.e., block
+    # selection depends on table selection).
     selected_table_reasons: dict[str, list[str]] = {}
-    selected_table_segments = []
+    selected_table_segments: list[TableSegment] = []
 
     for segment in document_ir.segments:
         if segment.kind != "table":
@@ -1430,10 +1542,21 @@ def select_extraction_segments(
             selected_table_segments.append(segment)
 
     nearby_heading_keys = _collect_nearby_heading_keys_for_tables(
-        document_profile=document_profile,
-        table_segments=selected_table_segments,
+        document_profile=document_profile, table_segments=selected_table_segments
     )
 
+    # 2. This loop is the materialization pass. It walks the entire document again, in
+    # original DocumentIR order, and turns the selected tables + selected blocks into
+    # actual SelectedExtractionSegment records. In other words, this loop gives us a
+    # clean final output ordered exactly like the source document:
+    #
+    #   DocumentIR segment order
+    #     -> selected table/block order
+    #         -> selection_index order
+    #             -> later extraction window order
+    #
+    # This ordering is important because `build_llm_extraction_windows()` later
+    # consumes `selected_segments` in order and builds block/table windows from them.
     selected_segments: list[SelectedExtractionSegment] = []
 
     for segment in document_ir.segments:
@@ -1441,6 +1564,11 @@ def select_extraction_segments(
 
         if segment.kind == "table":
             selection_reasons = selected_table_reasons.get(segment.segment_id, [])
+
+        # Block selection only happens if the profile explicitly allows block windows.
+        # The block can be selected because it contains a profile code match, matches a
+        # context-heading rule, is a nearby heading for a selected table, or matches
+        # target section patterns.
         elif segment.kind == "block" and document_profile.include_block_windows:
             selection_reasons = _get_block_selection_reasons(
                 document_profile=document_profile,
@@ -1448,36 +1576,36 @@ def select_extraction_segments(
                 segment=segment,
             )
 
+        # If neither table logic nor block logic produces reasons, the segment is
+        # ignored.
         if not selection_reasons:
             continue
 
-        canonical_string = (
-            f"lc:curriculum:{document_ir.doc_key}:selected_extraction_segment:"
-            f"{segment.kind}:{segment.segment_id}"
-        )
-        source_page_indexes = sorted(
-            {int(provenance.page_index) for provenance in segment.segment_provenance}
-        )
-
-        block_type_raw = getattr(segment, "block_type", None)
-        block_type_str = (
-            str(getattr(block_type_raw, "value", block_type_raw))
-            if block_type_raw is not None
-            else None
-        )
+        block_type = getattr(segment, "block_type", None)
         selected_segments.append(
             SelectedExtractionSegment(
-                block_type=block_type_str,
+                block_type=(
+                    str(getattr(block_type, "value", block_type))
+                    if block_type is not None
+                    else None
+                ),
                 columns_signature=getattr(segment, "columns_signature", None),
                 local_code=getattr(segment, "local_code", None),
                 row_count=len(segment.rows) if segment.kind == "table" else None,
                 section_path=_model_dump_list(segment.section_path),
                 segment_id=segment.segment_id,
                 segment_kind=segment.kind,
-                selection_id=_deterministic_uuid(canonical_string),
+                selection_id=_deterministic_uuid(
+                    f"lc:curriculum:{document_ir.doc_key}:selected_extraction_segment:{segment.kind}:{segment.segment_id}"
+                ),
                 selection_index=len(selected_segments),
                 selection_reasons=selection_reasons,
-                source_page_indexes=source_page_indexes,
+                source_page_indexes=sorted(  # Debug: where did the segment come from?
+                    {
+                        int(provenance.page_index)
+                        for provenance in segment.segment_provenance
+                    }
+                ),
             )
         )
 
