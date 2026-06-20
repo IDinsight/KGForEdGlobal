@@ -623,6 +623,78 @@ def _deterministic_uuid(canonical_string: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, canonical_string))
 
 
+def _extract_figure_text(block_payload: dict[str, Any]) -> str:
+    """Extract source text from a block payload's figure fields.
+
+    Parameters
+    ----------
+    block_payload
+        JSON-serializable block payload containing optional figure data.
+
+    Returns
+    -------
+    str
+        Source text drawn from embedded text, caption, or alt text, or an empty string
+        when no useful figure text is present.
+    """
+
+    figure = block_payload.get("figure")
+
+    if not isinstance(figure, dict):
+        return ""
+
+    embedded_text = figure.get("embedded_text")
+
+    if isinstance(embedded_text, dict) and embedded_text.get("text"):
+        return str(embedded_text["text"]).strip()
+
+    caption = figure.get("caption")
+
+    if isinstance(caption, dict) and caption.get("text"):
+        return str(caption["text"]).strip()
+
+    if isinstance(caption, str) and caption.strip():
+        return caption.strip()
+
+    if figure.get("contains_text") and figure.get("alt_text"):
+        return str(figure["alt_text"]).strip()
+
+    return ""
+
+
+def _extract_list_items_text(list_items: list[Any]) -> str:
+    """Join the text fields of list items into a single newline-delimited string.
+
+    Parameters
+    ----------
+    list_items
+        List items extracted from a block payload.
+
+    Returns
+    -------
+    str
+        Newline-joined item text, or an empty string when no item text is present.
+    """
+
+    if not isinstance(list_items, list):
+        return ""
+
+    item_texts: list[str] = []
+
+    for item in list_items:
+        if not isinstance(item, dict):
+            continue
+
+        item_text = item.get("text")
+
+        if isinstance(item_text, dict):
+            item_texts.append(str(item_text.get("text") or "").strip())
+        elif item_text:
+            item_texts.append(str(item_text).strip())
+
+    return "\n".join(item_text for item_text in item_texts if item_text)
+
+
 def _extract_list_or_figure_text(
     *, block_payload: dict[str, Any], list_items: list[Any]
 ) -> str:
@@ -642,40 +714,12 @@ def _extract_list_or_figure_text(
         when no useful source text is present.
     """
 
-    if isinstance(list_items, list):
-        item_texts: list[str] = []
+    list_text = _extract_list_items_text(list_items)
 
-        for item in list_items:
-            if isinstance(item, dict):
-                item_text = item.get("text")
+    if list_text:
+        return list_text
 
-                if isinstance(item_text, dict):
-                    item_texts.append(str(item_text.get("text") or "").strip())
-                elif item_text:
-                    item_texts.append(str(item_text).strip())
-
-        if item_texts:
-            return "\n".join(item_text for item_text in item_texts if item_text)
-
-    figure = block_payload.get("figure")
-
-    if isinstance(figure, dict):
-        embedded_text = figure.get("embedded_text")
-
-        if isinstance(embedded_text, dict) and embedded_text.get("text"):
-            return str(embedded_text["text"]).strip()
-
-        caption = figure.get("caption")
-
-        if isinstance(caption, dict) and caption.get("text"):
-            return str(caption["text"]).strip()
-        if isinstance(caption, str) and caption.strip():
-            return caption.strip()
-
-        if figure.get("contains_text") and figure.get("alt_text"):
-            return str(figure["alt_text"]).strip()
-
-    return ""
+    return _extract_figure_text(block_payload)
 
 
 def _get_table_plan_reasons(
