@@ -22,6 +22,9 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+# Third Party Library
+from pydantic import BaseModel
+
 # Package Library
 from skg.document_ir.schemas import BlockSegment, DocumentIR, TableSegment
 from skg.kgs.schemas import (
@@ -96,29 +99,29 @@ def _build_block_windows(
 
     block_payload = segment.model_dump(mode="json")
     source_text = _build_block_source_text(block_payload)
-
-    if not source_text:
-        return []
-
-    return [
-        _build_extraction_window(
-            block=block_payload,
-            document_ir=document_ir,
-            document_profile=document_profile,
-            plan_item=plan_item,
-            row_range_label=None,
-            segment_kind="block",
-            source_provenance=_model_dump_list(segment.segment_provenance),
-            source_segment_ids=[segment.segment_id],
-            source_text=source_text,
-            table=None,
-            window_id=_deterministic_uuid(
-                f"lc:curriculum:{document_ir.doc_key}:extraction_window:block:{segment.segment_id}"
-            ),
-            window_index=window_start_index,
-            window_notes=["block_window_full_segment_source"],
-        )
-    ]
+    return (
+        []
+        if not source_text
+        else [
+            _build_extraction_window(
+                block=block_payload,
+                document_ir=document_ir,
+                document_profile=document_profile,
+                plan_item=plan_item,
+                row_range_label=None,
+                segment_kind="block",
+                source_provenance=_model_dump_list(segment.segment_provenance),
+                source_segment_ids=[segment.segment_id],
+                source_text=source_text,
+                table=None,
+                window_id=_deterministic_uuid(
+                    f"lc:curriculum:{document_ir.doc_key}:extraction_window:block:{segment.segment_id}"
+                ),
+                window_index=window_start_index,
+                window_notes=["block_window_full_segment_source"],
+            )
+        ]
+    )
 
 
 def _build_extraction_window(
@@ -175,12 +178,10 @@ def _build_extraction_window(
     """
 
     code_matches = _collect_code_matches(
-        document_profile=document_profile,
-        source_text=source_text,
+        document_profile=document_profile, source_text=source_text
     )
     code_parent_hints = _collect_code_parent_hints(
-        code_matches=code_matches,
-        document_profile=document_profile,
+        code_matches=code_matches, document_profile=document_profile
     )
     canonical_context = "|".join(
         [
@@ -326,20 +327,16 @@ def _build_table_window_for_row_range(
     row_indexes = list(range(body_row_start_index, body_row_end_index_exclusive))
     rows = _model_dump_by_indexes(indexes=row_indexes, values=segment.rows)
     rows_grid = _optional_model_dump_by_indexes(
-        indexes=row_indexes,
-        values=getattr(segment, "rows_grid", None),
+        indexes=row_indexes, values=segment.rows_grid
     )
     rows_filldown = _optional_model_dump_by_indexes(
-        indexes=row_indexes,
-        values=getattr(segment, "rows_filldown", None),
+        indexes=row_indexes, values=segment.rows_filldown
     )
     row_provenance = _optional_model_dump_by_indexes(
-        indexes=row_indexes,
-        values=getattr(segment, "row_provenance", None),
+        indexes=row_indexes, values=segment.row_provenance
     )
     grid_sources = _optional_list_by_indexes(
-        indexes=row_indexes,
-        values=getattr(segment, "grid_sources", None),
+        indexes=row_indexes, values=segment.grid_sources
     )
     table_payload = ExtractionWindowTablePayload(
         body_row_end_index_exclusive=body_row_end_index_exclusive,
@@ -358,14 +355,7 @@ def _build_table_window_for_row_range(
         rows_grid=rows_grid,
         source_table_row_count=len(segment.rows),
     )
-    source_text = _build_table_source_text(
-        rows=rows,
-        table_payload=table_payload,
-    )
     row_range_label = f"rows:{body_row_start_index}:{body_row_end_index_exclusive}"
-    window_id = _deterministic_uuid(
-        f"lc:curriculum:{document_ir.doc_key}:extraction_window:table:{segment.segment_id}:{row_range_label}"
-    )
     return _build_extraction_window(
         block=None,
         document_ir=document_ir,
@@ -375,9 +365,11 @@ def _build_table_window_for_row_range(
         segment_kind="table",
         source_provenance=_model_dump_list(segment.segment_provenance),
         source_segment_ids=[segment.segment_id],
-        source_text=source_text,
+        source_text=_build_table_source_text(rows=rows, table_payload=table_payload),
         table=table_payload,
-        window_id=window_id,
+        window_id=_deterministic_uuid(
+            f"lc:curriculum:{document_ir.doc_key}:extraction_window:table:{segment.segment_id}:{row_range_label}"
+        ),
         window_index=window_index,
         window_notes=["table_window_uses_optional_helpers_when_present"],
     )
@@ -410,13 +402,18 @@ def _build_table_windows(
     -------
     list[ExtractionWindow]
         Table extraction windows.
+
+    Raises
+    ------
+    ValueError
+        If the planned table segment does not contain any rows.
     """
 
     body_start_index = min(segment.header_row_count, len(segment.rows))
     body_end_index = len(segment.rows)
 
     if body_start_index >= body_end_index:
-        return []
+        raise ValueError(f"{body_start_index} > {body_end_index} for: {segment}")
 
     windows: list[ExtractionWindow] = []
 
@@ -444,7 +441,7 @@ def _build_table_windows(
 def _collect_code_matches(
     *, document_profile: DocumentProfile, source_text: str
 ) -> list[CodeMatch]:
-    """Collect document-profile code regex matches from window source text.
+    """Collect document profile code regex matches from window source text.
 
     Parameters
     ----------
@@ -497,7 +494,7 @@ def _collect_code_matches(
 def _collect_code_parent_hints(
     *, code_matches: Sequence[CodeMatch], document_profile: DocumentProfile
 ) -> list[CodeParentHint]:
-    """Collect deterministic code-parent hints from profile rules.
+    """Collect code-parent hints from document profile rules.
 
     Parameters
     ----------
@@ -546,8 +543,7 @@ def _collect_code_parent_hints(
             parent_pattern = code_patterns.get(parent_code_type)
 
             if parent_pattern is not None and not re.fullmatch(
-                parent_pattern,
-                parent_code,
+                parent_pattern, parent_code
             ):
                 continue
 
@@ -738,7 +734,7 @@ def _iter_row_chunks(
     overlap: int,
     start_index: int,
 ) -> list[tuple[int, int]]:
-    """Return deterministic body-row chunks for a table window.
+    """Return body-row chunks for a table window.
 
     Parameters
     ----------
@@ -811,7 +807,7 @@ def _matches_any_pattern(*, patterns: Sequence[str], text: str) -> bool:
 def _model_dump_by_indexes(
     *, indexes: Sequence[int], values: Sequence[Any]
 ) -> list[dict[str, Any]]:
-    """Serialize selected model/list values by index.
+    """Serialize selected values by index.
 
     Parameters
     ----------
@@ -826,10 +822,10 @@ def _model_dump_by_indexes(
         Serialized selected values.
     """
 
-    return [_model_to_dict(values[index]) for index in indexes]
+    return [values[index].model_dump(mode="json") for index in indexes]
 
 
-def _model_dump_list(values: Sequence[Any]) -> list[dict[str, Any]]:
+def _model_dump_list(values: Sequence[BaseModel]) -> list[dict[str, Any]]:
     """Serialize a sequence of Pydantic models or dictionaries.
 
     Parameters
@@ -843,35 +839,7 @@ def _model_dump_list(values: Sequence[Any]) -> list[dict[str, Any]]:
         Serialized dictionaries.
     """
 
-    return [_model_to_dict(value) for value in values]
-
-
-def _model_to_dict(value: Any) -> dict[str, Any]:
-    """Serialize one Pydantic model or dictionary value.
-
-    Parameters
-    ----------
-    value
-        Value to serialize.
-
-    Returns
-    -------
-    dict[str, Any]
-        JSON-serializable dictionary.
-
-    Raises
-    ------
-    TypeError
-        If the value is neither a Pydantic model nor a dictionary.
-    """
-
-    if hasattr(value, "model_dump"):
-        return value.model_dump(mode="json")
-
-    if isinstance(value, dict):
-        return dict(value)
-
-    raise TypeError(f"Expected a Pydantic model or dict-like value, got {type(value)}")
+    return [value.model_dump(mode="json") for value in values]
 
 
 def _optional_list_by_indexes(
@@ -892,10 +860,7 @@ def _optional_list_by_indexes(
         Selected values, or None when the source helper view is missing or unaligned.
     """
 
-    if values is None:
-        return None
-
-    if max(indexes, default=-1) >= len(values):
+    if values is None or max(indexes, default=-1) >= len(values):
         return None
 
     return [values[index] for index in indexes]
@@ -904,7 +869,7 @@ def _optional_list_by_indexes(
 def _optional_model_dump_by_indexes(
     *, indexes: Sequence[int], values: Optional[Sequence[Any]]
 ) -> Optional[list[dict[str, Any]]]:
-    """Serialize optional model/list values by index.
+    """Serialize optional values by index.
 
     Parameters
     ----------
@@ -916,13 +881,11 @@ def _optional_model_dump_by_indexes(
     Returns
     -------
     Optional[list[dict[str, Any]]]
-        Serialized selected values, or None when the helper view is missing or unaligned.
+        Serialized selected values, or None when the helper view is missing or
+        unaligned.
     """
 
-    if values is None:
-        return None
-
-    if max(indexes, default=-1) >= len(values):
+    if values is None or max(indexes, default=-1) >= len(values):
         return None
 
     return _model_dump_by_indexes(indexes=indexes, values=values)
