@@ -3,15 +3,15 @@
 	"attribution_statement": "Source curriculum published by NaCCA, Ministry of Education, Republic of Ghana, September 2019.",
 	"author": "NaCCA, Ministry of Education",
 	"context_spine": {
-		"description": "Carry a small bounded set of nearby raw headings for Ghana table windows. Direct structured-context rules are intentionally left empty for this profile because the current DocumentIR contains combined/noisy headings; the LLM should use nearby headings and the raw section_path as source evidence.",
+		"description": "Reserved for future structured-context work. Academic Standards v0 extraction-window planning does not use context_spine, section_path, or nearby heading context.",
 		"heading_rules": [],
-		"include_nearby_headings": true,
-		"max_nearby_headings": 3,
+		"include_nearby_headings": false,
+		"max_nearby_headings": 0,
 		"reset_rules": [],
 		"role_order": [],
 		"split_multiline_headings": true
 	},
-  "country": "Ghana",
+	"country": "Ghana",
 	"framework_title": "Mathematics Curriculum for Primary Schools (Basic 4 - 6)",
 	"grades_or_stages": [
 		"Basic 4",
@@ -26,40 +26,6 @@
 	"primary_language": "en",
 	"provider": "IDinsight",
 	"subject": "Mathematics",
-
-  "excluded_block_section_patterns": [],
-	"excluded_block_text_patterns": [
-		"^MINISTRY OF EDUCATION$",
-		"^REPUBLIC OF GHANA$",
-		"^MATHEMATICS\\s+CURRICULUM FOR PRIMARY SCHOOLS\\s+\\(BASIC 4 - 6\\)$",
-		"^SEPTEMBER 2019$",
-		"^Mathematics Curriculum for Primary Schools$",
-		"^TABLE OF CONTENTS$",
-		"^FOREWORD$",
-		"^RATIONALE FOR PRIMARY MATHEMATICS$",
-		"^PHILOSOPHY$",
-		"^GENERAL AIMS$",
-		"^SUBJECT AIMS$",
-		"^CORE COMPETENCIES$",
-		"^VALUES:?$",
-		"^ASSESSMENT$",
-		"^ORGANISATION AND STRUCTURE OF THE CURRICULUM$",
-		"^ORGANIZATION OF THE STANDARDS \\(B4 [–-] B6\\)$",
-		"^STRUCTURE OF THE CURRICULUM$",
-		"^SCOPE AND SEQUENCE$",
-		"^ANNOTATION$",
-		"^MATHEMATICS SUBJECT PANEL MEMBERS AND REVIEWERS$"
-	],
-	"excluded_block_types": [
-		"figure",
-		"caption"
-	],
-	"target_block_code_match_types": [],
-	"target_block_context_rule_names": [],
-	"target_block_section_patterns": [],
-	"target_block_text_patterns": [],
-	"target_block_types": [],
-
 	"code_parent_rules": [
 		{
 			"child": "indicator",
@@ -77,20 +43,15 @@
 	},
 	"has_stable_codes": true,
 	"sfi_hierarchy_roles": [],
-
-  "excluded_table_columns_signatures": [],
+	"excluded_table_columns_signatures": [],
 	"excluded_table_section_patterns": [],
 	"target_table_columns_signatures": [
 		"content standards|indicators and exemplars|subject specific practices and core competencies",
 		"content standard|indicators and exemplars|subject specific practices and core competencies"
 	],
 	"target_table_section_patterns": [],
-
-	"include_context_blocks_for_selected_tables": true,
 	"max_rows_per_table_window": 20,
 	"row_overlap": 1,
-	"table_window_mode": "row_chunks",
-
 	"bilingual_pair_policy": null,
 	"repeated_statement_policy": "Merge same official code when text is compatible. Same official code with materially conflicting text should become a conflict bucket.",
 	"synthetic_merge_key_fields": [
@@ -102,7 +63,6 @@
 		"hierarchy_context",
 		"normalized_text"
 	],
-
 	"duplicate_review_instructions": "Decide whether candidates in the bucket are the same Ghana curriculum item. Same official statement code with compatible text should merge. Same official statement code with conflicting text should be marked conflict. Similar text with different official codes should usually remain distinct.",
 	"learning_component_instructions": "Decompose each final Ghana Mathematics Standard SFI into one or more atomic mathematical skills or concepts. Do not create activities, examples, or assessment tasks as LearningComponents.",
 	"sfi_extraction_instructions": "Extract Ghana Mathematics SFI candidates. BASIC 4, BASIC 5, and BASIC 6 are Standard Grouping SFIs. Strand and Sub-Strand headings are Standard Grouping SFIs. Content Standards with codes like B4.1.1.1 are Standard SFIs. Indicators with codes like B4.1.1.1.1 are Standard SFIs. Exemplars beginning with E.g. are auxiliary examples, not SFIs. Core competency text is auxiliary guidance, not an SFI. Repeated table headers are not SFIs."

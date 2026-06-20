@@ -30,7 +30,7 @@ if __name__ == "__main__":
 # Package Library
 from skg.kgs.create_extraction_windows import (
     build_llm_extraction_windows,
-    select_extraction_segments,
+    plan_extraction_windows,
 )
 from skg.kgs.utils import (
     KGDirs,
@@ -54,7 +54,7 @@ def build_kgs(*, config: CreateKGConfig, document_ir_fp: Path, kg_dirs: KGDirs) 
 
     1. Load and validate the stitched DocumentIR and DocumentProfile.
     2. Build and persist `kg_run_manifest.json`.
-    3. Select source DocumentIR segments for Academic Standards (SFI) extraction.
+    3. Plan source DocumentIR units for Academic Standards (SFI) extraction windows.
     4. Build LLM-ready extraction windows.
 
     Later KG-building steps should consume these extraction windows to run LLM SFI
@@ -90,18 +90,18 @@ def build_kgs(*, config: CreateKGConfig, document_ir_fp: Path, kg_dirs: KGDirs) 
     write_to_json(fp=kg_run_manifest_fp, json_info=kg_run_manifest)
 
     # 3.
-    selected_segments = select_extraction_segments(
+    plan_items = plan_extraction_windows(
         document_ir=kg_run_inputs.document_ir,
         document_profile=kg_run_inputs.document_profile,
-        save_fp=kg_dirs.root / "selected_extraction_segments.json",
+        save_fp=kg_dirs.root / "extraction_window_plan.json",
     )
 
     # 4.
     extraction_windows = build_llm_extraction_windows(
         document_ir=kg_run_inputs.document_ir,
         document_profile=kg_run_inputs.document_profile,
+        plan_items=plan_items,
         save_fp=kg_dirs.root / "extraction_windows.jsonl",
-        selected_segments=selected_segments,
     )
 
     logger.debug(f"{extraction_windows = }")

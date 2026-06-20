@@ -423,11 +423,11 @@ def _validate_document_profile_compatibility(
             raise ValueError(message)
 
     if (
-        document_profile.table_window_mode in {"row_chunks", "whole_table"}
-        and segment_counts.get("table", 0) == 0
-    ):
+        document_profile.target_table_columns_signatures
+        or document_profile.target_table_section_patterns
+    ) and segment_counts.get("table", 0) == 0:
         warnings.append(
-            "Profile table_window_mode expects table segments, but the DocumentIR "
+            "DocumentProfile contains table-selection rules, but the DocumentIR "
             "contains no table segments."
         )
 

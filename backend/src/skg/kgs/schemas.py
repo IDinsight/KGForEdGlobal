@@ -468,60 +468,6 @@ class DocumentProfile(BaseSchema):
     provider: str
     subject: str
 
-    # Block selection policy.
-    excluded_block_section_patterns: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Regex patterns over bounded nearby heading/section text that exclude block "
-            "segments from direct block extraction and table-context block selection."
-        ),
-    )
-    excluded_block_text_patterns: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Regex patterns over a block's own source text that exclude the block from "
-            "direct block extraction and table-context block selection."
-        ),
-    )
-    excluded_block_types: list[str] = Field(
-        default_factory=list,
-        description=(
-            "DocumentIR block_type values that should never be selected as block windows."
-        ),
-    )
-    target_block_code_match_types: list[str] = Field(
-        default_factory=list,
-        description=(
-            "DocumentProfile.code_patterns keys whose matches can select direct block "
-            "windows. Code patterns are otherwise only hints for extraction windows."
-        ),
-    )
-    target_block_context_rule_names: list[str] = Field(
-        default_factory=list,
-        description=(
-            "ContextSpineConfig.heading_rules names whose matches can select direct "
-            "block windows. Context rules are otherwise only structured-context hints."
-        ),
-    )
-    target_block_section_patterns: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Regex patterns over bounded nearby heading/section text that can select "
-            "block segments independently of table selection."
-        ),
-    )
-    target_block_text_patterns: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Regex patterns over a block's own source text that can select block "
-            "segments independently of table selection."
-        ),
-    )
-    target_block_types: list[str] = Field(
-        default_factory=list,
-        description="DocumentIR block_type values that should be selected as direct block windows.",
-    )
-
     # Code handling.
     code_parent_rules: list[dict[str, str]] = Field(default_factory=list)
     code_patterns: dict[str, str] = Field(default_factory=dict)
@@ -566,16 +512,14 @@ class DocumentProfile(BaseSchema):
     )
 
     # Windowing.
-    include_context_blocks_for_selected_tables: bool = Field(
-        default=True,
+    max_rows_per_table_window: Optional[int] = Field(
+        default=20,
         description=(
-            "Whether headings near selected tables should be selected as contextual "
-            "block windows. This is independent of direct block selection."
+            "Maximum number of table body rows per extraction window. Set to null "
+            "to emit one whole-table window per selected table."
         ),
     )
-    max_rows_per_table_window: int = Field(default=20, ge=1)
     row_overlap: int = Field(default=1, ge=0)
-    table_window_mode: Literal["whole_table", "row_chunks"] = "row_chunks"
 
     # Duplication behavior.
     bilingual_pair_policy: str | None = None
@@ -760,11 +704,7 @@ class DocumentProfile(BaseSchema):
         return cleaned
 
     @field_validator(
-        "excluded_block_types",
         "excluded_table_columns_signatures",
-        "target_block_code_match_types",
-        "target_block_context_rule_names",
-        "target_block_types",
         "target_table_columns_signatures",
     )
     @classmethod
@@ -787,11 +727,7 @@ class DocumentProfile(BaseSchema):
         )
 
     @field_validator(
-        "excluded_block_section_patterns",
-        "excluded_block_text_patterns",
         "excluded_table_section_patterns",
-        "target_block_section_patterns",
-        "target_block_text_patterns",
         "target_table_section_patterns",
     )
     @classmethod
@@ -955,13 +891,22 @@ class DocumentProfile(BaseSchema):
             )
 
     def _validate_windowing(self) -> None:
-        """Ensure row windowing configuration is internally consistent.
+        """Ensure table row windowing configuration is internally consistent.
 
         Raises
         ------
         ValueError
-            If row_overlap is not smaller than max_rows_per_table_window.
+            If max_rows_per_table_window is non-positive, or if row_overlap is not
+            smaller than max_rows_per_table_window when chunking is enabled.
         """
+
+        if self.max_rows_per_table_window is None:
+            return
+
+        if self.max_rows_per_table_window <= 0:
+            raise ValueError(
+                "DocumentProfile.max_rows_per_table_window must be positive or null."
+            )
 
         if self.row_overlap >= self.max_rows_per_table_window:
             raise ValueError(
@@ -1051,67 +996,24 @@ class DocumentProfile(BaseSchema):
                 f"code_patterns: {unknown_statement_type_keys}"
             )
 
-    def _validate_explicit_block_target_references(self, known: set[str]) -> None:
-        """Validate explicit block targets that reference profile rule names.
-
-        Parameters
-        ----------
-        known
-            Set of known code pattern names.
-
-        Raises
-        ------
-        ValueError
-            If a targeted block code type is absent from code_patterns or a targeted
-            context rule name is absent from context_spine.heading_rules.
-        """
-
-        unknown_code_types = sorted(set(self.target_block_code_match_types) - known)
-
-        if unknown_code_types:
-            raise ValueError(
-                f"DocumentProfile.target_block_code_match_types contains values not "
-                f"present in code_patterns: {unknown_code_types}"
-            )
-
-        context_rule_names = {rule.name for rule in self.context_spine.heading_rules}
-        unknown_context_rule_names = sorted(
-            set(self.target_block_context_rule_names) - context_rule_names
-        )
-
-        if unknown_context_rule_names:
-            raise ValueError(
-                f"DocumentProfile.target_block_context_rule_names contains values not "
-                f"present in context_spine.heading_rules: {unknown_context_rule_names}"
-            )
-
     def _validate_selection_overlap_policy(self) -> None:
-        """Ensure selection policies do not both target and exclude the same value.
+        """Ensure table-selection policy does not both target and exclude the same
+        value.
 
         Raises
         ------
         ValueError
-            If a table columns_signature or block_type appears in both its target and
-            excluded selection lists.
+            If a table columns_signature appears in both target and excluded lists.
         """
 
-        overlapping_block_types = sorted(
-            set(self.target_block_types) & set(self.excluded_block_types)
-        )
         overlapping_table_signatures = sorted(
             set(self.target_table_columns_signatures)
             & set(self.excluded_table_columns_signatures)
         )
 
-        if overlapping_block_types:
-            raise ValueError(
-                "DocumentProfile block-selection policy cannot target and exclude the "
-                f"same block_type values: {overlapping_block_types}"
-            )
-
         if overlapping_table_signatures:
             raise ValueError(
-                "DocumentProfile table-selection policy cannot target and exclude the "
+                f"DocumentProfile table-selection policy cannot target and exclude the "
                 f"same columns_signature values: {overlapping_table_signatures}"
             )
 
@@ -1174,7 +1076,6 @@ class DocumentProfile(BaseSchema):
         self._validate_windowing()
         self._validate_code_parent_rules(known)
         self._validate_statement_type_keys(known)
-        self._validate_explicit_block_target_references(known)
         self._validate_selection_overlap_policy()
         self._validate_sfi_hierarchy_roles()
         return self
@@ -1253,9 +1154,6 @@ class ExtractionWindow(BaseSchema):
         default_factory=list,
         description="Document profile derived code parent hints for later extraction/validation.",
     )
-    context_path_text: str = Field(
-        description="Readable context path assembled from nearby headings."
-    )
     deterministic_hints: dict[str, Any] = Field(
         default_factory=dict,
         description="Non-semantic deterministic hints for LLM extraction and merging.",
@@ -1265,17 +1163,10 @@ class ExtractionWindow(BaseSchema):
     llm_task_instructions: str = Field(
         description="Task instructions for the later SFI extraction LLM call."
     )
-    nearby_headings: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description="Raw nearby heading references for debug/fallback context.",
-    )
     pdf_name: Optional[str] = Field(default=None, description="Source PDF filename.")
     primary_language: str = Field(description="DocumentProfile primary language.")
     profile_extraction_instructions: str = Field(
         description="DocumentProfile.sfi_extraction_instructions."
-    )
-    section_path: list[dict[str, Any]] = Field(
-        default_factory=list, description="Raw DocumentIR section_path for the window."
     )
     segment_kind: Literal["block", "table"] = Field(description="Source segment kind.")
     source_provenance: list[dict[str, Any]] = Field(
@@ -1287,10 +1178,6 @@ class ExtractionWindow(BaseSchema):
     )
     source_text: str = Field(
         description="Human-readable source text assembled from the window payload."
-    )
-    structured_context: list[StructuredContextItem] = Field(
-        default_factory=list,
-        description="Document profile derived structured context, if document profile rules are available.",
     )
     subject: str = Field(description="DocumentProfile subject.")
     table: Optional[ExtractionWindowTablePayload] = Field(
@@ -1384,9 +1271,6 @@ class ExtractionWindowTablePayload(BaseSchema):
     source_table_row_count: int = Field(
         description="Total number of rows in the source TableSegment.", ge=0
     )
-    table_window_mode: Literal["row_chunks", "whole_table"] = Field(
-        description="Profile table-window mode used for this table payload."
-    )
 
     @model_validator(mode="after")
     def validate_row_ranges(self) -> Self:
@@ -1432,82 +1316,74 @@ class ExtractionWindowTablePayload(BaseSchema):
         return self
 
 
-class SelectedExtractionSegment(BaseSchema):
-    """A DocumentIR segment selected for Academic Standards extraction."""
+class ExtractionWindowPlanItem(BaseSchema):
+    """A planned DocumentIR source unit for Academic Standards extraction."""
 
     block_type: Optional[str] = Field(
         default=None,
-        description="Block type for selected block segments; null for table segments.",
+        description="Block type for planned block windows; null for table windows.",
     )
     columns_signature: Optional[str] = Field(
         default=None,
-        description="Table columns_signature for selected table segments; null for blocks.",
+        description="Table columns_signature for planned table windows; null for blocks.",
     )
     local_code: Optional[str] = Field(
         default=None, description="DocumentIR local_code for the segment, if present."
     )
+    plan_id: str = Field(description="Deterministic plan item identifier.")
+    plan_index: int = Field(description="0-based index in source-window plan order.")
+    plan_reasons: list[str] = Field(
+        default_factory=list,
+        description="Deterministic reasons this source unit is planned for extraction.",
+    )
     row_count: Optional[int] = Field(
         default=None,
-        description="Number of source table rows for table selections; null for blocks.",
+        description="Number of source table rows for table plans; null for blocks.",
         ge=0,
     )
-    section_path: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description="Raw DocumentIR section_path for the selected segment.",
-    )
     segment_id: str = Field(description="DocumentIR segment_id.")
-    segment_kind: Literal["block", "table"] = Field(
-        description="Selected segment kind."
-    )
-    selection_id: str = Field(description="Deterministic selection identifier.")
-    selection_index: int = Field(description="0-based index in selected-segment order.")
-    selection_reasons: list[str] = Field(
-        default_factory=list,
-        description="Deterministic reasons this segment was selected.",
-    )
+    segment_kind: Literal["block", "table"] = Field(description="Planned segment kind.")
     source_page_indexes: list[int] = Field(
         default_factory=list,
         description="Sorted unique 0-based source page indexes for this segment.",
     )
 
-    @field_validator("selection_reasons")
+    @field_validator("plan_reasons")
     @classmethod
-    def validate_selection_reasons(cls, v: list[str]) -> list[str]:
-        """Require at least one non-empty selection reason.
+    def validate_plan_reasons(cls, v: list[str]) -> list[str]:
+        """Validate that each plan item records at least one reason.
 
         Parameters
         ----------
         v
-            Selection reasons.
+            Plan reasons.
 
         Returns
         -------
         list[str]
-            Cleaned selection reasons.
+            Cleaned unique plan reasons.
 
         Raises
         ------
         ValueError
-            If no non-empty reasons are provided.
+            If no non-empty plan reasons remain.
         """
 
         cleaned = unique_clean_strings(v)
 
         if not cleaned:
-            raise ValueError("SelectedExtractionSegment requires selection_reasons.")
+            raise ValueError("ExtractionWindowPlanItem requires plan_reasons.")
 
         return cleaned
 
 
-class SelectedExtractionSegmentsArtifact(BaseSchema):
-    """Artifact containing selected extraction segments and counts for inspection
-    purposes.
-    """
+class ExtractionWindowPlanArtifact(BaseSchema):
+    """Persisted artifact summarizing planned extraction-window source units."""
 
     counts_by_reason: dict[str, int] = Field(default_factory=dict)
     counts_by_segment_kind: dict[str, int] = Field(default_factory=dict)
-    selected_segments: list[SelectedExtractionSegment] = Field(default_factory=list)
-    total_selected_segments: int = Field(default=0, ge=0)
+    plan_items: list[ExtractionWindowPlanItem] = Field(default_factory=list)
+    total_plan_items: int = Field(ge=0)
 
 
 class StructuredContextItem(BaseSchema):
