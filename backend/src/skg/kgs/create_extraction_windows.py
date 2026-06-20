@@ -826,7 +826,7 @@ def _model_dump_by_indexes(
 
 
 def _model_dump_list(values: Sequence[BaseModel]) -> list[dict[str, Any]]:
-    """Serialize a sequence of Pydantic models or dictionaries.
+    """Serialize a sequence of Pydantic models.
 
     Parameters
     ----------
