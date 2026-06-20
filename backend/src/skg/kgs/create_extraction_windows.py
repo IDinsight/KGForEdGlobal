@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 # Package Library
-from skg.document_ir.schemas import BlockSegment, DocumentIR, Segment, TableSegment
+from skg.document_ir.schemas import BlockSegment, DocumentIR, TableSegment
 from skg.kgs.schemas import (
     CodeMatch,
     CodeParentHint,
@@ -60,10 +60,9 @@ def _build_block_source_text(block_payload: dict[str, Any]) -> str:
     if isinstance(text_unit, dict) and text_unit.get("text"):
         return str(text_unit["text"]).strip()
 
-    return _extract_list_or_figure_text(
-        block_payload=block_payload,
-        list_items=block_payload.get("list_items") or [],
-    )
+    return _extract_list_items_text(
+        block_payload.get("list_items") or []
+    ) or _extract_figure_text(block_payload)
 
 
 def _build_block_windows(
@@ -690,33 +689,6 @@ def _extract_list_items_text(list_items: list[Any]) -> str:
     return "\n".join(item_text for item_text in item_texts if item_text)
 
 
-def _extract_list_or_figure_text(
-    *, block_payload: dict[str, Any], list_items: list[Any]
-) -> str:
-    """Extract source text from list items or figure text fields.
-
-    Parameters
-    ----------
-    block_payload
-        JSON-serializable block payload containing optional figure data.
-    list_items
-        List items extracted from the block payload.
-
-    Returns
-    -------
-    str
-        Source text extracted from list items or figure text fields, or an empty string
-        when no useful source text is present.
-    """
-
-    list_text = _extract_list_items_text(list_items)
-
-    if list_text:
-        return list_text
-
-    return _extract_figure_text(block_payload)
-
-
 def _get_table_plan_reasons(
     *, document_profile: DocumentProfile, segment: TableSegment
 ) -> list[str]:
@@ -742,8 +714,7 @@ def _get_table_plan_reasons(
         return []
 
     if _matches_any_pattern(
-        patterns=document_profile.excluded_table_section_patterns,
-        text=section_text,
+        patterns=document_profile.excluded_table_section_patterns, text=section_text
     ):
         return []
 
@@ -753,8 +724,7 @@ def _get_table_plan_reasons(
         reasons.append("table_columns_signature_target_match")
 
     if _matches_any_pattern(
-        patterns=document_profile.target_table_section_patterns,
-        text=section_text,
+        patterns=document_profile.target_table_section_patterns, text=section_text
     ):
         reasons.append("table_section_target_pattern_match")
 
@@ -975,53 +945,6 @@ def _optional_model_dump_by_indexes(
     return _model_dump_by_indexes(indexes=indexes, values=values)
 
 
-def _plan_item_from_segment(
-    *,
-    document_ir: DocumentIR,
-    plan_index: int,
-    plan_reasons: list[str],
-    segment: Segment,
-) -> ExtractionWindowPlanItem:
-    """Create one validated plan item from a DocumentIR segment.
-
-    Parameters
-    ----------
-    document_ir
-        Validated stitched DocumentIR.
-    plan_index
-        0-based plan item index.
-    plan_reasons
-        Reasons this segment was planned.
-    segment
-        Source DocumentIR segment.
-
-    Returns
-    -------
-    ExtractionWindowPlanItem
-        Validated plan item.
-    """
-
-    block_type = segment.block_type.value if segment.kind == "block" else None
-    row_count = len(segment.rows) if segment.kind == "table" else None
-
-    return ExtractionWindowPlanItem(
-        block_type=block_type,
-        columns_signature=getattr(segment, "columns_signature", None),
-        local_code=getattr(segment, "local_code", None),
-        plan_id=_deterministic_uuid(
-            f"lc:curriculum:{document_ir.doc_key}:extraction_window_plan:{segment.kind}:{segment.segment_id}"
-        ),
-        plan_index=plan_index,
-        plan_reasons=plan_reasons,
-        row_count=row_count,
-        segment_id=segment.segment_id,
-        segment_kind=segment.kind,
-        source_page_indexes=sorted(
-            {int(provenance.page_index) for provenance in segment.segment_provenance}
-        ),
-    )
-
-
 def _table_section_text(segment: TableSegment) -> str:
     """Build text used only for table section-pattern selection rules.
 
@@ -1165,8 +1088,7 @@ def plan_extraction_windows(
             plan_reasons = ["block_has_extractable_source_text"]
         elif segment.kind == "table":
             plan_reasons = _get_table_plan_reasons(
-                document_profile=document_profile,
-                segment=segment,
+                document_profile=document_profile, segment=segment
             )
 
             if not plan_reasons:
@@ -1175,11 +1097,26 @@ def plan_extraction_windows(
             continue
 
         plan_items.append(
-            _plan_item_from_segment(
-                document_ir=document_ir,
+            ExtractionWindowPlanItem(
+                block_type=(
+                    segment.block_type.value if segment.kind == "block" else None
+                ),
+                columns_signature=getattr(segment, "columns_signature", None),
+                local_code=segment.local_code,
+                plan_id=_deterministic_uuid(
+                    f"lc:curriculum:{document_ir.doc_key}:extraction_window_plan:{segment.kind}:{segment.segment_id}"
+                ),
                 plan_index=len(plan_items),
                 plan_reasons=plan_reasons,
-                segment=segment,
+                row_count=len(segment.rows) if segment.kind == "table" else None,
+                segment_id=segment.segment_id,
+                segment_kind=segment.kind,
+                source_page_indexes=sorted(
+                    {
+                        int(provenance.page_index)
+                        for provenance in segment.segment_provenance
+                    }
+                ),
             )
         )
 

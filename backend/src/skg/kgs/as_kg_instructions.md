@@ -19,7 +19,7 @@ stitched DocumentIR
 
 LearningComponents and LearningProgressions remain important downstream goals, but they should come after the Academic Standards hierarchy is stable.
 
-Academic Standards KG creation is an **LLM extraction pipeline**. Python prepares source-faithful windows, adds profile/context/code hints, validates structured responses, merges duplicates, mints deterministic IDs, resolves relationships, and exports artifacts. The LLM performs the semantic extraction from each window into SFI candidates and hierarchy/parent hints. Deterministic rules are guardrails and helpers, not a replacement for LLM extraction.
+Academic Standards KG creation is an **LLM extraction pipeline**. Python prepares source-faithful windows, adds profile and code hints, validates structured responses, merges duplicates, mints deterministic IDs, resolves relationships, and exports artifacts. The LLM performs the semantic extraction from each window into SFI candidates and hierarchy/parent hints. Deterministic rules are guardrails and helpers, not a replacement for LLM extraction.
 
 ---
 
@@ -115,17 +115,21 @@ DocumentIR + DocumentProfile
 
 The KG entry point is `create_kgs.py`.
 
-Its current v0 behavior is prep/validation only:
+The current v0 implementation now covers the prep and extraction-window artifact stages:
 
 ```text
 1. Load and validate the stitched DocumentIR and DocumentProfile.
 2. Cross-check basic profile/document compatibility.
 3. Build and persist kg_run_manifest.json.
+4. Plan extraction windows from DocumentIR segments.
+5. Persist extraction_window_plan.json.
+6. Build LLM-ready extraction windows.
+7. Persist extraction_windows.jsonl.
 ```
 
-The CLI also cross-checks that the KG run is using the same PDF bytes/doc_key as the extraction and stitching run, creates the KG output directory, persists `kg_run.json`, and then calls `build_kgs(...)`.
+The CLI cross-checks that the KG run is using the same PDF bytes/doc_key as the extraction and stitching run, creates the KG output directory, persists `kg_run.json`, and then calls `build_kgs(...)`.
 
-The next coding work should extend `build_kgs(...)` after the manifest prep remains successful.
+The next coding target is Step 4: run LLM extraction over `extraction_windows.jsonl` to produce validated SFI extraction results.
 
 ---
 
@@ -185,7 +189,7 @@ The Academic Standards KG should be created through an LLM extraction stage, not
 Python should do the deterministic orchestration work:
 
 ```text
-select eligible source segments
+plan extraction windows from source segments
 build stable LLM prompt windows
 provide profile-derived hints and constraints
 preserve raw source text/provenance
@@ -235,7 +239,7 @@ grid_sources      -> debugging/provenance for normalized cells
 row_provenance    -> row/cell provenance
 ```
 
-However, the KG stage should not fail just because `rows_grid` or `rows_filldown` is missing. Use them when present; fall back to raw rows, headers, section path, and provenance when not present.
+However, the KG stage should not fail just because `rows_grid` or `rows_filldown` is missing. Use them when present; fall back to raw rows, headers, and provenance when not present.
 
 ### 7. Use candidates before final KG nodes
 
@@ -283,104 +287,123 @@ Do not treat validation as a later cleanup step. The v0 product should include s
 
 ## Academic Standards v0 implementation sequence
 
-The current prep/manifest code already exists. The following 11 steps are the recommended next implementation sequence inside or below `build_kgs(...)`, after `kg_run_manifest.json` is successfully created.
+The prep/manifest and extraction-window stages now exist. The remaining implementation sequence should continue from the persisted `extraction_window_plan.json` and `extraction_windows.jsonl` artifacts.
 
-### Step 1. Select extraction segments
+### Step 1. Plan extraction windows from DocumentIR segments — implemented
 
-Add a function such as:
+Implemented by a function such as:
 
 ```python
-select_extraction_segments(document_ir, document_profile) -> SelectedExtractionSegments
+plan_extraction_windows(*, document_ir, document_profile, save_fp) -> list[ExtractionWindowPlanItem]
 ```
 
 Purpose:
 
 ```text
-Choose the DocumentIR segments eligible for Academic Standards extraction.
-```
-
-Inputs:
-
-```text
-DocumentIR.segments
-DocumentProfile target/excluded table signatures
-DocumentProfile target/excluded section patterns
-DocumentProfile table/window mode
+Walk `DocumentIR.segments` in source order and plan the source units that should become Academic Standards extraction windows.
 ```
 
 Rules:
 
 ```text
-Prefer profile-driven table selection.
-Ignore front matter, panel-member tables, pure examples, and non-standards tables.
-Include block segments only when the profile says block text can contain extractable standards/groupings.
-Add a hard guard: if zero extraction segments/windows are selected, raise unless the profile explicitly allows zero windows.
+Block segments:
+- Plan one block extraction window for every block segment with extractable source text.
+- Do not require profile block-selection rules.
+- Do not make Python decide whether a block contains SFIs. The LLM extraction step decides whether the block yields SFI candidates, auxiliary records, or no candidates.
+
+Table segments:
+- Apply profile-driven table selection.
+- Exclude tables matching excluded_table_columns_signatures.
+- Exclude tables matching excluded_table_section_patterns.
+- Include tables matching target_table_columns_signatures.
+- Include tables matching target_table_section_patterns.
+- Skip non-selected tables.
+
+Run behavior:
+- Preserve DocumentIR source order.
+- Persist a deterministic plan item for every planned block/table source unit.
+- Fail by default if no plan items are produced.
 ```
 
-Output artifact candidate:
+Output artifact:
 
 ```text
-selected_extraction_segments.json
+extraction_window_plan.json
 ```
 
-### Step 2. Build LLM-ready extraction windows
+### Step 2. Build LLM-ready extraction windows — implemented
 
-Add a function such as:
+Implemented by a function such as:
 
 ```python
-build_llm_extraction_windows(selected_segments, document_profile) -> list[ExtractionWindow]
+build_llm_extraction_windows(*, document_ir, document_profile, plan_items, save_fp) -> list[ExtractionWindow]
 ```
 
 Purpose:
 
 ```text
-Cut selected DocumentIR content into stable prompt-sized windows for LLM-based Academic Standards extraction.
+Convert planned DocumentIR source units into stable prompt payloads for LLM-based Academic Standards extraction.
 ```
 
-This step should produce the inputs that will be sent to the LLM. It is not merely a chunking utility; it is where Python packages the exact source text, table structure, context spine, profile instructions, and provenance needed for reliable LLM extraction.
+This step produces the inputs that will be sent to the LLM. It is not a semantic extraction step. Python packages the exact source text, table structure, optional helper views, provenance, code hints, profile instructions, and deterministic source-derived keys needed for reliable LLM extraction.
 
-Step 2 is the LLM prompt-payload construction stage; Step 4 is the LLM call and structured-response validation stage.
+Step 2 is the LLM prompt-payload construction stage. Step 4 is the LLM call and structured-response validation stage.
 
 Each window should include:
 
 ```text
 window_id
+window_index
 source segment_id(s)
-section path / heading context
-structured context from profile rules, if available
+source segment kind
+source text
+block payload, for block windows
+table payload, for table windows
 table metadata and column signature, if table-based
-headers
-raw rows/cells
+headers, if table-based
+raw rows/cells, if table-based
 rows_grid when available
 rows_filldown when available
 grid_sources when available
 row_provenance/page provenance
+code matches from configured code_patterns
+code parent hints from configured code_parent_rules
+deterministic source-derived hints
 profile extraction instructions
-LLM task instructions that ask for SFI candidates, auxiliary candidates, and parent/context hints
+LLM task instructions that ask for SFI candidates, auxiliary candidates, and parent/context hints visible in the window
 ```
 
-Each window should be treated as an LLM prompt payload. Python may precompute deterministic hints such as code matches, candidate parent-code suggestions, table-header role hints, and normalized context strings, but the window's purpose is to give the LLM enough source material to extract Academic Standards candidates faithfully.
+The extraction-window stage should not depend on `section_path`, `nearby_headings`, or `context_spine` as semantic hierarchy. Those fields may exist upstream or in the profile for future use, but v0 extraction windows should be source-faithful prompt payloads, not Python-derived curriculum hierarchy.
 
-For tables, v0 can use row chunks or whole-table windows based on the profile. Do not implement a separate logical-row assembly layer yet; use `rows_filldown` plus downstream dedup/merge.
+For tables, windowing is controlled by `max_rows_per_table_window`:
 
-### Step 3. Persist extraction windows
+```text
+max_rows_per_table_window = null -> one whole-table window
+max_rows_per_table_window = integer -> row chunks of at most that many body rows
+row_overlap -> overlapping body rows between adjacent chunks when row chunking is enabled
+```
+
+Do not implement a separate logical-row assembly layer yet; use raw rows plus optional `rows_grid`, `rows_filldown`, `grid_sources`, and `row_provenance` when available, then rely on downstream candidate dedup/merge.
+
+### Step 3. Persist extraction artifacts — implemented
 
 Write:
 
 ```text
+extraction_window_plan.json
 extraction_windows.jsonl
 ```
 
-Each line should validate against an intermediate `ExtractionWindow` schema once that schema is added.
+Each extraction-window JSONL record should validate against the intermediate `ExtractionWindow` schema.
 
-This artifact should be inspectable without running the LLM. It is the primary debugging surface for, "What did we ask the LLM extractor to inspect?"
+These artifacts should be inspectable without running the LLM. They are the primary debugging surface for, "What did we ask the LLM extractor to inspect?"
 
-### Step 4. Run LLM extraction to create SFI candidates
+### Step 4. Run LLM extraction to create SFI candidates — next target
 
 Add a function such as:
 
 ```python
-extract_sfi_candidates_with_llm(windows, document_profile) -> list[SFIExtractionResult]
+extract_sfi_candidates_with_llm(*, document_profile, windows) -> list[SFIExtractionResult]
 ```
 
 Purpose:
@@ -407,11 +430,9 @@ Use deterministic logic around the LLM call for:
 
 ```text
 prompt construction
-stable code-pattern hints
 code-pattern hints
 code parent-rule hints
-table header role hints
-section/context spine hints
+table header/source-structure hints
 schema validation of LLM responses
 retry/repair when the response fails validation
 post-extraction normalization and merge/ID support
@@ -429,7 +450,7 @@ in_language: required
 statement_type/source role: required when known
 normalized_statement_type: Standard | Standard Grouping | Other
 candidate role: expectation | descriptor | guidance | grouping | auxiliary
-parent hints: temporary candidate IDs, code parent hints, context path hints, or none
+parent hints: temporary candidate IDs, code parent hints, source-visible hierarchy hints, or none
 source provenance: required
 synthetic_context_key/no-code merge fields: required when statement_code is missing
 confidence/rationale when LLM-derived
@@ -481,7 +502,7 @@ The registry should normalize and index candidates by:
 ```text
 source code when present
 normalized source text hash
-normalized context path
+source-derived context/disambiguation key
 statement/source role
 language
 source segment/table/row/cell provenance
@@ -530,7 +551,7 @@ same statement_code + conflicting source text/context -> review or disambiguate
 For no-code curricula:
 
 ```text
-doc_key + subject + level/stage/week/palier context + source role + normalized source text -> likely merge key
+doc_key + subject + source-visible level/stage/week/palier/grouping context + source role + normalized source text -> likely merge key
 ```
 
 Use bounded LLM duplicate review only when deterministic rules cannot decide.
@@ -566,7 +587,7 @@ lc:curriculum:{doc_key}:sfi:{role}:{statement_code}:{disambiguating_context_if_n
 For no-code items, prefer:
 
 ```text
-lc:curriculum:{doc_key}:sfi:{role}:{normalized_context_path}:{normalized_source_text_hash}
+lc:curriculum:{doc_key}:sfi:{role}:{source_context_key}:{normalized_source_text_hash}
 ```
 
 Then convert the canonical string to UUIDv5.
@@ -583,7 +604,7 @@ source_text / description text
 source and normalized statement type
 statement_code, if any
 language
-context path / canonical path key
+source context/disambiguation key
 metadata/provenance
 ```
 
@@ -614,7 +635,7 @@ B4.1.1.1.1 -> parent B4.1.1.1
 3.9.4.1 -> parent inferred by configured code hierarchy, when safe
 ```
 
-For no-code curricula, use structural/context hierarchy:
+For no-code curricula, use LLM-emitted grouping/context candidates, source order, and profile policy:
 
 ```text
 Framework -> subject/domain/activity section -> stage/level/palier/week -> expectation
@@ -742,11 +763,20 @@ A user can run create_kgs.py on a stitched DocumentIR and receive a validated Ac
 
 Do not define every possible intermediate schema up front. Define schemas as each boundary is implemented.
 
-Recommended first intermediate schemas:
+Implemented intermediate schemas now include:
 
 ```text
-SelectedExtractionSegment
+ExtractionWindowPlanItem
+ExtractionWindowPlanArtifact
 ExtractionWindow
+ExtractionWindowTablePayload
+CodeMatch
+CodeParentHint
+```
+
+Recommended next intermediate schemas:
+
+```text
 SFIExtractionResult
 SFICandidate
 SFICandidateRegistry
@@ -763,19 +793,17 @@ All LLM outputs should validate against schemas. Do not pass unvalidated ad hoc 
 
 ## Practical coding notes for the next session
 
-Start by extending `build_kgs(...)` in `create_kgs.py` after `kg_run_manifest.json` is written.
+Start from the current `extraction_windows.jsonl` artifact. Steps 1–3 now provide an inspectable prompt-input artifact before running the LLM.
 
-A practical first coding target is:
+The next coding target is:
 
 ```text
-select_extraction_segments()
-build_llm_extraction_windows()
-write extraction_windows.jsonl
+extract_sfi_candidates_with_llm()
+write sfi_extraction_results.jsonl
+write sfi_extraction_summary.json
 ```
 
-This gives an inspectable artifact before running the LLM and makes prompt/debug review possible.
-
-A good second coding target is LLM-based SFI candidate extraction for one relatively structured document, such as Ghana or Zambia, using deterministic code/table/header hints in the prompt and validating the LLM response against the new intermediate schemas. That will test the registry, merge, ID, and hasChild machinery before the more difficult Senegal no-code/bilingual path.
+Begin with one relatively structured document, such as Ghana or Zambia, using the current source windows, deterministic code-pattern hints, code-parent hints, table headers, and table helper views in the prompt. Validate every LLM response against the new intermediate SFI extraction schema before implementing the registry, merge, ID, and hasChild machinery.
 
 Do not begin with LearningComponents or LearningProgressions. Those should be behind later flags and should consume final SFIs, not candidates.
 
