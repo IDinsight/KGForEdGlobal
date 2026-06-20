@@ -981,15 +981,14 @@ def build_llm_extraction_windows(
     Raises
     ------
     ValueError
-        If a planned segment is missing or no windows are produced without an explicit
-        zero-window override.
+        If a planned segment is missing or no windows are produced.
     """
 
-    segment_by_id = {segment.segment_id: segment for segment in document_ir.segments}
+    segments_by_id = {segment.segment_id: segment for segment in document_ir.segments}
     extraction_windows: list[ExtractionWindow] = []
 
     for plan_item in plan_items:
-        segment = segment_by_id.get(plan_item.segment_id)
+        segment = segments_by_id.get(plan_item.segment_id)
 
         if segment is None:
             raise ValueError(
@@ -1022,10 +1021,7 @@ def build_llm_extraction_windows(
     if not extraction_windows:
         raise ValueError("No extraction windows were produced.")
 
-    write_extraction_windows(
-        extraction_windows=extraction_windows,
-        save_fp=save_fp,
-    )
+    write_extraction_windows(extraction_windows=extraction_windows, save_fp=save_fp)
     return extraction_windows
 
 
