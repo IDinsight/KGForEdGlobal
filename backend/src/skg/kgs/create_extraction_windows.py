@@ -188,7 +188,7 @@ def _build_extraction_window(
             plan_item.segment_kind,
             plan_item.segment_id,
             row_range_label or "",
-            _normalize_key_text(source_text),
+            re.sub(r"\s+", " ", source_text or "").strip().casefold(),
         ]
     )
     return ExtractionWindow(
@@ -872,23 +872,6 @@ def _model_to_dict(value: Any) -> dict[str, Any]:
         return dict(value)
 
     raise TypeError(f"Expected a Pydantic model or dict-like value, got {type(value)}")
-
-
-def _normalize_key_text(text: str) -> str:
-    """Normalize source text for source-derived keys.
-
-    Parameters
-    ----------
-    text
-        Source text.
-
-    Returns
-    -------
-    str
-        Whitespace-normalized lowercase text.
-    """
-
-    return re.sub(r"\s+", " ", text or "").strip().casefold()
 
 
 def _optional_list_by_indexes(
