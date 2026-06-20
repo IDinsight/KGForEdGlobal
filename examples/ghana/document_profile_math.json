@@ -37,12 +37,6 @@
 		"content_standard": "\\bB[456]\\.\\d+\\.\\d+\\.\\d+(?!\\.\\d)\\b",
 		"indicator": "\\bB[456]\\.\\d+\\.\\d+\\.\\d+\\.\\d+(?!\\.\\d)\\b"
 	},
-	"code_statement_types": {
-		"content_standard": "Content Standard",
-		"indicator": "Indicator"
-	},
-	"has_stable_codes": true,
-	"sfi_hierarchy_roles": [],
 	"excluded_table_columns_signatures": [],
 	"excluded_table_section_patterns": [],
 	"target_table_columns_signatures": [

@@ -15,7 +15,6 @@ from __future__ import annotations
 # Standard Library
 import re
 
-from collections import Counter
 from datetime import datetime
 from typing import Any, Literal, Optional, Self, Sequence
 from urllib.parse import urlparse
@@ -381,69 +380,6 @@ class ContextSpineConfig(BaseSchema):
         return self
 
 
-class SFIHierarchyRole(BaseSchema):
-    """Profile declaration of a final SFI hierarchy role.
-
-    This separates the window-level context spine from row-local SFI roles. For Ghana,
-    grade/strand/sub-strand are context-derived groupings, while content standards and
-    learning indicators are row-local standards extracted from table cells/codes.
-    """
-
-    normalized_statement_type: _NormalizedStatementType
-    parent_role: Optional[str] = None
-    role: str
-    source: Literal["context", "row", "framework"] = "row"
-    statement_type: str
-
-    @field_validator("role", "statement_type", mode="before")
-    @classmethod
-    def _strip_required_strings(cls, v: str) -> str:
-        """Strip whitespace and require non-empty strings for required fields.
-
-        Parameters
-        ----------
-        v
-            The input string value to validate.
-
-        Returns
-        -------
-        str
-            The validated and stripped string value.
-        """
-
-        return _strip_and_require_non_empty_str(v)
-
-    @field_validator("parent_role", mode="before")
-    @classmethod
-    def _strip_optional_parent_role(cls, v: Optional[str]) -> Optional[str]:
-        """Strip the optional parent_role, coercing blanks to None.
-
-        Parameters
-        ----------
-        v
-            The parent_role value to validate, or None.
-
-        Returns
-        -------
-        Optional[str]
-            The stripped parent_role, or None if the input was None or blank.
-
-        Raises
-        ------
-        TypeError
-            If the input is neither a string nor None.
-        """
-
-        if v is None:
-            return None
-
-        if not isinstance(v, str):
-            raise TypeError("parent_role must be a string or None")
-
-        v2 = v.strip()
-        return v2 if v2 else None
-
-
 class DocumentProfile(BaseSchema):
     """Country/document-specific profile for KG extraction."""
 
@@ -471,15 +407,6 @@ class DocumentProfile(BaseSchema):
     # Code handling.
     code_parent_rules: list[dict[str, str]] = Field(default_factory=list)
     code_patterns: dict[str, str] = Field(default_factory=dict)
-    code_statement_types: dict[str, str] = Field(default_factory=dict)
-    has_stable_codes: bool = False
-    sfi_hierarchy_roles: list[SFIHierarchyRole] = Field(
-        default_factory=list,
-        description=(
-            "Final KG hierarchy roles expected for this document. This includes both "
-            "context-derived grouping roles and row-local standard roles."
-        ),
-    )
 
     # Table selection policy.
     excluded_table_columns_signatures: list[str] = Field(
@@ -876,20 +803,6 @@ class DocumentProfile(BaseSchema):
 
         return cleaned
 
-    def _validate_stable_codes(self) -> None:
-        """Ensure stable codes have associated code patterns.
-
-        Raises
-        ------
-        ValueError
-            If has_stable_codes is true but no code_patterns were configured.
-        """
-
-        if self.has_stable_codes and not self.code_patterns:
-            raise ValueError(
-                "DocumentProfile.has_stable_codes is true, but no code_patterns were configured."
-            )
-
     def _validate_windowing(self) -> None:
         """Ensure table row windowing configuration is internally consistent.
 
@@ -972,30 +885,6 @@ class DocumentProfile(BaseSchema):
         for idx, rule in enumerate(self.code_parent_rules):
             self._validate_code_parent_rule(idx, rule, known)
 
-    def _validate_statement_type_keys(self, known: set[str]) -> None:
-        """Ensure code_statement_types keys are a subset of code_patterns.
-
-        Parameters
-        ----------
-        known
-            Set of known code pattern names.
-
-        Raises
-        ------
-        ValueError
-            If code_statement_types contains keys absent from code_patterns.
-        """
-
-        unknown_statement_type_keys = sorted(
-            set(self.code_statement_types.keys()) - known
-        )
-
-        if unknown_statement_type_keys:
-            raise ValueError(
-                f"DocumentProfile.code_statement_types contains keys not present in "
-                f"code_patterns: {unknown_statement_type_keys}"
-            )
-
     def _validate_selection_overlap_policy(self) -> None:
         """Ensure table-selection policy does not both target and exclude the same
         value.
@@ -1017,45 +906,6 @@ class DocumentProfile(BaseSchema):
                 f"same columns_signature values: {overlapping_table_signatures}"
             )
 
-    def _validate_sfi_hierarchy_roles(self) -> None:
-        """Validate final SFI hierarchy role declarations.
-
-        Raises
-        ------
-        ValueError
-            If role names are duplicated, parent roles are unknown, or context-sourced
-            roles are not produced by the configured context spine.
-        """
-
-        roles = [item.role for item in self.sfi_hierarchy_roles]
-        duplicate_roles = sorted(
-            role for role, count in Counter(roles).items() if count > 1
-        )
-        if duplicate_roles:
-            raise ValueError(
-                f"DocumentProfile.sfi_hierarchy_roles contains duplicate roles: {duplicate_roles}"
-            )
-
-        known_roles = set(roles)
-        for item in self.sfi_hierarchy_roles:
-            if item.parent_role and item.parent_role not in known_roles:
-                raise ValueError(
-                    f"SFI hierarchy role {item.role!r} references unknown parent_role: "
-                    f"{item.parent_role!r}"
-                )
-
-        context_roles = {rule.role for rule in self.context_spine.heading_rules}
-        missing_context_roles = sorted(
-            item.role
-            for item in self.sfi_hierarchy_roles
-            if item.source == "context" and item.role not in context_roles
-        )
-        if missing_context_roles:
-            raise ValueError(
-                "Context-sourced SFI hierarchy roles are not produced by "
-                f"context_spine.heading_rules: {missing_context_roles}"
-            )
-
     @model_validator(mode="after")
     def validate_profile_configuration(self) -> DocumentProfile:
         """Validate cross-field DocumentProfile configuration.
@@ -1072,12 +922,9 @@ class DocumentProfile(BaseSchema):
         """
 
         known = set(self.code_patterns.keys())
-        self._validate_stable_codes()
         self._validate_windowing()
         self._validate_code_parent_rules(known)
-        self._validate_statement_type_keys(known)
         self._validate_selection_overlap_policy()
-        self._validate_sfi_hierarchy_roles()
         return self
 
 
@@ -1094,10 +941,6 @@ class CodeMatch(BaseSchema):
     start_char: int = Field(
         description="Start character offset of the match within window source_text.",
         ge=0,
-    )
-    statement_type: Optional[str] = Field(
-        default=None,
-        description="Document profile statement type associated with this code type, if any.",
     )
     value: str = Field(description="Matched source-code surface form.")
 
@@ -1133,10 +976,6 @@ class CodeParentHint(BaseSchema):
     parent_code: str = Field(description="Derived parent code.")
     parent_code_type: str = Field(
         description="Document profile local parent code type."
-    )
-    parent_statement_type: Optional[str] = Field(
-        default=None,
-        description="Document profile statement type associated with the parent code type, if any.",
     )
 
 
@@ -1219,6 +1058,76 @@ class ExtractionWindow(BaseSchema):
             raise ValueError("Table extraction windows must not include block payload.")
 
         return self
+
+
+class ExtractionWindowPlanArtifact(BaseSchema):
+    """Persisted artifact summarizing planned extraction-window source units."""
+
+    counts_by_reason: dict[str, int] = Field(default_factory=dict)
+    counts_by_segment_kind: dict[str, int] = Field(default_factory=dict)
+    plan_items: list[ExtractionWindowPlanItem] = Field(default_factory=list)
+    total_plan_items: int = Field(ge=0)
+
+
+class ExtractionWindowPlanItem(BaseSchema):
+    """A planned DocumentIR source unit for Academic Standards extraction."""
+
+    block_type: Optional[str] = Field(
+        default=None,
+        description="Block type for planned block windows; null for table windows.",
+    )
+    columns_signature: Optional[str] = Field(
+        default=None,
+        description="Table columns_signature for planned table windows; null for blocks.",
+    )
+    local_code: Optional[str] = Field(
+        default=None, description="DocumentIR local_code for the segment, if present."
+    )
+    plan_id: str = Field(description="Deterministic plan item identifier.")
+    plan_index: int = Field(description="0-based index in source-window plan order.")
+    plan_reasons: list[str] = Field(
+        default_factory=list,
+        description="Deterministic reasons this source unit is planned for extraction.",
+    )
+    row_count: Optional[int] = Field(
+        default=None,
+        description="Number of source table rows for table plans; null for blocks.",
+        ge=0,
+    )
+    segment_id: str = Field(description="DocumentIR segment_id.")
+    segment_kind: Literal["block", "table"] = Field(description="Planned segment kind.")
+    source_page_indexes: list[int] = Field(
+        default_factory=list,
+        description="Sorted unique 0-based source page indexes for this segment.",
+    )
+
+    @field_validator("plan_reasons")
+    @classmethod
+    def validate_plan_reasons(cls, v: list[str]) -> list[str]:
+        """Validate that each plan item records at least one reason.
+
+        Parameters
+        ----------
+        v
+            Plan reasons.
+
+        Returns
+        -------
+        list[str]
+            Cleaned unique plan reasons.
+
+        Raises
+        ------
+        ValueError
+            If no non-empty plan reasons remain.
+        """
+
+        cleaned = unique_clean_strings(v)
+
+        if not cleaned:
+            raise ValueError("ExtractionWindowPlanItem requires plan_reasons.")
+
+        return cleaned
 
 
 class ExtractionWindowTablePayload(BaseSchema):
@@ -1314,76 +1223,6 @@ class ExtractionWindowTablePayload(BaseSchema):
                 )
 
         return self
-
-
-class ExtractionWindowPlanItem(BaseSchema):
-    """A planned DocumentIR source unit for Academic Standards extraction."""
-
-    block_type: Optional[str] = Field(
-        default=None,
-        description="Block type for planned block windows; null for table windows.",
-    )
-    columns_signature: Optional[str] = Field(
-        default=None,
-        description="Table columns_signature for planned table windows; null for blocks.",
-    )
-    local_code: Optional[str] = Field(
-        default=None, description="DocumentIR local_code for the segment, if present."
-    )
-    plan_id: str = Field(description="Deterministic plan item identifier.")
-    plan_index: int = Field(description="0-based index in source-window plan order.")
-    plan_reasons: list[str] = Field(
-        default_factory=list,
-        description="Deterministic reasons this source unit is planned for extraction.",
-    )
-    row_count: Optional[int] = Field(
-        default=None,
-        description="Number of source table rows for table plans; null for blocks.",
-        ge=0,
-    )
-    segment_id: str = Field(description="DocumentIR segment_id.")
-    segment_kind: Literal["block", "table"] = Field(description="Planned segment kind.")
-    source_page_indexes: list[int] = Field(
-        default_factory=list,
-        description="Sorted unique 0-based source page indexes for this segment.",
-    )
-
-    @field_validator("plan_reasons")
-    @classmethod
-    def validate_plan_reasons(cls, v: list[str]) -> list[str]:
-        """Validate that each plan item records at least one reason.
-
-        Parameters
-        ----------
-        v
-            Plan reasons.
-
-        Returns
-        -------
-        list[str]
-            Cleaned unique plan reasons.
-
-        Raises
-        ------
-        ValueError
-            If no non-empty plan reasons remain.
-        """
-
-        cleaned = unique_clean_strings(v)
-
-        if not cleaned:
-            raise ValueError("ExtractionWindowPlanItem requires plan_reasons.")
-
-        return cleaned
-
-
-class ExtractionWindowPlanArtifact(BaseSchema):
-    """Persisted artifact summarizing planned extraction-window source units."""
-
-    counts_by_reason: dict[str, int] = Field(default_factory=dict)
-    counts_by_segment_kind: dict[str, int] = Field(default_factory=dict)
-    plan_items: list[ExtractionWindowPlanItem] = Field(default_factory=list)
-    total_plan_items: int = Field(ge=0)
 
 
 class StructuredContextItem(BaseSchema):

@@ -200,9 +200,7 @@ def _build_extraction_window(
             "bilingual_pair_policy": document_profile.bilingual_pair_policy,
             "code_parent_rules": document_profile.code_parent_rules,
             "code_patterns": document_profile.code_patterns,
-            "code_statement_types": document_profile.code_statement_types,
             "country": document_profile.country,
-            "has_stable_codes": document_profile.has_stable_codes,
             "no_code_policy": (
                 "statement_code is optional. When no official code is visible, later "
                 "candidate merge/ID steps must use source-derived keys and source text, "
@@ -471,7 +469,6 @@ def _collect_code_matches(
                     code_type=code_type,
                     end_char=match.end(),
                     start_char=match.start(),
-                    statement_type=document_profile.code_statement_types.get(code_type),
                     value=match.group(0),
                 )
             )
@@ -517,7 +514,6 @@ def _collect_code_parent_hints(
     """
 
     code_patterns = document_profile.code_patterns
-    code_statement_types = document_profile.code_statement_types
     hints: list[CodeParentHint] = []
 
     for code_match in code_matches:
@@ -563,7 +559,6 @@ def _collect_code_parent_hints(
                     method=str(method),
                     parent_code=parent_code,
                     parent_code_type=parent_code_type,
-                    parent_statement_type=code_statement_types.get(parent_code_type),
                 )
             )
 

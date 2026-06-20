@@ -2,7 +2,7 @@
 
 ## Purpose of this file
 
-Use this file at the start of the coding session to (re)establish the shared context quickly and begin implementation without re-reviewing the full curriculum mapping background.
+Use this file at the start of the coding session to establish the shared context quickly and begin implementation without re-reviewing the full curriculum mapping background.
 
 The immediate goal is **not** to build the full Learning Commons KG pipeline end-to-end. The immediate goal is to implement a focused v0 slice:
 
@@ -20,26 +20,6 @@ stitched DocumentIR
 LearningComponents and LearningProgressions remain important downstream goals, but they should come after the Academic Standards hierarchy is stable.
 
 Academic Standards KG creation is an **LLM extraction pipeline**. Python prepares source-faithful windows, adds profile/context/code hints, validates structured responses, merges duplicates, mints deterministic IDs, resolves relationships, and exports artifacts. The LLM performs the semantic extraction from each window into SFI candidates and hierarchy/parent hints. Deterministic rules are guardrails and helpers, not a replacement for LLM extraction.
-
----
-
-## Starting Files for This Session
-
-Files available:
-1. Python files:
-    - `create_kgs.py`: the main entry point for creating the KGs from the document IR and document profile JSON files
-    - `create_extraction_windows.py`: contains functionalities for creating LLM-ready extraction windows from the DocumentIR and the document profile 
-    - `schemas.py`: schemas for the KG pipeline
-    - `utils.py`: utility functions for the KG pipeline
-    - `run_config_schemas.py`: contains the run config schemas (renamed to avoid conflict)
-    - `schemas_document_ir.py`: schemas for stitched DocumentIR segments, including BlockSegment, TableSegment, provenance, table rows, rows_grid, grid_sources, row_provenance, and rows_filldown (renamed to avoid conflict)
-    - `utils_document_ir.py`: utility functions from the DocumentIR pipeline; useful for source-text normalization, local-code comparison, provenance handling, and deterministic source-address logic (renamed to avoid conflict)
-    - `stitch_segments.py`: reference for how stitched table segments and helper views are produced; useful when building LLM-ready table extraction windows
-2. JSON files:
-    - `config_math_curriculum.json`: the runtime config parameters (note that some parameters for the KG pipeline are outdated/unused and can probably be removed if not useful)
-    - `document_ir.json`: the stitched DocumentIR output for Ghana's math curriculum PDF
-    - `document_profile_math.json`: the DocumentProfile for Ghana's math curriculum PDF
-    - `kg_run_manifest.json`: output from the current KG prep stage for the Ghana math run; useful as the sanity-check baseline before implementing extraction windows
 
 ---
 
@@ -67,6 +47,26 @@ Relationship(supports)
 Relationship(buildsTowards)
 Relationship(relatesTo)
 ```
+
+---
+
+## Starting Files for This Session
+
+Files available:
+1. Python files:
+    - `create_kgs.py`: the main entry point for creating the KGs from the document IR and document profile JSON files
+    - `create_extraction_windows.py`: contains functionalities for creating LLM-ready extraction windows from the DocumentIR and the document profile
+    - `schemas.py`: schemas for the KG pipeline
+    - `utils.py`: utility functions for the KG pipeline
+    - `run_config_schemas.py`: contains the run config schemas (renamed to avoid conflict)
+    - `schemas_document_ir.py`: schemas for stitched DocumentIR segments, including BlockSegment, TableSegment, provenance, table rows, rows_grid, grid_sources, row_provenance, and rows_filldown (renamed to avoid conflict)
+    - `utils_document_ir.py`: utility functions from the DocumentIR pipeline; useful for source-text normalization, local-code comparison, provenance handling, and deterministic source-address logic (renamed to avoid conflict)
+    - `stitch_segments.py`: reference for how stitched table segments and helper views are produced; useful when building LLM-ready table extraction windows
+2. JSON files:
+    - `config_math_curriculum.json`: the runtime config parameters (note that some parameters for the KG pipeline are outdated/unused and can probably be removed if not useful)
+    - `document_ir.json`: the stitched DocumentIR output for Ghana's math curriculum PDF
+    - `document_profile_math.json`: the DocumentProfile for Ghana's math curriculum PDF
+    - `kg_run_manifest.json`: output from the current KG prep stage for the Ghana math run; useful as the sanity-check baseline before implementing extraction windows
 
 ---
 
@@ -113,7 +113,7 @@ DocumentIR + DocumentProfile
 
 ## Current implementation state
 
-The new KG entry point is `create_kgs.py`.
+The KG entry point is `create_kgs.py`.
 
 Its current v0 behavior is prep/validation only:
 
@@ -145,7 +145,6 @@ what counts as a normative expectation SFI
 what counts as descriptor/guidance/activity/auxiliary material
 which table signatures/sections are eligible for extraction
 which table signatures/sections are excluded
-whether the document has stable codes
 what code patterns exist, if any
 which fields should be used for no-code synthetic merge keys
 how bilingual pairs should be treated
@@ -338,7 +337,7 @@ Purpose:
 Cut selected DocumentIR content into stable prompt-sized windows for LLM-based Academic Standards extraction.
 ```
 
-This step should produce the inputs that will be sent to the LLM. It is not merely a chunking utility; it is where Python packages the exact source text, table structure, context spine, profile instructions, and provenance needed for reliable LLM extraction. 
+This step should produce the inputs that will be sent to the LLM. It is not merely a chunking utility; it is where Python packages the exact source text, table structure, context spine, profile instructions, and provenance needed for reliable LLM extraction.
 
 Step 2 is the LLM prompt-payload construction stage; Step 4 is the LLM call and structured-response validation stage.
 
@@ -409,7 +408,7 @@ Use deterministic logic around the LLM call for:
 ```text
 prompt construction
 stable code-pattern hints
-code statement type hints
+code-pattern hints
 code parent-rule hints
 table header role hints
 section/context spine hints

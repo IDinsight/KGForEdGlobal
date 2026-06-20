@@ -410,15 +410,15 @@ def _validate_document_profile_compatibility(
             f"DocumentIR languages: {observed_languages}."
         )
 
-    if document_profile.has_stable_codes:
+    if document_profile.code_patterns:
         total_code_matches = sum(
             match_counts["total"] for match_counts in code_pattern_match_counts.values()
         )
 
         if total_code_matches == 0:
             message = (
-                "DocumentProfile.has_stable_codes is true, but none of the configured "
-                "code_patterns matched text in the DocumentIR."
+                "DocumentProfile configured code_patterns, but none of them matched "
+                "text in the DocumentIR."
             )
             raise ValueError(message)
 
@@ -478,7 +478,6 @@ def build_run_manifest(kg_run_inputs: KGInputs) -> dict[str, Any]:
         "document_ir_fp": str(kg_run_inputs.document_ir_fp),
         "document_profile_fp": str(kg_run_inputs.document_profile_fp),
         "framework_title": document_profile.framework_title,
-        "has_stable_codes": document_profile.has_stable_codes,
         "kg_run_dir": str(kg_run_inputs.kg_dirs.root),
         "observed_languages": kg_run_inputs.observed_languages,
         "page_count": document_ir.page_count,
