@@ -720,13 +720,13 @@ def _get_table_plan_reasons(
 
     reasons: list[str] = []
 
-    if columns_signature in document_profile.target_table_columns_signatures:
-        reasons.append("table_columns_signature_target_match")
+    if columns_signature in document_profile.included_table_columns_signatures:
+        reasons.append("table_columns_signature_included_match")
 
     if _matches_any_pattern(
-        patterns=document_profile.target_table_section_patterns, text=section_text
+        patterns=document_profile.included_table_section_patterns, text=section_text
     ):
-        reasons.append("table_section_target_pattern_match")
+        reasons.append("table_section_included_pattern_match")
 
     return unique_clean_strings(reasons)
 
@@ -1036,13 +1036,8 @@ def build_llm_extraction_windows(
         else:
             raise ValueError(f"Unrecognized planned segment kind: {segment.kind}")
 
-    if not extraction_windows and not bool(
-        document_profile.metadata.get("allow_zero_extraction_windows")
-    ):
-        raise ValueError(
-            "No extraction windows were produced. This is a hard failure unless "
-            "DocumentProfile.metadata.allow_zero_extraction_windows is true."
-        )
+    if not extraction_windows:
+        raise ValueError("No extraction windows were produced.")
 
     write_extraction_windows(
         extraction_windows=extraction_windows,
@@ -1073,7 +1068,7 @@ def plan_extraction_windows(
     Raises
     ------
     ValueError
-        If no source units are planned without an explicit zero-window override.
+        If no source units are planned.
     """
 
     plan_items: list[ExtractionWindowPlanItem] = []
@@ -1120,13 +1115,8 @@ def plan_extraction_windows(
             )
         )
 
-    if not plan_items and not bool(
-        document_profile.metadata.get("allow_zero_extraction_windows")
-    ):
-        raise ValueError(
-            "No extraction window source units were planned. This is a hard failure "
-            "unless DocumentProfile.metadata.allow_zero_extraction_windows is true."
-        )
+    if not plan_items:
+        raise ValueError("No extraction window source units were planned.")
 
     write_extraction_window_plan(plan_items=plan_items, save_fp=save_fp)
     return plan_items

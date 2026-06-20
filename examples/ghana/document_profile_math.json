@@ -39,11 +39,11 @@
 	},
 	"excluded_table_columns_signatures": [],
 	"excluded_table_section_patterns": [],
-	"target_table_columns_signatures": [
+	"included_table_columns_signatures": [
 		"content standards|indicators and exemplars|subject specific practices and core competencies",
 		"content standard|indicators and exemplars|subject specific practices and core competencies"
 	],
-	"target_table_section_patterns": [],
+	"included_table_section_patterns": [],
 	"max_rows_per_table_window": 20,
 	"row_overlap": 1,
 	"bilingual_pair_policy": null,

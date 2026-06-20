@@ -315,8 +315,8 @@ Table segments:
 - Apply profile-driven table selection.
 - Exclude tables matching excluded_table_columns_signatures.
 - Exclude tables matching excluded_table_section_patterns.
-- Include tables matching target_table_columns_signatures.
-- Include tables matching target_table_section_patterns.
+- Include tables matching included_table_columns_signatures.
+- Include tables matching included_table_section_patterns.
 - Skip non-selected tables.
 
 Run behavior:

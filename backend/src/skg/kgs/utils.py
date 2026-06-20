@@ -173,7 +173,7 @@ def _count_table_selection_matches(
     Returns
     -------
     dict[str, Any]
-        Summary counts for target and excluded table column signatures.
+        Summary counts for included and excluded table column signatures.
     """
 
     observed_counts: Counter[str] = Counter()
@@ -188,15 +188,15 @@ def _count_table_selection_matches(
         signature: observed_counts.get(signature, 0)
         for signature in document_profile.excluded_table_columns_signatures
     }
-    target_signature_counts = {
+    included_signature_counts = {
         signature: observed_counts.get(signature, 0)
-        for signature in document_profile.target_table_columns_signatures
+        for signature in document_profile.included_table_columns_signatures
     }
     return {
-        "excluded_table_signature_match_total": sum(excluded_signature_counts.values()),
         "excluded_table_signature_counts": excluded_signature_counts,
-        "target_table_signature_match_total": sum(target_signature_counts.values()),
-        "target_table_signature_counts": target_signature_counts,
+        "excluded_table_signature_match_total": sum(excluded_signature_counts.values()),
+        "included_table_signature_counts": included_signature_counts,
+        "included_table_signature_match_total": sum(included_signature_counts.values()),
     }
 
 
@@ -423,22 +423,22 @@ def _validate_document_profile_compatibility(
             raise ValueError(message)
 
     if (
-        document_profile.target_table_columns_signatures
-        or document_profile.target_table_section_patterns
+        document_profile.included_table_columns_signatures
+        or document_profile.included_table_section_patterns
     ) and segment_counts.get("table", 0) == 0:
         warnings.append(
             "DocumentProfile contains table-selection rules, but the DocumentIR "
             "contains no table segments."
         )
 
-    if document_profile.target_table_columns_signatures:
-        target_match_total = table_selection_match_counts[
-            "target_table_signature_match_total"
+    if document_profile.included_table_columns_signatures:
+        included_match_total = table_selection_match_counts[
+            "included_table_signature_match_total"
         ]
 
-        if target_match_total == 0:
+        if included_match_total == 0:
             raise ValueError(
-                "DocumentProfile configured target_table_columns_signatures, but no "
+                "DocumentProfile configured included_table_columns_signatures, but no "
                 "matching table segments were observed in the DocumentIR. "
             )
 
@@ -491,8 +491,8 @@ def build_run_manifest(kg_run_inputs: KGInputs) -> dict[str, Any]:
         "table_selection_policy": {
             "excluded_table_columns_signatures": document_profile.excluded_table_columns_signatures,
             "excluded_table_section_patterns": document_profile.excluded_table_section_patterns,
-            "target_table_columns_signatures": document_profile.target_table_columns_signatures,
-            "target_table_section_patterns": document_profile.target_table_section_patterns,
+            "included_table_columns_signatures": document_profile.included_table_columns_signatures,
+            "included_table_section_patterns": document_profile.included_table_section_patterns,
         },
         "warnings": kg_run_inputs.warnings,
     }

@@ -424,13 +424,13 @@ class DocumentProfile(BaseSchema):
             "eligible."
         ),
     )
-    target_table_columns_signatures: list[str] = Field(
+    included_table_columns_signatures: list[str] = Field(
         default_factory=list,
         description=(
             "Column signatures that identify table segments eligible for SFI extraction."
         ),
     )
-    target_table_section_patterns: list[str] = Field(
+    included_table_section_patterns: list[str] = Field(
         default_factory=list,
         description=(
             "Regex patterns over bounded nearby heading/section text that can include "
@@ -467,9 +467,6 @@ class DocumentProfile(BaseSchema):
     duplicate_review_instructions: str
     learning_component_instructions: str
     sfi_extraction_instructions: str
-
-    # All other metadata.
-    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator(
         "attribution_statement",
@@ -632,7 +629,7 @@ class DocumentProfile(BaseSchema):
 
     @field_validator(
         "excluded_table_columns_signatures",
-        "target_table_columns_signatures",
+        "included_table_columns_signatures",
     )
     @classmethod
     def validate_selection_string_lists(cls, v: list[str]) -> list[str]:
@@ -655,7 +652,7 @@ class DocumentProfile(BaseSchema):
 
     @field_validator(
         "excluded_table_section_patterns",
-        "target_table_section_patterns",
+        "included_table_section_patterns",
     )
     @classmethod
     def validate_selection_pattern_lists(cls, v: list[str]) -> list[str]:
@@ -886,23 +883,23 @@ class DocumentProfile(BaseSchema):
             self._validate_code_parent_rule(idx, rule, known)
 
     def _validate_selection_overlap_policy(self) -> None:
-        """Ensure table-selection policy does not both target and exclude the same
+        """Ensure table-selection policy does not both include and exclude the same
         value.
 
         Raises
         ------
         ValueError
-            If a table columns_signature appears in both target and excluded lists.
+            If a table columns_signature appears in both included and excluded lists.
         """
 
         overlapping_table_signatures = sorted(
-            set(self.target_table_columns_signatures)
+            set(self.included_table_columns_signatures)
             & set(self.excluded_table_columns_signatures)
         )
 
         if overlapping_table_signatures:
             raise ValueError(
-                f"DocumentProfile table-selection policy cannot target and exclude the "
+                f"DocumentProfile table-selection policy cannot include and exclude the "
                 f"same columns_signature values: {overlapping_table_signatures}"
             )
 
