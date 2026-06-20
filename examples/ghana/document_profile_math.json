@@ -30,7 +30,9 @@
 		{
 			"child": "indicator",
 			"parent": "content_standard",
-			"method": "drop_last_dot_component"
+			"method": "regex_substitution",
+			"regex": "^(B[456]\\.\\d+\\.\\d+\\.\\d+)\\.\\d+\\.?$",
+			"replacement": "\\1"
 		}
 	],
 	"code_patterns": {

@@ -494,7 +494,7 @@ def _collect_code_matches(
 def _collect_code_parent_hints(
     *, code_matches: Sequence[CodeMatch], document_profile: DocumentProfile
 ) -> list[CodeParentHint]:
-    """Collect code-parent hints from document profile rules.
+    """Collect code-parent hints from regex-substitution rules.
 
     Parameters
     ----------
@@ -506,52 +506,38 @@ def _collect_code_parent_hints(
     Returns
     -------
     list[CodeParentHint]
-        Ordered unique parent-code hints.
+        Ordered unique parent-code hints whose derived parent code validates against
+        the configured parent code pattern.
     """
 
-    code_patterns = document_profile.code_patterns
     hints: list[CodeParentHint] = []
 
     for code_match in code_matches:
+        child_code = code_match.value
+
         for rule in document_profile.code_parent_rules:
-            child_code_type = rule.get("child")
-
-            if code_match.code_type != child_code_type:
+            if code_match.code_type != rule["child"]:
                 continue
 
-            method = rule.get("method")
-            parent_code_type = rule.get("parent")
-            parent_code: Optional[str] = None
+            # Derive parent code via regex substitution.
+            parent_code = re.sub(rule["regex"], rule["replacement"], child_code).strip()
 
-            if method == "drop_last_dot_component":
-                if "." in code_match.value:
-                    parent_code = code_match.value.rsplit(".", 1)[0]
-            elif method == "regex_substitution":
-                regex = rule.get("regex")
-                replacement = rule.get("replacement")
-
-                if regex is not None and replacement is not None:
-                    parent_code = re.sub(regex, replacement, code_match.value)
-
-            if (
-                not parent_code
-                or parent_code == code_match.value
-                or parent_code_type is None
-            ):
+            # Ensure the substitution produced a distinct, non-empty code.
+            if not parent_code or parent_code == child_code:
                 continue
 
-            parent_pattern = code_patterns.get(parent_code_type)
+            parent_code_type = rule["parent"]
+            parent_pattern = document_profile.code_patterns[parent_code_type]
 
-            if parent_pattern is not None and not re.fullmatch(
-                parent_pattern, parent_code
-            ):
+            # Ensure the derived parent code matches the configured pattern.
+            if not re.fullmatch(parent_pattern, parent_code):
                 continue
 
             hints.append(
                 CodeParentHint(
-                    child_code=code_match.value,
+                    child_code=child_code,
                     child_code_type=code_match.code_type,
-                    method=str(method),
+                    method=rule["method"],
                     parent_code=parent_code,
                     parent_code_type=parent_code_type,
                 )

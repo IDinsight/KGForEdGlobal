@@ -841,8 +841,9 @@ class DocumentProfile(BaseSchema):
         Raises
         ------
         ValueError
-            If the rule references unknown patterns, uses an invalid method, or is
-            missing required regex_substitution fields.
+            If the rule references unknown patterns, uses a method other than
+            `regex_substitution`, is missing required `regex_substitution` fields, or
+            has an invalid regex.
         """
 
         child = rule.get("child")
@@ -859,16 +860,18 @@ class DocumentProfile(BaseSchema):
                 f"code_parent_rules[{idx}] unknown parent pattern: {parent!r}"
             )
 
-        if method not in {"drop_last_dot_component", "regex_substitution"}:
-            raise ValueError(f"code_parent_rules[{idx}] invalid method: {method!r}")
+        if method != "regex_substitution":
+            raise ValueError(
+                f"code_parent_rules[{idx}] invalid method: {method!r}. "
+                f"Only 'regex_substitution' is supported."
+            )
 
-        if method == "regex_substitution":
-            if "regex" not in rule or "replacement" not in rule:
-                raise ValueError(
-                    f"code_parent_rules[{idx}] regex_substitution requires regex and replacement"
-                )
+        if "regex" not in rule or "replacement" not in rule:
+            raise ValueError(
+                f"code_parent_rules[{idx}] regex_substitution requires regex and replacement"
+            )
 
-            re.compile(rule["regex"])
+        re.compile(rule["regex"])
 
     def _validate_code_parent_rules(self, known: set[str]) -> None:
         """Validate all configured code parent rules.
