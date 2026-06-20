@@ -271,16 +271,16 @@ def _build_table_source_text(
     for row_index, row in zip(table_payload.row_indexes, rows):
         cell_texts: list[str] = []
 
-        for cell in row.get("cells") or []:
-            cell_text = ""
+        for cell in row["cells"]:
+            assert isinstance(cell, dict)
+            text_unit = cell.get("text")
 
-            if isinstance(cell, dict):
-                text_unit = cell.get("text")
-
-                if isinstance(text_unit, dict):
-                    cell_text = str(text_unit.get("text") or "").strip()
-                elif text_unit is not None:
-                    cell_text = str(text_unit).strip()
+            if isinstance(text_unit, dict):
+                cell_text = str(text_unit.get("text") or "").strip()
+            elif text_unit is not None:
+                cell_text = str(text_unit).strip()
+            else:
+                cell_text = ""
 
             cell_texts.append(cell_text)
 
