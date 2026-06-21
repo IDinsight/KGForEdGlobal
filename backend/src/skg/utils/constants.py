@@ -115,25 +115,6 @@ class PageContinuationKind(str, Enum):
     TEXT = "text"
 
 
-class SegmentDecisionType(str, Enum):
-    """Enumeration of high-level actions for segment decisions."""
-
-    EMIT_FLAGGED_UNRESOLVED = "emit_flagged_unresolved"
-    EMIT_GROUPINGS_AND_LEAVES = "emit_groupings_and_leaves"
-    EMIT_GROUPINGS_ONLY = "emit_groupings_only"
-    EMIT_LEAVES_ONLY = "emit_leaves_only"
-    IGNORE = "ignore"
-    UNRESOLVED = "unresolved"
-
-
-class StatementRole(str, Enum):
-    """Semantic role of a KG node in the hierarchy."""
-
-    EXPECTATION = "expectation"  # Normative statement (standard/outcome)
-    DESCRIPTOR = "descriptor"  # Performance indicator/benchmark
-    GUIDANCE = "guidance"  # Pedagogical guidance (activities/resources/teacher notes)
-
-
 # Literals/sets/etc. for various constant types.
 CaptionFigurePrefixes: tuple[str, ...] = (
     "diagramme",
@@ -152,38 +133,4 @@ CaptionTablePrefixes: tuple[str, ...] = (
     "tableau",
     "tbl",
     "tbl.",
-)
-
-# Context grouping role precedence (outer -> inner). Used to enforce consistent
-# ordering of SegmentDecision.context_groupings[] across segments and (especially)
-# across chunked table decisions.
-#
-# NB:
-# 1. This order is *configurable per curriculum document* (via config.json) because
-#   some curricula place certain containers (e.g., SECTION vs. WEEK) in different
-#   relative positions.
-# 2. Only roles present in DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER participate in
-#   precedence-based checks. Roles omitted from the configured order are treated as
-#   "unranked" and do not factor into context-grouping ordering/outer-ness validators.
-# 3. context_groupings[] should contain OUTER context only (stage/grade/subject/etc.).
-# 4. row-local groupings like TOPIC/SUBTOPIC usually live in RowDecision.groupings[].
-#   However, some curricula surface them as true outer context, so they remain in the
-#   default precedence list and can be kept/configured there when needed.
-# 5. Order matters here!
-DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER: tuple[NodeRole, ...] = (
-    NodeRole.STAGE,
-    NodeRole.GRADE_LEVEL,
-    NodeRole.LEARNING_AREA,
-    NodeRole.SUBJECT,
-    NodeRole.STRAND,
-    NodeRole.SUBSTRAND,
-    NodeRole.THEME,
-    NodeRole.SUBTHEME,
-    NodeRole.TERM,
-    NodeRole.UNIT,
-    NodeRole.SUBSTAGE,
-    NodeRole.SECTION,
-    NodeRole.WEEK,
-    NodeRole.TOPIC,
-    NodeRole.SUBTOPIC,
 )
