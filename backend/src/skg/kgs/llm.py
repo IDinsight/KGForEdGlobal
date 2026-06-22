@@ -5,9 +5,6 @@ artifacts using an LLM.
 # Standard Library
 from dataclasses import dataclass
 
-# Third Party Library
-from loguru import logger
-
 # Package Library
 from skg.config import Settings
 from skg.kgs.agents import create_sfi_extraction_agent
@@ -75,11 +72,6 @@ def extract_sfi_candidates(
         Parsed and quality-validated SFI extraction result.
     """
 
-    logger.info(
-        f"Running SFI extraction for window: "
-        f"{extraction_window.window_index} ({extraction_window.window_id})..."
-    )
-
     prompts = extract_sfi_candidates_from_window(
         extraction_window=extraction_window, kg_config=kg_config
     )
@@ -91,11 +83,4 @@ def extract_sfi_candidates(
     )
     result = agent.run_sync(prompts.user_message)
     usage_tracker.sfi_extraction.add_run_usage(result.usage())
-
-    logger.success(
-        f"Finished SFI extraction for window {extraction_window.window_index}; "
-        f"candidates={len(result.output.sfi_candidates)}, "
-        f"auxiliary={len(result.output.auxiliary_candidates)}."
-    )
-
     return result.output

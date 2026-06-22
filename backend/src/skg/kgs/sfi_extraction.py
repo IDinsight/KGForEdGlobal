@@ -278,6 +278,8 @@ def extract_sfi_candidates_from_windows(
         Parsed and quality-validated extraction results in window order.
     """
 
+    total_windows = len(extraction_windows)
+
     if overwrite:
         for fp in [save_fp, summary_fp]:
             if fp.exists():
@@ -285,7 +287,10 @@ def extract_sfi_candidates_from_windows(
                 logger.info(f"Removed existing SFI extraction artifact: {fp}")
 
         sfi_extraction_results: list[SFIExtractionResult] = []
-        logger.info("Starting SFI extraction from scratch because overwrite=True.")
+        logger.info(
+            f"Starting SFI extraction from scratch because overwrite=True; "
+            f"completed_windows=0/{total_windows}."
+        )
     else:
         sfi_extraction_results = _load_existing_sfi_extraction_results(save_fp)
         _validate_existing_sfi_extraction_results(
@@ -296,22 +301,33 @@ def extract_sfi_candidates_from_windows(
             results=sfi_extraction_results, summary_fp=summary_fp
         )
 
-        if len(sfi_extraction_results) == len(extraction_windows):
+        completed_windows = len(sfi_extraction_results)
+
+        if completed_windows == total_windows:
             logger.info(
                 f"SFI extraction is already complete and overwrite=False; "
-                f"completed_windows={len(sfi_extraction_results)}. Skipping LLM calls: "
-                f"{save_fp}, {summary_fp}."
+                f"completed_windows={completed_windows}/{total_windows}. "
+                f"Skipping LLM calls: {save_fp}, {summary_fp}."
             )
 
             return sfi_extraction_results
 
         logger.info(
             f"Resuming SFI extraction from existing artifact {save_fp}; "
-            f"completed_windows={len(sfi_extraction_results)}, "
-            f"remaining_windows={len(extraction_windows) - len(sfi_extraction_results)}."
+            f"completed_windows={completed_windows}/{total_windows}, "
+            f"remaining_windows={total_windows - completed_windows}."
         )
 
-    for extraction_window in extraction_windows[len(sfi_extraction_results) :]:
+    for current_window_number, extraction_window in enumerate(
+        extraction_windows[len(sfi_extraction_results) :],
+        start=len(sfi_extraction_results) + 1,
+    ):
+        logger.info(
+            f"Running SFI extraction for window "
+            f"{current_window_number}/{total_windows}: "
+            f"window_id={extraction_window.window_id}..."
+        )
+
         sfi_extraction_result = extract_sfi_candidates(
             extraction_window=extraction_window,
             kg_config=kg_config,
@@ -323,11 +339,22 @@ def extract_sfi_candidates_from_windows(
             results=sfi_extraction_results, summary_fp=summary_fp
         )
 
+        logger.success(
+            f"Finished SFI extraction for window "
+            f"{current_window_number}/{total_windows}: "
+            f"candidates={len(sfi_extraction_result.sfi_candidates)}, "
+            f"auxiliary={len(sfi_extraction_result.auxiliary_candidates)}."
+        )
+
     if not sfi_extraction_results:
         _persist_sfi_extraction_summary(
             results=sfi_extraction_results, summary_fp=summary_fp
         )
 
-    logger.success(f"Finished all SFI extraction: {save_fp} and {summary_fp}.")
+    logger.success(
+        f"Finished all SFI extraction: "
+        f"completed_windows={len(sfi_extraction_results)}/{total_windows}; "
+        f"{save_fp} and {summary_fp}."
+    )
 
     return sfi_extraction_results
