@@ -32,7 +32,8 @@ from skg.kgs.create_extraction_windows import (
     build_llm_extraction_windows,
     plan_extraction_windows,
 )
-from skg.kgs.llm import SFIExtractionUsageTracker, extract_sfi_candidates_from_windows
+from skg.kgs.llm import SFIExtractionUsageTracker
+from skg.kgs.sfi_extraction import extract_sfi_candidates_from_windows
 from skg.kgs.utils import (
     KGDirs,
     build_run_manifest,
@@ -114,6 +115,7 @@ def build_kgs(
     sfi_extraction_results = extract_sfi_candidates_from_windows(
         document_profile=kg_run_inputs.document_profile,
         extraction_windows=extraction_windows,
+        overwrite=config.overwrite,
         save_fp=kg_dirs.root / "sfi_extraction_results.jsonl",
         summary_fp=kg_dirs.root / "sfi_extraction_summary.json",
         usage_tracker=usage_tracker,

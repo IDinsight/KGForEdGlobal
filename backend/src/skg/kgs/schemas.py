@@ -31,6 +31,12 @@ _AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo
 _AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
 _MetadataT = dict[str, Any]
 _NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
+_ParentReferenceKind = Literal[
+    "ancestor_context_hint",
+    "direct_parent_hint",
+    "sibling_or_nearby_context",
+    "unresolved_context",
+]
 _ProgressionSubtype = Literal["developmental_prerequisite", "recurring_practice"]
 _ValidationLevel = Literal["error", "info"]
 
@@ -1247,6 +1253,434 @@ class StructuredContextItem(BaseSchema):
     statement_type: str = Field(
         description="Source-facing statement type if this context becomes a grouping."
     )
+
+
+# Schemas for SFI candidate extraction.
+class SFIAuxiliaryCandidate(BaseSchema):
+    """Auxiliary source material that should not become an SFI candidate.
+
+    Examples include exemplars, activities, resources, teacher guidance, core
+    competencies, descriptors, and assessment notes when the document profile says they
+    should not become standalone StandardsFrameworkItems.
+    """
+
+    auxiliary_id: str = Field(description="Window-local auxiliary identifier.")
+    auxiliary_type: str = Field(description="Source-facing auxiliary material type.")
+    language: LanguageField = Field(description="Language tag for source_text.")
+    rationale: str = Field(
+        description="Why this material is auxiliary rather than an SFI candidate.",
+        min_length=1,
+    )
+    related_candidate_ids: list[str] = Field(
+        default_factory=list,
+        description="Window-local candidate IDs this auxiliary material supports or describes.",
+    )
+    source_text: str = Field(
+        description="Verbatim source text for the auxiliary material."
+    )
+
+    @field_validator(
+        "auxiliary_id",
+        "auxiliary_type",
+        "rationale",
+        "source_text",
+        mode="before",
+    )
+    @classmethod
+    def strip_required_strings(cls, v: str) -> str:
+        """Strip and require non-empty required string fields.
+
+        Parameters
+        ----------
+        v
+            Raw string value.
+
+        Returns
+        -------
+        str
+            Cleaned string.
+
+        Raises
+        ------
+        ValueError
+            If the value is empty.
+        """
+
+        v2 = v.strip()
+
+        if not v2:
+            raise ValueError("Required string field cannot be empty")
+
+        return v2
+
+
+class SFICandidate(BaseSchema):
+    """Candidate StandardsFrameworkItem extracted from one source window."""
+
+    ancestor_context_references: list[SFICandidateParentReference] = Field(
+        default_factory=list,
+        description="Broader source-visible context hints for later hierarchy resolution.",
+    )
+    candidate_id: str = Field(description="Window-local stable candidate identifier.")
+    confidence: float = Field(
+        default=0.5,
+        description="Confidence that this source material should become an SFI candidate.",
+        ge=0.0,
+        le=1.0,
+    )
+    description: str = Field(
+        description="Candidate SFI description, preserving the source-language meaning.",
+        min_length=1,
+    )
+    language: LanguageField = Field(
+        description="Language tag for description/source_text."
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Free-form extraction metadata useful for later debugging/merge.",
+    )
+    normalized_statement_type: _NormalizedStatementType = Field(
+        description="Standard, Standard Grouping, or Other."
+    )
+    parent_references: list[SFICandidateParentReference] = Field(
+        default_factory=list,
+        description="Candidate direct-parent hints, not final hasChild edges.",
+    )
+    source_text: str = Field(
+        description="Verbatim source text supporting this candidate.", min_length=1
+    )
+    statement_code: Optional[str] = Field(
+        default=None,
+        description="Official/source statement code, if visible. Optional for no-code curricula.",
+    )
+    statement_type: str = Field(
+        description="Source-facing statement type, e.g. grade, strand, content_standard, indicator."
+    )
+    table_row_indexes: list[int] = Field(
+        default_factory=list,
+        description="Source table row indexes used by this candidate, if table-derived.",
+    )
+
+    @field_validator(
+        "candidate_id", "description", "source_text", "statement_type", mode="before"
+    )
+    @classmethod
+    def strip_required_strings(cls, v: str) -> str:
+        """Strip and require non-empty required string fields.
+
+        Parameters
+        ----------
+        v
+            Raw string value.
+
+        Returns
+        -------
+        str
+            Cleaned string.
+
+        Raises
+        ------
+        ValueError
+            If the value is empty.
+        """
+
+        v2 = v.strip()
+
+        if not v2:
+            raise ValueError("Required string field cannot be empty")
+
+        return v2
+
+    @field_validator("statement_code", mode="before")
+    @classmethod
+    def strip_statement_code(cls, v: Optional[str]) -> Optional[str]:
+        """Normalize blank statement codes to ``None``.
+
+        Parameters
+        ----------
+        v
+            Optional statement code.
+
+        Returns
+        -------
+        Optional[str]
+            Stripped code, or ``None``.
+        """
+
+        if v is None:
+            return None
+
+        v2 = v.strip()
+        return v2 if v2 else None
+
+    @field_validator("table_row_indexes")
+    @classmethod
+    def validate_table_row_indexes(cls, v: list[int]) -> list[int]:
+        """Clean and validate source table row indexes.
+
+        Parameters
+        ----------
+        v
+            Raw row indexes.
+
+        Returns
+        -------
+        list[int]
+            Sorted unique non-negative row indexes.
+
+        Raises
+        ------
+        ValueError
+            If any row index is negative.
+        """
+
+        cleaned = sorted(set(int(index) for index in v or []))
+
+        if any(index < 0 for index in cleaned):
+            raise ValueError("table_row_indexes must be non-negative")
+
+        return cleaned
+
+
+class SFICandidateParentReference(BaseSchema):
+    """Source-grounded parent or context reference emitted during SFI extraction.
+
+    These references are not final graph edges. They are retained as evidence for the
+    later post-deduplication `hasChild` resolver, which will resolve references against
+    finalized SFIs and the StandardsFramework root.
+    """
+
+    confidence: float = Field(
+        default=0.5,
+        description="Confidence that this reference is relevant parent/context evidence.",
+        ge=0.0,
+        le=1.0,
+    )
+    normalized_statement_type: Optional[_NormalizedStatementType] = Field(
+        default=None,
+        description="Expected normalized type of the referenced item, if visible.",
+    )
+    rationale: Optional[str] = Field(
+        default=None,
+        description="Brief source-grounded explanation for why this reference was emitted.",
+    )
+    reference_kind: _ParentReferenceKind = Field(
+        description="Whether this is a direct-parent hint, broader context, or unresolved context."
+    )
+    source_text: str = Field(
+        description="Verbatim source-visible text that identifies the referenced parent/context.",
+        min_length=1,
+    )
+    statement_code: Optional[str] = Field(
+        default=None,
+        description="Official/source code for the referenced item, if visible.",
+    )
+    statement_type: Optional[str] = Field(
+        default=None,
+        description="Source-facing role/type label for the referenced item, if visible.",
+    )
+
+    @field_validator("rationale", "statement_code", "statement_type", mode="before")
+    @classmethod
+    def strip_optional_strings(cls, v: Optional[str]) -> Optional[str]:
+        """Normalize optional string fields by stripping blanks to ``None``.
+
+        Parameters
+        ----------
+        v
+            Optional raw string value.
+
+        Returns
+        -------
+        Optional[str]
+            Stripped string, or `None` for blank values.
+        """
+
+        if v is None:
+            return None
+
+        v2 = v.strip()
+        return v2 if v2 else None
+
+    @field_validator("source_text", mode="before")
+    @classmethod
+    def strip_required_source_text(cls, v: str) -> str:
+        """Strip and require non-empty source text.
+
+        Parameters
+        ----------
+        v
+            Raw source text.
+
+        Returns
+        -------
+        str
+            Cleaned source text.
+
+        Raises
+        ------
+        ValueError
+            If source text is empty.
+        """
+
+        v2 = v.strip()
+
+        if not v2:
+            raise ValueError("source_text must be non-empty")
+
+        return v2
+
+
+class SFIExtractionResult(BaseSchema):
+    """Structured LLM output for one extraction window."""
+
+    auxiliary_candidates: list[SFIAuxiliaryCandidate] = Field(
+        default_factory=list,
+        description="Auxiliary material found in the window but not emitted as SFIs.",
+    )
+    extraction_notes: list[str] = Field(
+        default_factory=list,
+        description="Brief source-grounded notes, including why no candidates were returned.",
+    )
+    sfi_candidates: list[SFICandidate] = Field(
+        default_factory=list,
+        description="Candidate StandardsFrameworkItems extracted from this window.",
+    )
+    window_id: str = Field(description="ExtractionWindow.window_id for traceability.")
+    window_index: int = Field(description="ExtractionWindow.window_index.", ge=0)
+    window_source_segment_ids: list[str] = Field(
+        description="ExtractionWindow.source_segment_ids copied from the input window.",
+        min_length=1,
+    )
+
+    @field_validator("extraction_notes")
+    @classmethod
+    def clean_extraction_notes(cls, v: list[str]) -> list[str]:
+        """Strip blank extraction notes while preserving order.
+
+        Parameters
+        ----------
+        v
+            Raw notes.
+
+        Returns
+        -------
+        list[str]
+            Cleaned notes.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for note in v or []:
+            note_clean = str(note).strip()
+
+            if not note_clean or note_clean in seen:
+                continue
+
+            cleaned.append(note_clean)
+            seen.add(note_clean)
+
+        return cleaned
+
+    @field_validator("window_id", mode="before")
+    @classmethod
+    def strip_window_id(cls, v: str) -> str:
+        """Strip and require a non-empty window ID.
+
+        Parameters
+        ----------
+        v
+            Raw window ID.
+
+        Returns
+        -------
+        str
+            Cleaned window ID.
+
+        Raises
+        ------
+        ValueError
+            If window ID is empty.
+        """
+
+        v2 = v.strip()
+
+        if not v2:
+            raise ValueError("window_id must be non-empty")
+
+        return v2
+
+    @model_validator(mode="after")
+    def validate_local_ids_are_unique(self) -> Self:
+        """Validate unique window-local candidate and auxiliary IDs.
+
+        Returns
+        -------
+        Self
+            The validated extraction result.
+
+        Raises
+        ------
+        ValueError
+            If duplicate candidate or auxiliary IDs are present.
+        """
+
+        candidate_ids = [candidate.candidate_id for candidate in self.sfi_candidates]
+        auxiliary_ids = [
+            candidate.auxiliary_id for candidate in self.auxiliary_candidates
+        ]
+
+        duplicate_candidate_ids = sorted(
+            {
+                candidate_id
+                for candidate_id in candidate_ids
+                if candidate_ids.count(candidate_id) > 1
+            }
+        )
+        duplicate_auxiliary_ids = sorted(
+            {
+                auxiliary_id
+                for auxiliary_id in auxiliary_ids
+                if auxiliary_ids.count(auxiliary_id) > 1
+            }
+        )
+
+        if duplicate_candidate_ids:
+            raise ValueError(f"Duplicate candidate IDs: {duplicate_candidate_ids}")
+
+        if duplicate_auxiliary_ids:
+            raise ValueError(f"Duplicate auxiliary IDs: {duplicate_auxiliary_ids}")
+
+        known_candidate_ids = set(candidate_ids)
+
+        for auxiliary_candidate in self.auxiliary_candidates:
+            unknown_related = sorted(
+                set(auxiliary_candidate.related_candidate_ids) - known_candidate_ids
+            )
+
+            if unknown_related:
+                raise ValueError(
+                    f"Auxiliary candidate {auxiliary_candidate.auxiliary_id!r} references "
+                    f"unknown candidate IDs: {unknown_related}"
+                )
+
+        return self
+
+
+class SFIExtractionSummary(BaseSchema):
+    """Summary artifact for an SFI extraction run."""
+
+    auxiliary_candidate_count: int = Field(default=0, ge=0)
+    candidate_count: int = Field(default=0, ge=0)
+    candidate_count_by_normalized_statement_type: dict[str, int] = Field(
+        default_factory=dict
+    )
+    candidate_count_by_statement_type: dict[str, int] = Field(default_factory=dict)
+    window_count: int = Field(default=0, ge=0)
+    windows_with_auxiliary_candidates: int = Field(default=0, ge=0)
+    windows_with_sfi_candidates: int = Field(default=0, ge=0)
+    windows_without_candidates: int = Field(default=0, ge=0)
 
 
 # CURRENTLY UNUSED #

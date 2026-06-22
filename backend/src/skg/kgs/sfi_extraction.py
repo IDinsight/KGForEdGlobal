@@ -1,0 +1,324 @@
+"""This module contains functionalities related to extracting SFI candidates from
+extraction windows using an LLM.
+"""
+
+# Standard Library
+import json
+
+from collections import Counter
+from pathlib import Path
+from typing import Sequence
+
+# Third Party Library
+from loguru import logger
+
+# Package Library
+from skg.kgs.llm import SFIExtractionUsageTracker, extract_sfi_candidates
+from skg.kgs.schemas import (
+    DocumentProfile,
+    ExtractionWindow,
+    SFIExtractionResult,
+    SFIExtractionSummary,
+)
+from skg.utils.general import make_dir, write_to_json
+
+
+def _append_sfi_extraction_result(
+    *, result: SFIExtractionResult, save_fp: Path
+) -> None:
+    """Append one validated SFI extraction result to a JSONL artifact.
+
+    Parameters
+    ----------
+    result
+        Parsed and quality-validated extraction result to append.
+    save_fp
+        File path for the JSONL extraction-result artifact.
+    """
+
+    make_dir(save_fp.parent)
+    missing_trailing_newline = False
+
+    if save_fp.exists() and save_fp.stat().st_size > 0:
+        with save_fp.open("rb") as f:
+            f.seek(-1, 2)
+            missing_trailing_newline = f.read(1) != b"\n"
+
+    with save_fp.open("a", encoding="utf-8") as f:
+        if missing_trailing_newline:
+            f.write("\n")
+
+        f.write(json.dumps(result.model_dump(mode="json"), ensure_ascii=False))
+        f.write("\n")
+
+
+def _build_sfi_extraction_summary(
+    sfi_extraction_results: Sequence[SFIExtractionResult],
+) -> SFIExtractionSummary:
+    """Build an aggregate summary for SFI extraction results.
+
+    Parameters
+    ----------
+    sfi_extraction_results
+        Parsed and validated SFI extraction results.
+
+    Returns
+    -------
+    SFIExtractionSummary
+        Aggregate counts for the extraction run.
+    """
+
+    auxiliary_candidate_count = 0
+    candidate_count = 0
+    normalized_counts: Counter[str] = Counter()
+    statement_type_counts: Counter[str] = Counter()
+    windows_with_auxiliary_candidates = 0
+    windows_with_sfi_candidates = 0
+
+    for sfi_extraction_result in sfi_extraction_results:
+        auxiliary_candidate_count += len(sfi_extraction_result.auxiliary_candidates)
+        candidate_count += len(sfi_extraction_result.sfi_candidates)
+
+        if sfi_extraction_result.auxiliary_candidates:
+            windows_with_auxiliary_candidates += 1
+
+        if sfi_extraction_result.sfi_candidates:
+            windows_with_sfi_candidates += 1
+
+        for candidate in sfi_extraction_result.sfi_candidates:
+            normalized_counts[candidate.normalized_statement_type] += 1
+            statement_type_counts[candidate.statement_type] += 1
+
+    return SFIExtractionSummary(
+        auxiliary_candidate_count=auxiliary_candidate_count,
+        candidate_count=candidate_count,
+        candidate_count_by_normalized_statement_type=dict(
+            sorted(normalized_counts.items())
+        ),
+        candidate_count_by_statement_type=dict(sorted(statement_type_counts.items())),
+        window_count=len(sfi_extraction_results),
+        windows_with_auxiliary_candidates=windows_with_auxiliary_candidates,
+        windows_with_sfi_candidates=windows_with_sfi_candidates,
+        windows_without_candidates=len(sfi_extraction_results)
+        - windows_with_sfi_candidates,
+    )
+
+
+def _load_existing_sfi_extraction_results(save_fp: Path) -> list[SFIExtractionResult]:
+    """Load existing SFI extraction results from a JSONL artifact.
+
+    Blank lines are ignored. Every non-empty line must validate as an
+    `SFIExtractionResult` so resumed runs cannot silently continue from malformed
+    output.
+
+    Parameters
+    ----------
+    save_fp
+        File path for the JSONL extraction-result artifact.
+
+    Returns
+    -------
+    list[SFIExtractionResult]
+        Existing validated extraction results in file order.
+
+    Raises
+    ------
+    ValueError
+        If any non-empty JSONL line cannot be parsed or validated.
+    """
+
+    if not save_fp.exists():
+        return []
+
+    loaded_results: list[SFIExtractionResult] = []
+
+    with save_fp.open("r", encoding="utf-8") as f:
+        for line_number, line in enumerate(f, start=1):
+            line_clean = line.strip()
+
+            if not line_clean:
+                continue
+
+            try:
+                loaded_results.append(
+                    SFIExtractionResult.model_validate_json(line_clean)
+                )
+            except Exception as e:  # pylint: disable=broad-except
+                raise ValueError(
+                    f"Could not parse SFI extraction JSONL artifact {save_fp} "
+                    f"line {line_number}."
+                ) from e
+
+    return loaded_results
+
+
+def _persist_sfi_extraction_summary(
+    *, results: Sequence[SFIExtractionResult], summary_fp: Path
+) -> SFIExtractionSummary:
+    """Build and persist the current SFI extraction summary artifact.
+
+    Parameters
+    ----------
+    results
+        Parsed and quality-validated extraction results to summarize.
+    summary_fp
+        File path for the aggregate summary JSON artifact.
+
+    Returns
+    -------
+    SFIExtractionSummary
+        The summary written to disk.
+    """
+
+    make_dir(summary_fp.parent)
+    summary = _build_sfi_extraction_summary(results)
+    write_to_json(fp=summary_fp, json_info=summary)
+    return summary
+
+
+def _validate_existing_sfi_extraction_results(
+    *,
+    extraction_windows: Sequence[ExtractionWindow],
+    results: Sequence[SFIExtractionResult],
+) -> None:
+    """Validate that existing SFI results are a prefix of the current window list.
+
+    Resumability assumes this module wrote prior results in extraction-window order.
+    This check prevents a resumed run from mixing outputs from a stale or different
+    extraction-window artifact with the current run.
+
+    Parameters
+    ----------
+    extraction_windows
+        Ordered source-faithful extraction windows for the current run.
+    results
+        Existing extraction results loaded from the JSONL artifact.
+
+    Raises
+    ------
+    ValueError
+        If existing results are longer than the current window list or do not match the
+        corresponding window IDs, indexes, and source segment IDs.
+    """
+
+    if len(results) > len(extraction_windows):
+        raise ValueError(
+            f"Existing SFI extraction results contain {len(results)} windows, but "
+            f"the current extraction-window artifact contains only "
+            f"{len(extraction_windows)} windows."
+        )
+
+    for result_index, result in enumerate(results):
+        extraction_window = extraction_windows[result_index]
+
+        if result.window_id != extraction_window.window_id:
+            raise ValueError(
+                f"Existing SFI extraction result at position {result_index} has "
+                f"window_id={result.window_id!r}, but the current extraction window "
+                f"has window_id={extraction_window.window_id!r}."
+            )
+
+        if result.window_index != extraction_window.window_index:
+            raise ValueError(
+                f"Existing SFI extraction result at position {result_index} has "
+                f"window_index={result.window_index!r}, but the current extraction "
+                f"window has window_index={extraction_window.window_index!r}."
+            )
+
+        if result.window_source_segment_ids != extraction_window.source_segment_ids:
+            raise ValueError(
+                f"Existing SFI extraction result at position {result_index} has "
+                f"window_source_segment_ids={result.window_source_segment_ids!r}, "
+                f"but the current extraction window has "
+                f"source_segment_ids={extraction_window.source_segment_ids!r}."
+            )
+
+
+def extract_sfi_candidates_from_windows(
+    *,
+    document_profile: DocumentProfile,
+    extraction_windows: Sequence[ExtractionWindow],
+    overwrite: bool,
+    save_fp: Path,
+    summary_fp: Path,
+    usage_tracker: SFIExtractionUsageTracker,
+) -> list[SFIExtractionResult]:
+    """Extract SFI candidates and incrementally persist resumable artifacts.
+
+    If `overwrite` is false and both the JSONL result artifact and summary artifact
+    already exist, no extraction is performed and the existing JSONL results are
+    returned. Otherwise, the existing JSONL artifact is loaded as a completed prefix,
+    the summary is refreshed from that prefix when needed, and extraction resumes at
+    the first unprocessed window. After every successful window extraction, the new
+    result is appended to the JSONL artifact and the summary JSON is overwritten with
+    fresh aggregate counts.
+
+    Parameters
+    ----------
+    document_profile
+        Country/document-specific KG extraction profile.
+    extraction_windows
+        Ordered source-faithful extraction windows to process.
+    overwrite
+        Whether the run is allowed to continue or refresh existing SFI extraction
+        artifacts. When False and both artifacts already exist, the function returns
+        existing results without additional LLM calls.
+    save_fp
+        File path for the JSONL extraction-result artifact.
+    summary_fp
+        File path for the aggregate summary JSON artifact.
+    usage_tracker
+        Usage tracker to accumulate token usage.
+
+    Returns
+    -------
+    list[SFIExtractionResult]
+        Parsed and quality-validated extraction results in window order.
+    """
+
+    if not overwrite and save_fp.exists() and summary_fp.exists():
+        logger.info(
+            f"SFI extraction artifacts already exist and overwrite=False; "
+            f"skipping extraction: {save_fp}, {summary_fp}."
+        )
+        existing_results = _load_existing_sfi_extraction_results(save_fp)
+        _validate_existing_sfi_extraction_results(
+            extraction_windows=extraction_windows, results=existing_results
+        )
+        return existing_results
+
+    sfi_extraction_results = _load_existing_sfi_extraction_results(save_fp)
+    _validate_existing_sfi_extraction_results(
+        extraction_windows=extraction_windows, results=sfi_extraction_results
+    )
+
+    if sfi_extraction_results:
+        _persist_sfi_extraction_summary(
+            results=sfi_extraction_results, summary_fp=summary_fp
+        )
+        logger.info(
+            f"Resuming SFI extraction from existing artifact {save_fp}; "
+            f"completed_windows={len(sfi_extraction_results)}, "
+            f"remaining_windows={len(extraction_windows) - len(sfi_extraction_results)}."
+        )
+
+    for extraction_window in extraction_windows[len(sfi_extraction_results) :]:
+        sfi_extraction_result = extract_sfi_candidates(
+            document_profile=document_profile,
+            extraction_window=extraction_window,
+            usage_tracker=usage_tracker,
+        )
+        sfi_extraction_results.append(sfi_extraction_result)
+        _append_sfi_extraction_result(result=sfi_extraction_result, save_fp=save_fp)
+        _persist_sfi_extraction_summary(
+            results=sfi_extraction_results, summary_fp=summary_fp
+        )
+
+    if not sfi_extraction_results:
+        _persist_sfi_extraction_summary(
+            results=sfi_extraction_results, summary_fp=summary_fp
+        )
+
+    logger.success(f"Finished all SFI extraction: {save_fp} and {summary_fp}.")
+
+    return sfi_extraction_results
