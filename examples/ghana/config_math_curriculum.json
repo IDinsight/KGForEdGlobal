@@ -24,7 +24,7 @@
 	},
 	"document_ir": {
 		"keep_artifacts": false,
-		"max_section_path_length": 12,
+		"max_section_path_length": 24,
 		"min_link_score": 1.0,
 		"overwrite": true,
 		"repair_hyphenation": true,

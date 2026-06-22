@@ -28,7 +28,6 @@ def compute_doc_key(*, n_hex: int = 64, pdf_fp: Path) -> str:
 
     data = pdf_fp.read_bytes()
     h = hashlib.sha256(data).hexdigest()
-
     return h[:n_hex]
 
 
