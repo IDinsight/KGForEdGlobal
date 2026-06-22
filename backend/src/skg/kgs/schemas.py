@@ -142,7 +142,7 @@ class ExtractionWindow(BaseSchema):
     pdf_name: Optional[str] = Field(default=None, description="Source PDF filename.")
     primary_language: str = Field(description="KG config primary language.")
     kg_extraction_instructions: str = Field(
-        description="KG config.sfi_extraction_instructions."
+        description="KG config.as_sfi_extraction_instructions."
     )
     segment_kind: Literal["block", "table"] = Field(description="Source segment kind.")
     source_provenance: list[dict[str, Any]] = Field(

@@ -85,10 +85,7 @@ def build_kgs(
 
     # 1.
     kg_run_inputs = load_and_validate_inputs(
-        config=config,
-        document_ir_fp=document_ir_fp,
-        kg_dirs=kg_dirs,
-        overwrite=config.overwrite,
+        config=config, document_ir_fp=document_ir_fp, kg_dirs=kg_dirs
     )
 
     # 2.

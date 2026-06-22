@@ -102,12 +102,12 @@ def _build_compact_kg_config_context(
         "country": kg_config.country,
         "grades_or_stages": kg_config.grades_or_stages,
         "primary_language": kg_config.primary_language,
-        "sfi_extraction_instructions": kg_config.sfi_extraction_instructions,
+        "sfi_extraction_instructions": kg_config.as_sfi_extraction_instructions,
         "subject": kg_config.subject,
     }
 
-    if kg_config.bilingual_pair_policy:
-        kg_config_context["bilingual_pair_policy"] = kg_config.bilingual_pair_policy
+    if kg_config.as_bilingual_pair_policy:
+        kg_config_context["bilingual_pair_policy"] = kg_config.as_bilingual_pair_policy
 
     return kg_config_context
 

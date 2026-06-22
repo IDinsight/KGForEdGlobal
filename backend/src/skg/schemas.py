@@ -474,11 +474,12 @@ class _ContextSpineConfig(BaseSchema):
 class CreateKGConfig(BaseSchema):
     """Configuration for knowledge graph creation from document IR."""
 
+    # General attributes.
     overwrite: bool = Field(
         False, description="Overwrite existing knowledge graph artifacts."
     )
 
-    # Framework metadata.
+    # FRAMEWORK METADATA #
     adoption_status: str | None = None
     attribution_statement: str
     author: str
@@ -499,19 +500,21 @@ class CreateKGConfig(BaseSchema):
     provider: str
     subject: str
 
+    # ACADEMIC STANDARDS #
+
     # Code handling.
-    code_parent_rules: list[dict[str, str]] = Field(default_factory=list)
-    code_patterns: dict[str, str] = Field(default_factory=dict)
+    as_code_parent_rules: list[dict[str, str]] = Field(default_factory=list)
+    as_code_patterns: dict[str, str] = Field(default_factory=dict)
 
     # Table selection policy.
-    excluded_table_columns_signatures: list[str] = Field(
+    as_excluded_table_columns_signatures: list[str] = Field(
         default_factory=list,
         description=(
             "Column signatures that should never be sent through the table SFI "
             "extraction path, even if another table rule would otherwise include them."
         ),
     )
-    excluded_table_section_patterns: list[str] = Field(
+    as_excluded_table_section_patterns: list[str] = Field(
         default_factory=list,
         description=(
             "Regex patterns over bounded nearby heading/section text that exclude "
@@ -519,34 +522,32 @@ class CreateKGConfig(BaseSchema):
             "eligible."
         ),
     )
-    included_table_columns_signatures: list[str] = Field(
+    as_included_table_columns_signatures: list[str] = Field(
         default_factory=list,
         description=(
             "Column signatures that identify table segments eligible for SFI extraction."
         ),
     )
-    included_table_section_patterns: list[str] = Field(
+    as_included_table_section_patterns: list[str] = Field(
         default_factory=list,
         description=(
             "Regex patterns over bounded nearby heading/section text that can include "
             "tables when column signatures alone are not sufficient."
         ),
     )
-
-    # Windowing.
-    max_rows_per_table_window: Optional[int] = Field(
+    as_max_rows_per_table_window: Optional[int] = Field(
         default=20,
         description=(
             "Maximum number of table body rows per extraction window. Set to null "
             "to emit one whole-table window per selected table."
         ),
     )
-    row_overlap: int = Field(default=1, ge=0)
+    as_row_overlap: int = Field(default=1, ge=0)
 
     # Duplication behavior.
-    bilingual_pair_policy: str | None = None
-    repeated_statement_policy: str = ""
-    synthetic_merge_key_fields: list[str] = Field(
+    as_duplicate_review_instructions: str
+    as_repeated_statement_policy: str = ""
+    as_synthetic_merge_key_fields: list[str] = Field(
         default_factory=lambda: [
             "country",
             "subject",
@@ -559,22 +560,24 @@ class CreateKGConfig(BaseSchema):
     )
 
     # LLM instructions.
-    duplicate_review_instructions: str
-    learning_component_instructions: str
-    sfi_extraction_instructions: str
+    as_bilingual_pair_policy: str | None = None
+    as_sfi_extraction_instructions: str
+
+    # LEARNING COMPONENTS #
+    lc_generation_instructions: str
 
     @field_validator(
+        "as_duplicate_review_instructions",
+        "as_sfi_extraction_instructions",
         "attribution_statement",
         "author",
         "country",
-        "duplicate_review_instructions",
         "framework_title",
         "jurisdiction",
-        "learning_component_instructions",
+        "lc_generation_instructions",
         "license",
         "primary_language",
         "provider",
-        "sfi_extraction_instructions",
         "subject",
         mode="before",
     )
@@ -595,7 +598,7 @@ class CreateKGConfig(BaseSchema):
 
         return _strip_and_require_non_empty_str(v)
 
-    @field_validator("adoption_status", "bilingual_pair_policy", mode="before")
+    @field_validator("adoption_status", "as_bilingual_pair_policy", mode="before")
     @classmethod
     def _strip_optional_strings(cls, v: str | None) -> str | None:
         """Strip optional string fields and normalize blank strings to None.
@@ -723,8 +726,7 @@ class CreateKGConfig(BaseSchema):
         return cleaned
 
     @field_validator(
-        "excluded_table_columns_signatures",
-        "included_table_columns_signatures",
+        "as_excluded_table_columns_signatures", "as_included_table_columns_signatures"
     )
     @classmethod
     def validate_selection_string_lists(cls, v: list[str]) -> list[str]:
@@ -746,8 +748,7 @@ class CreateKGConfig(BaseSchema):
         )
 
     @field_validator(
-        "excluded_table_section_patterns",
-        "included_table_section_patterns",
+        "as_excluded_table_section_patterns", "as_included_table_section_patterns"
     )
     @classmethod
     def validate_selection_pattern_lists(cls, v: list[str]) -> list[str]:
@@ -768,9 +769,9 @@ class CreateKGConfig(BaseSchema):
             field_name="selection pattern list", values=v
         )
 
-    @field_validator("code_patterns")
+    @field_validator("as_code_patterns")
     @classmethod
-    def validate_code_patterns(cls, v: dict[str, str]) -> dict[str, str]:
+    def validate_as_code_patterns(cls, v: dict[str, str]) -> dict[str, str]:
         """Validate that all configured code patterns compile as regular expressions.
 
         Parameters
@@ -794,18 +795,18 @@ class CreateKGConfig(BaseSchema):
         for name, pattern in v.items():
             if not isinstance(pattern, str):
                 raise TypeError(
-                    f"code_patterns[{name!r}] must be a string. "
+                    f"as_code_patterns[{name!r}] must be a string. "
                     f"Got {type(pattern).__name__}."
                 )
 
             if not pattern.strip():
-                raise ValueError(f"code_patterns[{name!r}] must be non-empty.")
+                raise ValueError(f"as_code_patterns[{name!r}] must be non-empty.")
 
             try:
                 re.compile(pattern)
             except re.error as exc:
                 raise ValueError(
-                    f"Invalid regex for code_patterns[{name!r}]: {exc}"
+                    f"Invalid regex for as_code_patterns[{name!r}]: {exc}"
                 ) from exc
 
         return v
@@ -854,9 +855,9 @@ class CreateKGConfig(BaseSchema):
 
         return cleaned
 
-    @field_validator("synthetic_merge_key_fields")
+    @field_validator("as_synthetic_merge_key_fields")
     @classmethod
-    def validate_synthetic_merge_key_fields(cls, v: list[str]) -> list[str]:
+    def validate_as_synthetic_merge_key_fields(cls, v: list[str]) -> list[str]:
         """Validate synthetic merge key fields are non-empty strings.
 
         Parameters
@@ -876,7 +877,7 @@ class CreateKGConfig(BaseSchema):
         for field_name in v or []:
             if not isinstance(field_name, str):
                 raise TypeError(
-                    "CreateKGConfig.synthetic_merge_key_fields must contain only strings."
+                    "CreateKGConfig.as_synthetic_merge_key_fields must contain only strings."
                 )
 
             field_name_clean = field_name.strip()
@@ -890,7 +891,7 @@ class CreateKGConfig(BaseSchema):
 
         if not cleaned:
             raise ValueError(
-                "CreateKGConfig.synthetic_merge_key_fields must contain at least one value."
+                "CreateKGConfig.as_synthetic_merge_key_fields must contain at least one value."
             )
 
         return cleaned
@@ -901,25 +902,25 @@ class CreateKGConfig(BaseSchema):
         Raises
         ------
         ValueError
-            If max_rows_per_table_window is non-positive, or if row_overlap is not
-            smaller than max_rows_per_table_window when chunking is enabled.
+            If as_max_rows_per_table_window is non-positive, or if as_row_overlap is
+            not smaller than as_max_rows_per_table_window when chunking is enabled.
         """
 
-        if self.max_rows_per_table_window is None:
+        if self.as_max_rows_per_table_window is None:
             return
 
-        if self.max_rows_per_table_window <= 0:
+        if self.as_max_rows_per_table_window <= 0:
             raise ValueError(
-                "CreateKGConfig.max_rows_per_table_window must be positive or null."
+                "CreateKGConfig.as_max_rows_per_table_window must be positive or null."
             )
 
-        if self.row_overlap >= self.max_rows_per_table_window:
+        if self.as_row_overlap >= self.as_max_rows_per_table_window:
             raise ValueError(
-                "CreateKGConfig.row_overlap must be smaller than max_rows_per_table_window."
+                "CreateKGConfig.as_row_overlap must be smaller than as_max_rows_per_table_window."
             )
 
     @staticmethod
-    def _validate_code_parent_rule(
+    def _validate_as_code_parent_rule(
         idx: int, rule: dict[str, Any], known: set[str]
     ) -> None:
         """Validate a single code parent rule.
@@ -947,28 +948,28 @@ class CreateKGConfig(BaseSchema):
 
         if child not in known:
             raise ValueError(
-                f"code_parent_rules[{idx}] unknown child pattern: {child!r}"
+                f"as_code_parent_rules[{idx}] unknown child pattern: {child!r}"
             )
 
         if parent not in known:
             raise ValueError(
-                f"code_parent_rules[{idx}] unknown parent pattern: {parent!r}"
+                f"as_code_parent_rules[{idx}] unknown parent pattern: {parent!r}"
             )
 
         if method != "regex_substitution":
             raise ValueError(
-                f"code_parent_rules[{idx}] invalid method: {method!r}. "
+                f"as_code_parent_rules[{idx}] invalid method: {method!r}. "
                 f"Only 'regex_substitution' is supported."
             )
 
         if "regex" not in rule or "replacement" not in rule:
             raise ValueError(
-                f"code_parent_rules[{idx}] regex_substitution requires regex and replacement"
+                f"as_code_parent_rules[{idx}] regex_substitution requires regex and replacement"
             )
 
         re.compile(rule["regex"])
 
-    def _validate_code_parent_rules(self, known: set[str]) -> None:
+    def _validate_as_code_parent_rules(self, known: set[str]) -> None:
         """Validate all configured code parent rules.
 
         Parameters
@@ -977,8 +978,8 @@ class CreateKGConfig(BaseSchema):
             Set of known code pattern names.
         """
 
-        for idx, rule in enumerate(self.code_parent_rules):
-            self._validate_code_parent_rule(idx, rule, known)
+        for idx, rule in enumerate(self.as_code_parent_rules):
+            self._validate_as_code_parent_rule(idx, rule, known)
 
     def _validate_selection_overlap_policy(self) -> None:
         """Ensure table-selection policy does not both include and exclude the same
@@ -991,8 +992,8 @@ class CreateKGConfig(BaseSchema):
         """
 
         overlapping_table_signatures = sorted(
-            set(self.included_table_columns_signatures)
-            & set(self.excluded_table_columns_signatures)
+            set(self.as_included_table_columns_signatures)
+            & set(self.as_excluded_table_columns_signatures)
         )
 
         if overlapping_table_signatures:
@@ -1016,9 +1017,9 @@ class CreateKGConfig(BaseSchema):
             If code handling, parent rules, or windowing configuration is invalid.
         """
 
-        known = set(self.code_patterns.keys())
+        known = set(self.as_code_patterns.keys())
         self._validate_windowing()
-        self._validate_code_parent_rules(known)
+        self._validate_as_code_parent_rules(known)
         self._validate_selection_overlap_policy()
         return self
 
