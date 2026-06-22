@@ -245,13 +245,15 @@ def extract_sfi_candidates_from_windows(
 ) -> list[SFIExtractionResult]:
     """Extract SFI candidates and incrementally persist resumable artifacts.
 
-    If `overwrite` is false and both the JSONL result artifact and summary artifact
-    already exist, no extraction is performed and the existing JSONL results are
-    returned. Otherwise, the existing JSONL artifact is loaded as a completed prefix,
-    the summary is refreshed from that prefix when needed, and extraction resumes at
-    the first unprocessed window. After every successful window extraction, the new
-    result is appended to the JSONL artifact and the summary JSON is overwritten with
-    fresh aggregate counts.
+    If `overwrite` is True, any existing SFI extraction JSONL and summary artifacts are
+    deleted and extraction starts from the first window. If `overwrite` is False, any
+    existing JSONL artifact is treated as a completed prefix only after validating that
+    it matches the current extraction-window artifact. The run skips LLM calls only
+    when the existing prefix already covers every extraction window. Otherwise, the
+    summary is refreshed from the existing prefix and extraction resumes at the first
+    unprocessed window. After every successful window extraction, the new result is
+    appended to the JSONL artifact and the summary JSON is overwritten with fresh
+    aggregate counts.
 
     Parameters
     ----------
@@ -260,9 +262,9 @@ def extract_sfi_candidates_from_windows(
     extraction_windows
         Ordered source-faithful extraction windows to process.
     overwrite
-        Whether the run is allowed to continue or refresh existing SFI extraction
-        artifacts. When False and both artifacts already exist, the function returns
-        existing results without additional LLM calls.
+        Whether to discard existing SFI extraction artifacts and restart extraction
+        from the first window. When False, existing validated prefix results are reused
+        and extraction resumes until all windows are complete.
     save_fp
         File path for the JSONL extraction-result artifact.
     summary_fp
@@ -276,26 +278,32 @@ def extract_sfi_candidates_from_windows(
         Parsed and quality-validated extraction results in window order.
     """
 
-    if not overwrite and save_fp.exists() and summary_fp.exists():
-        logger.info(
-            f"SFI extraction artifacts already exist and overwrite=False; "
-            f"skipping extraction: {save_fp}, {summary_fp}."
-        )
-        existing_results = _load_existing_sfi_extraction_results(save_fp)
+    if overwrite:
+        for fp in [save_fp, summary_fp]:
+            if fp.exists():
+                fp.unlink()
+                logger.info(f"Removed existing SFI extraction artifact: {fp}")
+
+        sfi_extraction_results: list[SFIExtractionResult] = []
+        logger.info("Starting SFI extraction from scratch because overwrite=True.")
+    else:
+        sfi_extraction_results = _load_existing_sfi_extraction_results(save_fp)
         _validate_existing_sfi_extraction_results(
-            extraction_windows=extraction_windows, results=existing_results
+            extraction_windows=extraction_windows, results=sfi_extraction_results
         )
-        return existing_results
 
-    sfi_extraction_results = _load_existing_sfi_extraction_results(save_fp)
-    _validate_existing_sfi_extraction_results(
-        extraction_windows=extraction_windows, results=sfi_extraction_results
-    )
-
-    if sfi_extraction_results:
         _persist_sfi_extraction_summary(
             results=sfi_extraction_results, summary_fp=summary_fp
         )
+
+        if len(sfi_extraction_results) == len(extraction_windows):
+            logger.info(
+                f"SFI extraction is already complete and overwrite=False; "
+                f"completed_windows={len(sfi_extraction_results)}. Skipping LLM calls: "
+                f"{save_fp}, {summary_fp}."
+            )
+            return sfi_extraction_results
+
         logger.info(
             f"Resuming SFI extraction from existing artifact {save_fp}; "
             f"completed_windows={len(sfi_extraction_results)}, "
