@@ -9,11 +9,11 @@ in this module enforce quality checks that require access to other inputs.
 import re
 
 from dataclasses import dataclass
+from typing import Any
 
 # Package Library
 from skg.kgs.schemas import (
     ExtractionWindow,
-    SFIAuxiliaryCandidate,
     SFICandidate,
     SFICandidateParentReference,
     SFIExtractionResult,
@@ -23,12 +23,89 @@ from skg.page_ir_extraction.validators import QualityError
 
 @dataclass(frozen=True)
 class SFIExtractionQualityCtx:
-    """Context for SFI extraction quality checks."""
+    """Context for SFI extraction quality checks.
+
+    Attributes
+    ----------
+    extraction_result
+        Parsed SFI extraction result produced for the window.
+    source_visible_text_normalized
+        Normalized text built only from source-visible extraction-window text, raw
+        table headers, and raw table rows. Deterministic hints, KG config text, and
+        helper-only filldown context are intentionally excluded.
+    window
+        Source extraction window passed to the LLM.
+    """
 
     extraction_result: SFIExtractionResult
+    source_visible_text_normalized: str
     window: ExtractionWindow
-    window_source_text_normalized: str
-    window_text_blob_normalized: str
+
+
+def _append_row_cell_texts(*, row: dict[str, Any], texts: list[str]) -> None:
+    """Append text-bearing cells from one raw table row to a text accumulator.
+
+    Parameters
+    ----------
+    row
+        Raw table row payload from the extraction window.
+    texts
+        Mutable accumulator for source-visible text snippets.
+    """
+
+    for cell in row.get("cells") or []:
+        text_unit = cell.get("text") or {}
+        text = str(text_unit.get("text") or "").strip()
+
+        if text:
+            texts.append(text)
+
+
+def _build_source_visible_text_blob(window: ExtractionWindow) -> str:
+    """Build a source-visible text blob for extraction quality checks.
+
+    The blob intentionally excludes deterministic hints, KG config instructions,
+    code-parent hints, and filldown/helper views. It should contain only text that can
+    be quoted as source evidence: ``window.source_text``, raw block text, canonical
+    table headers, raw table header rows, and raw selected table rows.
+
+    Parameters
+    ----------
+    window
+        Source extraction window to inspect.
+
+    Returns
+    -------
+    str
+        Newline-joined source-visible text snippets.
+    """
+
+    texts: list[str] = []
+
+    if window.source_text.strip():
+        texts.append(window.source_text.strip())
+
+    if window.block is not None:
+        block_source_text = str(window.block.get("combined_text") or "").strip()
+
+        if block_source_text:
+            texts.append(block_source_text)
+
+    if window.table is not None:
+        for header_row in window.table.header_rows_canonical:
+            for header_label in header_row:
+                header_label_clean = str(header_label or "").strip()
+
+                if header_label_clean:
+                    texts.append(header_label_clean)
+
+        for row in window.table.header_rows:
+            _append_row_cell_texts(row=row, texts=texts)
+
+        for row in window.table.rows:
+            _append_row_cell_texts(row=row, texts=texts)
+
+    return "\n".join(texts)
 
 
 def _normalize_text(value: str) -> str:
@@ -48,46 +125,10 @@ def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
 
 
-def _validate_auxiliary_source_text_is_visible(
-    *, auxiliary_candidate: SFIAuxiliaryCandidate, ctx: SFIExtractionQualityCtx
-) -> None:
-    """Validate that auxiliary source text is source-visible for SFI extraction.
-
-    NB: The `<= 20` character validation is meant to catch LLM outputs that claim
-    source evidence the window does not actually contain.
-
-    Parameters
-    ----------
-    auxiliary_candidate
-        Auxiliary candidate to validate.
-    ctx
-        Quality-check context.
-
-    Raises
-    ------
-    QualityError
-        If source text is not recoverable from the source window.
-    """
-
-    source_text_normalized = _normalize_text(auxiliary_candidate.source_text)
-
-    if source_text_normalized in ctx.window_text_blob_normalized:
-        return
-
-    if len(source_text_normalized) <= 20:
-        return
-
-    raise QualityError(
-        f"Auxiliary candidate {auxiliary_candidate.auxiliary_id!r} source_text is "
-        f"not visible in the source window after whitespace normalization."
-    )
-
-
 def _validate_candidate_code_is_visible(
     *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
 ) -> None:
-    """Validate that a candidate statement code is visible in the source window for SFI
-    extraction.
+    """Validate that a candidate statement code is visible in source text.
 
     Parameters
     ----------
@@ -99,22 +140,22 @@ def _validate_candidate_code_is_visible(
     Raises
     ------
     QualityError
-        If the candidate has a statement code not visible in the window.
+        If the candidate has a statement code not visible in the source window.
     """
 
     if candidate.statement_code is None:
         return
 
-    visible_codes = {
-        code_match.value.strip()
+    code_normalized = _normalize_text(candidate.statement_code)
+    visible_codes_normalized = {
+        _normalize_text(code_match.value)
         for code_match in ctx.window.code_matches
         if code_match.value.strip()
     }
 
     if (
-        candidate.statement_code not in visible_codes
-        and _normalize_text(candidate.statement_code)
-        not in ctx.window_text_blob_normalized
+        code_normalized not in visible_codes_normalized
+        and code_normalized not in ctx.source_visible_text_normalized
     ):
         raise QualityError(
             f"Candidate {candidate.candidate_id!r} has statement_code "
@@ -124,8 +165,7 @@ def _validate_candidate_code_is_visible(
 
 
 def _validate_candidate_parent_references(ctx: SFIExtractionQualityCtx) -> None:
-    """Validate that parent/context references are source-grounded hints only for SFI
-    extraction.
+    """Validate that parent/context references are source-grounded hints only.
 
     Parameters
     ----------
@@ -135,7 +175,7 @@ def _validate_candidate_parent_references(ctx: SFIExtractionQualityCtx) -> None:
     Raises
     ------
     QualityError
-        If any reference is not grounded in the source window.
+        If any reference is not grounded in source-visible window text.
     """
 
     for candidate in ctx.extraction_result.sfi_candidates:
@@ -143,7 +183,9 @@ def _validate_candidate_parent_references(ctx: SFIExtractionQualityCtx) -> None:
             candidate.parent_references + candidate.ancestor_context_references
         ):
             _validate_parent_reference_is_source_grounded(
-                candidate_id=candidate.candidate_id, ctx=ctx, reference=reference
+                candidate_id=candidate.candidate_id,
+                ctx=ctx,
+                reference=reference,
             )
 
 
@@ -151,9 +193,6 @@ def _validate_candidate_source_text_is_visible(
     *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
 ) -> None:
     """Validate that candidate source text is source-visible for SFI extraction.
-
-    NB: The `<= 20` character validation is meant to catch LLM outputs that claim
-    source evidence the window does not actually contain.
 
     Parameters
     ----------
@@ -165,31 +204,18 @@ def _validate_candidate_source_text_is_visible(
     Raises
     ------
     QualityError
-        If source text is not recoverable from the source window.
+        If source text is not recoverable from source-visible window text.
     """
 
-    source_text_normalized = _normalize_text(candidate.source_text)
-
-    if not source_text_normalized:
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} has empty source_text."
-        )
-
-    if source_text_normalized in ctx.window_text_blob_normalized:
-        return
-
-    if len(source_text_normalized) <= 20:
-        return
-
-    raise QualityError(
-        f"Candidate {candidate.candidate_id!r} source_text is not visible in the "
-        f"window source payload after whitespace normalization. Quote the source text "
-        f"verbatim from the extraction window instead of paraphrasing."
+    _validate_source_text_is_visible(
+        ctx=ctx,
+        entity_label=f"Candidate {candidate.candidate_id!r}",
+        source_text=candidate.source_text,
     )
 
 
 def _validate_candidate_table_row_indexes(ctx: SFIExtractionQualityCtx) -> None:
-    """Validate table row indexes against the window table payload for SFI extraction.
+    """Validate table row indexes against the window table payload.
 
     Parameters
     ----------
@@ -199,7 +225,8 @@ def _validate_candidate_table_row_indexes(ctx: SFIExtractionQualityCtx) -> None:
     Raises
     ------
     QualityError
-        If a candidate uses row indexes outside the table window.
+        If a candidate uses row indexes outside the table window, omits row indexes for
+        a table-derived candidate, or uses row indexes in a block window.
     """
 
     if ctx.window.table is None:
@@ -220,6 +247,13 @@ def _validate_candidate_table_row_indexes(ctx: SFIExtractionQualityCtx) -> None:
     allowed_row_indexes = set(ctx.window.table.row_indexes)
 
     for candidate in ctx.extraction_result.sfi_candidates:
+        if not candidate.table_row_indexes:
+            raise QualityError(
+                f"Table-window candidate {candidate.candidate_id!r} must include at "
+                f"least one table_row_index from this window. Allowed row indexes are "
+                f"{sorted(allowed_row_indexes)}."
+            )
+
         invalid = sorted(set(candidate.table_row_indexes) - allowed_row_indexes)
 
         if invalid:
@@ -236,10 +270,7 @@ def _validate_parent_reference_is_source_grounded(
     ctx: SFIExtractionQualityCtx,
     reference: SFICandidateParentReference,
 ) -> None:
-    """Validate that a parent/context reference is source-grounded for SFI extraction.
-
-    NB: The `<= 20` character validation is meant to catch LLM outputs that claim
-    source evidence the window does not actually contain.
+    """Validate that a parent/context reference is source-grounded.
 
     Parameters
     ----------
@@ -253,21 +284,60 @@ def _validate_parent_reference_is_source_grounded(
     Raises
     ------
     QualityError
-        If the reference is not grounded in the source window.
+        If the reference is not grounded in source-visible window text.
     """
 
-    reference_source_text_normalized = _normalize_text(reference.source_text)
+    _validate_source_text_is_visible(
+        ctx=ctx,
+        entity_label=f"Candidate {candidate_id!r} parent/context reference",
+        source_text=reference.source_text,
+    )
 
-    if reference_source_text_normalized in ctx.window_text_blob_normalized:
+    if reference.statement_code is None:
         return
 
-    if len(reference_source_text_normalized) <= 20:
+    code_normalized = _normalize_text(reference.statement_code)
+
+    if code_normalized not in ctx.source_visible_text_normalized:
+        raise QualityError(
+            f"Candidate {candidate_id!r} emitted parent/context reference code "
+            f"{reference.statement_code!r}, but that code is not visible in the "
+            f"source window. Omit reference codes that are not source-visible."
+        )
+
+
+def _validate_source_text_is_visible(
+    *, ctx: SFIExtractionQualityCtx, entity_label: str, source_text: str
+) -> None:
+    """Validate that text is a non-empty source-visible excerpt.
+
+    Parameters
+    ----------
+    ctx
+        Quality-check context.
+    entity_label
+        Human-readable label for the candidate or auxiliary record being validated.
+    source_text
+        Source text claimed by the LLM output.
+
+    Raises
+    ------
+    QualityError
+        If source text is empty or not visible in source-visible window text.
+    """
+
+    source_text_normalized = _normalize_text(source_text)
+
+    if not source_text_normalized:
+        raise QualityError(f"{entity_label} has empty source_text.")
+
+    if source_text_normalized in ctx.source_visible_text_normalized:
         return
 
     raise QualityError(
-        f"Candidate {candidate_id!r} emitted parent/context reference "
-        f"{reference.source_text!r}, but that text is not visible in the source "
-        f"window. Omit references that are not source-visible."
+        f"{entity_label} source_text is not visible in the source window after "
+        f"whitespace normalization. Quote source-visible text from the extraction "
+        f"window instead of paraphrasing or using helper-only context."
     )
 
 
@@ -327,11 +397,10 @@ def verify_sfi_extraction_quality(
 
     ctx = SFIExtractionQualityCtx(
         extraction_result=extraction_result,
-        window=window,
-        window_source_text_normalized=_normalize_text(window.source_text),
-        window_text_blob_normalized=_normalize_text(
-            "\n".join([window.source_text, window.model_dump_json()])
+        source_visible_text_normalized=_normalize_text(
+            _build_source_visible_text_blob(window)
         ),
+        window=window,
     )
 
     _validate_window_identity(ctx)
@@ -344,6 +413,8 @@ def verify_sfi_extraction_quality(
     _validate_candidate_parent_references(ctx)
 
     for auxiliary_candidate in ctx.extraction_result.auxiliary_candidates:
-        _validate_auxiliary_source_text_is_visible(
-            auxiliary_candidate=auxiliary_candidate, ctx=ctx
+        _validate_source_text_is_visible(
+            ctx=ctx,
+            entity_label=f"Auxiliary candidate {auxiliary_candidate.auxiliary_id!r}",
+            source_text=auxiliary_candidate.source_text,
         )

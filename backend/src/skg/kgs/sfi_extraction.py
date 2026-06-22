@@ -19,6 +19,8 @@ from skg.kgs.schemas import (
     SFIExtractionResult,
     SFIExtractionSummary,
 )
+from skg.kgs.validators import verify_sfi_extraction_quality
+from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, write_to_json
 
@@ -181,11 +183,12 @@ def _validate_existing_sfi_extraction_results(
     extraction_windows: Sequence[ExtractionWindow],
     results: Sequence[SFIExtractionResult],
 ) -> None:
-    """Validate that existing SFI results are a prefix of the current window list.
+    """Validate that existing SFI results are a quality-checked current prefix.
 
     Resumability assumes this module wrote prior results in extraction-window order.
     This check prevents a resumed run from mixing outputs from a stale or different
-    extraction-window artifact with the current run.
+    extraction-window artifact with the current run, and re-runs current source-quality
+    validation so old JSONL lines cannot bypass updated validators.
 
     Parameters
     ----------
@@ -197,8 +200,9 @@ def _validate_existing_sfi_extraction_results(
     Raises
     ------
     ValueError
-        If existing results are longer than the current window list or do not match the
-        corresponding window IDs, indexes, and source segment IDs.
+        If existing results are longer than the current window list, do not match the
+        corresponding window IDs/indexes/source segment IDs, or fail current quality
+        validation.
     """
 
     if len(results) > len(extraction_windows):
@@ -232,6 +236,16 @@ def _validate_existing_sfi_extraction_results(
                 f"but the current extraction window has "
                 f"source_segment_ids={extraction_window.source_segment_ids!r}."
             )
+
+        try:
+            verify_sfi_extraction_quality(
+                extraction_result=result, window=extraction_window
+            )
+        except QualityError as e:
+            raise ValueError(
+                f"Existing SFI extraction result at position {result_index} failed "
+                f"current quality validation: {e}"
+            ) from e
 
 
 def extract_sfi_candidates_from_windows(

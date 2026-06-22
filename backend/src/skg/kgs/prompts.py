@@ -82,6 +82,77 @@ def _build_compact_extraction_window_payload(
     return payload
 
 
+def _build_compact_filldown_context_row_payload(
+    *,
+    filldown_row: dict[str, Any],
+    header_labels: list[str],
+    raw_row: dict[str, Any],
+    row_index: int,
+) -> Optional[dict[str, Any]]:
+    """Build helper-only filldown context cells for one table row.
+
+    Parameters
+    ----------
+    filldown_row
+        Filldown helper-view row aligned to the raw source row.
+    header_labels
+        Column labels from the final canonical header row, when available.
+    raw_row
+        Raw source row aligned to the filldown helper row.
+    row_index
+        Source table row index for this row.
+
+    Returns
+    -------
+    Optional[dict[str, Any]]
+        Compact helper-context row payload, or `None` when the filldown row adds no
+        helper-only context beyond the raw source row.
+    """
+
+    cells: list[dict[str, Any]] = []
+    raw_cells = raw_row.get("cells") or []
+
+    for column_index, cell in enumerate(filldown_row.get("cells") or []):
+        text_unit = cell.get("text") or {}
+        text = str(text_unit.get("text") or "").strip()
+
+        if not text:
+            continue
+
+        raw_cell = raw_cells[column_index] if column_index < len(raw_cells) else {}
+        raw_text_unit = raw_cell.get("text") or {}
+        raw_text = str(raw_text_unit.get("text") or "").strip()
+        helper_only = bool(cell.get("synthetic") or cell.get("rowspan_placeholder"))
+
+        if text == raw_text and not helper_only:
+            continue
+
+        payload: dict[str, Any] = {
+            "column_index": column_index,
+            "header": (
+                header_labels[column_index]
+                if column_index < len(header_labels)
+                else None
+            ),
+            "language": text_unit.get("language"),
+            "source_visibility": "helper_context_only",
+            "text": text,
+        }
+
+        if cell.get("rowspan_placeholder"):
+            payload["rowspan_placeholder"] = True
+
+        if cell.get("synthetic"):
+            payload["synthetic"] = True
+
+        cells.append(payload)
+
+    if not cells:
+        return None
+
+    return {"cells": cells, "row_index": row_index}
+
+
 def _build_compact_kg_config_context(
     kg_config: CreateKGConfig,
 ) -> dict[str, Any]:
@@ -113,7 +184,11 @@ def _build_compact_kg_config_context(
 
 
 def _build_compact_row_payload(
-    *, header_labels: list[str], row: dict[str, Any], row_index: int
+    *,
+    header_labels: list[str],
+    row: dict[str, Any],
+    row_index: int,
+    source_visibility: str,
 ) -> dict[str, Any]:
     """Build a compact prompt-facing table row payload.
 
@@ -125,6 +200,9 @@ def _build_compact_row_payload(
         Source or helper-view table row payload.
     row_index
         Source table row index for this row.
+    source_visibility
+        Visibility label for the row's cells, such as `source_visible` or
+        `helper_context_only`.
 
     Returns
     -------
@@ -149,6 +227,7 @@ def _build_compact_row_payload(
                 else None
             ),
             "language": text_unit.get("language"),
+            "source_visibility": source_visibility,
             "text": text,
         }
 
@@ -184,30 +263,83 @@ def _build_compact_table_payload(
     if table is None:
         return None
 
-    # Select preferred table row view: filldown -> grid -> raw rows. The selected view
-    # name is intentionally omitted from the prompt because it is debug metadata;
-    # cell-level synthetic flags carry the only helper-view signal needed by the LLM.
-    if table.rows_filldown is not None:
-        row_view = table.rows_filldown
-    elif table.rows_grid is not None:
-        row_view = table.rows_grid
-    else:
-        row_view = table.rows
-
     header_labels = (
         table.header_rows_canonical[-1] if table.header_rows_canonical else []
     )
-
-    return {
+    payload: dict[str, Any] = {
         "header_rows_canonical": table.header_rows_canonical,
         "local_code": table.local_code,
-        "rows": [
+        "source_rows": [
             _build_compact_row_payload(
-                header_labels=header_labels, row=row, row_index=row_index
+                header_labels=header_labels,
+                row=row,
+                row_index=row_index,
+                source_visibility="source_visible",
             )
-            for row_index, row in zip(table.row_indexes, row_view)
+            for row_index, row in zip(table.row_indexes, table.rows)
         ],
+        "table_source_policy": (
+            "Quote source_text only from header_rows_canonical or source_rows cells. "
+            "Use filldown_context_rows only to understand repeated row-span context; "
+            "do not quote helper_context_only cells as source_text."
+        ),
     }
+
+    if table.rows_filldown is not None:
+        filldown_context_rows = _build_filldown_context_rows(
+            filldown_rows=table.rows_filldown,
+            header_labels=header_labels,
+            raw_rows=table.rows,
+            row_indexes=table.row_indexes,
+        )
+
+        if filldown_context_rows:
+            payload["filldown_context_rows"] = filldown_context_rows
+
+    return payload
+
+
+def _build_filldown_context_rows(
+    *,
+    filldown_rows: list[dict[str, Any]],
+    header_labels: list[str],
+    raw_rows: list[dict[str, Any]],
+    row_indexes: list[int],
+) -> list[dict[str, Any]]:
+    """Build compact filldown context rows aligned to source table rows.
+
+    Parameters
+    ----------
+    filldown_rows
+        Filldown helper-view rows aligned to `row_indexes`.
+    header_labels
+        Column labels from the final canonical header row, when available.
+    raw_rows
+        Raw source rows aligned to `row_indexes`.
+    row_indexes
+        Source table row indexes included in the window.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Helper-only filldown context rows. These rows are context for interpreting
+        row spans and should not be quoted as source-visible evidence.
+    """
+
+    context_rows: list[dict[str, Any]] = []
+
+    for row_index, filldown_row, raw_row in zip(row_indexes, filldown_rows, raw_rows):
+        context_row = _build_compact_filldown_context_row_payload(
+            filldown_row=filldown_row,
+            header_labels=header_labels,
+            raw_row=raw_row,
+            row_index=row_index,
+        )
+
+        if context_row is not None:
+            context_rows.append(context_row)
+
+    return context_rows
 
 
 def extract_sfi_candidates_from_window(
@@ -270,11 +402,11 @@ def extract_sfi_candidates_from_window(
 
 ## Source fidelity rules
 - Preserve source-language text. Do not translate.
-- For every candidate and auxiliary record, source_text must be a verbatim quote or faithful source-visible excerpt from block.source_text or table row cell text.
-- For table-derived candidates, table_row_indexes must use the visible table.rows[].row_index values.
-- Use code_matches, code_parent_hints, table headers, and selected table row text as evidence, not as final KG nodes.
-- Use code_parent_hints only as deterministic evidence for likely hierarchy. Emit a parent_reference from a code-parent hint only when the parent code or parent text is also visible in the actual block/table source text in this compact window. Do not use code-parent hints alone as source_text.
-- Prefer source-visible row text over synthetic/filldown helper text for source_text when both are available. Helper text may be used as context when it is visible in the compact source window.
+- For every candidate and auxiliary record, source_text must be a verbatim quote or faithful source-visible excerpt from block.source_text, table.header_rows_canonical, or table.source_rows cell text.
+- For table-derived SFI candidates, table_row_indexes must be non-empty and must use the visible table.source_rows[].row_index values that support the candidate.
+- Use code_matches, code_parent_hints, table headers, and table.source_rows text as evidence, not as final KG nodes.
+- Use code_parent_hints only as deterministic evidence for likely hierarchy. Emit a parent_reference from a code-parent hint only when the parent code or parent text is also visible in block.source_text, table.header_rows_canonical, or table.source_rows. Do not use code-parent hints alone as source_text.
+- Treat table.filldown_context_rows as helper context only. These cells repeat row-span context for interpretation, but they are not source-visible evidence. Do not quote helper_context_only cells as candidate source_text, auxiliary source_text, or parent/context reference source_text unless the same text is also visible in block.source_text, table.header_rows_canonical, or table.source_rows.
 
 ## Output contract
 Return one SFIExtractionResult object as structured JSON only. Copy window_id, window_index, and window_source_segment_ids exactly from the compact source window.
