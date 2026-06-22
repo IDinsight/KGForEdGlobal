@@ -98,19 +98,7 @@ def _build_compact_extraction_window_payload(
             code_parent_hint.model_dump(mode="json")
             for code_parent_hint in extraction_window.code_parent_hints
         ],
-        "primary_language": extraction_window.primary_language,
         "segment_kind": extraction_window.segment_kind,
-        "source_provenance": [
-            {
-                "boundary": record.get("boundary"),
-                "item_addr": record.get("item_addr"),
-                "item_index": record.get("item_index"),
-                "local_code": record.get("local_code"),
-                "page_index": record.get("page_index"),
-                "repeats_header": record.get("repeats_header"),
-            }
-            for record in extraction_window.source_provenance
-        ],
         "window_id": extraction_window.window_id,
         "window_index": extraction_window.window_index,
         "window_source_segment_ids": extraction_window.source_segment_ids,
@@ -197,23 +185,23 @@ def _build_compact_table_payload(
     if table is None:
         return None
 
-    # Select preferred table row view: filldown -> grid -> raw rows.
+    # Select preferred table row view: filldown -> grid -> raw rows. The selected view
+    # name is intentionally omitted from the prompt because it is debug metadata;
+    # cell-level synthetic flags carry the only helper-view signal needed by the LLM.
     if table.rows_filldown is not None:
-        row_view_name, row_view = "rows_filldown", table.rows_filldown
+        row_view = table.rows_filldown
     elif table.rows_grid is not None:
-        row_view_name, row_view = "rows_grid", table.rows_grid
+        row_view = table.rows_grid
     else:
-        row_view_name, row_view = "rows", table.rows
+        row_view = table.rows
 
     header_labels = (
         table.header_rows_canonical[-1] if table.header_rows_canonical else []
     )
 
     return {
-        "columns_signature": table.columns_signature,
         "header_rows_canonical": table.header_rows_canonical,
         "local_code": table.local_code,
-        "row_view": row_view_name,
         "rows": [
             _build_compact_row_payload(
                 header_labels=header_labels, row=row, row_index=row_index
@@ -285,7 +273,8 @@ def extract_sfi_candidates_from_window(
 - Preserve source-language text. Do not translate.
 - For every candidate and auxiliary record, source_text must be a verbatim quote or faithful source-visible excerpt from block.source_text or table row cell text.
 - For table-derived candidates, table_row_indexes must use the visible table.rows[].row_index values.
-- Use code_matches, code_parent_hints, table headers, row_view, and selected table row text as evidence, not as final KG nodes.
+- Use code_matches, code_parent_hints, table headers, and selected table row text as evidence, not as final KG nodes.
+- Use code_parent_hints only as deterministic evidence for likely hierarchy. Emit a parent_reference from a code-parent hint only when the parent code or parent text is also visible in the actual block/table source text in this compact window. Do not use code-parent hints alone as source_text.
 - Prefer source-visible row text over synthetic/filldown helper text for source_text when both are available. Helper text may be used as context when it is visible in the compact source window.
 
 ## Output contract
