@@ -32,6 +32,7 @@ from skg.kgs.create_extraction_windows import (
     build_llm_extraction_windows,
     plan_extraction_windows,
 )
+from skg.kgs.llm import SFIExtractionUsageTracker, extract_sfi_candidates_from_windows
 from skg.kgs.utils import (
     KGDirs,
     build_run_manifest,
@@ -47,8 +48,14 @@ from skg.utils.pdf import compute_doc_key
 cli = typer.Typer(no_args_is_help=True)
 
 
-def build_kgs(*, config: CreateKGConfig, document_ir_fp: Path, kg_dirs: KGDirs) -> Path:
-    """Build the initial KG artifacts for a stitched DocumentIR.
+def build_kgs(
+    *,
+    config: CreateKGConfig,
+    document_ir_fp: Path,
+    kg_dirs: KGDirs,
+    usage_tracker: SFIExtractionUsageTracker,
+) -> Path:
+    """Build Academic Standards KG artifacts for a DocumentIR and document profile.
 
     The process is as follows:
 
@@ -56,10 +63,7 @@ def build_kgs(*, config: CreateKGConfig, document_ir_fp: Path, kg_dirs: KGDirs) 
     2. Build and persist `kg_run_manifest.json`.
     3. Plan source DocumentIR units for Academic Standards (SFI) extraction windows.
     4. Build LLM-ready extraction windows.
-
-    Later KG-building steps should consume these extraction windows to run LLM SFI
-    candidate extraction, merge candidates, mint deterministic IDs, resolve hasChild
-    edges, and export Academic Standards KG artifacts.
+    5. Extract source-grounded SFI candidates from extraction windows using an LLM.
 
     Parameters
     ----------
@@ -69,6 +73,8 @@ def build_kgs(*, config: CreateKGConfig, document_ir_fp: Path, kg_dirs: KGDirs) 
         Path to the stitched DocumentIR JSON.
     kg_dirs
         Directories for storing KG run artifacts.
+    usage_tracker
+        Tracker to accumulate token usage for extracting SFI candidates.
 
     Returns
     -------
@@ -104,7 +110,16 @@ def build_kgs(*, config: CreateKGConfig, document_ir_fp: Path, kg_dirs: KGDirs) 
         save_fp=kg_dirs.root / "extraction_windows.jsonl",
     )
 
-    logger.debug(f"{extraction_windows = }")
+    # 5.
+    sfi_extraction_results = extract_sfi_candidates_from_windows(
+        document_profile=kg_run_inputs.document_profile,
+        extraction_windows=extraction_windows,
+        save_fp=kg_dirs.root / "sfi_extraction_results.jsonl",
+        summary_fp=kg_dirs.root / "sfi_extraction_summary.json",
+        usage_tracker=usage_tracker,
+    )
+
+    logger.debug(f"{len(sfi_extraction_results) = }")
 
     return kg_run_manifest_fp
 
@@ -128,7 +143,8 @@ def create(
     1. Load the global run config and resolve KG, extraction, and stitching paths.
     2. Cross-check stitching run results.
     3. Persist KG run metadata.
-    4. Build the knowledge graphs.
+    4. Create a usage tracker to accumulate token costs for extracting SFIs.
+    5. Build the knowledge graphs.
 
     Parameters
     ----------
@@ -167,6 +183,9 @@ def create(
     kg_results_dir = extraction_config.output_dir / computed_doc_key / "kgs"
     kg_dirs, kg_run = persist_kg_run(config=config, output_dir=kg_results_dir)
 
+    # 4.
+    usage_tracker = SFIExtractionUsageTracker()
+
     try:
         logger.info(
             f"Starting KG creation using runtime config: {config_fp}; "
@@ -175,10 +194,12 @@ def create(
 
         # 4.
         kg_run_manifest_fp = build_kgs(
-            config=config, document_ir_fp=document_ir_fp, kg_dirs=kg_dirs
+            config=config,
+            document_ir_fp=document_ir_fp,
+            kg_dirs=kg_dirs,
+            usage_tracker=usage_tracker,
         )
         kg_run.extra["status"] = "success"
-        kg_run.extra["kg_run_manifest_fp"] = str(kg_run_manifest_fp)
 
         logger.success(f"KG creation completed successfully: {kg_run_manifest_fp}")
     except Exception as e:  # pylint: disable=broad-except
@@ -190,6 +211,7 @@ def create(
         }
         raise
     finally:
+        kg_run.extra["usage"] = usage_tracker.to_dict()
         kg_run.completed_at = datetime.now(timezone.utc)
         write_to_json(fp=kg_dirs.root / "kg_run.json", json_info=kg_run)
 

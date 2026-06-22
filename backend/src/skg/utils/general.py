@@ -215,6 +215,23 @@ def compare_directories(dir1_path: str | Path, dir2_path: str | Path) -> bool:
     return False
 
 
+def json_dumps(value: object) -> str:
+    """Serialize prompt JSON with stable formatting.
+
+    Parameters
+    ----------
+    value
+        JSON-serializable value.
+
+    Returns
+    -------
+    str
+        Pretty JSON string.
+    """
+
+    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+
+
 def make_dir(dir_: str | Path, mode: int = 0o777, verbose: bool = True) -> None:
     """Create a directory.
 

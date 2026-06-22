@@ -285,10 +285,14 @@ class ModelConfig(BaseSchema):
             If an invalid `type_` is provided.
         """
 
-        if type_ not in {"learning_components", "learning_progressions"}:
+        if type_ not in {
+            "learning_components",
+            "learning_progressions",
+            "sfi_extraction",
+        }:
             raise ValueError(
                 f"Invalid knowledge graph model type '{type_}'. "
-                f"Valid options are 'learning_components' or 'learning_progressions'."
+                f"Valid options are 'learning_components', 'learning_progressions', or `sfi_extraction`."
             )
 
         factory = _KGS_SETTINGS_REGISTRY[self.provider]
