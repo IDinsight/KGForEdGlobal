@@ -5,7 +5,7 @@ The windowing strategy is intentionally simple:
 
 1. Walk stitched DocumentIR segments in source order.
 2. Plan one block window for every block segment with extractable source text.
-3. Plan table windows only for table segments selected by DocumentProfile table rules.
+3. Plan table windows only for table segments selected by KG config table rules.
 4. Build LLM-ready payloads that preserve source text, table structure, optional table
     helper views, provenance, code hints, and the later SFI extraction contract.
 
@@ -30,13 +30,13 @@ from skg.document_ir.schemas import BlockSegment, DocumentIR, TableSegment
 from skg.kgs.schemas import (
     CodeMatch,
     CodeParentHint,
-    DocumentProfile,
     ExtractionWindow,
     ExtractionWindowPlanArtifact,
     ExtractionWindowPlanItem,
     ExtractionWindowTablePayload,
     unique_clean_strings,
 )
+from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, write_to_json
 
 
@@ -71,7 +71,7 @@ def _build_block_source_text(block_payload: dict[str, Any]) -> str:
 def _build_block_windows(
     *,
     document_ir: DocumentIR,
-    document_profile: DocumentProfile,
+    kg_config: CreateKGConfig,
     plan_item: ExtractionWindowPlanItem,
     segment: BlockSegment,
     window_start_index: int,
@@ -82,8 +82,8 @@ def _build_block_windows(
     ----------
     document_ir
         Validated stitched DocumentIR.
-    document_profile
-        Country/document-specific KG extraction profile.
+    kg_config
+        Country/document-specific KG extraction configuration.
     plan_item
         Planned source unit for this block segment.
     segment
@@ -106,7 +106,7 @@ def _build_block_windows(
             _build_extraction_window(
                 block=block_payload,
                 document_ir=document_ir,
-                document_profile=document_profile,
+                kg_config=kg_config,
                 plan_item=plan_item,
                 row_range_label=None,
                 segment_kind="block",
@@ -128,7 +128,7 @@ def _build_extraction_window(
     *,
     block: Optional[dict[str, Any]],
     document_ir: DocumentIR,
-    document_profile: DocumentProfile,
+    kg_config: CreateKGConfig,
     plan_item: ExtractionWindowPlanItem,
     row_range_label: Optional[str],
     segment_kind: str,
@@ -148,8 +148,8 @@ def _build_extraction_window(
         Optional block payload for block windows.
     document_ir
         Validated stitched DocumentIR.
-    document_profile
-        Country/document-specific KG extraction profile.
+    kg_config
+        Country/document-specific KG extraction configuration.
     plan_item
         Planned source unit that produced this window.
     row_range_label
@@ -177,11 +177,9 @@ def _build_extraction_window(
         Validated extraction window.
     """
 
-    code_matches = _collect_code_matches(
-        document_profile=document_profile, source_text=source_text
-    )
+    code_matches = _collect_code_matches(kg_config=kg_config, source_text=source_text)
     code_parent_hints = _collect_code_parent_hints(
-        code_matches=code_matches, document_profile=document_profile
+        code_matches=code_matches, kg_config=kg_config
     )
     canonical_context = "|".join(
         [
@@ -197,46 +195,33 @@ def _build_extraction_window(
         code_matches=code_matches,
         code_parent_hints=code_parent_hints,
         deterministic_hints={
-            "bilingual_pair_policy": document_profile.bilingual_pair_policy,
-            "code_parent_rules": document_profile.code_parent_rules,
-            "code_patterns": document_profile.code_patterns,
-            "country": document_profile.country,
+            "bilingual_pair_policy": kg_config.bilingual_pair_policy,
+            "code_parent_rules": kg_config.code_parent_rules,
+            "code_patterns": kg_config.code_patterns,
+            "country": kg_config.country,
             "no_code_policy": (
                 "statement_code is optional. When no official code is visible, later "
                 "candidate merge/ID steps must use source-derived keys and source text, "
                 "not LLM paraphrases."
             ),
             "plan_reasons": plan_item.plan_reasons,
-            "repeated_statement_policy": document_profile.repeated_statement_policy,
+            "repeated_statement_policy": kg_config.repeated_statement_policy,
             "source_context_key": hashlib.sha256(
                 canonical_context.encode("utf-8")
             ).hexdigest()[:32],
-            "subject": document_profile.subject,
-            "synthetic_merge_key_fields": document_profile.synthetic_merge_key_fields,
+            "subject": kg_config.subject,
+            "synthetic_merge_key_fields": kg_config.synthetic_merge_key_fields,
         },
         doc_key=document_ir.doc_key,
-        framework_title=document_profile.framework_title,
-        llm_task_instructions=(
-            "Inspect only the source material in this extraction window. Return candidate "
-            "StandardsFrameworkItems and auxiliary candidates using the expected output "
-            "schema. Treat Python-provided code matches, code-parent hints, table headers, "
-            "filldown rows, and source provenance as hints, not final KG nodes. Preserve "
-            "source-language text, language tags, and provenance. statement_code is "
-            "optional; when no official source code is visible, use source-derived keys "
-            "and normalized source text for synthetic merge-key fields. Separate normative "
-            "standards/groupings from descriptors, guidance, activities, examples, and other "
-            "auxiliary material according to the DocumentProfile instructions. Return "
-            "parent/context hints only when visible in the window; do not invent missing "
-            "hierarchy."
-        ),
+        framework_title=kg_config.framework_title,
         pdf_name=document_ir.pdf_name,
-        primary_language=document_profile.primary_language,
-        profile_extraction_instructions=document_profile.sfi_extraction_instructions,
+        primary_language=kg_config.primary_language,
+        kg_extraction_instructions=kg_config.sfi_extraction_instructions,
         segment_kind=segment_kind,
         source_provenance=source_provenance,
         source_segment_ids=source_segment_ids,
         source_text=source_text,
-        subject=document_profile.subject,
+        subject=kg_config.subject,
         table=table,
         window_id=window_id,
         window_index=window_index,
@@ -294,7 +279,7 @@ def _build_table_window_for_row_range(
     body_row_end_index_exclusive: int,
     body_row_start_index: int,
     document_ir: DocumentIR,
-    document_profile: DocumentProfile,
+    kg_config: CreateKGConfig,
     plan_item: ExtractionWindowPlanItem,
     segment: TableSegment,
     window_index: int,
@@ -309,8 +294,8 @@ def _build_table_window_for_row_range(
         Inclusive start index in the source table rows.
     document_ir
         Validated stitched DocumentIR.
-    document_profile
-        Country/document-specific KG extraction profile.
+    kg_config
+        Country/document-specific KG extraction configuration.
     plan_item
         Planned source unit for this table segment.
     segment
@@ -359,7 +344,7 @@ def _build_table_window_for_row_range(
     return _build_extraction_window(
         block=None,
         document_ir=document_ir,
-        document_profile=document_profile,
+        kg_config=kg_config,
         plan_item=plan_item,
         row_range_label=row_range_label,
         segment_kind="table",
@@ -378,7 +363,7 @@ def _build_table_window_for_row_range(
 def _build_table_windows(
     *,
     document_ir: DocumentIR,
-    document_profile: DocumentProfile,
+    kg_config: CreateKGConfig,
     plan_item: ExtractionWindowPlanItem,
     segment: TableSegment,
     window_start_index: int,
@@ -389,8 +374,8 @@ def _build_table_windows(
     ----------
     document_ir
         Validated stitched DocumentIR.
-    document_profile
-        Country/document-specific KG extraction profile.
+    kg_config
+        Country/document-specific KG extraction configuration.
     plan_item
         Planned source unit for this table segment.
     segment
@@ -419,8 +404,8 @@ def _build_table_windows(
 
     for start_index, end_index in _iter_row_chunks(
         end_index=body_end_index,
-        max_rows_per_window=document_profile.max_rows_per_table_window,
-        overlap=document_profile.row_overlap,
+        max_rows_per_window=kg_config.max_rows_per_table_window,
+        overlap=kg_config.row_overlap,
         start_index=body_start_index,
     ):
         windows.append(
@@ -428,7 +413,7 @@ def _build_table_windows(
                 body_row_end_index_exclusive=end_index,
                 body_row_start_index=start_index,
                 document_ir=document_ir,
-                document_profile=document_profile,
+                kg_config=kg_config,
                 plan_item=plan_item,
                 segment=segment,
                 window_index=window_start_index + len(windows),
@@ -439,14 +424,14 @@ def _build_table_windows(
 
 
 def _collect_code_matches(
-    *, document_profile: DocumentProfile, source_text: str
+    *, kg_config: CreateKGConfig, source_text: str
 ) -> list[CodeMatch]:
-    """Collect document profile code regex matches from window source text.
+    """Collect KG config code regex matches from window source text.
 
     Parameters
     ----------
-    document_profile
-        Country/document-specific KG extraction profile.
+    kg_config
+        Country/document-specific KG extraction configuration.
     source_text
         Window source text.
 
@@ -458,7 +443,7 @@ def _collect_code_matches(
 
     code_matches: list[CodeMatch] = []
 
-    for code_type, pattern in document_profile.code_patterns.items():
+    for code_type, pattern in kg_config.code_patterns.items():
         for match in re.finditer(pattern, source_text):
             code_matches.append(
                 CodeMatch(
@@ -492,7 +477,7 @@ def _collect_code_matches(
 
 
 def _collect_code_parent_hints(
-    *, code_matches: Sequence[CodeMatch], document_profile: DocumentProfile
+    *, code_matches: Sequence[CodeMatch], kg_config: CreateKGConfig
 ) -> list[CodeParentHint]:
     """Collect code-parent hints from regex-substitution rules.
 
@@ -500,8 +485,8 @@ def _collect_code_parent_hints(
     ----------
     code_matches
         Code matches found in the window.
-    document_profile
-        Country/document-specific KG extraction profile.
+    kg_config
+        Country/document-specific KG extraction configuration.
 
     Returns
     -------
@@ -515,7 +500,7 @@ def _collect_code_parent_hints(
     for code_match in code_matches:
         child_code = code_match.value
 
-        for rule in document_profile.code_parent_rules:
+        for rule in kg_config.code_parent_rules:
             if code_match.code_type != rule["child"]:
                 continue
 
@@ -527,7 +512,7 @@ def _collect_code_parent_hints(
                 continue
 
             parent_code_type = rule["parent"]
-            parent_pattern = document_profile.code_patterns[parent_code_type]
+            parent_pattern = kg_config.code_patterns[parent_code_type]
 
             # Ensure the derived parent code matches the configured pattern.
             if not re.fullmatch(parent_pattern, parent_code):
@@ -672,14 +657,14 @@ def _extract_list_items_text(list_items: list[Any]) -> str:
 
 
 def _get_table_plan_reasons(
-    *, document_profile: DocumentProfile, segment: TableSegment
+    *, kg_config: CreateKGConfig, segment: TableSegment
 ) -> list[str]:
     """Return reasons for planning a table segment for extraction.
 
     Parameters
     ----------
-    document_profile
-        Country/document-specific KG extraction profile.
+    kg_config
+        Country/document-specific KG extraction configuration.
     segment
         Candidate table segment.
 
@@ -692,21 +677,21 @@ def _get_table_plan_reasons(
     columns_signature = segment.columns_signature or "<missing>"
     section_text = _table_section_text(segment)
 
-    if columns_signature in document_profile.excluded_table_columns_signatures:
+    if columns_signature in kg_config.excluded_table_columns_signatures:
         return []
 
     if _matches_any_pattern(
-        patterns=document_profile.excluded_table_section_patterns, text=section_text
+        patterns=kg_config.excluded_table_section_patterns, text=section_text
     ):
         return []
 
     reasons: list[str] = []
 
-    if columns_signature in document_profile.included_table_columns_signatures:
+    if columns_signature in kg_config.included_table_columns_signatures:
         reasons.append("table_columns_signature_included_match")
 
     if _matches_any_pattern(
-        patterns=document_profile.included_table_section_patterns, text=section_text
+        patterns=kg_config.included_table_section_patterns, text=section_text
     ):
         reasons.append("table_section_included_pattern_match")
 
@@ -905,7 +890,7 @@ def _table_section_text(segment: TableSegment) -> str:
 def build_llm_extraction_windows(
     *,
     document_ir: DocumentIR,
-    document_profile: DocumentProfile,
+    kg_config: CreateKGConfig,
     plan_items: Sequence[ExtractionWindowPlanItem],
     save_fp: Path,
 ) -> list[ExtractionWindow]:
@@ -915,8 +900,8 @@ def build_llm_extraction_windows(
     ----------
     document_ir
         Validated stitched DocumentIR.
-    document_profile
-        Country/document-specific KG extraction profile.
+    kg_config
+        Country/document-specific KG extraction configuration.
     plan_items
         Ordered planned source units from `plan_extraction_windows()`.
     save_fp
@@ -948,7 +933,7 @@ def build_llm_extraction_windows(
             extraction_windows.extend(
                 _build_block_windows(
                     document_ir=document_ir,
-                    document_profile=document_profile,
+                    kg_config=kg_config,
                     plan_item=plan_item,
                     segment=segment,
                     window_start_index=len(extraction_windows),
@@ -958,7 +943,7 @@ def build_llm_extraction_windows(
             extraction_windows.extend(
                 _build_table_windows(
                     document_ir=document_ir,
-                    document_profile=document_profile,
+                    kg_config=kg_config,
                     plan_item=plan_item,
                     segment=segment,
                     window_start_index=len(extraction_windows),
@@ -975,7 +960,7 @@ def build_llm_extraction_windows(
 
 
 def plan_extraction_windows(
-    *, document_ir: DocumentIR, document_profile: DocumentProfile, save_fp: Path
+    *, document_ir: DocumentIR, kg_config: CreateKGConfig, save_fp: Path
 ) -> list[ExtractionWindowPlanItem]:
     """Plan DocumentIR source units that should become extraction windows.
 
@@ -983,8 +968,8 @@ def plan_extraction_windows(
     ----------
     document_ir
         Validated stitched DocumentIR.
-    document_profile
-        Country/document-specific KG extraction profile.
+    kg_config
+        Country/document-specific KG extraction configuration.
     save_fp
         Filepath for saving the extraction-window plan artifact.
 
@@ -1010,9 +995,7 @@ def plan_extraction_windows(
 
             plan_reasons = ["block_has_extractable_source_text"]
         elif segment.kind == "table":
-            plan_reasons = _get_table_plan_reasons(
-                document_profile=document_profile, segment=segment
-            )
+            plan_reasons = _get_table_plan_reasons(kg_config=kg_config, segment=segment)
 
             if not plan_reasons:
                 continue

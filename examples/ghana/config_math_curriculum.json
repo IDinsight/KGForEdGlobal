@@ -34,7 +34,69 @@
 		"verification_auto_stitch_confidence": 0.7
 	},
 	"kgs": {
-		"document_profile_fp": "/Users/tzz/Projects/private/idi/SenegalKG/examples/ghana/document_profile_math.json",
+		"adoption_status": "Adopted",
+		"attribution_statement": "Source curriculum published by NaCCA, Ministry of Education, Republic of Ghana, September 2019.",
+		"author": "NaCCA, Ministry of Education",
+		"context_spine": {
+			"description": "Reserved for future structured-context work. Academic Standards v0 extraction-window planning does not use context_spine, section_path, or nearby heading context.",
+			"heading_rules": [],
+			"include_nearby_headings": false,
+			"max_nearby_headings": 0,
+			"reset_rules": [],
+			"role_order": [],
+			"split_multiline_headings": true
+		},
+		"country": "Ghana",
+		"framework_title": "Mathematics Curriculum for Primary Schools (Basic 4 - 6)",
+		"grades_or_stages": [
+			"Basic 4",
+			"Basic 5",
+			"Basic 6"
+		],
+		"jurisdiction": "Ghana",
+		"languages": [
+			"en"
+		],
+		"license": "unknown",
+		"primary_language": "en",
+		"provider": "IDinsight",
+		"subject": "Mathematics",
+		"code_parent_rules": [
+			{
+				"child": "indicator",
+				"parent": "content_standard",
+				"method": "regex_substitution",
+				"regex": "^(B[456]\\.\\d+\\.\\d+\\.\\d+)\\.\\d+\\.?$",
+				"replacement": "\\1"
+			}
+		],
+		"code_patterns": {
+			"content_standard": "\\bB[456]\\.\\d+\\.\\d+\\.\\d+(?!\\.\\d)\\b",
+			"indicator": "\\bB[456]\\.\\d+\\.\\d+\\.\\d+\\.\\d+(?!\\.\\d)\\b"
+		},
+		"excluded_table_columns_signatures": [],
+		"excluded_table_section_patterns": [],
+		"included_table_columns_signatures": [
+			"content standards|indicators and exemplars|subject specific practices and core competencies",
+			"content standard|indicators and exemplars|subject specific practices and core competencies"
+		],
+		"included_table_section_patterns": [],
+		"max_rows_per_table_window": 20,
+		"row_overlap": 1,
+		"bilingual_pair_policy": "This Ghana Mathematics curriculum is English-only. Do not create bilingual pairs, translations, or cross-language duplicate candidates. Preserve visible English source text exactly. If non-English text appears incidentally, keep it only as source-visible text and do not translate it or pair it with an English candidate unless the document itself explicitly presents both versions as equivalent official curriculum text.",
+		"repeated_statement_policy": "Merge same official code when text is compatible. Same official code with materially conflicting text should become a conflict bucket.",
+		"synthetic_merge_key_fields": [
+			"country",
+			"subject",
+			"grade_level",
+			"normalized_statement_type",
+			"statement_type",
+			"hierarchy_context",
+			"normalized_text"
+		],
+		"duplicate_review_instructions": "Decide whether candidates in the bucket are the same Ghana curriculum item. Same official statement code with compatible text should merge. Same official statement code with conflicting text should be marked conflict. Similar text with different official codes should usually remain distinct.",
+		"learning_component_instructions": "Decompose each final Ghana Mathematics Standard SFI into one or more atomic mathematical skills or concepts. Do not create activities, examples, or assessment tasks as LearningComponents.",
+		"sfi_extraction_instructions": "Extract candidate StandardsFrameworkItems (SFIs) from the Ghana Mathematics curriculum only when the visible text is an official curriculum framework item or structural organizer. Treat BASIC 4, BASIC 5, and BASIC 6 headings as Standard Grouping SFIs. Treat Strand headings and Sub-Strand headings as Standard Grouping SFIs when they are visible as curriculum organizers. Treat Content Standards with official codes such as B4.1.1.1 as Standard SFIs. Treat Indicators with official codes such as B4.1.1.1.1 as Standard SFIs. Do not extract LearningComponents in this step: do not decompose a content standard or indicator into smaller skills, concepts, lesson objectives, or teachable subskills. Treat exemplars, examples beginning with E.g., classroom activities, assessment suggestions, teacher guidance, resources, duration/time allocations, values, and pedagogical notes as auxiliary or non-SFI text, not SFIs. Treat Subject Specific Practices and Core Competencies as auxiliary guidance, not SFIs, unless a document-specific profile explicitly overrides this policy. Repeated table headers and repeated continuation labels are not SFIs. Preserve source-language wording; use statement_code only when an official code is visible in the source window; include parent/context references only when the referenced context is visible in the same extraction window.",
 		"overwrite": true
 	}
 }

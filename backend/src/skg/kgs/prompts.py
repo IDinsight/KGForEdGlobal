@@ -5,7 +5,8 @@ from textwrap import dedent
 from typing import Any, Optional
 
 # Package Library
-from skg.kgs.schemas import DocumentProfile, ExtractionWindow
+from skg.kgs.schemas import ExtractionWindow
+from skg.schemas import CreateKGConfig
 from skg.utils.general import PromptPair, json_dumps
 
 
@@ -35,38 +36,6 @@ def _build_compact_block_payload(
             "source_text": extraction_window.source_text,
         }
     )
-
-
-def _build_compact_document_profile_context(
-    document_profile: DocumentProfile,
-) -> dict[str, Any]:
-    """Build the compact document profile context for the extraction prompt.
-
-    Parameters
-    ----------
-    document_profile
-        Country/document-specific extraction profile.
-
-    Returns
-    -------
-    dict[str, Any]
-        Compact document profile facts and extraction instructions needed by the LLM.
-    """
-
-    profile_context: dict[str, Any] = {
-        "country": document_profile.country,
-        "grades_or_stages": document_profile.grades_or_stages,
-        "primary_language": document_profile.primary_language,
-        "sfi_extraction_instructions": document_profile.sfi_extraction_instructions,
-        "subject": document_profile.subject,
-    }
-
-    if document_profile.bilingual_pair_policy:
-        profile_context["bilingual_pair_policy"] = (
-            document_profile.bilingual_pair_policy
-        )
-
-    return profile_context
 
 
 def _build_compact_extraction_window_payload(
@@ -111,6 +80,36 @@ def _build_compact_extraction_window_payload(
         payload["table"] = table_payload
 
     return payload
+
+
+def _build_compact_kg_config_context(
+    kg_config: CreateKGConfig,
+) -> dict[str, Any]:
+    """Build the compact KG config context for the extraction prompt.
+
+    Parameters
+    ----------
+    kg_config
+        Country/document-specific extraction configuration.
+
+    Returns
+    -------
+    dict[str, Any]
+        Compact KG config facts and extraction instructions needed by the LLM.
+    """
+
+    kg_config_context: dict[str, Any] = {
+        "country": kg_config.country,
+        "grades_or_stages": kg_config.grades_or_stages,
+        "primary_language": kg_config.primary_language,
+        "sfi_extraction_instructions": kg_config.sfi_extraction_instructions,
+        "subject": kg_config.subject,
+    }
+
+    if kg_config.bilingual_pair_policy:
+        kg_config_context["bilingual_pair_policy"] = kg_config.bilingual_pair_policy
+
+    return kg_config_context
 
 
 def _build_compact_row_payload(
@@ -212,16 +211,16 @@ def _build_compact_table_payload(
 
 
 def extract_sfi_candidates_from_window(
-    *, document_profile: DocumentProfile, extraction_window: ExtractionWindow
+    *, extraction_window: ExtractionWindow, kg_config: CreateKGConfig
 ) -> PromptPair:
     """Generate the prompts for extracting candidate SFIs from one extraction window.
 
     Parameters
     ----------
-    document_profile
-        Country/document-specific extraction profile.
     extraction_window
         Source-faithful LLM-ready extraction window.
+    kg_config
+        Country/document-specific KG extraction configuration.
 
     Returns
     -------
@@ -230,7 +229,7 @@ def extract_sfi_candidates_from_window(
         agent.
     """
 
-    profile_context = _build_compact_document_profile_context(document_profile)
+    kg_config_context = _build_compact_kg_config_context(kg_config)
     user_payload = _build_compact_extraction_window_payload(extraction_window)
 
     system_message = dedent(
@@ -249,24 +248,24 @@ def extract_sfi_candidates_from_window(
 - Return zero SFI candidates when the window contains front matter, examples only, teacher guidance only, activities only, resources only, assessment suggestions only, or unrelated content.
 - Parent/context references are optional source-grounded hints only. They are not final graph edges.
 - Do not invent missing hierarchy. If parent/context text is not visible in the compact source window, omit it or add an extraction note.
-- Use the curriculum-specific extraction profile below to adapt the generic ontology rules to this document.
+- Use the curriculum-specific extraction KG config below to adapt the generic ontology rules to this document.
 
-## Curriculum-specific extraction profile
-{json_dumps(profile_context)}
+## Curriculum-specific KG extraction config
+{json_dumps(kg_config_context)}
 
 ## Candidate classification policy
 - Use normalized_statement_type="Standard Grouping" for source-visible organizational groupings that should become SFI grouping nodes.
 - Use normalized_statement_type="Standard" for source-visible learning expectations that should become SFI standard nodes.
-- Use normalized_statement_type="Other" rarely, only when the profile explicitly says a visible framework item should be retained as an SFI but it is neither a grouping nor a learning expectation.
-- Do not classify examples, exemplars, competencies lists that describe cross-cutting skills, activities, assessment suggestions, resources, pedagogical notes, durations, teacher guidance, or learning-material content as SFIs unless the profile explicitly says they are standards-framework items.
+- Use normalized_statement_type="Other" rarely, only when the KG config explicitly says a visible framework item should be retained as an SFI but it is neither a grouping nor a learning expectation.
+- Do not classify examples, exemplars, competencies lists that describe cross-cutting skills, activities, assessment suggestions, resources, pedagogical notes, durations, teacher guidance, or learning-material content as SFIs unless the KG config explicitly says they are standards-framework items.
 - Return auxiliary candidates only when useful for explaining why visible source text is not an SFI; do not exhaustively list every example, activity, competency, or guidance note.
 
 ## Candidate field policy
 - candidate_id must be unique within this window, such as sfi_1, sfi_2, etc.
 - description should preserve the source-language wording of the SFI. For learning expectations, use the official statement text. For groupings, use the grouping label or heading text.
-- statement_type should be the source-facing role when visible, such as Grade, Stage, Strand, Domain, Cluster, Content Standard, Indicator, Competency, Objective, or Outcome. If no source-facing role is visible, use a concise best-effort role consistent with the source window and profile.
+- statement_type should be the source-facing role when visible, such as Grade, Stage, Strand, Domain, Cluster, Content Standard, Indicator, Competency, Objective, or Outcome. If no source-facing role is visible, use a concise best-effort role consistent with the source window and KG config.
 - statement_code should be the official/source-visible code when present. Use null when no code is visible.
-- language should use the source language tag when visible; otherwise use the profile primary language.
+- language should use the source language tag when visible; otherwise use the KG config primary language.
 - confidence should reflect how clearly the source window supports the candidate.
 
 ## Source fidelity rules

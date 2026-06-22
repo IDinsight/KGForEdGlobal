@@ -15,7 +15,6 @@ from loguru import logger
 
 # Package Library
 from skg.document_ir.schemas import DocumentIR
-from skg.kgs.schemas import DocumentProfile
 from skg.page_ir_extraction.schemas import TableCell, TextUnit
 from skg.schemas import CreateKGConfig, ExtractionConfig, RunCtx
 from skg.utils.general import make_dir, open_json_type, write_to_json
@@ -41,7 +40,7 @@ class KGInputs:
     Parameters
     ----------
     code_pattern_match_counts
-        Match counts for each configured profile code pattern.
+        Match counts for each configured KG config code pattern.
     document_ir
         The validated stitched DocumentIR.
     document_ir_fp
@@ -50,16 +49,14 @@ class KGInputs:
         Output directories for this KG creation run.
     observed_languages
         Language tags observed in DocumentIR text units.
-    profile
-        The validated country/document-specific DocumentProfile.
-    profile_fp
-        Path to the source DocumentProfile JSON file.
+    kg_config
+        The validated KG creation config with embedded extraction attributes.
     segment_counts
         Counts of DocumentIR segment kinds.
     table_columns_signature_counts
         Counts of table column signatures observed in table segments.
     table_selection_match_counts
-        Counts showing how the observed table signatures match the DocumentProfile
+        Counts showing how the observed table signatures match the CreateKGConfig
         table-selection policy.
     warnings
         Non-fatal warnings.
@@ -68,8 +65,7 @@ class KGInputs:
     code_pattern_match_counts: dict[str, dict[str, int]]
     document_ir: DocumentIR
     document_ir_fp: Path
-    document_profile: DocumentProfile
-    document_profile_fp: Path
+    kg_config: CreateKGConfig
     kg_dirs: KGDirs
     observed_languages: list[str]
     segment_counts: dict[str, int]
@@ -79,7 +75,7 @@ class KGInputs:
 
 
 def _count_code_pattern_matches(
-    *, document_ir: DocumentIR, document_profile: DocumentProfile
+    *, document_ir: DocumentIR, kg_config: CreateKGConfig
 ) -> dict[str, dict[str, int]]:
     """Count configured code pattern matches in the DocumentIR.
 
@@ -87,8 +83,8 @@ def _count_code_pattern_matches(
     ----------
     document_ir
         The stitched DocumentIR to scan.
-    document_profile
-        The validated DocumentProfile containing regex code patterns.
+    kg_config
+        The validated CreateKGConfig containing regex code patterns.
 
     Returns
     -------
@@ -125,7 +121,7 @@ def _count_code_pattern_matches(
     all_text = "\n".join(texts)
     counts: dict[str, dict[str, int]] = {}
 
-    for name, pattern in document_profile.code_patterns.items():
+    for name, pattern in kg_config.code_patterns.items():
         matches = [match.group(0) for match in re.finditer(pattern, all_text)]
         counts[name] = {"total": len(matches), "unique": len(set(matches))}
 
@@ -159,16 +155,16 @@ def _count_table_columns_signatures(document_ir: DocumentIR) -> dict[str, int]:
 
 
 def _count_table_selection_matches(
-    *, document_ir: DocumentIR, document_profile: DocumentProfile
+    *, document_ir: DocumentIR, kg_config: CreateKGConfig
 ) -> dict[str, Any]:
-    """Count how observed table signatures match the profile table-selection policy.
+    """Count how observed table signatures match the KG config table-selection policy.
 
     Parameters
     ----------
     document_ir
         The stitched DocumentIR to inspect.
-    document_profile
-        The validated DocumentProfile containing table-selection rules.
+    kg_config
+        The validated CreateKGConfig containing table-selection rules.
 
     Returns
     -------
@@ -186,11 +182,11 @@ def _count_table_selection_matches(
 
     excluded_signature_counts = {
         signature: observed_counts.get(signature, 0)
-        for signature in document_profile.excluded_table_columns_signatures
+        for signature in kg_config.excluded_table_columns_signatures
     }
     included_signature_counts = {
         signature: observed_counts.get(signature, 0)
-        for signature in document_profile.included_table_columns_signatures
+        for signature in kg_config.included_table_columns_signatures
     }
     return {
         "excluded_table_signature_counts": excluded_signature_counts,
@@ -358,22 +354,22 @@ def _validate_document_ir(document_ir_fp: Path) -> DocumentIR:
     return document_ir
 
 
-def _validate_document_profile_compatibility(
+def _validate_kg_config_compatibility(
     *,
     code_pattern_match_counts: dict[str, dict[str, int]],
-    document_profile: DocumentProfile,
+    kg_config: CreateKGConfig,
     observed_languages: list[str],
     segment_counts: dict[str, int],
     table_selection_match_counts: dict[str, Any],
 ) -> list[str]:
-    """Cross-check document profile assumptions against the stitched DocumentIR.
+    """Cross-check KG config assumptions against the stitched DocumentIR.
 
     Parameters
     ----------
     code_pattern_match_counts
         Match counts for each configured code pattern.
-    document_profile
-        The validated DocumentProfile.
+    kg_config
+        The validated CreateKGConfig.
     observed_languages
         Language tags observed in the DocumentIR.
     segment_counts
@@ -394,51 +390,51 @@ def _validate_document_profile_compatibility(
 
     warnings: list[str] = []
 
-    document_profile_language_bases = {
-        _language_base(language) for language in document_profile.languages
+    kg_config_language_bases = {
+        _language_base(language) for language in kg_config.languages
     }
     observed_language_bases = {
         _language_base(language) for language in observed_languages if language
     }
 
     if observed_language_bases and not (
-        document_profile_language_bases & observed_language_bases
+        kg_config_language_bases & observed_language_bases
     ):
         warnings.append(
-            f"Document profile languages do not overlap with languages observed in the "
-            f"DocumentIR: Document Profile languages: {sorted(document_profile.languages)}, "
+            f"KG config languages do not overlap with languages observed in the "
+            f"DocumentIR: KG config languages: {sorted(kg_config.languages)}, "
             f"DocumentIR languages: {observed_languages}."
         )
 
-    if document_profile.code_patterns:
+    if kg_config.code_patterns:
         total_code_matches = sum(
             match_counts["total"] for match_counts in code_pattern_match_counts.values()
         )
 
         if total_code_matches == 0:
             message = (
-                "DocumentProfile configured code_patterns, but none of them matched "
+                "CreateKGConfig configured code_patterns, but none of them matched "
                 "text in the DocumentIR."
             )
             raise ValueError(message)
 
     if (
-        document_profile.included_table_columns_signatures
-        or document_profile.included_table_section_patterns
+        kg_config.included_table_columns_signatures
+        or kg_config.included_table_section_patterns
     ) and segment_counts.get("table", 0) == 0:
         warnings.append(
-            "DocumentProfile contains table-selection rules, but the DocumentIR "
+            "CreateKGConfig contains table-selection rules, but the DocumentIR "
             "contains no table segments."
         )
 
-    if document_profile.included_table_columns_signatures:
+    if kg_config.included_table_columns_signatures:
         included_match_total = table_selection_match_counts[
             "included_table_signature_match_total"
         ]
 
         if included_match_total == 0:
             raise ValueError(
-                "DocumentProfile configured included_table_columns_signatures, but no "
+                "CreateKGConfig configured included_table_columns_signatures, but no "
                 "matching table segments were observed in the DocumentIR. "
             )
 
@@ -460,7 +456,7 @@ def build_run_manifest(kg_run_inputs: KGInputs) -> dict[str, Any]:
     """
 
     document_ir = kg_run_inputs.document_ir
-    document_profile = kg_run_inputs.document_profile
+    kg_config = kg_run_inputs.kg_config
     counts: Counter[str] = Counter()
 
     for segment in document_ir.segments:
@@ -472,27 +468,27 @@ def build_run_manifest(kg_run_inputs: KGInputs) -> dict[str, Any]:
     return {
         "block_type_counts": dict(sorted(counts.items())),
         "code_pattern_match_counts": kg_run_inputs.code_pattern_match_counts,
-        "country": document_profile.country,
+        "country": kg_config.country,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "doc_key": document_ir.doc_key,
         "document_ir_fp": str(kg_run_inputs.document_ir_fp),
-        "document_profile_fp": str(kg_run_inputs.document_profile_fp),
-        "framework_title": document_profile.framework_title,
+        "kg_config_source": "run_config.kgs",
+        "framework_title": kg_config.framework_title,
         "kg_run_dir": str(kg_run_inputs.kg_dirs.root),
         "observed_languages": kg_run_inputs.observed_languages,
         "page_count": document_ir.page_count,
         "pdf_name": document_ir.pdf_name,
-        "primary_language": document_profile.primary_language,
+        "primary_language": kg_config.primary_language,
         "segment_counts": kg_run_inputs.segment_counts,
         "status": "prep_complete",
-        "subject": document_profile.subject,
+        "subject": kg_config.subject,
         "table_columns_signature_counts": kg_run_inputs.table_columns_signature_counts,
         "table_selection_match_counts": kg_run_inputs.table_selection_match_counts,
         "table_selection_policy": {
-            "excluded_table_columns_signatures": document_profile.excluded_table_columns_signatures,
-            "excluded_table_section_patterns": document_profile.excluded_table_section_patterns,
-            "included_table_columns_signatures": document_profile.included_table_columns_signatures,
-            "included_table_section_patterns": document_profile.included_table_section_patterns,
+            "excluded_table_columns_signatures": kg_config.excluded_table_columns_signatures,
+            "excluded_table_section_patterns": kg_config.excluded_table_section_patterns,
+            "included_table_columns_signatures": kg_config.included_table_columns_signatures,
+            "included_table_section_patterns": kg_config.included_table_section_patterns,
         },
         "warnings": kg_run_inputs.warnings,
     }
@@ -582,8 +578,8 @@ def cross_check_stitching_run(
 
 def load_and_validate_inputs(
     *,
+    config: CreateKGConfig,
     document_ir_fp: Path,
-    document_profile_fp: Path,
     kg_dirs: KGDirs,
     overwrite: bool,
 ) -> KGInputs:
@@ -591,10 +587,11 @@ def load_and_validate_inputs(
 
     Parameters
     ----------
+    config
+        KG creation config with embedded country/document-specific extraction
+        attributes.
     document_ir_fp
         Path to the stitched DocumentIR JSON file.
-    document_profile_fp
-        Path to the country/document-specific DocumentProfile JSON file.
     kg_dirs
         Directories for storing KG run artifacts.
     overwrite
@@ -610,14 +607,12 @@ def load_and_validate_inputs(
     FileExistsError
         If the run manifest already exists and overwrite is False.
     ValueError
-        If the DocumentProfile or DocumentIR fails prep validation.
+        If the CreateKGConfig or DocumentIR fails prep validation.
     """
 
-    # Validate the DocumentIR and DocumentProfile objects.
+    # Validate the DocumentIR object. The CreateKGConfig has already been parsed and
+    # validated by the runtime config loader.
     document_ir = _validate_document_ir(document_ir_fp)
-    document_profile = DocumentProfile.model_validate(
-        open_json_type(document_profile_fp)
-    )
 
     # Check whether the KG run manifest can be written.
     kg_manifest_fp = kg_dirs.root / "kg_run_manifest.json"
@@ -630,7 +625,7 @@ def load_and_validate_inputs(
 
     # Count code pattern matches in the document IR.
     code_pattern_match_counts = _count_code_pattern_matches(
-        document_ir=document_ir, document_profile=document_profile
+        document_ir=document_ir, kg_config=config
     )
 
     # Extract unique languages observed in the DocumentIR.
@@ -644,15 +639,15 @@ def load_and_validate_inputs(
     # Count table signatures.
     table_columns_signature_counts = _count_table_columns_signatures(document_ir)
 
-    # Count matches against the profile table-selection policy.
+    # Count matches against the KG config table-selection policy.
     table_selection_match_counts = _count_table_selection_matches(
-        document_ir=document_ir, document_profile=document_profile
+        document_ir=document_ir, kg_config=config
     )
 
     # Check compatibility.
-    warnings = _validate_document_profile_compatibility(
+    warnings = _validate_kg_config_compatibility(
         code_pattern_match_counts=code_pattern_match_counts,
-        document_profile=document_profile,
+        kg_config=config,
         observed_languages=observed_languages,
         segment_counts=segment_counts,
         table_selection_match_counts=table_selection_match_counts,
@@ -662,8 +657,7 @@ def load_and_validate_inputs(
         code_pattern_match_counts=code_pattern_match_counts,
         document_ir=document_ir,
         document_ir_fp=document_ir_fp,
-        document_profile=document_profile,
-        document_profile_fp=document_profile_fp,
+        kg_config=config,
         kg_dirs=kg_dirs,
         observed_languages=observed_languages,
         segment_counts=segment_counts,

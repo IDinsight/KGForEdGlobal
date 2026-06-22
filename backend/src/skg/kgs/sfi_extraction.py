@@ -15,11 +15,11 @@ from loguru import logger
 # Package Library
 from skg.kgs.llm import SFIExtractionUsageTracker, extract_sfi_candidates
 from skg.kgs.schemas import (
-    DocumentProfile,
     ExtractionWindow,
     SFIExtractionResult,
     SFIExtractionSummary,
 )
+from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, write_to_json
 
 
@@ -236,8 +236,8 @@ def _validate_existing_sfi_extraction_results(
 
 def extract_sfi_candidates_from_windows(
     *,
-    document_profile: DocumentProfile,
     extraction_windows: Sequence[ExtractionWindow],
+    kg_config: CreateKGConfig,
     overwrite: bool,
     save_fp: Path,
     summary_fp: Path,
@@ -245,8 +245,8 @@ def extract_sfi_candidates_from_windows(
 ) -> list[SFIExtractionResult]:
     """Extract SFI candidates and incrementally persist resumable artifacts.
 
-    If `overwrite` is True, any existing SFI extraction JSONL and summary artifacts are
-    deleted and extraction starts from the first window. If `overwrite` is False, any
+    If `overwrite` is true, any existing SFI extraction JSONL and summary artifacts are
+    deleted and extraction starts from the first window. If `overwrite` is false, any
     existing JSONL artifact is treated as a completed prefix only after validating that
     it matches the current extraction-window artifact. The run skips LLM calls only
     when the existing prefix already covers every extraction window. Otherwise, the
@@ -257,10 +257,10 @@ def extract_sfi_candidates_from_windows(
 
     Parameters
     ----------
-    document_profile
-        Country/document-specific KG extraction profile.
     extraction_windows
         Ordered source-faithful extraction windows to process.
+    kg_config
+        Country/document-specific KG extraction configuration.
     overwrite
         Whether to discard existing SFI extraction artifacts and restart extraction
         from the first window. When False, existing validated prefix results are reused
@@ -302,6 +302,7 @@ def extract_sfi_candidates_from_windows(
                 f"completed_windows={len(sfi_extraction_results)}. Skipping LLM calls: "
                 f"{save_fp}, {summary_fp}."
             )
+
             return sfi_extraction_results
 
         logger.info(
@@ -312,8 +313,8 @@ def extract_sfi_candidates_from_windows(
 
     for extraction_window in extraction_windows[len(sfi_extraction_results) :]:
         sfi_extraction_result = extract_sfi_candidates(
-            document_profile=document_profile,
             extraction_window=extraction_window,
+            kg_config=kg_config,
             usage_tracker=usage_tracker,
         )
         sfi_extraction_results.append(sfi_extraction_result)

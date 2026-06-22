@@ -56,11 +56,11 @@ def build_kgs(
     kg_dirs: KGDirs,
     usage_tracker: SFIExtractionUsageTracker,
 ) -> Path:
-    """Build Academic Standards KG artifacts for a DocumentIR and document profile.
+    """Build Academic Standards KG artifacts for a DocumentIR and KG config.
 
     The process is as follows:
 
-    1. Load and validate the stitched DocumentIR and DocumentProfile.
+    1. Load the stitched DocumentIR and validate it against the KG config parameters.
     2. Build and persist `kg_run_manifest.json`.
     3. Plan source DocumentIR units for Academic Standards (SFI) extraction windows.
     4. Build LLM-ready extraction windows.
@@ -85,8 +85,8 @@ def build_kgs(
 
     # 1.
     kg_run_inputs = load_and_validate_inputs(
+        config=config,
         document_ir_fp=document_ir_fp,
-        document_profile_fp=config.document_profile_fp,
         kg_dirs=kg_dirs,
         overwrite=config.overwrite,
     )
@@ -99,22 +99,22 @@ def build_kgs(
     # 3.
     plan_items = plan_extraction_windows(
         document_ir=kg_run_inputs.document_ir,
-        document_profile=kg_run_inputs.document_profile,
+        kg_config=kg_run_inputs.kg_config,
         save_fp=kg_dirs.root / "extraction_window_plan.json",
     )
 
     # 4.
     extraction_windows = build_llm_extraction_windows(
         document_ir=kg_run_inputs.document_ir,
-        document_profile=kg_run_inputs.document_profile,
+        kg_config=kg_run_inputs.kg_config,
         plan_items=plan_items,
         save_fp=kg_dirs.root / "extraction_windows.jsonl",
     )
 
     # 5.
     sfi_extraction_results = extract_sfi_candidates_from_windows(
-        document_profile=kg_run_inputs.document_profile,
         extraction_windows=extraction_windows,
+        kg_config=kg_run_inputs.kg_config,
         overwrite=config.overwrite,
         save_fp=kg_dirs.root / "sfi_extraction_results.jsonl",
         summary_fp=kg_dirs.root / "sfi_extraction_summary.json",
@@ -191,7 +191,8 @@ def create(
     try:
         logger.info(
             f"Starting KG creation using runtime config: {config_fp}; "
-            f"DocumentIR: {document_ir_fp}; document profile: {config.document_profile_fp}"
+            f"DocumentIR: {document_ir_fp}; "
+            f"KG config framework: {config.framework_title}"
         )
 
         # 4.
