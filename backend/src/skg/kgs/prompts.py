@@ -63,10 +63,6 @@ def _build_compact_extraction_window_payload(
             code_match.model_dump(mode="json")
             for code_match in extraction_window.code_matches
         ],
-        "code_parent_hints": [
-            code_parent_hint.model_dump(mode="json")
-            for code_parent_hint in extraction_window.code_parent_hints
-        ],
         "segment_kind": extraction_window.segment_kind,
         "window_id": extraction_window.window_id,
         "window_index": extraction_window.window_index,
@@ -153,9 +149,7 @@ def _build_compact_filldown_context_row_payload(
     return {"cells": cells, "row_index": row_index}
 
 
-def _build_compact_kg_config_context(
-    kg_config: CreateKGConfig,
-) -> dict[str, Any]:
+def _build_compact_kg_config_context(kg_config: CreateKGConfig) -> dict[str, Any]:
     """Build the compact KG config context for the extraction prompt.
 
     Parameters
@@ -378,8 +372,8 @@ def extract_sfi_candidates_from_window(
 ## Scope
 - Extract candidate SFIs only from the provided compact source window.
 - Return zero SFI candidates when the window contains front matter, examples only, teacher guidance only, activities only, resources only, assessment suggestions only, or unrelated content.
-- Parent/context references are optional source-grounded hints only. They are not final graph edges.
-- Do not invent missing hierarchy. If parent/context text is not visible in the compact source window, omit it or add an extraction note.
+- Do not infer hierarchy or relationships in this step. Extract only SFI candidates directly visible in this compact source window; final hasChild relationships are resolved later from finalized SFIs and source provenance.
+- Extract grouping SFIs only when the grouping label itself is visible in this window. Do not add absent grade, strand, sub-strand, or parent context.
 - Use the curriculum-specific extraction KG config below to adapt the generic ontology rules to this document.
 
 ## Curriculum-specific KG extraction config
@@ -390,7 +384,6 @@ def extract_sfi_candidates_from_window(
 - Use normalized_statement_type="Standard" for source-visible learning expectations that should become SFI standard nodes.
 - Use normalized_statement_type="Other" rarely, only when the KG config explicitly says a visible framework item should be retained as an SFI but it is neither a grouping nor a learning expectation.
 - Do not classify examples, exemplars, competencies lists that describe cross-cutting skills, activities, assessment suggestions, resources, pedagogical notes, durations, teacher guidance, or learning-material content as SFIs unless the KG config explicitly says they are standards-framework items.
-- Return auxiliary candidates only when useful for explaining why visible source text is not an SFI; do not exhaustively list every example, activity, competency, or guidance note.
 
 ## Candidate field policy
 - candidate_id must be unique within this window, such as sfi_1, sfi_2, etc.
@@ -399,19 +392,20 @@ def extract_sfi_candidates_from_window(
 - statement_code should be the official/source-visible code when present. Use null when no code is visible.
 - language should use the source language tag when visible; otherwise use the KG config primary language.
 - confidence should reflect how clearly the source window supports the candidate.
+- Keep source_text as short as possible while still source-visible and sufficient: for coded table statements, quote only the official code and statement text, not examples, exemplars, teacher guidance, or competencies.
 
 ## Source fidelity rules
 - Preserve source-language text. Do not translate.
-- For every candidate and auxiliary record, source_text must be a verbatim quote or faithful source-visible excerpt from block.source_text, table.header_rows_canonical, or table.source_rows cell text.
+- For every candidate and auxiliary record, source_text must be a verbatim source-visible excerpt from block.source_text, table.header_rows_canonical, or table.source_rows cell text.
 - For table-derived SFI candidates, table_row_indexes must be non-empty and must use the visible table.source_rows[].row_index values that support the candidate.
-- Use code_matches, code_parent_hints, table headers, and table.source_rows text as evidence, not as final KG nodes.
-- Use code_parent_hints only as deterministic evidence for likely hierarchy. Emit a parent_reference from a code-parent hint only when the parent code or parent text is also visible in block.source_text, table.header_rows_canonical, or table.source_rows. Do not use code-parent hints alone as source_text.
-- Treat table.filldown_context_rows as helper context only. These cells repeat row-span context for interpretation, but they are not source-visible evidence. Do not quote helper_context_only cells as candidate source_text, auxiliary source_text, or parent/context reference source_text unless the same text is also visible in block.source_text, table.header_rows_canonical, or table.source_rows.
+- Use code_matches, table headers, and table.source_rows text as evidence, not as final KG nodes.
+- Treat table.filldown_context_rows as helper context only. These cells repeat row-span context for interpretation, but they are not source-visible evidence. Do not quote helper_context_only cells as candidate source_text or auxiliary source_text unless the same text is also visible in block.source_text, table.header_rows_canonical, or table.source_rows.
 
 ## Output contract
-Return one SFIExtractionResult object as structured JSON only. Copy window_id, window_index, and window_source_segment_ids exactly from the compact source window.
-Each SFI candidate must include candidate_id, confidence, description, language, metadata, normalized_statement_type, parent_references, ancestor_context_references, source_text, statement_code, statement_type, and table_row_indexes.
-Each auxiliary candidate must include auxiliary_id, auxiliary_type, language, rationale, related_candidate_ids, and source_text.
+Return exactly one SFIExtractionResult object as structured JSON only. Follow the schema exactly and do not include extra fields.
+Copy window_id, window_index, and window_source_segment_ids exactly from the compact source window.
+Keep extraction_notes short; use them only for window-level extraction issues, not to summarize examples, competencies, or activities.
+Return auxiliary candidates only when they clarify why prominent source-visible text was not extracted as an SFI; do not list ordinary examples, activities, competencies, or guidance notes.
         """
     )
 

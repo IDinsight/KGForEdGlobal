@@ -12,12 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 # Package Library
-from skg.kgs.schemas import (
-    ExtractionWindow,
-    SFICandidate,
-    SFICandidateParentReference,
-    SFIExtractionResult,
-)
+from skg.kgs.schemas import ExtractionWindow, SFICandidate, SFIExtractionResult
 from skg.page_ir_extraction.validators import QualityError
 
 
@@ -164,31 +159,6 @@ def _validate_candidate_code_is_visible(
         )
 
 
-def _validate_candidate_parent_references(ctx: SFIExtractionQualityCtx) -> None:
-    """Validate that parent/context references are source-grounded hints only.
-
-    Parameters
-    ----------
-    ctx
-        Quality-check context.
-
-    Raises
-    ------
-    QualityError
-        If any reference is not grounded in source-visible window text.
-    """
-
-    for candidate in ctx.extraction_result.sfi_candidates:
-        for reference in (
-            candidate.parent_references + candidate.ancestor_context_references
-        ):
-            _validate_parent_reference_is_source_grounded(
-                candidate_id=candidate.candidate_id,
-                ctx=ctx,
-                reference=reference,
-            )
-
-
 def _validate_candidate_source_text_is_visible(
     *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
 ) -> None:
@@ -262,48 +232,6 @@ def _validate_candidate_table_row_indexes(ctx: SFIExtractionQualityCtx) -> None:
                 f"outside this window: {invalid}. Allowed row indexes are "
                 f"{sorted(allowed_row_indexes)}."
             )
-
-
-def _validate_parent_reference_is_source_grounded(
-    *,
-    candidate_id: str,
-    ctx: SFIExtractionQualityCtx,
-    reference: SFICandidateParentReference,
-) -> None:
-    """Validate that a parent/context reference is source-grounded.
-
-    Parameters
-    ----------
-    candidate_id
-        Candidate ID that emitted the reference.
-    ctx
-        Quality-check context.
-    reference
-        Parent/context reference to validate.
-
-    Raises
-    ------
-    QualityError
-        If the reference is not grounded in source-visible window text.
-    """
-
-    _validate_source_text_is_visible(
-        ctx=ctx,
-        entity_label=f"Candidate {candidate_id!r} parent/context reference",
-        source_text=reference.source_text,
-    )
-
-    if reference.statement_code is None:
-        return
-
-    code_normalized = _normalize_text(reference.statement_code)
-
-    if code_normalized not in ctx.source_visible_text_normalized:
-        raise QualityError(
-            f"Candidate {candidate_id!r} emitted parent/context reference code "
-            f"{reference.statement_code!r}, but that code is not visible in the "
-            f"source window. Omit reference codes that are not source-visible."
-        )
 
 
 def _validate_source_text_is_visible(
@@ -410,7 +338,6 @@ def verify_sfi_extraction_quality(
         _validate_candidate_source_text_is_visible(candidate=candidate, ctx=ctx)
 
     _validate_candidate_table_row_indexes(ctx)
-    _validate_candidate_parent_references(ctx)
 
     for auxiliary_candidate in ctx.extraction_result.auxiliary_candidates:
         _validate_source_text_is_visible(

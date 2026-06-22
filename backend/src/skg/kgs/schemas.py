@@ -33,12 +33,6 @@ from skg.schemas import (
 _AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo"}
 _AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
 _MetadataT = dict[str, Any]
-_ParentReferenceKind = Literal[
-    "ancestor_context_hint",
-    "direct_parent_hint",
-    "sibling_or_nearby_context",
-    "unresolved_context",
-]
 _ProgressionSubtype = Literal["developmental_prerequisite", "recurring_practice"]
 _ValidationLevel = Literal["error", "info"]
 
@@ -446,10 +440,6 @@ class SFIAuxiliaryCandidate(BaseSchema):
 class SFICandidate(BaseSchema):
     """Candidate StandardsFrameworkItem extracted from one source window."""
 
-    ancestor_context_references: list[SFICandidateParentReference] = Field(
-        default_factory=list,
-        description="Broader source-visible context hints for later hierarchy resolution.",
-    )
     candidate_id: str = Field(description="Window-local stable candidate identifier.")
     confidence: float = Field(
         default=0.5,
@@ -464,16 +454,8 @@ class SFICandidate(BaseSchema):
     language: LanguageField = Field(
         description="Language tag for description/source_text."
     )
-    metadata: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Free-form extraction metadata useful for later debugging/merge.",
-    )
     normalized_statement_type: NormalizedStatementType = Field(
         description="Standard, Standard Grouping, or Other."
-    )
-    parent_references: list[SFICandidateParentReference] = Field(
-        default_factory=list,
-        description="Candidate direct-parent hints, not final hasChild edges.",
     )
     source_text: str = Field(
         description="Verbatim source text supporting this candidate.", min_length=1
@@ -569,95 +551,6 @@ class SFICandidate(BaseSchema):
             raise ValueError("table_row_indexes must be non-negative")
 
         return cleaned
-
-
-class SFICandidateParentReference(BaseSchema):
-    """Source-grounded parent or context reference emitted during SFI extraction.
-
-    These references are not final graph edges. They are retained as evidence for the
-    later post-deduplication `hasChild` resolver, which will resolve references against
-    finalized SFIs and the StandardsFramework root.
-    """
-
-    confidence: float = Field(
-        default=0.5,
-        description="Confidence that this reference is relevant parent/context evidence.",
-        ge=0.0,
-        le=1.0,
-    )
-    normalized_statement_type: Optional[NormalizedStatementType] = Field(
-        default=None,
-        description="Expected normalized type of the referenced item, if visible.",
-    )
-    rationale: Optional[str] = Field(
-        default=None,
-        description="Brief source-grounded explanation for why this reference was emitted.",
-    )
-    reference_kind: _ParentReferenceKind = Field(
-        description="Whether this is a direct-parent hint, broader context, or unresolved context."
-    )
-    source_text: str = Field(
-        description="Verbatim source-visible text that identifies the referenced parent/context.",
-        min_length=1,
-    )
-    statement_code: Optional[str] = Field(
-        default=None,
-        description="Official/source code for the referenced item, if visible.",
-    )
-    statement_type: Optional[str] = Field(
-        default=None,
-        description="Source-facing role/type label for the referenced item, if visible.",
-    )
-
-    @field_validator("rationale", "statement_code", "statement_type", mode="before")
-    @classmethod
-    def strip_optional_strings(cls, v: Optional[str]) -> Optional[str]:
-        """Normalize optional string fields by stripping blanks to ``None``.
-
-        Parameters
-        ----------
-        v
-            Optional raw string value.
-
-        Returns
-        -------
-        Optional[str]
-            Stripped string, or `None` for blank values.
-        """
-
-        if v is None:
-            return None
-
-        v2 = v.strip()
-        return v2 if v2 else None
-
-    @field_validator("source_text", mode="before")
-    @classmethod
-    def strip_required_source_text(cls, v: str) -> str:
-        """Strip and require non-empty source text.
-
-        Parameters
-        ----------
-        v
-            Raw source text.
-
-        Returns
-        -------
-        str
-            Cleaned source text.
-
-        Raises
-        ------
-        ValueError
-            If source text is empty.
-        """
-
-        v2 = v.strip()
-
-        if not v2:
-            raise ValueError("source_text must be non-empty")
-
-        return v2
 
 
 class SFIExtractionResult(BaseSchema):
@@ -812,7 +705,6 @@ class SFIExtractionSummary(BaseSchema):
     windows_without_candidates: int = Field(default=0, ge=0)
 
 
-# CURRENTLY UNUSED #
 def _strip_and_require_non_empty_str(v: str) -> str:
     """Strip whitespace and require non-empty string for required fields.
 
@@ -848,6 +740,7 @@ def _strip_and_require_non_empty_str(v: str) -> str:
     return v2
 
 
+# CURRENTLY UNUSED #
 def _validate_iso8601_str(v: Optional[str]) -> Optional[str]:
     """Validate ISO-8601 parseability for timestamps if provided.
 
