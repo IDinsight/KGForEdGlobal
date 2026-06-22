@@ -25,72 +25,16 @@ def _build_compact_block_payload(
         A compact block payload for block windows, or `None` for table windows.
     """
 
-    if extraction_window.block is None:
-        return None
-
-    return {
-        "block_type": extraction_window.block.get("block_type"),
-        "language": extraction_window.primary_language,
-        "local_code": extraction_window.block.get("local_code"),
-        "source_text": extraction_window.source_text,
-    }
-
-
-def _build_compact_extraction_window_payload(
-    extraction_window: ExtractionWindow,
-) -> dict[str, Any]:
-    """Build the compact prompt payload sent to the SFI extraction LLM.
-
-    The persisted `ExtractionWindow` remains the complete source-faithful artifact.
-    This prompt payload keeps only the fields the model needs to decide which candidate
-    SFIs and auxiliary records are visible in one window.
-
-    Parameters
-    ----------
-    extraction_window
-        Source-faithful extraction window to compact for the prompt.
-
-    Returns
-    -------
-    dict[str, Any]
-        Compact JSON-serializable source payload for the extraction prompt.
-    """
-
-    payload: dict[str, Any] = {
-        "code_matches": [
-            code_match.model_dump(mode="json")
-            for code_match in extraction_window.code_matches
-        ],
-        "code_parent_hints": [
-            code_parent_hint.model_dump(mode="json")
-            for code_parent_hint in extraction_window.code_parent_hints
-        ],
-        "primary_language": extraction_window.primary_language,
-        "segment_kind": extraction_window.segment_kind,
-        # Omit geometry-heavy fields by mapping only required keys.
-        "source_provenance": [
-            {
-                "boundary": record.get("boundary"),
-                "item_addr": record.get("item_addr"),
-                "item_index": record.get("item_index"),
-                "local_code": record.get("local_code"),
-                "page_index": record.get("page_index"),
-                "repeats_header": record.get("repeats_header"),
-            }
-            for record in extraction_window.source_provenance
-        ],
-        "window_id": extraction_window.window_id,
-        "window_index": extraction_window.window_index,
-        "window_source_segment_ids": extraction_window.source_segment_ids,
-    }
-
-    if block_payload := _build_compact_block_payload(extraction_window):
-        payload["block"] = block_payload
-
-    if table_payload := _build_compact_table_payload(extraction_window):
-        payload["table"] = table_payload
-
-    return payload
+    return (
+        None
+        if extraction_window.block is None
+        else {
+            "block_type": extraction_window.block.get("block_type"),
+            "language": extraction_window.primary_language,
+            "local_code": extraction_window.block.get("local_code"),
+            "source_text": extraction_window.source_text,
+        }
+    )
 
 
 def _build_compact_document_profile_context(
@@ -125,6 +69,62 @@ def _build_compact_document_profile_context(
     return profile_context
 
 
+def _build_compact_extraction_window_payload(
+    extraction_window: ExtractionWindow,
+) -> dict[str, Any]:
+    """Build the compact prompt payload sent to the SFI extraction LLM.
+
+    The persisted `ExtractionWindow` remains the complete source-faithful artifact.
+    This prompt payload keeps only the fields the model needs to decide which candidate
+    SFIs and auxiliary records are visible in one window.
+
+    Parameters
+    ----------
+    extraction_window
+        Source-faithful extraction window to compact for the prompt.
+
+    Returns
+    -------
+    dict[str, Any]
+        Compact JSON-serializable source payload for the extraction prompt.
+    """
+
+    payload: dict[str, Any] = {
+        "code_matches": [
+            code_match.model_dump(mode="json")
+            for code_match in extraction_window.code_matches
+        ],
+        "code_parent_hints": [
+            code_parent_hint.model_dump(mode="json")
+            for code_parent_hint in extraction_window.code_parent_hints
+        ],
+        "primary_language": extraction_window.primary_language,
+        "segment_kind": extraction_window.segment_kind,
+        "source_provenance": [
+            {
+                "boundary": record.get("boundary"),
+                "item_addr": record.get("item_addr"),
+                "item_index": record.get("item_index"),
+                "local_code": record.get("local_code"),
+                "page_index": record.get("page_index"),
+                "repeats_header": record.get("repeats_header"),
+            }
+            for record in extraction_window.source_provenance
+        ],
+        "window_id": extraction_window.window_id,
+        "window_index": extraction_window.window_index,
+        "window_source_segment_ids": extraction_window.source_segment_ids,
+    }
+
+    if block_payload := _build_compact_block_payload(extraction_window):
+        payload["block"] = block_payload
+
+    if table_payload := _build_compact_table_payload(extraction_window):
+        payload["table"] = table_payload
+
+    return payload
+
+
 def _build_compact_row_payload(
     *, header_labels: list[str], row: dict[str, Any], row_index: int
 ) -> dict[str, Any]:
@@ -145,17 +145,15 @@ def _build_compact_row_payload(
         Compact row payload with text-bearing cells only.
     """
 
-    cells = []
+    cells: list[dict[str, Any]] = []
 
     for column_index, cell in enumerate(row.get("cells") or []):
         text_unit = cell.get("text") or {}
         text = str(text_unit.get("text") or "").strip()
 
-        # Skip cells that don't contain any text.
         if not text:
             continue
 
-        # Build the base payload for the text-bearing cell.
         payload: dict[str, Any] = {
             "column_index": column_index,
             "header": (
@@ -167,7 +165,6 @@ def _build_compact_row_payload(
             "text": text,
         }
 
-        # Optionally add boolean flags if they are present and truthy.
         if cell.get("rowspan_placeholder"):
             payload["rowspan_placeholder"] = True
 
@@ -208,6 +205,10 @@ def _build_compact_table_payload(
     else:
         row_view_name, row_view = "rows", table.rows
 
+    header_labels = (
+        table.header_rows_canonical[-1] if table.header_rows_canonical else []
+    )
+
     return {
         "columns_signature": table.columns_signature,
         "header_rows_canonical": table.header_rows_canonical,
@@ -215,13 +216,7 @@ def _build_compact_table_payload(
         "row_view": row_view_name,
         "rows": [
             _build_compact_row_payload(
-                header_labels=(
-                    table.header_rows_canonical[-1]
-                    if table.header_rows_canonical
-                    else []
-                ),
-                row=row,
-                row_index=row_index,
+                header_labels=header_labels, row=row, row_index=row_index
             )
             for row_index, row in zip(table.row_indexes, row_view)
         ],
@@ -251,31 +246,47 @@ def extract_sfi_candidates_from_window(
     user_payload = _build_compact_extraction_window_payload(extraction_window)
 
     system_message = dedent(
-        f"""You are an Academic Standards extraction agent. Inspect exactly one compact source window and return structured SFI candidate records.
+        f"""You are an Academic Standards extraction agent for a Learning Commons-shaped Knowledge Graph. Inspect exactly one compact source window and return candidate StandardsFrameworkItem records.
+
+## Learning Commons ontology target
+- A StandardsFrameworkItem (SFI) is an individual statement or structural element inside an academic standards framework.
+- Extract an SFI when the source text is an official standards-framework item: either a learning expectation or an organizational grouping.
+- Learning expectations are normative statements that define what learners should know, understand, demonstrate, or be able to do. Examples include standards, competencies, objectives, outcomes, content standards, performance expectations, benchmarks, and indicators.
+- Organizational groupings are source-visible structural items that organize learning expectations. Examples include grades/stages, domains, strands, substrands, clusters, topics, units, themes, paliers, and similar headings when they structure the official standards hierarchy.
+- Do not extract LearningComponents in this step. A LearningComponent is a granular teachable skill or concept that breaks down a broader SFI for instruction, activities, assessment items, or lesson planning. LearningComponents are created later and may support SFIs.
+- Do not extract final relationships. Final hasChild, supports, buildsTowards, relatesTo, hasEducationalAlignment, and other edges are resolved in later stages.
 
 ## Scope
-- Extract candidate StandardsFrameworkItems only from the provided compact source window.
-- Return zero SFI candidates when the window contains front matter, examples only, teacher guidance only, activities only, resources only, or unrelated content.
-- Do not create final IDs, final hasChild edges, LearningComponents, LearningProgressions, buildsTowards, relatesTo, or supports relationships.
+- Extract candidate SFIs only from the provided compact source window.
+- Return zero SFI candidates when the window contains front matter, examples only, teacher guidance only, activities only, resources only, assessment suggestions only, or unrelated content.
 - Parent/context references are optional source-grounded hints only. They are not final graph edges.
 - Do not invent missing hierarchy. If parent/context text is not visible in the compact source window, omit it or add an extraction note.
+- Use the curriculum-specific extraction profile below to adapt the generic ontology rules to this document.
 
 ## Curriculum-specific extraction profile
 {json_dumps(profile_context)}
 
-## Candidate type policy
-- Use normalized_statement_type="Standard Grouping" for grouping/organizing curriculum items that should become SFI grouping nodes.
-- Use normalized_statement_type="Standard" for normative expectations learners should know, understand, or demonstrate.
-- Use normalized_statement_type="Other" only when profile policy says the item may be retained as an SFI but it is neither a grouping nor a normative expectation.
-- Treat examples, exemplars, competencies, activities, assessment suggestions, resources, pedagogical notes, duration, and teacher guidance as auxiliary unless the profile explicitly says otherwise.
-- Return auxiliary candidates only when useful for explaining why visible source text is not an SFI; do not exhaustively list every example, activity, or competency.
+## Candidate classification policy
+- Use normalized_statement_type="Standard Grouping" for source-visible organizational groupings that should become SFI grouping nodes.
+- Use normalized_statement_type="Standard" for source-visible learning expectations that should become SFI standard nodes.
+- Use normalized_statement_type="Other" rarely, only when the profile explicitly says a visible framework item should be retained as an SFI but it is neither a grouping nor a learning expectation.
+- Do not classify examples, exemplars, competencies lists that describe cross-cutting skills, activities, assessment suggestions, resources, pedagogical notes, durations, teacher guidance, or learning-material content as SFIs unless the profile explicitly says they are standards-framework items.
+- Return auxiliary candidates only when useful for explaining why visible source text is not an SFI; do not exhaustively list every example, activity, competency, or guidance note.
+
+## Candidate field policy
+- candidate_id must be unique within this window, such as sfi_1, sfi_2, etc.
+- description should preserve the source-language wording of the SFI. For learning expectations, use the official statement text. For groupings, use the grouping label or heading text.
+- statement_type should be the source-facing role when visible, such as Grade, Stage, Strand, Domain, Cluster, Content Standard, Indicator, Competency, Objective, or Outcome. If no source-facing role is visible, use a concise best-effort role consistent with the source window and profile.
+- statement_code should be the official/source-visible code when present. Use null when no code is visible.
+- language should use the source language tag when visible; otherwise use the profile primary language.
+- confidence should reflect how clearly the source window supports the candidate.
 
 ## Source fidelity rules
 - Preserve source-language text. Do not translate.
-- statement_code is optional. Use null when no official/source-visible code is present.
 - For every candidate and auxiliary record, source_text must be a verbatim quote or faithful source-visible excerpt from block.source_text or table row cell text.
 - For table-derived candidates, table_row_indexes must use the visible table.rows[].row_index values.
-- Use code_matches, code_parent_hints, table headers, and selected table row text as evidence, not as final KG nodes.
+- Use code_matches, code_parent_hints, table headers, row_view, and selected table row text as evidence, not as final KG nodes.
+- Prefer source-visible row text over synthetic/filldown helper text for source_text when both are available. Helper text may be used as context when it is visible in the compact source window.
 
 ## Output contract
 Return one SFIExtractionResult object as structured JSON only. Copy window_id, window_index, and window_source_segment_ids exactly from the compact source window.
