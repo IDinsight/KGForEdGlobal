@@ -563,6 +563,7 @@ candidate role: expectation | descriptor | guidance | grouping | auxiliary
 parent candidates: candidate direct parent references using temporary candidate IDs, source codes, source labels, source roles, or unresolved placeholders
 ancestor context candidates: broader grade/course/strand/domain/topic/palier/week context references that should not automatically become direct parents
 observed_context_path: source-visible path strings/items when visible or supported by source_context_hints
+source_context_group_key: deterministic batching key derived from observed_context_path; prefer deriving this in Python by normalizing/lowercasing context path strings rather than asking the LLM to invent it
 parent evidence: required for every non-empty parent/context candidate
 source provenance: required
 synthetic_context_key/no-code merge fields: required when statement_code is missing
@@ -769,6 +770,10 @@ For no-code curricula, rely on LLM-emitted candidate parents and observed contex
 Framework -> subject/domain/activity section -> stage/level/palier/week -> expectation
 ```
 
+For LLM-assisted hierarchy resolution, batching should remain generic and mechanical. Python may derive a `source_context_group_key` from each finalized SFI's merged `observed_context_path` by lowercasing, normalizing whitespace/punctuation, and joining path components. This key is only a batching/retrieval aid; it is not semantic hierarchy inference and does not decide parentage.
+
+Use `source_context_group_key` to group unresolved SFIs with nearby/plausible candidate parents before calling the hierarchy-resolution LLM. Each batch should contain children to place, candidate parents from the same or adjacent context groups, direct parent references already emitted during SFI extraction, and the StandardsFramework root fallback. The LLM should choose from provided candidates or mark unresolved; it should not invent new parent nodes.
+
 Rules:
 
 ```text
@@ -911,6 +916,7 @@ Recommended next intermediate schemas:
 ```text
 SourceContextHint
 ObservedContextPath
+SourceContextGroupKey
 SFIExtractionResult
 SFICandidate
 SFICandidateParentReference
@@ -921,6 +927,8 @@ HasChildEdgeCandidate / FinalHasChildEdge
 AcademicStandardsKGArtifacts
 AcademicStandardsValidationReport
 ```
+
+`SourceContextGroupKey` is a Python-derived helper rather than an LLM output schema. It should be computed deterministically from `ObservedContextPath` when possible, used only for batching/retrieval, and never treated as an asserted curriculum hierarchy edge.
 
 All LLM outputs should validate against schemas. Do not pass unvalidated ad hoc dictionaries between implemented stages.
 
