@@ -327,9 +327,13 @@ def _build_compact_table_payload(
             "Quote source_text only from block.source_text, table.header_rows cell "
             "text, or table.source_rows cell text. Use header_rows_canonical to "
             "understand table structure, but prefer table.header_rows for verbatim "
-            "header source_text. Use filldown_context_rows only to understand "
-            "repeated row-span context; do not quote helper_context_only cells as "
-            "source_text."
+            "header source_text. If an official table statement is split across "
+            "adjacent source rows or cells, use all visible contributing fragments "
+            "to build the candidate description and include all contributing "
+            "table_row_indexes. Use source_text as a source-visible evidence quote, "
+            "not as the only downstream provenance or final KG statement text. Use "
+            "filldown_context_rows only to understand repeated row-span context; do "
+            "not quote helper_context_only cells as source_text."
         ),
     }
 
@@ -449,11 +453,15 @@ def extract_sfi_candidates_from_window(
 - confidence should reflect how clearly the source window supports the candidate.
 - table_header_indexes should be populated only for candidates whose evidence comes from table.header_rows.
 - table_row_indexes should be populated only for candidates whose evidence comes from table.source_rows.
-- Keep source_text as short as possible while still source-visible and sufficient: for coded table statements, quote only the official code and statement text, not examples, exemplars, teacher guidance, or competencies.
+- description should contain the complete source-visible SFI statement or grouping label, including visible continuation fragments when an official statement is split across adjacent table rows or cells.
+- source_text is a source-visible evidence quote for validation. It is not the final canonical KG statement text and it is not the only downstream provenance.
+- Keep source_text concise but sufficient. For coded table statements, quote only official code and statement text, not examples, exemplars, teacher guidance, activities, or competencies. When a statement is split across multiple visible rows/cells, quote the complete visible statement only if the contributing fragments can be represented as a source-visible excerpt; otherwise quote the strongest exact visible fragment and rely on table_row_indexes/table_header_indexes for downstream source recovery.
 
 ## Source fidelity rules
 - Preserve source-language text. Do not translate.
 - For every candidate and auxiliary record, source_text must be a verbatim source-visible excerpt from block.source_text, table.header_rows cell text, or table.source_rows cell text.
+- If a table statement visibly continues across adjacent source rows or cells, include every contributing table_row_index and assemble the complete official statement in description from those visible fragments. Do not truncate description at the first row/cell.
+- The final KG-building stages recover full source provenance from window_id, window_source_segment_ids, table_row_indexes, table_header_indexes, and the persisted ExtractionWindow/DocumentIR. Do not use source_text to carry hidden context, parentage, or non-visible text.
 - Use code_matches as evidence, not as final KG nodes.
 - Table headers are source-visible structural evidence. When the curriculum-specific KG config says a table-header label is an official grouping SFI, extract it as a Standard Grouping candidate.
 - For table-row-derived SFI candidates, table_row_indexes must be non-empty and must use the visible table.source_rows[].row_index values that support the candidate.
