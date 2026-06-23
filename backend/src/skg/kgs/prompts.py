@@ -406,6 +406,7 @@ Return exactly one SFIExtractionResult object as structured JSON only. Follow th
 Copy window_id, window_index, and window_source_segment_ids exactly from the compact source window.
 Keep extraction_notes short; use them only for window-level extraction issues, not to summarize examples, competencies, or activities.
 Return auxiliary candidates only when they clarify why prominent source-visible text was not extracted as an SFI; do not list ordinary examples, activities, competencies, or guidance notes.
+Do not emit auxiliary candidates for routine front matter, ordinary examples, or repeated core-competency lists unless they are unusually ambiguous or likely to be mistaken for an SFI.
         """
     )
 
