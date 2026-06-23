@@ -59,12 +59,16 @@
 			{
 				"child": "specific_competence_code",
 				"parent": "subtopic_code",
-				"method": "drop_last_dot_component"
+				"method": "regex_substitution",
+				"regex": "^(\\d+(?:\\.\\d+)+)\\.\\d+$",
+				"replacement": "\\1"
 			},
 			{
 				"child": "subtopic_code",
 				"parent": "topic_code",
-				"method": "drop_last_dot_component"
+				"method": "regex_substitution",
+				"regex": "^(\\d+(?:\\.\\d+)+)\\.\\d+$",
+				"replacement": "\\1"
 			}
 		],
 		"as_code_patterns": {
@@ -76,13 +80,7 @@
 		"as_excluded_table_columns_signatures": [
 			"s/n|competence|descriptors"
 		],
-		"as_excluded_table_section_patterns": [
-			"(?i)KEY\\s+COMPETENCES\\s+TO\\s+BE\\s+DEVELOPED",
-			"(?i)\\bINTRODUCTION\\b",
-			"(?i)Suggested\\s+Teaching\\s+Methodology",
-			"(?i)\\bAssessment\\b",
-			"(?i)Time\\s+Allocation"
-		],
+		"as_excluded_table_section_patterns": [],
 		"as_included_table_columns_signatures": [
 			"listening and speaking|||||||topic|sub-topic|specific competences|learning activities|expected standard",
 			"reading|||||||topic|sub-topic|specific competences|learning activities|expected standard",
@@ -99,7 +97,7 @@
 		"as_max_rows_per_table_window": 15,
 		"as_repeated_statement_policy": "For coded Zambia syllabus items, merge candidates with the same stable statement_code and same source statement type. Merge repeated candidates caused by row-span or fill-down table layout when they refer to the same code. Do not merge distinct specific competences that have different four-part codes, even when their text is similar across grades or components.",
 		"as_row_overlap": 2,
-		"as_sfi_extraction_instructions": "Extract Zambia Literacy and Language StandardsFrameworkItem candidates from the English Language lower-primary syllabus tables. Use the grade heading as grade context: Grade 1, Grade 2, or Grade 3. Treat Listening and Speaking, Reading, and Writing as component/strand grouping SFIs. In syllabus tables with columns Topic, Sub-topic, Specific Competences, Learning Activities, and Expected Standard, extract Topic and Sub-topic as Standard Grouping SFIs using their stable codes. Extract Specific Competences as the main leaf Standard SFIs and preserve the four-part statement_code. Treat Expected Standard as a descriptor or benchmark attached to the corresponding Specific Competence, not as a standalone Standard unless it is the only clear normative expectation in the row. Treat Learning Activities as guidance only, not SFIs for v0. Ignore front-matter tables such as Key Competences to be Developed for SFI extraction. Use rows_filldown for interpreting row-span context, but preserve raw row/cell text and provenance. Always retain page indices, table segment id, row order, source column, statement code, grade, component, topic, and sub-topic context.",
+	  "as_sfi_extraction_instructions": "Extract Zambia Literacy and Language StandardsFrameworkItem candidates from the English Language lower-primary syllabus tables. For this syllabus, the first numeric component of a code indicates the grade: 1.* = Grade 1, 2.* = Grade 2, and 3.* = Grade 3. Use the grade heading as grade context: Grade 1, Grade 2, or Grade 3. Treat Listening and Speaking, Reading, and Writing as component/strand grouping SFIs. In syllabus tables with columns Topic, Sub-topic, Specific Competences, Learning Activities, and Expected Standard, extract Topic and Sub-topic as Standard Grouping SFIs using their stable codes. Extract Specific Competences as the main leaf Standard SFIs and preserve the four-part statement_code. Treat Expected Standard as a descriptor or benchmark attached to the corresponding Specific Competence, not as a standalone Standard unless it is the only clear normative expectation in the row. Treat Learning Activities as guidance only, not SFIs for v0. Do not extract Introduction, Structure of the Syllabus, Suggested Teaching Methodology, Time Allocation, Assessment, or Key Competences to be Developed as SFI candidates; treat them as front matter or auxiliary context only. Use rows_filldown for interpreting row-span context, but preserve raw row/cell text and provenance. Always retain page indices, table segment id, row order, source column, statement code, grade, component, topic, and sub-topic context.",
 		"as_synthetic_merge_key_fields": [
 			"country",
 			"subject",
