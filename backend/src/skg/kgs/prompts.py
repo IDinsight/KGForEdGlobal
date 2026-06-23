@@ -149,6 +149,51 @@ def _build_compact_filldown_context_row_payload(
     return {"cells": cells, "row_index": row_index}
 
 
+def _build_compact_header_row_payload(
+    *, header_row: dict[str, Any], header_row_index: int
+) -> dict[str, Any]:
+    """Build a compact prompt-facing table header row payload.
+
+    Parameters
+    ----------
+    header_row
+        Raw source table header row payload.
+    header_row_index
+        Source table header row index within the table header block.
+
+    Returns
+    -------
+    dict[str, Any]
+        Compact header row payload with text-bearing cells only.
+    """
+
+    cells: list[dict[str, Any]] = []
+
+    for column_index, cell in enumerate(header_row.get("cells") or []):
+        text_unit = cell.get("text") or {}
+        text = str(text_unit.get("text") or "").strip()
+
+        if not text:
+            continue
+
+        payload: dict[str, Any] = {
+            "column_index": column_index,
+            "language": text_unit.get("language"),
+            "source_visibility": "source_visible_header",
+            "text": text,
+        }
+
+        if cell.get("col_span") is not None:
+            payload["col_span"] = cell.get("col_span")
+
+        if cell.get("row_span") is not None:
+            payload["row_span"] = cell.get("row_span")
+
+        cells.append(payload)
+
+    return {"cells": cells, "header_row_index": header_row_index}
+
+
 def _build_compact_kg_config_context(kg_config: CreateKGConfig) -> dict[str, Any]:
     """Build the compact KG config context for the extraction prompt.
 
@@ -261,6 +306,12 @@ def _build_compact_table_payload(
         table.header_rows_canonical[-1] if table.header_rows_canonical else []
     )
     payload: dict[str, Any] = {
+        "header_rows": [
+            _build_compact_header_row_payload(
+                header_row=header_row, header_row_index=header_row_index
+            )
+            for header_row_index, header_row in enumerate(table.header_rows)
+        ],
         "header_rows_canonical": table.header_rows_canonical,
         "local_code": table.local_code,
         "source_rows": [
@@ -268,14 +319,17 @@ def _build_compact_table_payload(
                 header_labels=header_labels,
                 row=row,
                 row_index=row_index,
-                source_visibility="source_visible",
+                source_visibility="source_visible_row",
             )
             for row_index, row in zip(table.row_indexes, table.rows)
         ],
         "table_source_policy": (
-            "Quote source_text only from header_rows_canonical or source_rows cells. "
-            "Use filldown_context_rows only to understand repeated row-span context; "
-            "do not quote helper_context_only cells as source_text."
+            "Quote source_text only from block.source_text, table.header_rows cell "
+            "text, or table.source_rows cell text. Use header_rows_canonical to "
+            "understand table structure, but prefer table.header_rows for verbatim "
+            "header source_text. Use filldown_context_rows only to understand "
+            "repeated row-span context; do not quote helper_context_only cells as "
+            "source_text."
         ),
     }
 
@@ -375,6 +429,7 @@ def extract_sfi_candidates_from_window(
 - Do not infer hierarchy or relationships in this step. Extract only SFI candidates directly visible in this compact source window; final hasChild relationships are resolved later from finalized SFIs and source provenance.
 - Extract grouping SFIs only when the grouping label itself is visible in this window. Do not add absent grade, strand, sub-strand, or parent context.
 - Use the curriculum-specific extraction KG config below to adapt the generic ontology rules to this document.
+- If the generic instructions and the curriculum-specific runtime config conflict, follow the curriculum-specific runtime config. The runtime config is authoritative for document-specific extraction policy.
 
 ## Curriculum-specific KG extraction config
 {json_dumps(kg_config_context)}
@@ -392,14 +447,19 @@ def extract_sfi_candidates_from_window(
 - statement_code should be the official/source-visible code when present. Use null when no code is visible.
 - language should use the source language tag when visible; otherwise use the KG config primary language.
 - confidence should reflect how clearly the source window supports the candidate.
+- table_header_indexes should be populated only for candidates whose evidence comes from table.header_rows.
+- table_row_indexes should be populated only for candidates whose evidence comes from table.source_rows.
 - Keep source_text as short as possible while still source-visible and sufficient: for coded table statements, quote only the official code and statement text, not examples, exemplars, teacher guidance, or competencies.
 
 ## Source fidelity rules
 - Preserve source-language text. Do not translate.
-- For every candidate and auxiliary record, source_text must be a verbatim source-visible excerpt from block.source_text, table.header_rows_canonical, or table.source_rows cell text.
-- For table-derived SFI candidates, table_row_indexes must be non-empty and must use the visible table.source_rows[].row_index values that support the candidate.
-- Use code_matches, table headers, and table.source_rows text as evidence, not as final KG nodes.
-- Treat table.filldown_context_rows as helper context only. These cells repeat row-span context for interpretation, but they are not source-visible evidence. Do not quote helper_context_only cells as candidate source_text or auxiliary source_text unless the same text is also visible in block.source_text, table.header_rows_canonical, or table.source_rows.
+- For every candidate and auxiliary record, source_text must be a verbatim source-visible excerpt from block.source_text, table.header_rows cell text, or table.source_rows cell text.
+- Use code_matches as evidence, not as final KG nodes.
+- Table headers are source-visible structural evidence. When the curriculum-specific KG config says a table-header label is an official grouping SFI, extract it as a Standard Grouping candidate.
+- For table-row-derived SFI candidates, table_row_indexes must be non-empty and must use the visible table.source_rows[].row_index values that support the candidate.
+- For table-header-derived SFI candidates, table_header_indexes must be non-empty and must use the visible table.header_rows[].header_row_index values that support the candidate; table_row_indexes may be empty for these candidates.
+- If a table candidate is supported by both a header and body rows, include both table_header_indexes and table_row_indexes.
+- Treat table.filldown_context_rows as helper context only. These cells repeat row-span context for interpretation, but they are not source-visible evidence. Do not quote helper_context_only cells as candidate source_text or auxiliary source_text unless the same text is also visible in block.source_text, table.header_rows, or table.source_rows.
 
 ## Output contract
 Return exactly one SFIExtractionResult object as structured JSON only. Follow the schema exactly and do not include extra fields.

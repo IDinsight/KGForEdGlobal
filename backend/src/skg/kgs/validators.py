@@ -26,14 +26,22 @@ class SFIExtractionQualityCtx:
         Parsed SFI extraction result produced for the window.
     source_visible_text_normalized
         Normalized text built only from source-visible extraction-window text, raw
-        table headers, and raw table rows. Deterministic hints, KG config text, and
-        helper-only filldown context are intentionally excluded.
+        table headers, and raw table body rows. Deterministic hints, KG config text,
+        constructed table source_text, and helper-only filldown context are
+        intentionally excluded.
+    table_header_text_normalized
+        Normalized raw table-header text for the source window. Empty for block windows.
+    table_row_text_normalized
+        Normalized raw table-body-row text for the source window. Empty for block
+        windows.
     window
         Source extraction window passed to the LLM.
     """
 
     extraction_result: SFIExtractionResult
     source_visible_text_normalized: str
+    table_header_text_normalized: str
+    table_row_text_normalized: str
     window: ExtractionWindow
 
 
@@ -56,13 +64,41 @@ def _append_row_cell_texts(*, row: dict[str, Any], texts: list[str]) -> None:
             texts.append(text)
 
 
-def _build_source_visible_text_blob(window: ExtractionWindow) -> str:
-    """Build a source-visible text blob for extraction quality checks.
+def _build_source_visible_text_blob(
+    *, table_header_text_blob: str, table_row_text_blob: str, window: ExtractionWindow
+) -> str:
+    """Build the full source-visible text blob for extraction quality checks.
 
-    The blob intentionally excludes deterministic hints, KG config instructions,
-    code-parent hints, and filldown/helper views. It should contain only text that can
-    be quoted as source evidence: ``window.source_text``, raw block text, canonical
-    table headers, raw table header rows, and raw selected table rows.
+    Parameters
+    ----------
+    table_header_text_blob
+        Newline-joined source-visible raw table header text.
+    table_row_text_blob
+        Newline-joined source-visible raw table body-row text.
+    window
+        Source extraction window to inspect.
+
+    Returns
+    -------
+    str
+        Newline-joined source-visible text snippets for the window.
+    """
+
+    if window.table is None:
+        parts = [window.source_text.strip()]
+
+        if window.block:
+            parts.append(str(window.block.get("combined_text") or "").strip())
+
+        return "\n".join(p for p in parts if p)
+
+    return "\n".join(
+        text for text in (table_header_text_blob, table_row_text_blob) if text.strip()
+    )
+
+
+def _build_table_header_visible_text_blob(window: ExtractionWindow) -> str:
+    """Build source-visible text from raw table header rows.
 
     Parameters
     ----------
@@ -72,33 +108,41 @@ def _build_source_visible_text_blob(window: ExtractionWindow) -> str:
     Returns
     -------
     str
-        Newline-joined source-visible text snippets.
+        Newline-joined source-visible raw table header text snippets.
     """
+
+    if window.table is None:
+        return ""
 
     texts: list[str] = []
 
-    if window.source_text.strip():
-        texts.append(window.source_text.strip())
+    for row in window.table.header_rows:
+        _append_row_cell_texts(row=row, texts=texts)
 
-    if window.block is not None:
-        block_source_text = str(window.block.get("combined_text") or "").strip()
+    return "\n".join(texts)
 
-        if block_source_text:
-            texts.append(block_source_text)
 
-    if window.table is not None:
-        for header_row in window.table.header_rows_canonical:
-            for header_label in header_row:
-                header_label_clean = str(header_label or "").strip()
+def _build_table_row_visible_text_blob(window: ExtractionWindow) -> str:
+    """Build source-visible text from raw selected table body rows.
 
-                if header_label_clean:
-                    texts.append(header_label_clean)
+    Parameters
+    ----------
+    window
+        Source extraction window to inspect.
 
-        for row in window.table.header_rows:
-            _append_row_cell_texts(row=row, texts=texts)
+    Returns
+    -------
+    str
+        Newline-joined source-visible raw table body-row text snippets.
+    """
 
-        for row in window.table.rows:
-            _append_row_cell_texts(row=row, texts=texts)
+    if window.table is None:
+        return ""
+
+    texts: list[str] = []
+
+    for row in window.table.rows:
+        _append_row_cell_texts(row=row, texts=texts)
 
     return "\n".join(texts)
 
@@ -184,8 +228,8 @@ def _validate_candidate_source_text_is_visible(
     )
 
 
-def _validate_candidate_table_row_indexes(ctx: SFIExtractionQualityCtx) -> None:
-    """Validate table row indexes against the window table payload.
+def _validate_candidate_table_indexes(ctx: SFIExtractionQualityCtx) -> None:
+    """Validate table header/body indexes against the window table payload.
 
     Parameters
     ----------
@@ -195,43 +239,59 @@ def _validate_candidate_table_row_indexes(ctx: SFIExtractionQualityCtx) -> None:
     Raises
     ------
     QualityError
-        If a candidate uses row indexes outside the table window, omits row indexes for
-        a table-derived candidate, or uses row indexes in a block window.
+        If a candidate uses indexes outside the table window, omits all table indexes
+        for a table-derived candidate, or uses table indexes in a block window.
     """
 
     if ctx.window.table is None:
         invalid_block_candidates = [
             candidate.candidate_id
             for candidate in ctx.extraction_result.sfi_candidates
-            if candidate.table_row_indexes
+            if candidate.table_header_indexes or candidate.table_row_indexes
         ]
 
         if invalid_block_candidates:
             raise QualityError(
-                f"Block-window candidates must not include table_row_indexes: "
-                f"{invalid_block_candidates}"
+                f"Block-window candidates must not include table_header_indexes or "
+                f"table_row_indexes: {invalid_block_candidates}"
             )
 
         return
 
+    allowed_header_indexes = set(range(len(ctx.window.table.header_rows)))
     allowed_row_indexes = set(ctx.window.table.row_indexes)
 
     for candidate in ctx.extraction_result.sfi_candidates:
-        if not candidate.table_row_indexes:
+        if not candidate.table_header_indexes and not candidate.table_row_indexes:
             raise QualityError(
                 f"Table-window candidate {candidate.candidate_id!r} must include at "
-                f"least one table_row_index from this window. Allowed row indexes are "
-                f"{sorted(allowed_row_indexes)}."
+                f"least one table_header_index or table_row_index from this window. "
+                f"Allowed header indexes are {sorted(allowed_header_indexes)}; "
+                f"allowed row indexes are {sorted(allowed_row_indexes)}."
             )
 
-        invalid = sorted(set(candidate.table_row_indexes) - allowed_row_indexes)
+        invalid_header_indexes = sorted(
+            set(candidate.table_header_indexes) - allowed_header_indexes
+        )
+        invalid_row_indexes = sorted(
+            set(candidate.table_row_indexes) - allowed_row_indexes
+        )
 
-        if invalid:
+        if invalid_header_indexes:
+            raise QualityError(
+                f"Candidate {candidate.candidate_id!r} references "
+                f"table_header_indexes outside this window: {invalid_header_indexes}. "
+                f"Allowed header indexes are {sorted(allowed_header_indexes)}."
+            )
+
+        if invalid_row_indexes:
             raise QualityError(
                 f"Candidate {candidate.candidate_id!r} references table_row_indexes "
-                f"outside this window: {invalid}. Allowed row indexes are "
+                f"outside this window: {invalid_row_indexes}. Allowed row indexes are "
                 f"{sorted(allowed_row_indexes)}."
             )
+
+        _validate_table_candidate_source_location(candidate=candidate, ctx=ctx)
 
 
 def _validate_source_text_is_visible(
@@ -265,8 +325,61 @@ def _validate_source_text_is_visible(
     raise QualityError(
         f"{entity_label} source_text is not visible in the source window after "
         f"whitespace normalization. Quote source-visible text from the extraction "
-        f"window instead of paraphrasing or using helper-only context."
+        f"window instead of paraphrasing, using constructed table source_text, or "
+        f"using helper-only context."
     )
+
+
+def _validate_table_candidate_source_location(
+    *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
+) -> None:
+    """Validate that table candidate indexes match the source-text location.
+
+    Parameters
+    ----------
+    candidate
+        Candidate to validate.
+    ctx
+        Quality-check context.
+
+    Raises
+    ------
+    QualityError
+        If a candidate cites header indexes for row-only text, cites row indexes for
+        header-only text, or omits the source location implied by its source_text.
+    """
+
+    source_text_normalized = _normalize_text(candidate.source_text)
+    visible_in_headers = source_text_normalized in ctx.table_header_text_normalized
+    visible_in_rows = source_text_normalized in ctx.table_row_text_normalized
+
+    if candidate.table_header_indexes and not visible_in_headers:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} includes table_header_indexes, "
+            f"but its source_text is not visible in raw table header text."
+        )
+
+    if candidate.table_row_indexes and not visible_in_rows:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} includes table_row_indexes, but "
+            f"its source_text is not visible in raw table body-row text."
+        )
+
+    if (
+        visible_in_headers
+        and not visible_in_rows
+        and not candidate.table_header_indexes
+    ):
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} source_text is table-header text, "
+            f"so table_header_indexes must be populated."
+        )
+
+    if visible_in_rows and not visible_in_headers and not candidate.table_row_indexes:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} source_text is table-row text, so "
+            f"table_row_indexes must be populated."
+        )
 
 
 def _validate_window_identity(ctx: SFIExtractionQualityCtx) -> None:
@@ -323,11 +436,19 @@ def verify_sfi_extraction_quality(
         If any quality check fails.
     """
 
+    table_header_text_blob = _build_table_header_visible_text_blob(window)
+    table_row_text_blob = _build_table_row_visible_text_blob(window)
     ctx = SFIExtractionQualityCtx(
         extraction_result=extraction_result,
         source_visible_text_normalized=_normalize_text(
-            _build_source_visible_text_blob(window)
+            _build_source_visible_text_blob(
+                table_header_text_blob=table_header_text_blob,
+                table_row_text_blob=table_row_text_blob,
+                window=window,
+            )
         ),
+        table_header_text_normalized=_normalize_text(table_header_text_blob),
+        table_row_text_normalized=_normalize_text(table_row_text_blob),
         window=window,
     )
 
@@ -337,7 +458,7 @@ def verify_sfi_extraction_quality(
         _validate_candidate_code_is_visible(candidate=candidate, ctx=ctx)
         _validate_candidate_source_text_is_visible(candidate=candidate, ctx=ctx)
 
-    _validate_candidate_table_row_indexes(ctx)
+    _validate_candidate_table_indexes(ctx)
 
     for auxiliary_candidate in ctx.extraction_result.auxiliary_candidates:
         _validate_source_text_is_visible(

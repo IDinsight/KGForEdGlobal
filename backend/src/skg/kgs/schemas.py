@@ -467,9 +467,19 @@ class SFICandidate(BaseSchema):
     statement_type: str = Field(
         description="Source-facing statement type, e.g. grade, strand, content_standard, indicator."
     )
+    table_header_indexes: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Source table header row indexes used by this candidate, if table-header "
+            "derived. Use this for grouping SFIs whose visible source text appears in "
+            "table headers rather than body rows."
+        ),
+    )
     table_row_indexes: list[int] = Field(
         default_factory=list,
-        description="Source table row indexes used by this candidate, if table-derived.",
+        description=(
+            "Source table body row indexes used by this candidate, if table-row derived."
+        ),
     )
 
     @field_validator(
@@ -524,31 +534,31 @@ class SFICandidate(BaseSchema):
         v2 = v.strip()
         return v2 if v2 else None
 
-    @field_validator("table_row_indexes")
+    @field_validator("table_header_indexes", "table_row_indexes")
     @classmethod
-    def validate_table_row_indexes(cls, v: list[int]) -> list[int]:
-        """Clean and validate source table row indexes.
+    def validate_table_indexes(cls, v: list[int]) -> list[int]:
+        """Clean and validate source table row/header indexes.
 
         Parameters
         ----------
         v
-            Raw row indexes.
+            Raw row or header indexes.
 
         Returns
         -------
         list[int]
-            Sorted unique non-negative row indexes.
+            Sorted unique non-negative indexes.
 
         Raises
         ------
         ValueError
-            If any row index is negative.
+            If any index is negative.
         """
 
         cleaned = sorted(set(int(index) for index in v or []))
 
         if any(index < 0 for index in cleaned):
-            raise ValueError("table_row_indexes must be non-negative")
+            raise ValueError("table indexes must be non-negative")
 
         return cleaned
 
