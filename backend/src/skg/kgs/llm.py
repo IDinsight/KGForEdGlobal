@@ -77,6 +77,7 @@ def extract_sfi_candidates(
     )
     agent = create_sfi_extraction_agent(
         instructions=prompts.system_message,
+        kg_config=kg_config,
         model_config=Settings.llm_config("kgs"),
         verify_quality_fn=verify_sfi_extraction_quality,
         window=extraction_window,

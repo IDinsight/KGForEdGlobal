@@ -181,6 +181,7 @@ def _persist_sfi_extraction_summary(
 def _validate_existing_sfi_extraction_results(
     *,
     extraction_windows: Sequence[ExtractionWindow],
+    kg_config: CreateKGConfig,
     results: Sequence[SFIExtractionResult],
 ) -> None:
     """Validate that existing SFI results are a quality-checked current prefix.
@@ -194,6 +195,8 @@ def _validate_existing_sfi_extraction_results(
     ----------
     extraction_windows
         Ordered source-faithful extraction windows for the current run.
+    kg_config
+        Country/document-specific KG extraction configuration.
     results
         Existing extraction results loaded from the JSONL artifact.
 
@@ -239,7 +242,7 @@ def _validate_existing_sfi_extraction_results(
 
         try:
             verify_sfi_extraction_quality(
-                extraction_result=result, window=extraction_window
+                extraction_result=result, kg_config=kg_config, window=extraction_window
             )
         except QualityError as e:
             raise ValueError(
@@ -308,7 +311,9 @@ def extract_sfi_candidates_from_windows(
     else:
         sfi_extraction_results = _load_existing_sfi_extraction_results(save_fp)
         _validate_existing_sfi_extraction_results(
-            extraction_windows=extraction_windows, results=sfi_extraction_results
+            extraction_windows=extraction_windows,
+            kg_config=kg_config,
+            results=sfi_extraction_results,
         )
 
         _persist_sfi_extraction_summary(

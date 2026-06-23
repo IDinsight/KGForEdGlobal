@@ -162,6 +162,130 @@ class BaseSchema(BaseModel):
 
 
 # Schemas for KG configuration fields.
+class _AcademicStandardStatementTypePolicyItem(BaseSchema):
+    """Canonical statement-type label allowed for SFI extraction.
+
+    The policy is runtime-configured so each curriculum can preserve its own
+    source-facing vocabulary while still forcing LLM outputs into a stable set of
+    canonical labels.
+    """
+
+    aliases: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Alternative source-facing or model-prone spellings that should map to "
+            "statement_type. Examples include lowercase, snake_case, or document-local "
+            "variants."
+        ),
+    )
+    code_type: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional KG config code-pattern key that usually supports this statement "
+            "type, such as 'indicator' or 'content_standard'."
+        ),
+    )
+    description: str = Field(
+        description="Brief curriculum-specific guidance for when to use this statement type."
+    )
+    normalized_statement_type: NormalizedStatementType = Field(
+        description="Global normalized SFI class expected for this statement type."
+    )
+    statement_type: str = Field(
+        description="Canonical source-facing statement_type label the LLM must output."
+    )
+
+    @field_validator("aliases")
+    @classmethod
+    def validate_aliases(cls, v: list[str]) -> list[str]:
+        """Clean and de-duplicate statement-type aliases.
+
+        Parameters
+        ----------
+        v
+            Raw alias strings.
+
+        Returns
+        -------
+        list[str]
+            Cleaned aliases in stable order.
+
+        Raises
+        ------
+        TypeError
+            If any alias is not a string.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for alias in v or []:
+            if not isinstance(alias, str):
+                raise TypeError(
+                    "_AcademicStandardStatementTypePolicyItem.aliases must contain strings."
+                )
+
+            alias_clean = alias.strip()
+
+            if not alias_clean or alias_clean in seen:
+                continue
+
+            cleaned.append(alias_clean)
+            seen.add(alias_clean)
+
+        return cleaned
+
+    @field_validator("code_type", mode="before")
+    @classmethod
+    def validate_code_type(cls, v: Optional[str]) -> Optional[str]:
+        """Clean an optional code-pattern key.
+
+        Parameters
+        ----------
+        v
+            Raw optional code-pattern key.
+
+        Returns
+        -------
+        Optional[str]
+            Cleaned key, or None when blank.
+
+        Raises
+        ------
+        TypeError
+            If the value is not a string or None.
+        """
+
+        if v is None:
+            return None
+
+        if not isinstance(v, str):
+            raise TypeError(
+                "_AcademicStandardStatementTypePolicyItem.code_type must be a string or None."
+            )
+
+        v_clean = v.strip()
+        return v_clean if v_clean else None
+
+    @field_validator("description", "statement_type", mode="before")
+    @classmethod
+    def validate_required_strings(cls, v: str) -> str:
+        """Strip and require non-empty statement-type policy strings.
+
+        Parameters
+        ----------
+        v
+            Raw string value.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty string.
+        """
+
+        return _strip_and_require_non_empty_str(v)
+
+
 class _ContextHeadingRule(BaseSchema):
     """Rule for deriving structured window context from heading text.
 
@@ -543,6 +667,14 @@ class CreateKGConfig(BaseSchema):
         ),
     )
     as_row_overlap: int = Field(default=1, ge=0)
+    as_statement_type_policy: list[_AcademicStandardStatementTypePolicyItem] = Field(
+        description=(
+            "Canonical curriculum-specific statement_type labels allowed in "
+            "SFIExtractionResult.sfi_candidates. The LLM must output only these "
+            "labels; aliases are used only for prompt guidance and validation errors."
+        ),
+        min_length=1,
+    )
 
     # Duplication behavior.
     as_duplicate_review_instructions: str
@@ -896,6 +1028,82 @@ class CreateKGConfig(BaseSchema):
 
         return cleaned
 
+    @staticmethod
+    def _statement_type_policy_key(value: str) -> str:
+        """Build a stable comparison key for statement-type labels and aliases.
+
+        Parameters
+        ----------
+        value
+            Statement-type label or alias.
+
+        Returns
+        -------
+        str
+            Casefolded key with non-alphanumeric runs collapsed to one space.
+        """
+
+        return re.sub(r"[^0-9a-z]+", " ", str(value or "").casefold()).strip()
+
+    @field_validator("as_statement_type_policy")
+    @classmethod
+    def validate_as_statement_type_policy(
+        cls, v: list[_AcademicStandardStatementTypePolicyItem]
+    ) -> list[_AcademicStandardStatementTypePolicyItem]:
+        """Validate canonical statement-type policy labels and aliases.
+
+        Parameters
+        ----------
+        v
+            Configured statement-type policy items.
+
+        Returns
+        -------
+        list[_AcademicStandardStatementTypePolicyItem]
+            Validated policy items in configured order.
+
+        Raises
+        ------
+        ValueError
+            If canonical labels or aliases conflict.
+        """
+
+        if not v:
+            raise ValueError("CreateKGConfig.as_statement_type_policy is required.")
+
+        alias_to_statement_type: dict[str, str] = {}
+        canonical_keys: set[str] = set()
+
+        for item in v:
+            canonical_key = cls._statement_type_policy_key(item.statement_type)
+
+            if canonical_key in canonical_keys:
+                raise ValueError(
+                    f"CreateKGConfig.as_statement_type_policy contains duplicate "
+                    f"statement_type labels after normalization: {item.statement_type!r}"
+                )
+
+            canonical_keys.add(canonical_key)
+
+            for alias in [item.statement_type, *item.aliases]:
+                alias_key = cls._statement_type_policy_key(alias)
+
+                if not alias_key:
+                    continue
+
+                existing = alias_to_statement_type.get(alias_key)
+
+                if existing is not None and existing != item.statement_type:
+                    raise ValueError(
+                        f"CreateKGConfig.as_statement_type_policy alias conflict: "
+                        f"{alias!r} maps to both {existing!r} and "
+                        f"{item.statement_type!r}."
+                    )
+
+                alias_to_statement_type[alias_key] = item.statement_type
+
+        return v
+
     def _validate_windowing(self) -> None:
         """Ensure table row windowing configuration is internally consistent.
 
@@ -981,6 +1189,28 @@ class CreateKGConfig(BaseSchema):
         for idx, rule in enumerate(self.as_code_parent_rules):
             self._validate_as_code_parent_rule(idx, rule, known)
 
+    def _validate_statement_type_policy_code_types(self, known: set[str]) -> None:
+        """Validate statement-type policy code_type references.
+
+        Parameters
+        ----------
+        known
+            Known KG config code-pattern keys.
+
+        Raises
+        ------
+        ValueError
+            If a statement-type policy item references an unknown code_type.
+        """
+
+        for item in self.as_statement_type_policy:
+            if item.code_type is not None and item.code_type not in known:
+                raise ValueError(
+                    f"CreateKGConfig.as_statement_type_policy references unknown "
+                    f"code_type {item.code_type!r} for statement_type "
+                    f"{item.statement_type!r}. Known code types: {sorted(known)}"
+                )
+
     def _validate_selection_overlap_policy(self) -> None:
         """Ensure table-selection policy does not both include and exclude the same
         value.
@@ -1021,6 +1251,7 @@ class CreateKGConfig(BaseSchema):
         self._validate_windowing()
         self._validate_as_code_parent_rules(known)
         self._validate_selection_overlap_policy()
+        self._validate_statement_type_policy_code_types(known)
         return self
 
 

@@ -14,6 +14,7 @@ from typing import Any
 # Package Library
 from skg.kgs.schemas import ExtractionWindow, SFICandidate, SFIExtractionResult
 from skg.page_ir_extraction.validators import QualityError
+from skg.schemas import CreateKGConfig
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,10 @@ class SFIExtractionQualityCtx:
         table headers, and raw table body rows. Deterministic hints, KG config text,
         constructed table source_text, and helper-only filldown context are
         intentionally excluded.
+    statement_type_alias_to_canonical
+        Mapping from normalized canonical labels and aliases to canonical labels.
+    statement_type_normalized_by_label
+        Mapping from canonical statement-type labels to configured normalized types.
     table_header_text_normalized
         Normalized raw table-header text for the source window. Empty for block windows.
     table_row_text_normalized
@@ -40,6 +45,8 @@ class SFIExtractionQualityCtx:
 
     extraction_result: SFIExtractionResult
     source_visible_text_normalized: str
+    statement_type_alias_to_canonical: dict[str, str]
+    statement_type_normalized_by_label: dict[str, str]
     table_header_text_normalized: str
     table_row_text_normalized: str
     window: ExtractionWindow
@@ -97,6 +104,32 @@ def _build_source_visible_text_blob(
     )
 
 
+def _build_statement_type_alias_map(kg_config: CreateKGConfig) -> dict[str, str]:
+    """Build canonical statement-type lookup from runtime config policy.
+
+    Parameters
+    ----------
+    kg_config
+        Runtime KG configuration containing statement-type policy items.
+
+    Returns
+    -------
+    dict[str, str]
+        Mapping from normalized canonical labels and aliases to canonical labels.
+    """
+
+    alias_to_canonical: dict[str, str] = {}
+
+    for item in kg_config.as_statement_type_policy:
+        for label in [item.statement_type, *item.aliases]:
+            key = _normalize_statement_type_key(label)
+
+            if key:
+                alias_to_canonical[key] = item.statement_type
+
+    return alias_to_canonical
+
+
 def _build_table_header_visible_text_blob(window: ExtractionWindow) -> str:
     """Build source-visible text from raw table header rows.
 
@@ -145,6 +178,23 @@ def _build_table_row_visible_text_blob(window: ExtractionWindow) -> str:
         _append_row_cell_texts(row=row, texts=texts)
 
     return "\n".join(texts)
+
+
+def _normalize_statement_type_key(value: str) -> str:
+    """Build a stable comparison key for statement-type labels and aliases.
+
+    Parameters
+    ----------
+    value
+        Statement-type label or alias.
+
+    Returns
+    -------
+    str
+        Casefolded key with non-alphanumeric runs collapsed to one space.
+    """
+
+    return re.sub(r"[^0-9a-z]+", " ", str(value or "").casefold()).strip()
 
 
 def _normalize_text(value: str) -> str:
@@ -226,6 +276,58 @@ def _validate_candidate_source_text_is_visible(
         entity_label=f"Candidate {candidate.candidate_id!r}",
         source_text=candidate.source_text,
     )
+
+
+def _validate_candidate_statement_type_policy(
+    *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
+) -> None:
+    """Validate candidate statement_type against runtime policy.
+
+    Parameters
+    ----------
+    candidate
+        Candidate to validate.
+    ctx
+        Quality-check context.
+
+    Raises
+    ------
+    QualityError
+        If the candidate uses an unknown alias, non-canonical label, or mismatched
+        normalized_statement_type.
+    """
+
+    statement_type_key = _normalize_statement_type_key(candidate.statement_type)
+    canonical_statement_type = ctx.statement_type_alias_to_canonical.get(
+        statement_type_key
+    )
+    allowed_statement_types = sorted(ctx.statement_type_normalized_by_label)
+
+    if canonical_statement_type is None:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} has unsupported statement_type "
+            f"{candidate.statement_type!r}. Use one of the configured canonical "
+            f"statement types: {allowed_statement_types}."
+        )
+
+    if candidate.statement_type != canonical_statement_type:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} uses statement_type "
+            f"{candidate.statement_type!r}, which is an alias or non-canonical "
+            f"label. Use canonical statement_type {canonical_statement_type!r}."
+        )
+
+    expected_normalized_statement_type = ctx.statement_type_normalized_by_label[
+        canonical_statement_type
+    ]
+
+    if candidate.normalized_statement_type != expected_normalized_statement_type:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} has statement_type "
+            f"{candidate.statement_type!r}, which must use "
+            f"normalized_statement_type {expected_normalized_statement_type!r}; "
+            f"got {candidate.normalized_statement_type!r}."
+        )
 
 
 def _validate_candidate_table_indexes(ctx: SFIExtractionQualityCtx) -> None:
@@ -419,7 +521,10 @@ def _validate_window_identity(ctx: SFIExtractionQualityCtx) -> None:
 
 
 def verify_sfi_extraction_quality(
-    *, extraction_result: SFIExtractionResult, window: ExtractionWindow
+    *,
+    extraction_result: SFIExtractionResult,
+    kg_config: CreateKGConfig,
+    window: ExtractionWindow,
 ) -> None:
     """Run SFI extraction quality checks on a structured LLM response.
 
@@ -427,6 +532,8 @@ def verify_sfi_extraction_quality(
     ----------
     extraction_result
         Parsed SFI extraction result.
+    kg_config
+        Runtime KG configuration containing statement-type policy.
     window
         Source extraction window passed to the LLM.
 
@@ -440,6 +547,11 @@ def verify_sfi_extraction_quality(
     table_row_text_blob = _build_table_row_visible_text_blob(window)
     ctx = SFIExtractionQualityCtx(
         extraction_result=extraction_result,
+        statement_type_alias_to_canonical=_build_statement_type_alias_map(kg_config),
+        statement_type_normalized_by_label={
+            item.statement_type: item.normalized_statement_type
+            for item in kg_config.as_statement_type_policy
+        },
         source_visible_text_normalized=_normalize_text(
             _build_source_visible_text_blob(
                 table_header_text_blob=table_header_text_blob,
@@ -455,6 +567,7 @@ def verify_sfi_extraction_quality(
     _validate_window_identity(ctx)
 
     for candidate in ctx.extraction_result.sfi_candidates:
+        _validate_candidate_statement_type_policy(candidate=candidate, ctx=ctx)
         _validate_candidate_code_is_visible(candidate=candidate, ctx=ctx)
         _validate_candidate_source_text_is_visible(candidate=candidate, ctx=ctx)
 

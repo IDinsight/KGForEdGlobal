@@ -213,6 +213,10 @@ def _build_compact_kg_config_context(kg_config: CreateKGConfig) -> dict[str, Any
         "grades_or_stages": kg_config.grades_or_stages,
         "primary_language": kg_config.primary_language,
         "sfi_extraction_instructions": kg_config.as_sfi_extraction_instructions,
+        "statement_type_policy": [
+            item.model_dump(mode="json", exclude_none=True)
+            for item in kg_config.as_statement_type_policy
+        ],
         "subject": kg_config.subject,
     }
 
@@ -444,10 +448,16 @@ def extract_sfi_candidates_from_window(
 - Use normalized_statement_type="Other" rarely, only when the KG config explicitly says a visible framework item should be retained as an SFI but it is neither a grouping nor a learning expectation.
 - Do not classify examples, exemplars, competencies lists that describe cross-cutting skills, activities, assessment suggestions, resources, pedagogical notes, durations, teacher guidance, or learning-material content as SFIs unless the KG config explicitly says they are standards-framework items.
 
+## Statement type policy
+- The runtime config includes statement_type_policy. For every SFI candidate, output statement_type using exactly one canonical statement_type from that policy.
+- Treat aliases in statement_type_policy as recognition hints only. If the source text or your draft label matches an alias, output the corresponding canonical statement_type.
+- Do not invent statement_type labels outside statement_type_policy. If no configured statement_type fits visible source text, do not emit an SFI candidate for that text; use extraction_notes or an auxiliary candidate only when needed.
+- The candidate normalized_statement_type must exactly match the normalized_statement_type configured for its canonical statement_type.
+
 ## Candidate field policy
 - candidate_id must be unique within this window, such as sfi_1, sfi_2, etc.
 - description should preserve the source-language wording of the SFI. For learning expectations, use the official statement text. For groupings, use the grouping label or heading text.
-- statement_type should be the source-facing role when visible, such as Grade, Stage, Strand, Domain, Cluster, Content Standard, Indicator, Competency, Objective, or Outcome. If no source-facing role is visible, use a concise best-effort role consistent with the source window and KG config.
+- statement_type must use exactly one canonical source-facing role from statement_type_policy.
 - statement_code should be the official/source-visible code when present. Use null when no code is visible.
 - language should use the source language tag when visible; otherwise use the KG config primary language.
 - confidence should reflect how clearly the source window supports the candidate.

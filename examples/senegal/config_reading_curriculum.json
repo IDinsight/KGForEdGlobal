@@ -92,7 +92,174 @@
 		"as_max_rows_per_table_window": 12,
 		"as_repeated_statement_policy": "For no-code rows, merge exact or near-exact repeated Wolof/French statements only when they share the same source role, activity/domain, palier/jéego, table/local_code, and objective context. In detailed oral/lecture tables, repeated Objectif d’apprentissage values may span several weekly rows; treat those repeated broad objectives as one contextual grouping or broad standard within the same activity and palier, while keeping distinct Objectifs spécifiques and weekly practice items separate. Do not merge recurring weekly practice items merely because wording is similar.",
 		"as_row_overlap": 2,
-		"as_sfi_extraction_instructions": "This is a no-stable-code Senegal CE1 bilingual Wolof/French language-and-communication curriculum. Extract StandardsFrameworkItems from normative curriculum statements, not from pedagogical directions alone. Create Standard Grouping SFIs for the framework, CE1/Étape 2, subdomains/activities such as Communication orale, Lecture, Communication écrite, Production d’écrits, Récitation, paliers/jéego/niveaux, and objective contexts when they organize leaf expectations. Use Outils de langue / Jumtukaayi làkk as an activity/domain grouping when it appears as section or table context; row-level tool-category labels such as Baataan/Vocabulaire, Grammaire, Conjugaison, Orthographe, and Écriture/Copie are local grouping/context labels, not leaf standards by themselves. Create Standard SFIs for Compétence de cycle, Compétence de l’étape, Compétences de sous-domaines, Compétences de base, Objectif d’apprentissage / Nisaru njàng, and Objectifs spécifiques / Nisaru jukki bi when they state what learners are expected to integrate, understand, produce, read, copy, recite, or demonstrate. In detailed oral and lecture tables, the Objectif d’apprentissage column usually contains a broad objective repeated across multiple weekly rows, while Objectifs spécifiques contains the main leaf objectives; emit at most one candidate per distinct repeated Objectif d’apprentissage in a single window and use all visible supporting row indexes, rather than duplicating the same broad objective for every row. In detailed production-writing tables, section headings such as Objectif d’apprentissage 2 / Nisaru njàng 2 may be extracted as broad objective context when the full objective text is visible, but the numeric ordinal alone is not an SFI or statement_code. Treat Contenus / Këmb / Limu ëmb, Durée / Diir, week labels including 1 à 8 or single week numbers, INTÉGRATION, and EVALUATION rows as metadata, descriptors, guidance, or sequencing evidence unless the row itself contains a clear normative objective. Use rows_filldown for interpreting implied palier/week/objective context, but cite raw rows/cells for source fidelity. Do not create a new SFI just because a filldown value repeats across multiple rows. When a cell contains Wolof followed by French conveying the same item, keep them together as one mixed-language candidate with language='mul'. This document has no stable item-level statement codes; do not use table numbers (for example Tableau 1.1.1), section numbers, week numbers, palier/jéego numbers, or objective-order numbers as statement_code. Treat them as provenance or hierarchy context only, and set statement_code to null unless a source row contains a true official item code.",
+		"as_sfi_extraction_instructions": "This is a no-stable-code Senegal CE1 bilingual Wolof/French language-and-communication curriculum. Extract StandardsFrameworkItems from normative curriculum statements, not from pedagogical directions alone. Create Standard Grouping SFIs for the framework, CE1/Étape 2, subdomains/activities such as Communication orale, Lecture, Communication écrite, Production d’écrits, Récitation, paliers/jéego/niveaux, and objective contexts when they organize leaf expectations. Use Outils de langue / Jumtukaayi làkk as an activity/domain grouping when it appears as section or table context; row-level tool-category labels such as Baataan/Vocabulaire, Grammaire, Conjugaison, Orthographe, and Écriture/Copie are local grouping/context labels, not leaf standards by themselves. Create Standard SFIs for Compétence de cycle, Compétence de l’étape, Compétences de sous-domaines, Compétences de base, Objectif d’apprentissage / Nisaru njàng, and Objectifs spécifiques / Nisaru jukki bi when they state what learners are expected to integrate, understand, produce, read, copy, recite, or demonstrate. In detailed oral and lecture tables, the Objectif d’apprentissage column usually contains a broad objective repeated across multiple weekly rows, while Objectifs spécifiques contains the main leaf objectives; emit at most one candidate per distinct repeated Objectif d’apprentissage in a single window and use all visible supporting row indexes, rather than duplicating the same broad objective for every row. In detailed production-writing tables, section headings such as Objectif d’apprentissage 2 / Nisaru njàng 2 may be extracted as broad objective context when the full objective text is visible, but the numeric ordinal alone is not an SFI or statement_code. Treat Contenus / Këmb / Limu ëmb, Durée / Diir, week labels including 1 à 8 or single week numbers, INTÉGRATION, and EVALUATION rows as metadata, descriptors, guidance, or sequencing evidence unless the row itself contains a clear normative objective. Use rows_filldown for interpreting implied palier/week/objective context, but cite raw rows/cells for source fidelity. Do not create a new SFI just because a filldown value repeats across multiple rows. When a cell contains Wolof followed by French conveying the same item, keep them together as one mixed-language candidate with language='mul'. This document has no stable item-level statement codes; do not use table numbers (for example Tableau 1.1.1), section numbers, week numbers, palier/jéego numbers, or objective-order numbers as statement_code. Treat them as provenance or hierarchy context only, and set statement_code to null unless a source row contains a true official item code.\n\nUse only the canonical statement_type values from as_statement_type_policy. For this Senegal Reading curriculum, classify source roles as: Référentiel, Étape, Section, Sous-domaine, Activité, Compétence de cycle, Compétence de l'étape, Compétence de sous-domaine, Compétence de base, Palier, Compétence de palier, Objectif d'apprentissage, or Objectif spécifique. Use Palier only for label-only palier/jéego/sumb groupings or headings; use Compétence de palier for full normative Jéego/Jëego/Sumb/Palier competency statements. Use Sous-domaine for Communication orale or Communication écrite; use Activité for activity organizers such as Expression orale, Récitation, Lecture, Lecture-écriture, Production d’écrits, Copie, or Outils de langue. Do not use English or compound output labels such as Framework, Stage/Grade, Activity, Domain, Sub-domain, Activity/Domain, Tool category, Palier/Jéego, or Objectif spécifique / Nisaru jukki bi.",
+		"as_statement_type_policy": [
+			{
+				"statement_type": "Référentiel",
+				"normalized_statement_type": "Standard Grouping",
+				"aliases": [
+					"Framework",
+					"Cadre du référentiel",
+					"Référentiel bilingue"
+				],
+				"description": "Overall Senegal CE1 bilingual language-and-communication framework title or source-visible framework organizer."
+			},
+			{
+				"statement_type": "Étape",
+				"normalized_statement_type": "Standard Grouping",
+				"aliases": [
+					"2ème étape",
+					"CE1",
+					"Grade",
+					"Niveau",
+					"Stage",
+					"Stage/Grade",
+					"Étape 2"
+				],
+				"description": "Source-visible CE1 or Étape 2 level organizer. Do not use table numbers, week numbers, or palier numbers as statement codes."
+			},
+			{
+				"statement_type": "Section",
+				"normalized_statement_type": "Standard Grouping",
+				"aliases": [
+					"Apprentissages ponctuels",
+					"Njàngum bennat / APPRENTISSAGES PONCTUELS",
+					"Njàngum bés bi / APPRENTISSAGES PONCTUELS",
+					"Planification des apprentissages",
+					"Schéma intégrateur",
+					"Section",
+					"Section Heading",
+					"Tableau de planification des apprentissages"
+				],
+				"description": "Major source-visible curriculum section that organizes subordinate competencies, activities, paliers, or objectives."
+			},
+			{
+				"statement_type": "Sous-domaine",
+				"normalized_statement_type": "Standard Grouping",
+				"aliases": [
+					"Activity / Domain",
+					"Domain",
+					"Domain Grouping",
+					"Jokkoo ci mbind / Communication écrite",
+					"Jokkoo ci wax / Communication orale",
+					"Pàccu fànn / Sous-domaine",
+					"Sous-domaine",
+					"Sub-domain"
+				],
+				"description": "Source-visible communication sub-domain such as Communication orale or Communication écrite."
+			},
+			{
+				"statement_type": "Activité",
+				"normalized_statement_type": "Standard Grouping",
+				"aliases": [
+					"Activité / Sous-section",
+					"Activity",
+					"Activity / Sub-domain",
+					"Activity Domain",
+					"Activity/Domain",
+					"Activity/Domain Grouping",
+					"Expression orale",
+					"Lecture",
+					"Lecture-écriture",
+					"Outil de langue",
+					"Outils de langue",
+					"Production d'écrits",
+					"Production d’écrits",
+					"Récitation",
+					"Sous-domaine / Activité"
+				],
+				"description": "Source-visible activity organizer such as Expression orale, Récitation, Lecture, Lecture-écriture, Production d’écrits, Copie, or Outils de langue. Do not extract row-level tool-category labels such as Vocabulaire, Grammaire, Conjugaison, Orthographe, or Écriture/Copie as standalone SFIs."
+			},
+			{
+				"statement_type": "Compétence de cycle",
+				"normalized_statement_type": "Standard",
+				"aliases": [
+					"Manooreb diirub njàng mi / Compétence de cycle"
+				],
+				"description": "Normative cycle-level competency statement visible in the competency framework table or block."
+			},
+			{
+				"statement_type": "Compétence de l'étape",
+				"normalized_statement_type": "Standard",
+				"aliases": [
+					"Compétence de l’étape",
+					"Manooreb tolluwaay bi / Compétence de l'étape",
+					"Manooreb tolluwaay bi / Compétence de l’étape"
+				],
+				"description": "Normative Étape 2 competency statement visible in the competency framework table or block."
+			},
+			{
+				"statement_type": "Compétence de sous-domaine",
+				"normalized_statement_type": "Standard",
+				"aliases": [
+					"Manooreb pàccu fànn / Compétence de sous-domaine",
+					"Manooreb pàccu fànn / Compétence de sous-domaine (Communication orale)",
+					"Manooreb pàccu fànn / Compétence de sous-domaine (Communication écrite)"
+				],
+				"description": "Normative competency statement for a source-visible sub-domain, such as Communication orale or Communication écrite."
+			},
+			{
+				"statement_type": "Compétence de base",
+				"normalized_statement_type": "Standard",
+				"aliases": [
+					"CB",
+					"Compétence de base",
+					"Compétences de base",
+					"Manoore gi lalu",
+					"Manoore yi lalu / Compétences de base"
+				],
+				"description": "Normative base competency statement, often introduced by CB or Manoore gi lalu."
+			},
+			{
+				"statement_type": "Palier",
+				"normalized_statement_type": "Standard Grouping",
+				"aliases": [
+					"Activity/Palier Grouping",
+					"Domain/Palier",
+					"JEEGO",
+					"Jéego",
+					"Jëego",
+					"Niveau",
+					"Palier",
+					"Sumb"
+				],
+				"description": "Label-only palier/jéego/sumb grouping or heading. Use Compétence de palier instead when the visible text is a full normative palier competency statement."
+			},
+			{
+				"statement_type": "Compétence de palier",
+				"normalized_statement_type": "Standard",
+				"aliases": [
+					"Compétence de palier",
+					"Palier competency",
+					"Palier competency statement"
+				],
+				"description": "Full normative Jéego/Jëego/Sumb/Palier competency statement. Do not use for label-only palier headings, table captions, or week ranges."
+			},
+			{
+				"statement_type": "Objectif d'apprentissage",
+				"normalized_statement_type": "Standard",
+				"aliases": [
+					"Nisaru njàng",
+					"Nisaru ñàng",
+					"Objectif d'apprentissage",
+					"Objectif d’apprentissage",
+					"Objectif d’apprentissage / Nisaru njàng"
+				],
+				"description": "Normative learning objective from an Objectif d’apprentissage / Nisaru njàng source cell or visible objective heading. Numeric ordinals alone are not SFIs."
+			},
+			{
+				"statement_type": "Objectif spécifique",
+				"normalized_statement_type": "Standard",
+				"aliases": [
+					"Nisaru jukki",
+					"Nisaru jukki bi",
+					"Objectif spécifique",
+					"Objectif spécifique / Nisaru jukki",
+					"Objectif spécifique / Nisaru jukki bi"
+				],
+				"description": "Normative specific objective, usually the main leaf SFI in detailed oral, reading, writing, copy, and tools-of-language tables."
+			}
+		],
 		"as_synthetic_merge_key_fields": [
 			"country",
 			"subject",

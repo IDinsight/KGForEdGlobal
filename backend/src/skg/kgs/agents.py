@@ -11,11 +11,13 @@ from pydantic_ai import Agent, ModelRetry
 from skg.kgs.schemas import ExtractionWindow, SFIExtractionResult
 from skg.model_registry import ModelConfig
 from skg.page_ir_extraction.validators import QualityError
+from skg.schemas import CreateKGConfig
 
 
 def create_sfi_extraction_agent(
     *,
     instructions: str,
+    kg_config: CreateKGConfig,
     max_retries: int = 3,
     model_config: ModelConfig,
     verify_quality_fn: Callable[..., None],
@@ -31,12 +33,14 @@ def create_sfi_extraction_agent(
     ----------
     instructions
         System-level SFI extraction instructions.
+    kg_config
+        Runtime KG configuration used for document-specific validation.
     max_retries
         Maximum number of quality-error retries.
     model_config
         Model configuration containing the model name and model settings helpers.
     verify_quality_fn
-        Callable with signature `(*, extraction_result, window)` that raises
+        Callable with signature `(*, extraction_result, kg_config, window)` that raises
         `QualityError` on failure.
     window
         Source extraction window being processed.
@@ -81,7 +85,9 @@ def create_sfi_extraction_agent(
         attempt = attempt_counter["value"]
 
         try:
-            verify_quality_fn(extraction_result=output, window=window)
+            verify_quality_fn(
+                extraction_result=output, kg_config=kg_config, window=window
+            )
         except QualityError as e:
             truncated_msg = str(e)[:500]
 
