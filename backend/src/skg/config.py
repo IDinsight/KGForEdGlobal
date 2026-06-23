@@ -25,6 +25,7 @@ class BackendSettings(BaseSettings):
     # LLM
     LLM_ANTHROPIC_EFFORT: str = "high"
     LLM_ANTHROPIC_THINKING_BUDGET_TOKENS: int = 16384
+    LLM_MAX_OUTPUT_TOKENS: int = 32768
     LLM_KG_MODEL: str = "anthropic:claude-opus-4-7"
     LLM_OPENAI_REASONING_EFFORT: str = "high"
     LLM_OPENAI_TEMPERATURE: float = 0.0
@@ -96,6 +97,7 @@ class BackendSettings(BaseSettings):
         return ModelConfig(
             anthropic_effort=self.LLM_ANTHROPIC_EFFORT,
             anthropic_thinking_budget_tokens=self.LLM_ANTHROPIC_THINKING_BUDGET_TOKENS,
+            max_output_tokens=self.LLM_MAX_OUTPUT_TOKENS,
             model=self._llm_type_registry(model_type),
             openai_reasoning_effort=self.LLM_OPENAI_REASONING_EFFORT,
             openai_temperature=self.LLM_OPENAI_TEMPERATURE,

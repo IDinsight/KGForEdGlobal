@@ -130,6 +130,7 @@ def _anthropic_thinking_settings(config: ModelConfig) -> AnthropicModelSettings:
         return AnthropicModelSettings(
             anthropic_thinking={"type": "adaptive"},
             anthropic_effort=config.anthropic_effort,
+            max_tokens=config.max_output_tokens,
         )
 
     return AnthropicModelSettings(
@@ -137,6 +138,7 @@ def _anthropic_thinking_settings(config: ModelConfig) -> AnthropicModelSettings:
             "budget_tokens": config.anthropic_thinking_budget_tokens,
             "type": "enabled",
         },
+        max_tokens=config.max_output_tokens,
     )
 
 
@@ -161,11 +163,13 @@ def _openai_kgs_settings(
 
     if type_ == "learning_components":
         return OpenAIResponsesModelSettings(
+            max_tokens=config.max_output_tokens,
             openai_reasoning_effort=config.openai_reasoning_effort,
             openai_reasoning_summary="detailed",
         )
 
     return OpenAIResponsesModelSettings(
+        max_tokens=config.max_output_tokens,
         openai_reasoning_effort=config.openai_reasoning_effort,
         openai_reasoning_summary="detailed",
     )
@@ -192,10 +196,13 @@ def _openai_page_ir_extraction_settings(
 
     if type_ == "extraction":
         return OpenAIResponsesModelSettings(
-            temperature=config.openai_temperature, top_p=config.openai_top_p
+            max_tokens=config.max_output_tokens,
+            temperature=config.openai_temperature,
+            top_p=config.openai_top_p,
         )
 
     return OpenAIResponsesModelSettings(
+        max_tokens=config.max_output_tokens,
         openai_reasoning_effort=config.openai_reasoning_effort,
         openai_reasoning_summary="detailed",
     )
@@ -222,10 +229,13 @@ def _openai_page_ir_verification_settings(
 
     if type_ == "verification":
         return OpenAIResponsesModelSettings(
-            temperature=config.openai_temperature, top_p=config.openai_top_p
+            max_tokens=config.max_output_tokens,
+            temperature=config.openai_temperature,
+            top_p=config.openai_top_p,
         )
 
     return OpenAIResponsesModelSettings(
+        max_tokens=config.max_output_tokens,
         openai_reasoning_effort=config.openai_reasoning_effort,
         openai_reasoning_summary="detailed",
     )
@@ -254,6 +264,9 @@ class ModelConfig(BaseSchema):
     """
 
     model: str
+
+    # Shared settings.
+    max_output_tokens: int = 32768
 
     # Anthropic settings.
     anthropic_effort: Literal["low", "medium", "high"] = "high"
