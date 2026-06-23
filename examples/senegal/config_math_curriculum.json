@@ -35,120 +35,63 @@
 		"verification_auto_stitch_confidence": 0.7
 	},
 	"kgs": {
-		"document_profile_fp": "/Users/tzz/Projects/private/idi/SenegalKG/examples/senegal/document_profile_math.json",
-		"generate_learning_progressions": true,
 		"overwrite": false,
-		"as_academic_subject_default": "Langue et Communication",
-		"as_adoption_status": "Adopted",
-		"as_attribution_statement": "© RÉPUBLIQUE DU SÉNÉGAL, Ministère de l’Éducation nationale, 2024. Source: Referentiel bilingue (wolof-français), Langue et Communication, 2eme etape (CE1).",
-		"as_author": "Ministère de l’Éducation nationale",
-		"as_aux_statement_parenting": "under_expectation",
-		"as_case_uri_base": "urn:lc:case:",
-		"as_default_level_context": {
-			"apply_to_roles": [
-				"expectation"
-			],
-			"apply_when_missing_only": true,
-			"kind": "grade_level",
-			"label": "CE1",
-			"ordinal_high": 1,
-			"ordinal_low": 1,
-			"source": "config: Référentiel bilingue (wolof-français), Langue et Communication, 2ème étape (CE1)"
-		},
-		"as_description_text_policy": "source",
-		"as_descriptor_handling": "attach_to_expectation_metadata",
-		"as_export_dialect": "global_relaxed",
-		"as_framework_name": "Référentiel bilingue (wolof-français), Langue et Communication, 2ème étape (CE1)",
-		"as_grouping_role_policy": "whitelist",
-		"as_grouping_roles_whitelist": [
-			"stage",
-			"section",
-			"strand",
-			"substage",
-			"week",
-			"subtopic"
+		"adoption_status": "Adopted",
+		"attribution_statement": "Content derived from the République du Sénégal, Ministère de l'Éducation nationale, Référentiel bilingue (wolof-français), Mathématiques, deuxième étape (CE1-CE2).",
+		"author": "Ministère de l'Éducation nationale, République du Sénégal",
+		"country": "Senegal",
+		"framework_title": "Référentiel bilingue (wolof-français), Mathématiques, deuxième étape (CE1-CE2)",
+		"grades_or_stages": [
+			"CE1",
+			"CE2",
+			"2ème étape",
+			"Étape 2"
 		],
-		"as_guidance_handling": "attach_to_expectation_metadata",
-		"as_jurisdiction_default": "Sénégal",
-		"as_language_default": "mul",
-		"as_license": "All rights reserved (source PDF)",
-		"as_non_grouping_role_handling": "drop",
-		"as_non_standard_columns_signature": [],
-		"as_non_standard_decision_types": [
-			"ignore",
-			"unresolved"
+		"jurisdiction": "Senegal",
+		"languages": [
+			"wo",
+			"fr",
+			"mul"
 		],
-		"as_non_standard_segment_drop_policy": [
-			"by_decision_type"
+		"license": "Unknown; source curriculum issued by the République du Sénégal, Ministère de l'Éducation nationale.",
+		"primary_language": "mul",
+		"provider": "IDinsight",
+		"subject": "Mathématiques",
+		"as_bilingual_pair_policy": "Preserve Wolof/French paired statements as one mixed-language candidate when they express the same competency or objective; do not create separate SFIs solely because the same item appears in both languages.",
+		"as_code_parent_rules": [],
+		"as_code_patterns": {},
+		"as_duplicate_review_instructions": "Review possible duplicate Senegal Math candidates conservatively. Treat Wolof and French text in the same cell or adjacent paired statements as one bilingual/mixed-language item when they express the same competency or objective. Merge repeated fill-down artifacts that repeat the same competency/palier/objective in the same domain context. Do not merge items that occur under different paliers, CE levels, activity domains, or week sequence positions unless they are clearly the same source statement repeated for table layout reasons.",
+		"as_excluded_table_columns_signatures": [],
+		"as_excluded_table_section_patterns": [],
+		"as_included_table_columns_signatures": [
+			"kenug xayma / activités numériques|yëngute xam-xamu dénd / activités géométriques|yëngute xam-xamu natt / activités de mesure|tekkim caxu xayma / activités rés. de problèmes|||manoore mi lalu / compétence de base|manoore mi lalu / compétence de base|manoore mi lalu / compétence de base|manoore mi lalu / compétence de base",
+			"semaine / palier|yëngute ci lim / activités numériques|yëngute ci tekkim caxu xayma / activités résolution de problèmes",
+			"objectif d'apprentissage|objectif spécifique|contenus|durée",
+			"objectif d’apprentissage|objectif spécifique|contenus|durée"
 		],
-		"as_provider": "IDinsight | Learning Commons",
-		"as_prune_empty_groupings": true,
-		"lc_atomic_skills_batch_size": 3,
-		"lc_atomic_skills_include_aux_statements": false,
-		"lc_atomic_skills_include_topic_context": true,
-		"lc_atomic_skills_min_per_sfi": 1,
-		"lc_atomic_skills_require_rationale": true,
-		"lc_max_splits_per_standard": 10,
-		"lc_output_language_policy": "source",
-		"lc_output_language_tag": null,
-		"lc_policy": "llm_atomic_skills",
-		"lc_source_labels_exclude": [],
-		"lc_source_labels_include": [],
-		"lc_source_max_path_depth": null,
-		"lc_source_min_path_depth": null,
-		"lc_source_normalized_statement_types": [
-			"Standard"
+		"as_included_table_section_patterns": [
+			"(?i)compétences de base",
+			"(?i)planification des apprentissages",
+			"(?i)apprentissages ponctuels",
+			"(?i)activités numériques|activités géométriques|activités de mesure|résolution de problèmes",
+			"(?i)palier\\s+\\d+|jéego\\s+\\d+"
 		],
-		"lc_source_path_patterns_exclude": [],
-		"lc_source_path_patterns_include": [],
-		"lc_source_roles_exclude": [],
-		"lc_source_roles_include": [
-			"expectation"
+		"as_max_rows_per_table_window": 12,
+		"as_repeated_statement_policy": "Merge repeated no-code statements only when the source role, domain/activity area, stage or level, palier context, and normalized bilingual text match. Keep recurring week-level objectives distinct when they occur under different weeks or paliers.",
+		"as_row_overlap": 2,
+		"as_sfi_extraction_instructions": "Extract Senegal Math StandardsFrameworkItem candidates from the bilingual Wolof/French curriculum without assuming stable official standard codes. Preserve original Wolof/French source text and language tags. Treat the framework, stage (Étape 2 / CE1-CE2), activity domains (Activités numériques, Activités géométriques, Activités de mesure, Résolution de problèmes), CE levels, paliers/jéego, and weeks as grouping or sequencing context. In the competency-frame table, extract Compétence de cycle, Compétence de l'étape, and Compétences de base as high-level standards/groupings according to context. In planning tables, use Semaine/Palier rows to capture sequence context; PALIER/Jéego statements may be grouping standards or broader expectations, while weekly rows usually describe sequenced learning objectives. In detailed apprentissages ponctuels tables, treat Objectif spécifique as the main leaf Standard SFI. Treat Objectif d'apprentissage as grouping/context unless it is itself the only normative objective for a row. Treat Contenus as descriptor/metadata/guidance attached to the objective, not as a standalone Standard unless explicitly normative. Treat Durée as metadata only. Ignore pure integration/evaluation/checkpoint rows as standards unless they contain a clear learning objective. Always retain provenance, page indices, table local_code, row order, section context, and whether the text came from raw rows, rows_grid, or rows_filldown. Extract Compétence de cycle and Compétence de l'étape when they appear as visible block/paragraph statements under Cadre de compétences / Cëslaayu manoore, not only when they appear in tables. This document has no stable item-level statement codes; do not use table numbers (for example Tableau 1 or Tableau 2), section numbers, week numbers, CE level labels, palier/jéego numbers, or objective-order numbers as statement_code. Treat them as provenance, hierarchy, or sequencing context only, and set statement_code to null unless a source row contains a true official item code.",
+		"as_synthetic_merge_key_fields": [
+			"country",
+			"subject",
+			"grade_level",
+			"normalized_statement_type",
+			"statement_type",
+			"activity_domain",
+			"stage_or_level",
+			"palier",
+			"hierarchy_context",
+			"normalized_text"
 		],
-		"lc_source_statement_types_exclude": [
-			"Compétence / libellé structurel",
-			"Compétence de base — Lecture-Écriture",
-			"Compétence de base — Récitation",
-			"Compétence de base — Expression orale",
-			"Compétence de base — Production d'écrits",
-			"expectation"
-		],
-		"lc_source_statement_types_include": [],
-		"lp_builds_towards_min_confidence": 0.75,
-		"lp_cross_level_builds_towards": false,
-		"lp_cross_level_relates_to": false,
-		"lp_cross_level_relates_to_max_items_per_subject": 10,
-		"lp_cross_level_thread_roles": [
-			"strand",
-			"substage"
-		],
-		"lp_cross_stage_builds_towards": false,
-		"lp_cross_stage_relates_to": false,
-		"lp_excluded_subject_labels": [
-			"UNSPECIFIED_SUBJECT"
-		],
-		"lp_relates_to_max_edges_per_sfi": 2,
-		"lp_relates_to_min_confidence": 0.9,
-		"lp_source_statement_types_exclude": [
-			"Compétence / libellé structurel",
-			"Compétence de base — Lecture-Écriture",
-			"Compétence de base — Récitation",
-			"Compétence de base — Expression orale",
-			"Compétence de base — Production d'écrits",
-			"expectation"
-		],
-		"lp_source_statement_types_include": [],
-		"lp_subject_role": "strand",
-		"lp_within_level_allow_banded_levels": false,
-		"lp_within_level_bucket_roles": [
-			"strand",
-			"subtopic"
-		],
-		"lp_within_level_builds_towards": true,
-		"lp_within_level_fallback_fields": [
-			"statement_type"
-		],
-		"lp_within_level_relates_to": true,
-		"lp_within_level_relates_to_max_items_per_subject": 20
+		"lc_generation_instructions": "Create LearningComponents from leaf normative math objectives, especially Objectif spécifique rows. Use the source language text as-is; do not translate for v0. Prefer a 1-to-1 component when the objective is already atomic. Split only when one objective clearly contains multiple distinct mathematical skills. Do not create LearningComponents from Durée, Contenus alone, integration/checkpoint labels, or broad domain/palier groupings unless the profile later marks them as LC sources."
 	}
 }
