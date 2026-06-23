@@ -24,7 +24,7 @@
 	},
 	"document_ir": {
 		"keep_artifacts": false,
-		"max_section_path_length": 12,
+		"max_section_path_length": 24,
 		"min_link_score": 1.0,
 		"overwrite": true,
 		"repair_hyphenation": true,
@@ -34,120 +34,82 @@
 		"verification_auto_stitch_confidence": 0.7
 	},
 	"kgs": {
-		"document_profile_fp": "/Users/tzz/Projects/private/idi/SenegalKG/examples/zambia/document_profile_literacy_and_language.json",
-		"generate_learning_progressions": true,
 		"overwrite": false,
-		"as_academic_subject_default": "Langue et Communication",
-		"as_adoption_status": "Adopted",
-		"as_attribution_statement": "© RÉPUBLIQUE DU SÉNÉGAL, Ministère de l’Éducation nationale, 2024. Source: Referentiel bilingue (wolof-français), Langue et Communication, 2eme etape (CE1).",
-		"as_author": "Ministère de l’Éducation nationale",
-		"as_aux_statement_parenting": "under_expectation",
-		"as_case_uri_base": "urn:lc:case:",
-		"as_default_level_context": {
-			"apply_to_roles": [
-				"expectation"
-			],
-			"apply_when_missing_only": true,
-			"kind": "grade_level",
-			"label": "CE1",
-			"ordinal_high": 1,
-			"ordinal_low": 1,
-			"source": "config: Référentiel bilingue (wolof-français), Langue et Communication, 2ème étape (CE1)"
+		"adoption_status": "Adopted",
+		"attribution_statement": "Content derived from Zambia Ministry of Education, Literacy and Language, English Language Lower Primary Syllabus for Grades 1-3.",
+		"author": "Ministry of Education, Republic of Zambia",
+		"country": "Zambia",
+		"framework_title": "Literacy and Language: English Language Lower Primary Syllabus (Grades 1-3)",
+		"grades_or_stages": [
+			"Lower Primary",
+			"Grade 1",
+			"Grade 2",
+			"Grade 3"
+		],
+		"jurisdiction": "Zambia",
+		"languages": [
+			"en"
+		],
+		"license": "Unknown; source curriculum issued by the Ministry of Education, Republic of Zambia.",
+		"primary_language": "en",
+		"provider": "IDinsight",
+		"subject": "English Language",
+		"as_bilingual_pair_policy": null,
+		"as_code_parent_rules": [
+			{
+				"child": "specific_competence_code",
+				"parent": "subtopic_code",
+				"method": "drop_last_dot_component"
+			},
+			{
+				"child": "subtopic_code",
+				"parent": "topic_code",
+				"method": "drop_last_dot_component"
+			}
+		],
+		"as_code_patterns": {
+			"topic_code": "(?<![\\d.])\\d+\\.\\d+(?![\\d.])",
+			"subtopic_code": "(?<![\\d.])\\d+\\.\\d+\\.\\d+(?![\\d.])",
+			"specific_competence_code": "(?<![\\d.])\\d+\\.\\d+\\.\\d+\\.\\d+(?![\\d.])"
 		},
-		"as_description_text_policy": "source",
-		"as_descriptor_handling": "attach_to_expectation_metadata",
-		"as_export_dialect": "global_relaxed",
-		"as_framework_name": "Référentiel bilingue (wolof-français), Langue et Communication, 2ème étape (CE1)",
-		"as_grouping_role_policy": "whitelist",
-		"as_grouping_roles_whitelist": [
-			"stage",
-			"section",
-			"strand",
-			"substage",
-			"week",
-			"subtopic"
+		"as_duplicate_review_instructions": "Review possible duplicate Zambia Literacy and Language candidates conservatively. Stable official codes are primary: the same code and statement type should normally merge with combined provenance; different specific competence codes should remain distinct. Treat repeated rows created by table continuation, row spans, or fill-down as layout duplicates when the code and statement text are the same. Do not merge similar skills across Grade 1, Grade 2, and Grade 3 unless they are clearly the same source item repeated by extraction.",
+		"as_excluded_table_columns_signatures": [
+			"s/n|competence|descriptors"
 		],
-		"as_guidance_handling": "attach_to_expectation_metadata",
-		"as_jurisdiction_default": "Sénégal",
-		"as_language_default": "mul",
-		"as_license": "All rights reserved (source PDF)",
-		"as_non_grouping_role_handling": "drop",
-		"as_non_standard_columns_signature": [],
-		"as_non_standard_decision_types": [
-			"ignore",
-			"unresolved"
+		"as_excluded_table_section_patterns": [
+			"(?i)KEY\\s+COMPETENCES\\s+TO\\s+BE\\s+DEVELOPED",
+			"(?i)\\bINTRODUCTION\\b",
+			"(?i)Suggested\\s+Teaching\\s+Methodology",
+			"(?i)\\bAssessment\\b",
+			"(?i)Time\\s+Allocation"
 		],
-		"as_non_standard_segment_drop_policy": [
-			"by_decision_type"
+		"as_included_table_columns_signatures": [
+			"listening and speaking|||||||topic|sub-topic|specific competences|learning activities|expected standard",
+			"reading|||||||topic|sub-topic|specific competences|learning activities|expected standard",
+			"writing|||||||topic|sub-topic|specific competences|learning activities|expected standard",
+			"writing||||||||topic|sub-topic|specific competences|learning activities|expected standard|",
+			"listening and speaking||||||||topic|sub-topic|specific competences|learning activities|expected standard|"
 		],
-		"as_provider": "IDinsight | Learning Commons",
-		"as_prune_empty_groupings": true,
-		"lc_atomic_skills_batch_size": 3,
-		"lc_atomic_skills_include_aux_statements": false,
-		"lc_atomic_skills_include_topic_context": true,
-		"lc_atomic_skills_min_per_sfi": 1,
-		"lc_atomic_skills_require_rationale": true,
-		"lc_max_splits_per_standard": 10,
-		"lc_output_language_policy": "source",
-		"lc_output_language_tag": null,
-		"lc_policy": "llm_atomic_skills",
-		"lc_source_labels_exclude": [],
-		"lc_source_labels_include": [],
-		"lc_source_max_path_depth": null,
-		"lc_source_min_path_depth": null,
-		"lc_source_normalized_statement_types": [
-			"Standard"
+		"as_included_table_section_patterns": [
+			"(?i)GRADE\\s+[123]\\s*:\\s*ENGLISH\\s+LANGUAGE",
+			"(?i)LISTENING\\s+AND\\s+SPEAKING",
+			"(?i)\\bREADING\\b",
+			"(?i)\\bWRITING\\b"
 		],
-		"lc_source_path_patterns_exclude": [],
-		"lc_source_path_patterns_include": [],
-		"lc_source_roles_exclude": [],
-		"lc_source_roles_include": [
-			"expectation"
+		"as_max_rows_per_table_window": 15,
+		"as_repeated_statement_policy": "For coded Zambia syllabus items, merge candidates with the same stable statement_code and same source statement type. Merge repeated candidates caused by row-span or fill-down table layout when they refer to the same code. Do not merge distinct specific competences that have different four-part codes, even when their text is similar across grades or components.",
+		"as_row_overlap": 2,
+		"as_sfi_extraction_instructions": "Extract Zambia Literacy and Language StandardsFrameworkItem candidates from the English Language lower-primary syllabus tables. Use the grade heading as grade context: Grade 1, Grade 2, or Grade 3. Treat Listening and Speaking, Reading, and Writing as component/strand grouping SFIs. In syllabus tables with columns Topic, Sub-topic, Specific Competences, Learning Activities, and Expected Standard, extract Topic and Sub-topic as Standard Grouping SFIs using their stable codes. Extract Specific Competences as the main leaf Standard SFIs and preserve the four-part statement_code. Treat Expected Standard as a descriptor or benchmark attached to the corresponding Specific Competence, not as a standalone Standard unless it is the only clear normative expectation in the row. Treat Learning Activities as guidance only, not SFIs for v0. Ignore front-matter tables such as Key Competences to be Developed for SFI extraction. Use rows_filldown for interpreting row-span context, but preserve raw row/cell text and provenance. Always retain page indices, table segment id, row order, source column, statement code, grade, component, topic, and sub-topic context.",
+		"as_synthetic_merge_key_fields": [
+			"country",
+			"subject",
+			"grade_level",
+			"normalized_statement_type",
+			"statement_type",
+			"statement_code",
+			"hierarchy_context",
+			"normalized_text"
 		],
-		"lc_source_statement_types_exclude": [
-			"Compétence / libellé structurel",
-			"Compétence de base — Lecture-Écriture",
-			"Compétence de base — Récitation",
-			"Compétence de base — Expression orale",
-			"Compétence de base — Production d'écrits",
-			"expectation"
-		],
-		"lc_source_statement_types_include": [],
-		"lp_builds_towards_min_confidence": 0.75,
-		"lp_cross_level_builds_towards": false,
-		"lp_cross_level_relates_to": false,
-		"lp_cross_level_relates_to_max_items_per_subject": 10,
-		"lp_cross_level_thread_roles": [
-			"strand",
-			"substage"
-		],
-		"lp_cross_stage_builds_towards": false,
-		"lp_cross_stage_relates_to": false,
-		"lp_excluded_subject_labels": [
-			"UNSPECIFIED_SUBJECT"
-		],
-		"lp_relates_to_max_edges_per_sfi": 2,
-		"lp_relates_to_min_confidence": 0.9,
-		"lp_source_statement_types_exclude": [
-			"Compétence / libellé structurel",
-			"Compétence de base — Lecture-Écriture",
-			"Compétence de base — Récitation",
-			"Compétence de base — Expression orale",
-			"Compétence de base — Production d'écrits",
-			"expectation"
-		],
-		"lp_source_statement_types_include": [],
-		"lp_subject_role": "strand",
-		"lp_within_level_allow_banded_levels": false,
-		"lp_within_level_bucket_roles": [
-			"strand",
-			"subtopic"
-		],
-		"lp_within_level_builds_towards": true,
-		"lp_within_level_fallback_fields": [
-			"statement_type"
-		],
-		"lp_within_level_relates_to": true,
-		"lp_within_level_relates_to_max_items_per_subject": 20
+		"lc_generation_instructions": "Create LearningComponents primarily from leaf Specific Competence SFIs. Use the source English text as-is. Prefer a 1-to-1 component when the competence is already atomic. Split only when one specific competence clearly contains multiple distinct language skills. Do not create LearningComponents from Topic or Sub-topic grouping nodes, Learning Activities, Expected Standard benchmarks, methodology prose, or the Key Competences table unless a later profile explicitly marks them as LC sources."
 	}
 }
