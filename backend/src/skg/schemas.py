@@ -598,9 +598,19 @@ class _ContextSpineConfig(BaseSchema):
 class _CreateKGMetadata(BaseSchema):
     """Framework-level metadata for a KG creation run."""
 
-    adoption_status: str | None = None
-    attribution_statement: str
-    author: str
+    adoption_status: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional adoption or approval status of the framework (e.g., 'adopted', "
+            "'draft', 'under review'). Blank strings are normalized to None."
+        ),
+    )
+    attribution_statement: str = Field(
+        description="Required attribution or citation statement to credit the source of the framework."
+    )
+    author: str = Field(
+        description="Author or issuing body responsible for the framework."
+    )
     context_spine: _ContextSpineConfig = Field(
         default_factory=_ContextSpineConfig,
         description=(
@@ -608,15 +618,32 @@ class _CreateKGMetadata(BaseSchema):
             "from headings (e.g., for Ghana: grade_level -> strand -> substrand)."
         ),
     )
-    country: str
-    framework_title: str
-    grades_or_stages: list[str] = Field(default_factory=list)
-    jurisdiction: str
-    languages: list[str]
-    license: str
-    primary_language: str
-    provider: str
-    subject: str
+    country: str = Field(description="Country the framework applies to.")
+    framework_title: str = Field(
+        description="Human-readable title of the academic standards framework."
+    )
+    grades_or_stages: list[str] = Field(
+        default_factory=list,
+        description="Grades or stages covered by the framework (e.g., ['Grade 1', 'Grade 2']).",
+    )
+    jurisdiction: str = Field(
+        description="Jurisdiction that governs the framework (e.g., a national or regional education authority)."
+    )
+    languages: list[str] = Field(
+        description="Languages present in the framework. Must contain at least one non-empty value."
+    )
+    license: str = Field(
+        description="License under which the framework content is published or used."
+    )
+    primary_language: str = Field(
+        description="Primary language of the framework content."
+    )
+    provider: str = Field(
+        description="Provider or organization supplying the framework data."
+    )
+    subject: str = Field(
+        description="Academic subject the framework covers (e.g., 'Mathematics', 'English')."
+    )
 
     @field_validator(
         "attribution_statement",
@@ -632,14 +659,41 @@ class _CreateKGMetadata(BaseSchema):
     )
     @classmethod
     def _strip_and_require_non_empty(cls, v: str) -> str:
-        """Strip whitespace and require non-empty strings for required metadata fields."""
+        """Strip whitespace and require non-empty strings for required metadata fields.
+
+        Parameters
+        ----------
+        v
+            Raw value for a required string metadata field.
+
+        Returns
+        -------
+        str
+            The stripped non-empty string.
+        """
 
         return _strip_and_require_non_empty_str(v)
 
     @field_validator("adoption_status", mode="before")
     @classmethod
-    def _strip_optional_strings(cls, v: str | None) -> str | None:
-        """Strip optional string fields and normalize blank strings to None."""
+    def _strip_optional_strings(cls, v: Optional[str]) -> Optional[str]:
+        """Strip optional string fields and normalize blank strings to None.
+
+        Parameters
+        ----------
+        v
+            Raw optional adoption-status value.
+
+        Returns
+        -------
+        Optional[str]
+            The stripped string, or None when the value is None or blank.
+
+        Raises
+        ------
+        TypeError
+            If the value is not a string or None.
+        """
 
         if v is None:
             return None
@@ -653,7 +707,25 @@ class _CreateKGMetadata(BaseSchema):
     @field_validator("languages")
     @classmethod
     def validate_languages(cls, v: list[str]) -> list[str]:
-        """Validate configured metadata languages are present and de-duplicated."""
+        """Validate configured metadata languages are present and de-duplicated.
+
+        Parameters
+        ----------
+        v
+            Raw list of language strings.
+
+        Returns
+        -------
+        list[str]
+            Cleaned, de-duplicated languages in stable order.
+
+        Raises
+        ------
+        TypeError
+            If any language is not a string.
+        ValueError
+            If the list is empty or contains no non-empty values after stripping.
+        """
 
         if not v:
             raise ValueError(
