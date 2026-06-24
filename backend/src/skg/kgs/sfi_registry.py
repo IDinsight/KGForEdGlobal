@@ -735,6 +735,41 @@ def _validate_statement_type_code_types(
     return code_patterns, statement_type_code_types
 
 
+def _validate_unique_window_candidate_ids(
+    *, extraction_result: SFIExtractionResult, result_index: int
+) -> None:
+    """Validate that SFI candidate IDs are unique within one extraction result.
+
+    Parameters
+    ----------
+    extraction_result
+        SFI extraction result whose window-local candidate IDs should be unique.
+    result_index
+        0-based extraction-result position used for error reporting.
+
+    Raises
+    ------
+    ValueError
+        If any `SFICandidate.candidate_id` value appears more than once within the same
+        extraction result.
+    """
+
+    candidate_id_counts = Counter(
+        candidate.candidate_id for candidate in extraction_result.sfi_candidates
+    )
+    duplicate_candidate_ids = sorted(
+        candidate_id for candidate_id, count in candidate_id_counts.items() if count > 1
+    )
+
+    if duplicate_candidate_ids:
+        raise ValueError(
+            f"SFI extraction result {result_index} has duplicate window-local "
+            f"candidate_id values: {duplicate_candidate_ids}. Candidate IDs must "
+            f"be unique within each extraction result so registry_candidate_id "
+            f"values remain globally addressable."
+        )
+
+
 def _warn_on_code_across_statement_types(
     *,
     candidates: Sequence[SFIRegistryCandidate],
@@ -1130,6 +1165,9 @@ def build_candidate_registry(
             extraction_window=extraction_window,
             kg_config=kg_config,
             result_index=result_index,
+        )
+        _validate_unique_window_candidate_ids(
+            extraction_result=extraction_result, result_index=result_index
         )
         auxiliary_candidate_count += len(extraction_result.auxiliary_candidates)
 
