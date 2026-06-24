@@ -198,7 +198,7 @@ def _build_extraction_window(
             "bilingual_pair_policy": kg_config.as_bilingual_pair_policy,
             "code_parent_rules": kg_config.as_code_parent_rules,
             "code_patterns": kg_config.as_code_patterns,
-            "country": kg_config.country,
+            "country": kg_config.metadata.country,
             "no_code_policy": (
                 "statement_code is optional. When no official code is visible, later "
                 "candidate merge/ID steps must use source-derived keys and source text, "
@@ -209,19 +209,19 @@ def _build_extraction_window(
             "source_context_key": hashlib.sha256(
                 canonical_context.encode("utf-8")
             ).hexdigest()[:32],
-            "subject": kg_config.subject,
+            "subject": kg_config.metadata.subject,
             "synthetic_merge_key_fields": kg_config.as_synthetic_merge_key_fields,
         },
         doc_key=document_ir.doc_key,
-        framework_title=kg_config.framework_title,
+        framework_title=kg_config.metadata.framework_title,
         pdf_name=document_ir.pdf_name,
-        primary_language=kg_config.primary_language,
+        primary_language=kg_config.metadata.primary_language,
         kg_extraction_instructions=kg_config.as_sfi_extraction_instructions,
         segment_kind=segment_kind,
         source_provenance=source_provenance,
         source_segment_ids=source_segment_ids,
         source_text=source_text,
-        subject=kg_config.subject,
+        subject=kg_config.metadata.subject,
         table=table,
         window_id=window_id,
         window_index=window_index,

@@ -189,7 +189,7 @@ def create(
         logger.info(
             f"Starting KG creation using runtime config: {config_fp}; "
             f"DocumentIR: {document_ir_fp}; "
-            f"KG config framework: {config.framework_title}"
+            f"KG config framework: {config.metadata.framework_title}"
         )
 
         # 4.

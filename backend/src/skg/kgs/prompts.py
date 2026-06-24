@@ -209,15 +209,15 @@ def _build_compact_kg_config_context(kg_config: CreateKGConfig) -> dict[str, Any
     """
 
     kg_config_context: dict[str, Any] = {
-        "country": kg_config.country,
-        "grades_or_stages": kg_config.grades_or_stages,
-        "primary_language": kg_config.primary_language,
+        "country": kg_config.metadata.country,
+        "grades_or_stages": kg_config.metadata.grades_or_stages,
+        "primary_language": kg_config.metadata.primary_language,
         "sfi_extraction_instructions": kg_config.as_sfi_extraction_instructions,
         "statement_type_policy": [
             item.model_dump(mode="json", exclude_none=True)
             for item in kg_config.as_statement_type_policy
         ],
-        "subject": kg_config.subject,
+        "subject": kg_config.metadata.subject,
     }
 
     if kg_config.as_bilingual_pair_policy:

@@ -391,7 +391,7 @@ def _validate_kg_config_compatibility(
     warnings: list[str] = []
 
     kg_config_language_bases = {
-        _language_base(language) for language in kg_config.languages
+        _language_base(language) for language in kg_config.metadata.languages
     }
     observed_language_bases = {
         _language_base(language) for language in observed_languages if language
@@ -402,7 +402,7 @@ def _validate_kg_config_compatibility(
     ):
         warnings.append(
             f"KG config languages do not overlap with languages observed in the "
-            f"DocumentIR: KG config languages: {sorted(kg_config.languages)}, "
+            f"DocumentIR: KG config languages: {sorted(kg_config.metadata.languages)}, "
             f"DocumentIR languages: {observed_languages}."
         )
 
@@ -468,20 +468,20 @@ def build_run_manifest(kg_run_inputs: KGInputs) -> dict[str, Any]:
     return {
         "block_type_counts": dict(sorted(counts.items())),
         "code_pattern_match_counts": kg_run_inputs.code_pattern_match_counts,
-        "country": kg_config.country,
+        "country": kg_config.metadata.country,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "doc_key": document_ir.doc_key,
         "document_ir_fp": str(kg_run_inputs.document_ir_fp),
         "kg_config_source": "run_config.kgs",
-        "framework_title": kg_config.framework_title,
+        "framework_title": kg_config.metadata.framework_title,
         "kg_run_dir": str(kg_run_inputs.kg_dirs.root),
         "observed_languages": kg_run_inputs.observed_languages,
         "page_count": document_ir.page_count,
         "pdf_name": document_ir.pdf_name,
-        "primary_language": kg_config.primary_language,
+        "primary_language": kg_config.metadata.primary_language,
         "segment_counts": kg_run_inputs.segment_counts,
         "status": "prep_complete",
-        "subject": kg_config.subject,
+        "subject": kg_config.metadata.subject,
         "table_columns_signature_counts": kg_run_inputs.table_columns_signature_counts,
         "table_selection_match_counts": kg_run_inputs.table_selection_match_counts,
         "table_selection_policy": {

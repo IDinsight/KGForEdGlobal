@@ -595,15 +595,9 @@ class _ContextSpineConfig(BaseSchema):
         return self
 
 
-class CreateKGConfig(BaseSchema):
-    """Configuration for knowledge graph creation from document IR."""
+class _CreateKGMetadata(BaseSchema):
+    """Framework-level metadata for a KG creation run."""
 
-    # General attributes.
-    overwrite: bool = Field(
-        False, description="Overwrite existing knowledge graph artifacts."
-    )
-
-    # FRAMEWORK METADATA #
     adoption_status: str | None = None
     attribution_statement: str
     author: str
@@ -611,7 +605,7 @@ class CreateKGConfig(BaseSchema):
         default_factory=_ContextSpineConfig,
         description=(
             "KG configuration-driven rules for deriving structured extraction-window context "
-            "from headings (for Ghana: grade_level -> strand -> substrand)."
+            "from headings (e.g., for Ghana: grade_level -> strand -> substrand)."
         ),
     )
     country: str
@@ -623,6 +617,319 @@ class CreateKGConfig(BaseSchema):
     primary_language: str
     provider: str
     subject: str
+
+    @field_validator(
+        "attribution_statement",
+        "author",
+        "country",
+        "framework_title",
+        "jurisdiction",
+        "license",
+        "primary_language",
+        "provider",
+        "subject",
+        mode="before",
+    )
+    @classmethod
+    def _strip_and_require_non_empty(cls, v: str) -> str:
+        """Strip whitespace and require non-empty strings for required metadata fields."""
+
+        return _strip_and_require_non_empty_str(v)
+
+    @field_validator("adoption_status", mode="before")
+    @classmethod
+    def _strip_optional_strings(cls, v: str | None) -> str | None:
+        """Strip optional string fields and normalize blank strings to None."""
+
+        if v is None:
+            return None
+
+        if not isinstance(v, str):
+            raise TypeError("Expected a string or None")
+
+        v2 = v.strip()
+        return v2 if v2 else None
+
+    @field_validator("languages")
+    @classmethod
+    def validate_languages(cls, v: list[str]) -> list[str]:
+        """Validate configured metadata languages are present and de-duplicated."""
+
+        if not v:
+            raise ValueError(
+                "CreateKGMetadata.languages must contain at least one value."
+            )
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for language in v:
+            if not isinstance(language, str):
+                raise TypeError("CreateKGMetadata.languages must contain only strings.")
+
+            language_clean = language.strip()
+
+            if not language_clean:
+                continue
+
+            if language_clean not in seen:
+                cleaned.append(language_clean)
+                seen.add(language_clean)
+
+        if not cleaned:
+            raise ValueError(
+                "CreateKGMetadata.languages must contain at least one non-empty value."
+            )
+
+        return cleaned
+
+
+# Config schemas.
+class ExtractionConfig(BaseSchema):
+    """Configuration for page IR extraction from a PDF document."""
+
+    country: str = Field(
+        ..., description="The country associated with the PDF document."
+    )
+    dpi: int = Field(250, description="Render DPI for page images.")
+    end_page: Optional[int] = Field(
+        None, description="0-based end page (exclusive). Default None is to end."
+    )
+    languages: list[LanguageField] = Field(
+        ...,
+        description="One or more languages associated with the PDF document (e.g. en-US, fr-FR).",
+        min_length=1,
+    )
+    output_dir: Path = Field(..., description="Output directory root.")
+    overwrite: bool = Field(False, description="Overwrite existing page IR JSONs.")
+    pdf_fp: FilePath = Field(
+        ...,
+        description="The file path to the PDF document to extract curriculum data from.",
+    )
+    start_page: Optional[int] = Field(
+        None, description="0-based start page (inclusive)."
+    )
+    use_extracted_hints: bool = Field(
+        False,
+        description=(
+            "Whether or not to extract text layer and table layer hints using PyMuPDF "
+            "as additional context for the extraction agent's prompt. This is helpful "
+            "for PDF with non-English text and accents."
+        ),
+    )
+    year: Optional[int] = Field(
+        None, description="Document year (optional; overrides any inferred year)."
+    )
+
+    @model_validator(mode="after")
+    def check_page_range(self) -> Self:
+        """Ensure that if end_page is provided, it is strictly greater than start_page.
+
+        Returns
+        -------
+        Self
+            The passed in ExtractionConfig.
+
+        Raises
+        ------
+        ValueError
+            If end_page is not greater than start_page.
+        """
+
+        if (
+            self.end_page is not None
+            and self.start_page is not None
+            and self.end_page <= self.start_page
+        ):
+            raise ValueError(
+                f"end_page ({self.end_page}) must be greater than start_page ({self.start_page})."
+            )
+
+        return self
+
+    @field_validator("output_dir")
+    @classmethod
+    def ensure_output_dir_exists(cls, v: Path) -> Path:
+        """Ensure the output directory exists. If it doesn't, it creates it (including
+        parents).
+
+        Parameters
+        ----------
+        v
+            The output directory path.
+
+        Returns
+        -------
+        Path
+            The validated output directory path.
+        """
+
+        make_dir(v)
+
+        return v
+
+
+class VerificationConfig(BaseSchema):
+    """Configuration for page IR verification from a PDF document."""
+
+    end_page: Optional[int] = Field(
+        None, description="0-based end page (exclusive). Default: to end."
+    )
+    min_confidence_to_patch: float = Field(
+        0.75,
+        ge=0.0,
+        le=1.0,
+        description="Only apply compiled continuity decisions/repeats_header patches when verdict.confidence >= this threshold.",
+    )
+    min_confidence_to_select_positive: float = Field(
+        0.50,
+        description="Minimum confidence for a positive continuation verdict to outrank negatives during attempt selection. This does not control patching.",
+        ge=0.0,
+        le=1.0,
+    )
+    min_confidence_to_stop_negative_search: float = Field(
+        0.95,
+        description="Minimum confidence for a same-family primary-primary negative verdict to stop alternate candidate-pair search for a page boundary. This controls verification search budget, not compile-time patching.",
+        ge=0.0,
+        le=1.0,
+    )
+    next_page_crop_padding_px: int = Field(
+        120,
+        description="When cropping the top of page N+1 for verification, include this many extra pixels below the selected next candidate bbox. Crops are pair-specific.",
+        ge=0,
+    )
+    overwrite: bool = Field(
+        False,
+        description="If True, re-verify all page pairs even if pair reports already exist on disk. If False, reuse existing pair reports (resumed run support).",
+    )
+    start_page: Optional[int] = Field(
+        None, description="0-based start page (inclusive)."
+    )
+
+    @model_validator(mode="after")
+    def check_page_range(self) -> Self:
+        """Ensure that if end_page is provided, it is strictly greater than start_page.
+
+        Returns
+        -------
+        Self
+            The passed in VerificationConfig.
+
+        Raises
+        ------
+        ValueError
+            If end_page is not greater than start_page.
+        """
+
+        if (
+            self.end_page is not None
+            and self.start_page is not None
+            and self.end_page <= self.start_page
+        ):
+            raise ValueError(
+                f"end_page ({self.end_page}) must be greater than start_page ({self.start_page})."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def check_confidences(self) -> Self:
+        """Ensure confidence thresholds remain logically consistent.
+
+        Returns
+        -------
+        Self
+            The passed in VerificationConfig.
+
+        Raises
+        ------
+        ValueError
+            If min_confidence_to_select_positive is greater than
+                min_confidence_to_patch.
+            If min_confidence_to_stop_negative_search is lower than
+                min_confidence_to_patch.
+        """
+
+        if self.min_confidence_to_select_positive > self.min_confidence_to_patch:
+            raise ValueError(
+                "min_confidence_to_select_positive must be <= min_confidence_to_patch so selection remains at least as permissive as patching."
+            )
+
+        if self.min_confidence_to_stop_negative_search < self.min_confidence_to_patch:
+            raise ValueError(
+                "min_confidence_to_stop_negative_search must be >= min_confidence_to_patch so early negative stopping remains at least as conservative as patching."
+            )
+
+        return self
+
+
+class StitchingConfig(BaseSchema):
+    """Configuration for document IR stitching from verified page IR JSONs.
+
+    NB: `table_filldown_group_cols_max` (fill-down/rowspan reconstruction)
+
+    1. Many curriculum PDFs use **merged cells/rowspans** in the *leftmost grouping
+        columns* (e.g., **Topic**, **Sub-topic**, **Strand**, **Theme**). When
+        extracted, those merged cells often appear as **blank cells** on subsequent
+        rows.
+    2. `table_filldown_group_cols_max` controls **how many leading columns** should
+        have these visually empty cells **filled down** from the most recent non-empty
+        value above. This reconstructs the intended grouping structure without changing
+        the underlying table content.
+            - Only the **first `table_filldown_group_cols_max` columns** are eligible
+                for fill-down.
+            - Columns beyond this are treated as **leaf/content columns** (e.g.,
+                competences/outcomes, activities, expected standards), where blanks
+                typically mean **“no content / not applicable”**, not “repeat previous”.
+    3. Why not set it very large (e.g., 10)? Because non-grouping columns often contain
+        legitimate blanks (or extraction misses). A large value can silently “invent”
+        repeated activities/standards by copying prior rows, corrupting the extracted
+        table semantics.
+    """
+
+    keep_artifacts: bool = Field(
+        False,
+        description="Whether to keep artifacts such as page numbers, headers, footers, etc. after stitching.",
+    )
+    max_section_path_length: int = Field(
+        12,
+        description="Maximum number of section paths in the stack to maintain. For most PDFs, 12 is a good number that will capture enough breadcrumb context for heading traces.",
+    )
+    min_link_score: float = Field(
+        1.0, description="Minimum link score to consider for stitching.", ge=0
+    )
+    overwrite: bool = Field(False, description="Overwrite existing document IR JSON.")
+    repair_hyphenation: bool = Field(
+        True, description="Whether to repair hyphenation for stitched text."
+    )
+    sort_items_by_bbox: bool = Field(
+        False,
+        description="Whether to sort items by their bounding box positions before stitching.",
+    )
+    table_filldown_enabled: bool = Field(
+        True, description="Whether to enable table filldown during stitching."
+    )
+    table_filldown_group_cols_max: int = Field(
+        1, description="Maximum number of group columns for table filldown.", ge=0
+    )
+    verification_auto_stitch_confidence: float = Field(
+        0.75,
+        description="If a verified link has confidence >= this value, it will be automatically stitched.",
+        ge=0,
+        le=1,
+    )
+
+
+class CreateKGConfig(BaseSchema):
+    """Configuration for knowledge graph creation from document IR."""
+
+    # General attributes.
+    overwrite: bool = Field(
+        False, description="Overwrite existing knowledge graph artifacts."
+    )
+
+    # FRAMEWORK METADATA #
+    metadata: _CreateKGMetadata
 
     # ACADEMIC STANDARDS #
 
@@ -701,16 +1008,7 @@ class CreateKGConfig(BaseSchema):
     @field_validator(
         "as_duplicate_review_instructions",
         "as_sfi_extraction_instructions",
-        "attribution_statement",
-        "author",
-        "country",
-        "framework_title",
-        "jurisdiction",
         "lc_generation_instructions",
-        "license",
-        "primary_language",
-        "provider",
-        "subject",
         mode="before",
     )
     @classmethod
@@ -730,7 +1028,7 @@ class CreateKGConfig(BaseSchema):
 
         return _strip_and_require_non_empty_str(v)
 
-    @field_validator("adoption_status", "as_bilingual_pair_policy", mode="before")
+    @field_validator("as_bilingual_pair_policy", mode="before")
     @classmethod
     def _strip_optional_strings(cls, v: str | None) -> str | None:
         """Strip optional string fields and normalize blank strings to None.
@@ -942,50 +1240,6 @@ class CreateKGConfig(BaseSchema):
                 ) from exc
 
         return v
-
-    @field_validator("languages")
-    @classmethod
-    def validate_languages(cls, v: list[str]) -> list[str]:
-        """Validate configured languages are present, non-empty, and de-duplicated.
-
-        Parameters
-        ----------
-        v
-            Language tags configured for KG extraction.
-
-        Returns
-        -------
-        list[str]
-            Cleaned language tags in stable order.
-        """
-
-        if not v:
-            raise ValueError(
-                "CreateKGConfig.languages must contain at least one value."
-            )
-
-        cleaned: list[str] = []
-        seen: set[str] = set()
-
-        for language in v:
-            if not isinstance(language, str):
-                raise TypeError("CreateKGConfig.languages must contain only strings.")
-
-            language_clean = language.strip()
-
-            if not language_clean:
-                continue
-
-            if language_clean not in seen:
-                cleaned.append(language_clean)
-                seen.add(language_clean)
-
-        if not cleaned:
-            raise ValueError(
-                "CreateKGConfig.languages must contain at least one non-empty value."
-            )
-
-        return cleaned
 
     @field_validator("as_synthetic_merge_key_fields")
     @classmethod
@@ -1253,242 +1507,6 @@ class CreateKGConfig(BaseSchema):
         self._validate_selection_overlap_policy()
         self._validate_statement_type_policy_code_types(known)
         return self
-
-
-# Config schemas.
-class ExtractionConfig(BaseSchema):
-    """Configuration for page IR extraction from a PDF document."""
-
-    country: str = Field(
-        ..., description="The country associated with the PDF document."
-    )
-    dpi: int = Field(250, description="Render DPI for page images.")
-    end_page: Optional[int] = Field(
-        None, description="0-based end page (exclusive). Default None is to end."
-    )
-    languages: list[LanguageField] = Field(
-        ...,
-        description="One or more languages associated with the PDF document (e.g. en-US, fr-FR).",
-        min_length=1,
-    )
-    output_dir: Path = Field(..., description="Output directory root.")
-    overwrite: bool = Field(False, description="Overwrite existing page IR JSONs.")
-    pdf_fp: FilePath = Field(
-        ...,
-        description="The file path to the PDF document to extract curriculum data from.",
-    )
-    start_page: Optional[int] = Field(
-        None, description="0-based start page (inclusive)."
-    )
-    use_extracted_hints: bool = Field(
-        False,
-        description=(
-            "Whether or not to extract text layer and table layer hints using PyMuPDF "
-            "as additional context for the extraction agent's prompt. This is helpful "
-            "for PDF with non-English text and accents."
-        ),
-    )
-    year: Optional[int] = Field(
-        None, description="Document year (optional; overrides any inferred year)."
-    )
-
-    @model_validator(mode="after")
-    def check_page_range(self) -> Self:
-        """Ensure that if end_page is provided, it is strictly greater than start_page.
-
-        Returns
-        -------
-        Self
-            The passed in ExtractionConfig.
-
-        Raises
-        ------
-        ValueError
-            If end_page is not greater than start_page.
-        """
-
-        if (
-            self.end_page is not None
-            and self.start_page is not None
-            and self.end_page <= self.start_page
-        ):
-            raise ValueError(
-                f"end_page ({self.end_page}) must be greater than start_page ({self.start_page})."
-            )
-
-        return self
-
-    @field_validator("output_dir")
-    @classmethod
-    def ensure_output_dir_exists(cls, v: Path) -> Path:
-        """Ensure the output directory exists. If it doesn't, it creates it (including
-        parents).
-
-        Parameters
-        ----------
-        v
-            The output directory path.
-
-        Returns
-        -------
-        Path
-            The validated output directory path.
-        """
-
-        make_dir(v)
-
-        return v
-
-
-class VerificationConfig(BaseSchema):
-    """Configuration for page IR verification from a PDF document."""
-
-    end_page: Optional[int] = Field(
-        None, description="0-based end page (exclusive). Default: to end."
-    )
-    min_confidence_to_patch: float = Field(
-        0.75,
-        ge=0.0,
-        le=1.0,
-        description="Only apply compiled continuity decisions/repeats_header patches when verdict.confidence >= this threshold.",
-    )
-    min_confidence_to_select_positive: float = Field(
-        0.50,
-        description="Minimum confidence for a positive continuation verdict to outrank negatives during attempt selection. This does not control patching.",
-        ge=0.0,
-        le=1.0,
-    )
-    min_confidence_to_stop_negative_search: float = Field(
-        0.95,
-        description="Minimum confidence for a same-family primary-primary negative verdict to stop alternate candidate-pair search for a page boundary. This controls verification search budget, not compile-time patching.",
-        ge=0.0,
-        le=1.0,
-    )
-    next_page_crop_padding_px: int = Field(
-        120,
-        description="When cropping the top of page N+1 for verification, include this many extra pixels below the selected next candidate bbox. Crops are pair-specific.",
-        ge=0,
-    )
-    overwrite: bool = Field(
-        False,
-        description="If True, re-verify all page pairs even if pair reports already exist on disk. If False, reuse existing pair reports (resumed run support).",
-    )
-    start_page: Optional[int] = Field(
-        None, description="0-based start page (inclusive)."
-    )
-
-    @model_validator(mode="after")
-    def check_page_range(self) -> Self:
-        """Ensure that if end_page is provided, it is strictly greater than start_page.
-
-        Returns
-        -------
-        Self
-            The passed in VerificationConfig.
-
-        Raises
-        ------
-        ValueError
-            If end_page is not greater than start_page.
-        """
-
-        if (
-            self.end_page is not None
-            and self.start_page is not None
-            and self.end_page <= self.start_page
-        ):
-            raise ValueError(
-                f"end_page ({self.end_page}) must be greater than start_page ({self.start_page})."
-            )
-
-        return self
-
-    @model_validator(mode="after")
-    def check_confidences(self) -> Self:
-        """Ensure confidence thresholds remain logically consistent.
-
-        Returns
-        -------
-        Self
-            The passed in VerificationConfig.
-
-        Raises
-        ------
-        ValueError
-            If min_confidence_to_select_positive is greater than
-                min_confidence_to_patch.
-            If min_confidence_to_stop_negative_search is lower than
-                min_confidence_to_patch.
-        """
-
-        if self.min_confidence_to_select_positive > self.min_confidence_to_patch:
-            raise ValueError(
-                "min_confidence_to_select_positive must be <= min_confidence_to_patch so selection remains at least as permissive as patching."
-            )
-
-        if self.min_confidence_to_stop_negative_search < self.min_confidence_to_patch:
-            raise ValueError(
-                "min_confidence_to_stop_negative_search must be >= min_confidence_to_patch so early negative stopping remains at least as conservative as patching."
-            )
-
-        return self
-
-
-class StitchingConfig(BaseSchema):
-    """Configuration for document IR stitching from verified page IR JSONs.
-
-    NB: `table_filldown_group_cols_max` (fill-down/rowspan reconstruction)
-
-    1. Many curriculum PDFs use **merged cells/rowspans** in the *leftmost grouping
-        columns* (e.g., **Topic**, **Sub-topic**, **Strand**, **Theme**). When
-        extracted, those merged cells often appear as **blank cells** on subsequent
-        rows.
-    2. `table_filldown_group_cols_max` controls **how many leading columns** should
-        have these visually empty cells **filled down** from the most recent non-empty
-        value above. This reconstructs the intended grouping structure without changing
-        the underlying table content.
-            - Only the **first `table_filldown_group_cols_max` columns** are eligible
-                for fill-down.
-            - Columns beyond this are treated as **leaf/content columns** (e.g.,
-                competences/outcomes, activities, expected standards), where blanks
-                typically mean **“no content / not applicable”**, not “repeat previous”.
-    3. Why not set it very large (e.g., 10)? Because non-grouping columns often contain
-        legitimate blanks (or extraction misses). A large value can silently “invent”
-        repeated activities/standards by copying prior rows, corrupting the extracted
-        table semantics.
-    """
-
-    keep_artifacts: bool = Field(
-        False,
-        description="Whether to keep artifacts such as page numbers, headers, footers, etc. after stitching.",
-    )
-    max_section_path_length: int = Field(
-        12,
-        description="Maximum number of section paths in the stack to maintain. For most PDFs, 12 is a good number that will capture enough breadcrumb context for heading traces.",
-    )
-    min_link_score: float = Field(
-        1.0, description="Minimum link score to consider for stitching.", ge=0
-    )
-    overwrite: bool = Field(False, description="Overwrite existing document IR JSON.")
-    repair_hyphenation: bool = Field(
-        True, description="Whether to repair hyphenation for stitched text."
-    )
-    sort_items_by_bbox: bool = Field(
-        False,
-        description="Whether to sort items by their bounding box positions before stitching.",
-    )
-    table_filldown_enabled: bool = Field(
-        True, description="Whether to enable table filldown during stitching."
-    )
-    table_filldown_group_cols_max: int = Field(
-        1, description="Maximum number of group columns for table filldown.", ge=0
-    )
-    verification_auto_stitch_confidence: float = Field(
-        0.75,
-        description="If a verified link has confidence >= this value, it will be automatically stitched.",
-        ge=0,
-        le=1,
-    )
 
 
 class RunConfig(BaseSchema):
