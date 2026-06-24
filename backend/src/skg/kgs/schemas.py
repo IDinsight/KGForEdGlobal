@@ -794,14 +794,8 @@ class SFIRegistryCandidate(BaseSchema):
     normalized_description: str = Field(
         description="Lightweight normalized candidate description."
     )
-    normalized_description_without_leading_code: str = Field(
-        description="Normalized description with only an obvious leading code removed."
-    )
     normalized_source_text: str = Field(
         description="Lightweight normalized candidate source_text."
-    )
-    normalized_source_text_without_leading_code: str = Field(
-        description="Normalized source_text with only an obvious leading code removed."
     )
     normalized_statement_code: Optional[str] = Field(
         default=None, description="Lightweight normalized statement_code, when present."

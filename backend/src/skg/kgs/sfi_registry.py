@@ -15,6 +15,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+# Third Party Library
+from loguru import logger
+
 # Package Library
 from skg.kgs.schemas import (
     ExtractionWindow,
@@ -30,105 +33,6 @@ from skg.kgs.validators import verify_sfi_extraction_quality
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, write_to_json
-
-
-def _add_registry_warning(
-    *,
-    bucket_id: Optional[str],
-    message: str,
-    registry_candidate_ids: Sequence[str],
-    severity: str,
-    warning_index: int,
-    warning_type: str,
-) -> SFIRegistryWarning:
-    """Create one registry warning.
-
-    Parameters
-    ----------
-    bucket_id
-        Optional duplicate bucket ID associated with this warning.
-    message
-        Human-readable warning message.
-    registry_candidate_ids
-        Registry candidate IDs associated with the warning.
-    severity
-        Warning severity label.
-    warning_index
-        1-based warning index used to create a stable local ID.
-    warning_type
-        Machine-readable warning type.
-
-    Returns
-    -------
-    SFIRegistryWarning
-        Validated warning record.
-    """
-
-    return SFIRegistryWarning(
-        bucket_id=bucket_id,
-        message=message,
-        registry_candidate_ids=list(registry_candidate_ids),
-        severity=severity,
-        warning_id=f"warning_{warning_index:04d}",
-        warning_type=warning_type,
-    )
-
-
-def _build_duplicate_bucket(
-    *,
-    bucket_key: str,
-    bucket_type: str,
-    candidates_by_id: dict[str, SFIRegistryCandidate],
-    registry_candidate_ids: Sequence[str],
-) -> SFIRegistryDuplicateBucket:
-    """Build one possible duplicate bucket from registry candidate IDs.
-
-    Parameters
-    ----------
-    bucket_key
-        Normalized bucket key shared by all candidates in the bucket.
-    bucket_type
-        Bucket type, such as `code` or `description_text`.
-    candidates_by_id
-        Lookup of registry candidates by registry candidate ID.
-    registry_candidate_ids
-        Candidate IDs belonging to this bucket.
-
-    Returns
-    -------
-    SFIRegistryDuplicateBucket
-        Validated duplicate bucket record for later merge review.
-    """
-
-    candidate_ids = sorted(registry_candidate_ids)
-    candidate_records = [
-        candidates_by_id[candidate_id] for candidate_id in candidate_ids
-    ]
-    bucket_id = _deterministic_bucket_id(bucket_key=bucket_key, bucket_type=bucket_type)
-    evidence_strength = {
-        "code": "strong_signal",
-        "description_text": "medium_signal",
-        "source_text": "weak_signal",
-    }[bucket_type]
-    statement_types = sorted(
-        {candidate.statement_type for candidate in candidate_records}
-    )
-    window_indexes = sorted({candidate.window_index for candidate in candidate_records})
-
-    return SFIRegistryDuplicateBucket(
-        bucket_id=bucket_id,
-        bucket_key=bucket_key,
-        bucket_type=bucket_type,
-        candidate_count=len(candidate_ids),
-        description_examples=_unique_limited(
-            [candidate.description for candidate in candidate_records], limit=5
-        ),
-        evidence_strength=evidence_strength,
-        merge_policy_hint="review_required",
-        registry_candidate_ids=candidate_ids,
-        statement_types=statement_types,
-        window_indexes=window_indexes,
-    )
 
 
 def _build_duplicate_buckets(
@@ -147,8 +51,7 @@ def _build_duplicate_buckets(
         Possible duplicate buckets with at least two candidates each.
     """
 
-    buckets: list[SFIRegistryDuplicateBucket] = []
-    bucket_maps: dict[str, dict[str, list[str]]] = {
+    bucket_maps: dict[str, dict[str, list[SFIRegistryCandidate]]] = {
         "code": defaultdict(list),
         "description_text": defaultdict(list),
         "source_text": defaultdict(list),
@@ -156,44 +59,50 @@ def _build_duplicate_buckets(
 
     for candidate in candidates:
         if candidate.code_bucket_key:
-            bucket_maps["code"][candidate.code_bucket_key].append(
-                candidate.registry_candidate_id
-            )
+            bucket_maps["code"][candidate.code_bucket_key].append(candidate)
 
-        bucket_maps["description_text"][candidate.text_bucket_key].append(
-            candidate.registry_candidate_id
-        )
-        bucket_maps["source_text"][candidate.source_text_bucket_key].append(
-            candidate.registry_candidate_id
-        )
+        bucket_maps["description_text"][candidate.text_bucket_key].append(candidate)
+        bucket_maps["source_text"][candidate.source_text_bucket_key].append(candidate)
 
-    candidates_by_id = {
-        candidate.registry_candidate_id: candidate for candidate in candidates
+    evidence_strength_map = {
+        "code": "strong_signal",
+        "description_text": "medium_signal",
+        "source_text": "weak_signal",
     }
+    buckets: list[SFIRegistryDuplicateBucket] = []
 
+    # Iterate in the exact order required for the final return.
     for bucket_type in ["code", "description_text", "source_text"]:
-        for bucket_key, registry_candidate_ids in sorted(
-            bucket_maps[bucket_type].items()
-        ):
-            if len(registry_candidate_ids) < 2:
+        for bucket_key, bucket_candidates in sorted(bucket_maps[bucket_type].items()):
+            if len(bucket_candidates) < 2:
                 continue
 
+            # Sort candidates by ID to maintain deterministic order.
+            bucket_candidates.sort(key=lambda c: c.registry_candidate_id)
+            candidate_ids = [c.registry_candidate_id for c in bucket_candidates]
+
             buckets.append(
-                _build_duplicate_bucket(
+                SFIRegistryDuplicateBucket(
+                    bucket_id=_deterministic_bucket_id(
+                        bucket_key=bucket_key, bucket_type=bucket_type
+                    ),
                     bucket_key=bucket_key,
                     bucket_type=bucket_type,
-                    candidates_by_id=candidates_by_id,
-                    registry_candidate_ids=registry_candidate_ids,
+                    candidate_count=len(candidate_ids),
+                    description_examples=_unique_limited(
+                        [c.description for c in bucket_candidates], limit=5
+                    ),
+                    evidence_strength=evidence_strength_map[bucket_type],
+                    merge_policy_hint="review_required",
+                    registry_candidate_ids=candidate_ids,
+                    statement_types=sorted(
+                        {c.statement_type for c in bucket_candidates}
+                    ),
+                    window_indexes=sorted({c.window_index for c in bucket_candidates}),
                 )
             )
 
-    return sorted(
-        buckets,
-        key=lambda bucket: (
-            {"code": 0, "description_text": 1, "source_text": 2}[bucket.bucket_type],
-            bucket.bucket_key,
-        ),
-    )
+    return buckets
 
 
 def _build_registry_candidate(
@@ -222,35 +131,34 @@ def _build_registry_candidate(
     Returns
     -------
     SFIRegistryCandidate
-        Registry candidate with normalized keys and source references.
+        Registry candidate with normalized code and literal text bucket keys.
     """
 
-    normalized_description = _normalize_text(candidate.description)
-    normalized_source_text = _normalize_text(candidate.source_text)
     normalized_statement_code = _normalize_code(candidate.statement_code)
+
     _validate_statement_code_matches_config(
         candidate=candidate,
         code_patterns=code_patterns,
         normalized_statement_code=normalized_statement_code,
         statement_type_code_types=statement_type_code_types,
     )
-    normalized_description_without_leading_code = _strip_configured_leading_code_prefix(
-        code_patterns=code_patterns, value=normalized_description
-    )
-    normalized_source_text_without_leading_code = _strip_configured_leading_code_prefix(
-        code_patterns=code_patterns, value=normalized_source_text
-    )
-    registry_candidate_id = _deterministic_registry_candidate_id(
-        candidate_id=candidate.candidate_id,
-        window_id=extraction_window.window_id,
-        window_index=extraction_window.window_index,
-    )
+
+    # Generate deterministic temporary registry candidate ID.
+    candidate_slug = re.sub(
+        r"[^0-9A-Za-z_\-]+", "_", candidate.candidate_id.strip()
+    ).strip("_")
+    digest = hashlib.sha256(
+        f"{extraction_window.window_id}|{candidate.candidate_id}".encode("utf-8")
+    ).hexdigest()
+    registry_candidate_id = f"w{extraction_window.window_index:04d}:{candidate_slug or 'candidate'}:{digest[:8]}"
+
+    # Create bucket keys for source text and code.
+    normalized_description = _normalize_text(candidate.description)
+    normalized_source_text = _normalize_text(candidate.source_text)
     statement_type_key = _normalize_text(candidate.statement_type)
-    text_bucket_key = _join_bucket_key(
-        statement_type_key, normalized_description_without_leading_code
-    )
+    text_bucket_key = _join_bucket_key(statement_type_key, normalized_description)
     source_text_bucket_key = _join_bucket_key(
-        statement_type_key, normalized_source_text_without_leading_code
+        statement_type_key, normalized_source_text
     )
     code_bucket_key = (
         _join_bucket_key(statement_type_key, normalized_statement_code)
@@ -265,9 +173,7 @@ def _build_registry_candidate(
         description=candidate.description,
         language=candidate.language,
         normalized_description=normalized_description,
-        normalized_description_without_leading_code=normalized_description_without_leading_code,
         normalized_source_text=normalized_source_text,
-        normalized_source_text_without_leading_code=normalized_source_text_without_leading_code,
         normalized_statement_code=normalized_statement_code,
         normalized_statement_type=candidate.normalized_statement_type,
         registry_candidate_id=registry_candidate_id,
@@ -375,7 +281,7 @@ def _build_registry_warnings(
     duplicate_buckets: Sequence[SFIRegistryDuplicateBucket],
     statement_type_code_types: dict[str, str],
 ) -> list[SFIRegistryWarning]:
-    """Build lightweight non-fatal warnings for candidate review.
+    """Build non-fatal warnings for candidate review.
 
     Parameters
     ----------
@@ -394,8 +300,6 @@ def _build_registry_warnings(
         Non-fatal warnings for Step 7 review and debugging.
     """
 
-    warnings: list[SFIRegistryWarning] = []
-    warning_signatures: set[tuple[Any, ...]] = set()
     candidates_by_code: dict[str, list[SFIRegistryCandidate]] = defaultdict(list)
     candidates_by_id = {
         candidate.registry_candidate_id: candidate for candidate in candidates
@@ -404,6 +308,8 @@ def _build_registry_warnings(
         defaultdict(list)
     )
     candidates_by_text_bucket: dict[str, list[SFIRegistryCandidate]] = defaultdict(list)
+    warning_signatures: set[tuple[Any, ...]] = set()
+    warnings: list[SFIRegistryWarning] = []
 
     for candidate in candidates:
         if candidate.normalized_statement_code:
@@ -421,7 +327,7 @@ def _build_registry_warnings(
                 bucket_id=None,
                 message=(
                     f"Candidate {candidate.registry_candidate_id} has source text "
-                    "matching configured code_patterns but statement_code is null."
+                    f"matching configured code_patterns but statement_code is null."
                 ),
                 registry_candidate_ids=[candidate.registry_candidate_id],
                 severity="warning",
@@ -440,7 +346,7 @@ def _build_registry_warnings(
                     f"Candidate {candidate.registry_candidate_id} has statement_code "
                     f"{candidate.statement_code!r}, but statement_type "
                     f"{candidate.statement_type!r} does not define a code_type in "
-                    "statement_type_policy."
+                    f"statement_type_policy."
                 ),
                 registry_candidate_ids=[candidate.registry_candidate_id],
                 severity="warning",
@@ -546,7 +452,7 @@ def _build_registry_warnings(
                 duplicate_buckets=duplicate_buckets,
             ),
             message=(
-                "Same statement_type + normalized text appears across multiple "
+                f"Same statement_type + normalized text appears across multiple "
                 f"windows: {sorted(window_indexes)}."
             ),
             registry_candidate_ids=[
@@ -582,31 +488,6 @@ def _deterministic_bucket_id(*, bucket_key: str, bucket_type: str) -> str:
 
     digest = hashlib.sha256(f"{bucket_type}|{bucket_key}".encode("utf-8")).hexdigest()
     return f"bucket_{bucket_type}_{digest[:16]}"
-
-
-def _deterministic_registry_candidate_id(
-    *, candidate_id: str, window_id: str, window_index: int
-) -> str:
-    """Create a deterministic temporary registry candidate ID.
-
-    Parameters
-    ----------
-    candidate_id
-        Window-local candidate ID.
-    window_id
-        Source extraction window ID.
-    window_index
-        Source extraction window index.
-
-    Returns
-    -------
-    str
-        Temporary registry candidate ID for review and merge reporting.
-    """
-
-    candidate_slug = re.sub(r"[^0-9A-Za-z_\-]+", "_", candidate_id.strip()).strip("_")
-    digest = hashlib.sha256(f"{window_id}|{candidate_id}".encode("utf-8")).hexdigest()
-    return f"w{window_index:04d}:{candidate_slug or 'candidate'}:{digest[:8]}"
 
 
 def _find_bucket_id(
@@ -729,12 +610,12 @@ def _maybe_append_warning(
 
     warning_signatures.add(signature)
     warnings.append(
-        _add_registry_warning(
+        SFIRegistryWarning(
             bucket_id=bucket_id,
             message=message,
-            registry_candidate_ids=candidate_ids,
+            registry_candidate_ids=list(candidate_ids),
             severity=severity,
-            warning_index=len(warnings) + 1,
+            warning_id=f"warning_{len(warnings) + 1:04d}",
             warning_type=warning_type,
         )
     )
@@ -779,61 +660,6 @@ def _normalize_text(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
     normalized = re.sub(r"\s+", " ", normalized).strip()
     return normalized
-
-
-def _strip_configured_leading_code_prefix(
-    *, code_patterns: dict[str, re.Pattern[str]], value: str
-) -> str:
-    """Strip a leading prefix only when it matches configured code patterns.
-
-    Parameters
-    ----------
-    code_patterns
-        Compiled curriculum-specific code patterns keyed by code type.
-    value
-        Normalized candidate text.
-
-    Returns
-    -------
-    str
-        Text with a configured leading code prefix removed, when present.
-    """
-
-    if not code_patterns:
-        return value
-
-    text = str(value or "").strip()
-
-    if not text:
-        return value
-
-    max_prefix_length = min(len(text), 120)
-    delimiter_chars = " :.)-–—"
-
-    for prefix_end_index in range(1, max_prefix_length + 1):
-        if (
-            prefix_end_index < len(text)
-            and text[prefix_end_index] not in delimiter_chars
-        ):
-            continue
-
-        prefix = text[:prefix_end_index]
-        normalized_prefix = _normalize_code(prefix)
-
-        if normalized_prefix is None:
-            continue
-
-        if not [
-            code_type
-            for code_type, pattern in sorted(code_patterns.items())
-            if pattern.fullmatch(normalized_prefix or "")
-        ]:
-            continue
-
-        stripped = text[prefix_end_index:].lstrip(delimiter_chars).strip()
-        return stripped or value
-
-    return value
 
 
 def _unique_limited(values: Sequence[str], *, limit: int) -> list[str]:
@@ -1170,5 +996,7 @@ def build_candidate_registry(
     )
 
     write_to_json(fp=save_fp, json_info=sfi_registry_artifact)
+
+    logger.success(f"Saved SFI registry artifact to: {save_fp}")
 
     return sfi_registry_artifact
