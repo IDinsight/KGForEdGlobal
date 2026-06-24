@@ -37,6 +37,41 @@ _ProgressionSubtype = Literal["developmental_prerequisite", "recurring_practice"
 _ValidationLevel = Literal["error", "info"]
 
 
+def _strip_and_require_non_empty_str(v: str) -> str:
+    """Strip whitespace and require non-empty string for required fields.
+
+    Parameters
+    ----------
+    v
+        The input string value to validate.
+
+    Returns
+    -------
+    str
+        The validated and stripped string value.
+
+    Raises
+    ------
+    TypeError
+        If the input is not a string.
+    ValueError
+        If the input value is None or an empty string after stripping.
+    """
+
+    if v is None:
+        raise ValueError("Required field cannot be None")
+
+    if not isinstance(v, str):
+        raise TypeError("Expected a string")
+
+    v2 = v.strip()
+
+    if not v2:
+        raise ValueError("Required string field cannot be empty")
+
+    return v2
+
+
 def unique_clean_strings(values: Sequence[str]) -> list[str]:
     """Clean and de-duplicate strings while preserving order.
 
@@ -715,39 +750,167 @@ class SFIExtractionSummary(BaseSchema):
     windows_without_candidates: int = Field(default=0, ge=0)
 
 
-def _strip_and_require_non_empty_str(v: str) -> str:
-    """Strip whitespace and require non-empty string for required fields.
+# Schemas for SFI candidate registry.
+class SFIRegistryArtifact(BaseSchema):
+    """Persisted global SFI candidate registry artifact."""
 
-    Parameters
-    ----------
-    v
-        The input string value to validate.
+    candidates: list[SFIRegistryCandidate] = Field(default_factory=list)
+    country: str = Field(description="KG config metadata country.")
+    doc_key: Optional[str] = Field(
+        default=None, description="Source DocumentIR doc_key."
+    )
+    duplicate_buckets: list[SFIRegistryDuplicateBucket] = Field(default_factory=list)
+    framework_title: str = Field(description="KG config metadata framework title.")
+    pdf_name: Optional[str] = Field(default=None, description="Source PDF filename.")
+    primary_language: LanguageField = Field(
+        description="KG config metadata primary language."
+    )
+    subject: str = Field(description="KG config metadata subject.")
+    summary: SFIRegistrySummary = Field(description="Registry aggregate summary.")
+    warnings: list[SFIRegistryWarning] = Field(default_factory=list)
 
-    Returns
-    -------
-    str
-        The validated and stripped string value.
 
-    Raises
-    ------
-    TypeError
-        If the input is not a string.
-    ValueError
-        If the input value is None or an empty string after stripping.
+class SFIRegistryCandidate(BaseSchema):
+    """Document-level wrapper around one window-local SFI candidate.
+
+    The registry candidate is a temporary review handle for merge/dedup stages. It is
+    not a final StandardsFrameworkItem and must not be used as a final KG ID.
     """
 
-    if v is None:
-        raise ValueError("Required field cannot be None")
+    candidate_payload: SFICandidate = Field(
+        description="Original window-local SFI candidate payload."
+    )
+    code_bucket_key: Optional[str] = Field(
+        default=None,
+        description="statement_type + normalized_statement_code bucket key, when coded.",
+    )
+    confidence: float = Field(
+        description="Original candidate confidence.", ge=0.0, le=1.0
+    )
+    description: str = Field(
+        description="Original candidate description.", min_length=1
+    )
+    language: LanguageField = Field(description="Original candidate language tag.")
+    normalized_description: str = Field(
+        description="Lightweight normalized candidate description."
+    )
+    normalized_description_without_leading_code: str = Field(
+        description="Normalized description with only an obvious leading code removed."
+    )
+    normalized_source_text: str = Field(
+        description="Lightweight normalized candidate source_text."
+    )
+    normalized_source_text_without_leading_code: str = Field(
+        description="Normalized source_text with only an obvious leading code removed."
+    )
+    normalized_statement_code: Optional[str] = Field(
+        default=None, description="Lightweight normalized statement_code, when present."
+    )
+    normalized_statement_type: NormalizedStatementType = Field(
+        description="Original candidate normalized statement type."
+    )
+    registry_candidate_id: str = Field(
+        description="Temporary document-level candidate handle for review and merge."
+    )
+    source_segment_ids: list[str] = Field(
+        description="ExtractionWindow.source_segment_ids for source recovery.",
+        min_length=1,
+    )
+    source_text: str = Field(
+        description="Original candidate source_text.", min_length=1
+    )
+    source_text_bucket_key: str = Field(
+        description="statement_type + normalized source_text bucket key."
+    )
+    source_window_candidate_id: str = Field(
+        description="Original window-local candidate_id."
+    )
+    source_window_candidate_index: int = Field(
+        description="0-based candidate position within the extraction result.", ge=0
+    )
+    statement_code: Optional[str] = Field(
+        default=None, description="Original candidate statement_code, when present."
+    )
+    statement_type: str = Field(description="Original candidate statement_type.")
+    table_header_indexes: list[int] = Field(
+        default_factory=list, description="Original candidate table_header_indexes."
+    )
+    table_row_indexes: list[int] = Field(
+        default_factory=list, description="Original candidate table_row_indexes."
+    )
+    text_bucket_key: str = Field(
+        description="statement_type + normalized description bucket key."
+    )
+    window_id: str = Field(description="ExtractionWindow.window_id.")
+    window_index: int = Field(description="ExtractionWindow.window_index.", ge=0)
 
-    if not isinstance(v, str):
-        raise TypeError("Expected a string")
 
-    v2 = v.strip()
+class SFIRegistryDuplicateBucket(BaseSchema):
+    """Possible SFI duplicate bucket for later LLM-assisted merge review."""
 
-    if not v2:
-        raise ValueError("Required string field cannot be empty")
+    bucket_id: str = Field(description="Deterministic duplicate bucket ID.")
+    bucket_key: str = Field(description="Normalized bucket key.")
+    bucket_type: Literal["code", "description_text", "source_text"] = Field(
+        description="Duplicate signal type used to form the bucket."
+    )
+    candidate_count: int = Field(
+        description="Number of candidates in the bucket.", ge=2
+    )
+    description_examples: list[str] = Field(
+        default_factory=list, description="Up to five source candidate descriptions."
+    )
+    evidence_strength: Literal["strong_signal", "medium_signal", "weak_signal"] = Field(
+        description="LLM-facing duplicate-signal strength hint."
+    )
+    merge_policy_hint: Literal["review_required"] = Field(
+        default="review_required",
+        description="Reminder that this bucket is not an automatic merge decision.",
+    )
+    registry_candidate_ids: list[str] = Field(
+        description="Registry candidates included in this possible duplicate bucket.",
+        min_length=2,
+    )
+    statement_types: list[str] = Field(
+        default_factory=list, description="Statement types present in the bucket."
+    )
+    window_indexes: list[int] = Field(
+        default_factory=list,
+        description="Extraction window indexes present in the bucket.",
+    )
 
-    return v2
+
+class SFIRegistrySummary(BaseSchema):
+    """Aggregate summary for SFI candidate registry."""
+
+    auxiliary_candidate_count: int = Field(default=0, ge=0)
+    candidate_count: int = Field(default=0, ge=0)
+    candidate_count_by_language: dict[str, int] = Field(default_factory=dict)
+    candidate_count_by_normalized_statement_type: dict[str, int] = Field(
+        default_factory=dict
+    )
+    candidate_count_by_statement_type: dict[str, int] = Field(default_factory=dict)
+    candidates_with_statement_code: int = Field(default=0, ge=0)
+    candidates_without_statement_code: int = Field(default=0, ge=0)
+    extraction_window_count: int = Field(default=0, ge=0)
+    largest_duplicate_buckets: list[dict[str, Any]] = Field(default_factory=list)
+    possible_duplicate_bucket_count: int = Field(default=0, ge=0)
+    warning_count: int = Field(default=0, ge=0)
+    warning_count_by_type: dict[str, int] = Field(default_factory=dict)
+
+
+class SFIRegistryWarning(BaseSchema):
+    """Registry warning for SFI candidate review."""
+
+    bucket_id: Optional[str] = Field(
+        default=None, description="Associated duplicate bucket ID, when applicable."
+    )
+    message: str = Field(description="Human-readable warning message.", min_length=1)
+    registry_candidate_ids: list[str] = Field(
+        default_factory=list, description="Candidate IDs related to this warning."
+    )
+    severity: Literal["info", "warning"] = Field(description="Warning severity.")
+    warning_id: str = Field(description="Stable local warning ID.")
+    warning_type: str = Field(description="Machine-readable warning type.")
 
 
 # CURRENTLY UNUSED #

@@ -34,6 +34,7 @@ from skg.kgs.create_extraction_windows import (
 )
 from skg.kgs.llm import SFIExtractionUsageTracker
 from skg.kgs.sfi_extraction import extract_sfi_candidates_from_windows
+from skg.kgs.sfi_registry import build_candidate_registry
 from skg.kgs.utils import (
     KGDirs,
     build_run_manifest,
@@ -65,6 +66,7 @@ def build_kgs(
     3. Plan source DocumentIR units for Academic Standards (SFI) extraction windows.
     4. Build LLM-ready extraction windows.
     5. Extract source-grounded SFI candidates from extraction windows using an LLM.
+    6. Build and persist the global SFI candidate registry for merge review.
 
     Parameters
     ----------
@@ -118,7 +120,19 @@ def build_kgs(
         usage_tracker=usage_tracker,
     )
 
-    logger.debug(f"{len(sfi_extraction_results) = }")
+    # 6.
+    sfi_candidate_registry = build_candidate_registry(
+        extraction_windows=extraction_windows,
+        kg_config=kg_run_inputs.kg_config,
+        save_fp=kg_dirs.root / "sfi_candidate_registry.json",
+        sfi_extraction_results=sfi_extraction_results,
+    )
+
+    logger.debug(
+        f"{len(sfi_candidate_registry.candidates) = }; "
+        f"{len(sfi_candidate_registry.duplicate_buckets) = }; "
+        f"{len(sfi_candidate_registry.warnings) = }"
+    )
 
     return kg_run_manifest_fp
 
