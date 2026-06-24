@@ -300,169 +300,41 @@ def _build_registry_warnings(
         Non-fatal warnings for Step 7 review and debugging.
     """
 
-    candidates_by_code: dict[str, list[SFIRegistryCandidate]] = defaultdict(list)
     candidates_by_id = {
         candidate.registry_candidate_id: candidate for candidate in candidates
     }
-    candidates_by_text_and_window: dict[tuple[str, int], list[SFIRegistryCandidate]] = (
-        defaultdict(list)
-    )
-    candidates_by_text_bucket: dict[str, list[SFIRegistryCandidate]] = defaultdict(list)
     warning_signatures: set[tuple[Any, ...]] = set()
     warnings: list[SFIRegistryWarning] = []
 
-    for candidate in candidates:
-        if candidate.normalized_statement_code:
-            candidates_by_code[candidate.normalized_statement_code].append(candidate)
-
-        candidates_by_text_and_window[
-            (candidate.text_bucket_key, candidate.window_index)
-        ].append(candidate)
-        candidates_by_text_bucket[candidate.text_bucket_key].append(candidate)
-
-        if candidate.statement_code is None and _find_configured_code_matches_in_text(
-            code_patterns=code_patterns, value=candidate.source_text
-        ):
-            _maybe_append_warning(
-                bucket_id=None,
-                message=(
-                    f"Candidate {candidate.registry_candidate_id} has source text "
-                    f"matching configured code_patterns but statement_code is null."
-                ),
-                registry_candidate_ids=[candidate.registry_candidate_id],
-                severity="warning",
-                warning_signatures=warning_signatures,
-                warning_type="configured_code_source_text_with_null_statement_code",
-                warnings=warnings,
-            )
-
-        if (
-            candidate.normalized_statement_code is not None
-            and candidate.statement_type not in statement_type_code_types
-        ):
-            _maybe_append_warning(
-                bucket_id=None,
-                message=(
-                    f"Candidate {candidate.registry_candidate_id} has statement_code "
-                    f"{candidate.statement_code!r}, but statement_type "
-                    f"{candidate.statement_type!r} does not define a code_type in "
-                    f"statement_type_policy."
-                ),
-                registry_candidate_ids=[candidate.registry_candidate_id],
-                severity="warning",
-                warning_signatures=warning_signatures,
-                warning_type="statement_code_on_statement_type_without_code_type",
-                warnings=warnings,
-            )
-
-    for bucket in duplicate_buckets:
-        bucket_candidates = [
-            candidates_by_id[candidate_id]
-            for candidate_id in bucket.registry_candidate_ids
-        ]
-        description_keys = {
-            candidate.normalized_description_without_leading_code
-            for candidate in bucket_candidates
-        }
-        languages = {candidate.language for candidate in bucket_candidates}
-
-        if bucket.bucket_type == "code" and len(description_keys) > 1:
-            _maybe_append_warning(
-                bucket_id=bucket.bucket_id,
-                message=(
-                    "Same statement_type + statement_code bucket contains multiple "
-                    "normalized descriptions; review before merge."
-                ),
-                registry_candidate_ids=bucket.registry_candidate_ids,
-                severity="warning",
-                warning_signatures=warning_signatures,
-                warning_type="same_type_code_different_descriptions",
-                warnings=warnings,
-            )
-
-        if (
-            bucket.bucket_type in {"description_text", "source_text"}
-            and len(languages) > 1
-        ):
-            _maybe_append_warning(
-                bucket_id=bucket.bucket_id,
-                message=(
-                    "Near-duplicate text bucket contains multiple language tags; "
-                    "review bilingual or cross-language evidence before merge."
-                ),
-                registry_candidate_ids=bucket.registry_candidate_ids,
-                severity="info",
-                warning_signatures=warning_signatures,
-                warning_type="language_differs_across_text_bucket",
-                warnings=warnings,
-            )
-
-    for normalized_statement_code, code_candidates in sorted(
-        candidates_by_code.items()
-    ):
-        statement_types = {candidate.statement_type for candidate in code_candidates}
-
-        if len(statement_types) > 1:
-            _maybe_append_warning(
-                bucket_id=None,
-                message=(
-                    f"Statement code {normalized_statement_code!r} appears across "
-                    f"multiple statement types: {sorted(statement_types)}."
-                ),
-                registry_candidate_ids=[
-                    candidate.registry_candidate_id for candidate in code_candidates
-                ],
-                severity="warning",
-                warning_signatures=warning_signatures,
-                warning_type="same_code_across_multiple_statement_types",
-                warnings=warnings,
-            )
-
-    for (text_bucket_key, window_index), text_candidates in sorted(
-        candidates_by_text_and_window.items()
-    ):
-        if len(text_candidates) < 2:
-            continue
-
-        _maybe_append_warning(
-            bucket_id=None,
-            message=(
-                f"Same statement_type + normalized text appears multiple times in "
-                f"window {window_index}."
-            ),
-            registry_candidate_ids=[
-                candidate.registry_candidate_id for candidate in text_candidates
-            ],
-            severity="info",
-            warning_signatures=warning_signatures,
-            warning_type="same_text_repeated_within_window",
-            warnings=warnings,
-        )
-
-    for text_bucket_key, text_candidates in sorted(candidates_by_text_bucket.items()):
-        window_indexes = {candidate.window_index for candidate in text_candidates}
-
-        if len(window_indexes) < 2:
-            continue
-
-        _maybe_append_warning(
-            bucket_id=_find_bucket_id(
-                bucket_key=text_bucket_key,
-                bucket_type="description_text",
-                duplicate_buckets=duplicate_buckets,
-            ),
-            message=(
-                f"Same statement_type + normalized text appears across multiple "
-                f"windows: {sorted(window_indexes)}."
-            ),
-            registry_candidate_ids=[
-                candidate.registry_candidate_id for candidate in text_candidates
-            ],
-            severity="info",
-            warning_signatures=warning_signatures,
-            warning_type="same_text_repeated_across_windows",
-            warnings=warnings,
-        )
+    _warn_on_per_candidate_issues(
+        candidates=candidates,
+        code_patterns=code_patterns,
+        statement_type_code_types=statement_type_code_types,
+        warning_signatures=warning_signatures,
+        warnings=warnings,
+    )
+    _warn_on_duplicate_buckets(
+        candidates_by_id=candidates_by_id,
+        duplicate_buckets=duplicate_buckets,
+        warning_signatures=warning_signatures,
+        warnings=warnings,
+    )
+    _warn_on_code_across_statement_types(
+        candidates=candidates,
+        warning_signatures=warning_signatures,
+        warnings=warnings,
+    )
+    _warn_on_text_repeated_within_window(
+        candidates=candidates,
+        warning_signatures=warning_signatures,
+        warnings=warnings,
+    )
+    _warn_on_text_repeated_across_windows(
+        candidates=candidates,
+        duplicate_buckets=duplicate_buckets,
+        warning_signatures=warning_signatures,
+        warnings=warnings,
+    )
 
     return [
         warning.model_copy(update={"warning_id": f"warning_{index:04d}"})
@@ -535,7 +407,7 @@ def _find_configured_code_matches_in_text(
     Returns
     -------
     list[str]
-        Matched configured code strings, preserving first-seen order.
+        Matched configured code strings, preserving config pattern order.
     """
 
     matches: list[str] = []
@@ -844,7 +716,7 @@ def _validate_statement_type_code_types(
     Raises
     ------
     ValueError
-        If code patterns are empty/invalid, or if a statement_type_policy references a
+        If code patterns are invalid, or if a statement_type_policy references a
         missing code_pattern key.
     """
 
@@ -892,6 +764,277 @@ def _validate_statement_type_code_types(
         )
 
     return code_patterns, statement_type_code_types
+
+
+def _warn_on_code_across_statement_types(
+    *,
+    candidates: Sequence[SFIRegistryCandidate],
+    warning_signatures: set[tuple[Any, ...]],
+    warnings: list[SFIRegistryWarning],
+) -> None:
+    """Warn when one normalized statement_code spans multiple statement types.
+
+    Parameters
+    ----------
+    candidates
+        Flattened registry candidates.
+    warning_signatures
+        Mutable set of warning signatures already emitted.
+    warnings
+        Mutable warning accumulator.
+    """
+
+    candidates_by_code: dict[str, list[SFIRegistryCandidate]] = defaultdict(list)
+
+    for candidate in candidates:
+        if candidate.normalized_statement_code:
+            candidates_by_code[candidate.normalized_statement_code].append(candidate)
+
+    for normalized_statement_code, code_candidates in sorted(
+        candidates_by_code.items()
+    ):
+        statement_types = {candidate.statement_type for candidate in code_candidates}
+
+        if len(statement_types) > 1:
+            _maybe_append_warning(
+                bucket_id=None,
+                message=(
+                    f"Statement code {normalized_statement_code!r} appears across "
+                    f"multiple statement types: {sorted(statement_types)}."
+                ),
+                registry_candidate_ids=[
+                    candidate.registry_candidate_id for candidate in code_candidates
+                ],
+                severity="warning",
+                warning_signatures=warning_signatures,
+                warning_type="same_code_across_multiple_statement_types",
+                warnings=warnings,
+            )
+
+
+def _warn_on_duplicate_buckets(
+    *,
+    candidates_by_id: dict[str, SFIRegistryCandidate],
+    duplicate_buckets: Sequence[SFIRegistryDuplicateBucket],
+    warning_signatures: set[tuple[Any, ...]],
+    warnings: list[SFIRegistryWarning],
+) -> None:
+    """Warn on heterogeneous descriptions or languages within duplicate buckets.
+
+    Parameters
+    ----------
+    candidates_by_id
+        Lookup from registry candidate ID to candidate.
+    duplicate_buckets
+        Possible duplicate buckets generated from candidate keys.
+    warning_signatures
+        Mutable set of warning signatures already emitted.
+    warnings
+        Mutable warning accumulator.
+    """
+
+    for bucket in duplicate_buckets:
+        bucket_candidates = [
+            candidates_by_id[candidate_id]
+            for candidate_id in bucket.registry_candidate_ids
+        ]
+        description_keys = {
+            candidate.normalized_description for candidate in bucket_candidates
+        }
+        languages = {candidate.language for candidate in bucket_candidates}
+
+        if bucket.bucket_type == "code" and len(description_keys) > 1:
+            _maybe_append_warning(
+                bucket_id=bucket.bucket_id,
+                message=(
+                    "Same statement_type + statement_code bucket contains multiple "
+                    "normalized descriptions; review before merge."
+                ),
+                registry_candidate_ids=bucket.registry_candidate_ids,
+                severity="warning",
+                warning_signatures=warning_signatures,
+                warning_type="same_type_code_different_descriptions",
+                warnings=warnings,
+            )
+
+        if (
+            bucket.bucket_type in {"description_text", "source_text"}
+            and len(languages) > 1
+        ):
+            _maybe_append_warning(
+                bucket_id=bucket.bucket_id,
+                message=(
+                    "Near-duplicate text bucket contains multiple language tags; "
+                    "review bilingual or cross-language evidence before merge."
+                ),
+                registry_candidate_ids=bucket.registry_candidate_ids,
+                severity="info",
+                warning_signatures=warning_signatures,
+                warning_type="language_differs_across_text_bucket",
+                warnings=warnings,
+            )
+
+
+def _warn_on_per_candidate_issues(
+    *,
+    candidates: Sequence[SFIRegistryCandidate],
+    code_patterns: dict[str, re.Pattern[str]],
+    statement_type_code_types: dict[str, str],
+    warning_signatures: set[tuple[Any, ...]],
+    warnings: list[SFIRegistryWarning],
+) -> None:
+    """Warn on candidate-level statement_code anomalies.
+
+    Parameters
+    ----------
+    candidates
+        Flattened registry candidates.
+    code_patterns
+        Compiled curriculum-specific code patterns keyed by code type.
+    statement_type_code_types
+        Mapping from canonical statement_type labels to expected code types.
+    warning_signatures
+        Mutable set of warning signatures already emitted.
+    warnings
+        Mutable warning accumulator.
+    """
+
+    for candidate in candidates:
+        if candidate.statement_code is None and _find_configured_code_matches_in_text(
+            code_patterns=code_patterns, value=candidate.source_text
+        ):
+            _maybe_append_warning(
+                bucket_id=None,
+                message=(
+                    f"Candidate {candidate.registry_candidate_id} has source text "
+                    f"matching configured code_patterns but statement_code is null."
+                ),
+                registry_candidate_ids=[candidate.registry_candidate_id],
+                severity="warning",
+                warning_signatures=warning_signatures,
+                warning_type="configured_code_source_text_with_null_statement_code",
+                warnings=warnings,
+            )
+
+        if (
+            candidate.normalized_statement_code is not None
+            and candidate.statement_type not in statement_type_code_types
+        ):
+            _maybe_append_warning(
+                bucket_id=None,
+                message=(
+                    f"Candidate {candidate.registry_candidate_id} has statement_code "
+                    f"{candidate.statement_code!r}, but statement_type "
+                    f"{candidate.statement_type!r} does not define a code_type in "
+                    f"statement_type_policy."
+                ),
+                registry_candidate_ids=[candidate.registry_candidate_id],
+                severity="warning",
+                warning_signatures=warning_signatures,
+                warning_type="statement_code_on_statement_type_without_code_type",
+                warnings=warnings,
+            )
+
+
+def _warn_on_text_repeated_across_windows(
+    *,
+    candidates: Sequence[SFIRegistryCandidate],
+    duplicate_buckets: Sequence[SFIRegistryDuplicateBucket],
+    warning_signatures: set[tuple[Any, ...]],
+    warnings: list[SFIRegistryWarning],
+) -> None:
+    """Warn when the same text bucket key spans multiple windows.
+
+    Parameters
+    ----------
+    candidates
+        Flattened registry candidates.
+    duplicate_buckets
+        Possible duplicate buckets generated from candidate keys.
+    warning_signatures
+        Mutable set of warning signatures already emitted.
+    warnings
+        Mutable warning accumulator.
+    """
+
+    candidates_by_text_bucket: dict[str, list[SFIRegistryCandidate]] = defaultdict(list)
+
+    for candidate in candidates:
+        candidates_by_text_bucket[candidate.text_bucket_key].append(candidate)
+
+    for text_bucket_key, text_candidates in sorted(candidates_by_text_bucket.items()):
+        window_indexes = {candidate.window_index for candidate in text_candidates}
+
+        if len(window_indexes) < 2:
+            continue
+
+        _maybe_append_warning(
+            bucket_id=_find_bucket_id(
+                bucket_key=text_bucket_key,
+                bucket_type="description_text",
+                duplicate_buckets=duplicate_buckets,
+            ),
+            message=(
+                f"Same statement_type + normalized text appears across multiple "
+                f"windows: {sorted(window_indexes)}."
+            ),
+            registry_candidate_ids=[
+                candidate.registry_candidate_id for candidate in text_candidates
+            ],
+            severity="info",
+            warning_signatures=warning_signatures,
+            warning_type="same_text_repeated_across_windows",
+            warnings=warnings,
+        )
+
+
+def _warn_on_text_repeated_within_window(
+    *,
+    candidates: Sequence[SFIRegistryCandidate],
+    warning_signatures: set[tuple[Any, ...]],
+    warnings: list[SFIRegistryWarning],
+) -> None:
+    """Warn when the same text bucket key repeats within a single window.
+
+    Parameters
+    ----------
+    candidates
+        Flattened registry candidates.
+    warning_signatures
+        Mutable set of warning signatures already emitted.
+    warnings
+        Mutable warning accumulator.
+    """
+
+    candidates_by_text_and_window: dict[tuple[str, int], list[SFIRegistryCandidate]] = (
+        defaultdict(list)
+    )
+
+    for candidate in candidates:
+        candidates_by_text_and_window[
+            (candidate.text_bucket_key, candidate.window_index)
+        ].append(candidate)
+
+    for (_, window_index), text_candidates in sorted(
+        candidates_by_text_and_window.items()
+    ):
+        if len(text_candidates) < 2:
+            continue
+
+        _maybe_append_warning(
+            bucket_id=None,
+            message=(
+                f"Same statement_type + normalized text appears multiple times in "
+                f"window {window_index}."
+            ),
+            registry_candidate_ids=[
+                candidate.registry_candidate_id for candidate in text_candidates
+            ],
+            severity="info",
+            warning_signatures=warning_signatures,
+            warning_type="same_text_repeated_within_window",
+            warnings=warnings,
+        )
 
 
 def build_candidate_registry(
