@@ -31,17 +31,6 @@ from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, write_to_json
 
-_LEADING_CODE_PREFIX_RE = re.compile(
-    r"^\s*(?:"
-    r"[A-Za-z]{1,6}\d*(?:\.\s*\d+){1,8}\.?"
-    r"|\d+(?:\.\s*\d+){1,8}\.?"
-    r"|[A-Za-z]{1,6}\d+\."
-    r")\s*[:.)\-–—]?\s+"
-)
-_CODE_LIKE_RE = re.compile(
-    r"\b(?:[A-Za-z]{1,6}\d*(?:\.\s*\d+){1,8}|\d+(?:\.\s*\d+){1,8})\b"
-)
-
 
 def _add_registry_warning(
     *,
@@ -210,8 +199,10 @@ def _build_duplicate_buckets(
 def _build_registry_candidate(
     *,
     candidate: SFICandidate,
+    code_patterns: dict[str, re.Pattern[str]],
     extraction_window: ExtractionWindow,
     source_window_candidate_index: int,
+    statement_type_code_types: dict[str, str],
 ) -> SFIRegistryCandidate:
     """Build one flattened registry candidate from a window-local SFI candidate.
 
@@ -219,10 +210,14 @@ def _build_registry_candidate(
     ----------
     candidate
         Window-local candidate from an SFI extraction result.
+    code_patterns
+        Compiled curriculum-specific code patterns keyed by code type.
     extraction_window
         Source extraction window that produced the candidate.
     source_window_candidate_index
         0-based candidate position within the extraction result.
+    statement_type_code_types
+        Mapping from canonical statement_type labels to expected code types.
 
     Returns
     -------
@@ -232,13 +227,19 @@ def _build_registry_candidate(
 
     normalized_description = _normalize_text(candidate.description)
     normalized_source_text = _normalize_text(candidate.source_text)
-    normalized_description_without_leading_code = _strip_leading_code_prefix(
-        normalized_description
-    )
-    normalized_source_text_without_leading_code = _strip_leading_code_prefix(
-        normalized_source_text
-    )
     normalized_statement_code = _normalize_code(candidate.statement_code)
+    _validate_statement_code_matches_config(
+        candidate=candidate,
+        code_patterns=code_patterns,
+        normalized_statement_code=normalized_statement_code,
+        statement_type_code_types=statement_type_code_types,
+    )
+    normalized_description_without_leading_code = _strip_configured_leading_code_prefix(
+        code_patterns=code_patterns, value=normalized_description
+    )
+    normalized_source_text_without_leading_code = _strip_configured_leading_code_prefix(
+        code_patterns=code_patterns, value=normalized_source_text
+    )
     registry_candidate_id = _deterministic_registry_candidate_id(
         candidate_id=candidate.candidate_id,
         window_id=extraction_window.window_id,
@@ -370,7 +371,9 @@ def _build_registry_summary(
 def _build_registry_warnings(
     *,
     candidates: Sequence[SFIRegistryCandidate],
+    code_patterns: dict[str, re.Pattern[str]],
     duplicate_buckets: Sequence[SFIRegistryDuplicateBucket],
+    statement_type_code_types: dict[str, str],
 ) -> list[SFIRegistryWarning]:
     """Build lightweight non-fatal warnings for candidate review.
 
@@ -378,8 +381,12 @@ def _build_registry_warnings(
     ----------
     candidates
         Flattened registry candidates.
+    code_patterns
+        Compiled curriculum-specific code patterns keyed by code type.
     duplicate_buckets
         Possible duplicate buckets generated from candidate keys.
+    statement_type_code_types
+        Mapping from canonical statement_type labels to expected code types.
 
     Returns
     -------
@@ -407,38 +414,38 @@ def _build_registry_warnings(
         ].append(candidate)
         candidates_by_text_bucket[candidate.text_bucket_key].append(candidate)
 
-        if candidate.statement_code is None and _has_code_like_text(
-            candidate.source_text
+        if candidate.statement_code is None and _find_configured_code_matches_in_text(
+            code_patterns=code_patterns, value=candidate.source_text
         ):
             _maybe_append_warning(
                 bucket_id=None,
                 message=(
-                    f"Candidate {candidate.registry_candidate_id} has code-like "
-                    "source text but statement_code is null."
+                    f"Candidate {candidate.registry_candidate_id} has source text "
+                    "matching configured code_patterns but statement_code is null."
                 ),
                 registry_candidate_ids=[candidate.registry_candidate_id],
                 severity="warning",
                 warning_signatures=warning_signatures,
-                warning_type="code_like_source_text_with_null_statement_code",
+                warning_type="configured_code_source_text_with_null_statement_code",
                 warnings=warnings,
             )
 
         if (
-            candidate.normalized_statement_type == "Standard Grouping"
-            and candidate.normalized_statement_code is not None
-            and re.fullmatch(r"\d+", candidate.normalized_statement_code)
+            candidate.normalized_statement_code is not None
+            and candidate.statement_type not in statement_type_code_types
         ):
             _maybe_append_warning(
                 bucket_id=None,
                 message=(
-                    f"Grouping candidate {candidate.registry_candidate_id} has a "
-                    f"simple numeric statement_code {candidate.statement_code!r}; "
-                    "treat it as a weak local label, not a globally stable code."
+                    f"Candidate {candidate.registry_candidate_id} has statement_code "
+                    f"{candidate.statement_code!r}, but statement_type "
+                    f"{candidate.statement_type!r} does not define a code_type in "
+                    "statement_type_policy."
                 ),
                 registry_candidate_ids=[candidate.registry_candidate_id],
-                severity="info",
+                severity="warning",
                 warning_signatures=warning_signatures,
-                warning_type="simple_numeric_grouping_code",
+                warning_type="statement_code_on_statement_type_without_code_type",
                 warnings=warnings,
             )
 
@@ -632,21 +639,39 @@ def _find_bucket_id(
     return None
 
 
-def _has_code_like_text(value: str) -> bool:
-    """Check whether text contains a visible code-like pattern.
+def _find_configured_code_matches_in_text(
+    *, code_patterns: dict[str, re.Pattern[str]], value: str
+) -> list[str]:
+    """Find configured code-pattern matches in source-visible text.
 
     Parameters
     ----------
+    code_patterns
+        Compiled curriculum-specific code patterns keyed by code type.
     value
-        Source text to inspect.
+        Source-visible text to inspect.
 
     Returns
     -------
-    bool
-        Whether the text contains a code-like pattern.
+    list[str]
+        Matched configured code strings, preserving first-seen order.
     """
 
-    return bool(_CODE_LIKE_RE.search(value or ""))
+    matches: list[str] = []
+    seen: set[str] = set()
+
+    for pattern in code_patterns.values():
+        for match in pattern.finditer(value or ""):
+            match_text = match.group(0).strip()
+            match_key = _normalize_code(match_text)
+
+            if match_key is None or match_key in seen:
+                continue
+
+            matches.append(match_text)
+            seen.add(match_key)
+
+    return matches
 
 
 def _join_bucket_key(*values: Optional[str]) -> str:
@@ -756,22 +781,59 @@ def _normalize_text(value: str) -> str:
     return normalized
 
 
-def _strip_leading_code_prefix(value: str) -> str:
-    """Strip an obvious leading source-code prefix from normalized text.
+def _strip_configured_leading_code_prefix(
+    *, code_patterns: dict[str, re.Pattern[str]], value: str
+) -> str:
+    """Strip a leading prefix only when it matches configured code patterns.
 
     Parameters
     ----------
+    code_patterns
+        Compiled curriculum-specific code patterns keyed by code type.
     value
         Normalized candidate text.
 
     Returns
     -------
     str
-        Text with an obvious leading code prefix removed, when present.
+        Text with a configured leading code prefix removed, when present.
     """
 
-    stripped = _LEADING_CODE_PREFIX_RE.sub("", value or "", count=1).strip()
-    return stripped or value
+    if not code_patterns:
+        return value
+
+    text = str(value or "").strip()
+
+    if not text:
+        return value
+
+    max_prefix_length = min(len(text), 120)
+    delimiter_chars = " :.)-–—"
+
+    for prefix_end_index in range(1, max_prefix_length + 1):
+        if (
+            prefix_end_index < len(text)
+            and text[prefix_end_index] not in delimiter_chars
+        ):
+            continue
+
+        prefix = text[:prefix_end_index]
+        normalized_prefix = _normalize_code(prefix)
+
+        if normalized_prefix is None:
+            continue
+
+        if not [
+            code_type
+            for code_type, pattern in sorted(code_patterns.items())
+            if pattern.fullmatch(normalized_prefix or "")
+        ]:
+            continue
+
+        stripped = text[prefix_end_index:].lstrip(delimiter_chars).strip()
+        return stripped or value
+
+    return value
 
 
 def _unique_limited(values: Sequence[str], *, limit: int) -> list[str]:
@@ -871,6 +933,141 @@ def _validate_result_window_alignment(
         ) from e
 
 
+def _validate_statement_code_matches_config(
+    *,
+    candidate: SFICandidate,
+    code_patterns: dict[str, re.Pattern[str]],
+    normalized_statement_code: Optional[str],
+    statement_type_code_types: dict[str, str],
+) -> None:
+    """Validate a candidate statement_code against configured code patterns.
+
+    Parameters
+    ----------
+    candidate
+        Window-local candidate whose statement_code is being validated.
+    code_patterns
+        Compiled curriculum-specific code patterns keyed by code type.
+    normalized_statement_code
+        Normalized candidate statement_code, or None when absent.
+    statement_type_code_types
+        Mapping from canonical statement_type labels to expected code types.
+
+    Raises
+    ------
+    ValueError
+        If a present statement_code has no matching configured pattern, or if a
+        statement_type with an expected code_type has a mismatched code shape.
+    """
+
+    if normalized_statement_code is None:
+        return
+
+    if not code_patterns:
+        raise ValueError(
+            f"Candidate {candidate.candidate_id!r} has statement_code "
+            f"{candidate.statement_code!r}, but kg_config.academic_standards."
+            f"code_patterns is empty. Add curriculum-specific code_patterns or set "
+            f"statement_code to null."
+        )
+
+    matching_code_types = [
+        code_type
+        for code_type, pattern in sorted(code_patterns.items())
+        if pattern.fullmatch(normalized_statement_code or "")
+    ]
+
+    if not matching_code_types:
+        raise ValueError(
+            f"Candidate {candidate.candidate_id!r} has statement_code "
+            f"{candidate.statement_code!r}, normalized as "
+            f"{normalized_statement_code!r}, but it does not match any configured "
+            f"code_patterns: {sorted(code_patterns)}."
+        )
+
+    expected_code_type = statement_type_code_types.get(candidate.statement_type)
+
+    if expected_code_type is None:
+        return
+
+    if expected_code_type not in matching_code_types:
+        raise ValueError(
+            f"Candidate {candidate.candidate_id!r} has statement_type "
+            f"{candidate.statement_type!r}, which expects code_type "
+            f"{expected_code_type!r}, but statement_code {candidate.statement_code!r} "
+            f"matches configured code types {matching_code_types}."
+        )
+
+
+def _validate_statement_type_code_types(
+    kg_config: CreateKGConfig,
+) -> tuple[dict[str, re.Pattern[str]], dict[str, str]]:
+    """Compile code patterns, build statement-type mappings, and validate.
+
+    Parameters
+    ----------
+    kg_config
+        Runtime KG config containing curriculum-specific policies and patterns.
+
+    Returns
+    -------
+    tuple[dict[str, re.Pattern[str]], dict[str, str]]
+        - Compiled regex patterns keyed by configured code type.
+        - Mapping from canonical statement_type labels to configured code_pattern keys.
+
+    Raises
+    ------
+    ValueError
+        If code patterns are empty/invalid, or if a statement_type_policy references a
+        missing code_pattern key.
+    """
+
+    # 1. Compile code patterns.
+    code_patterns: dict[str, re.Pattern[str]] = {}
+
+    for code_type, pattern in kg_config.academic_standards.code_patterns.items():
+        code_type_clean = str(code_type or "").strip()
+        pattern_clean = str(pattern or "").strip()
+
+        if not code_type_clean:
+            raise ValueError("KG config code_patterns contains an empty code type key.")
+
+        if not pattern_clean:
+            raise ValueError(
+                f"KG config code pattern for code type {code_type_clean!r} is empty."
+            )
+
+        try:
+            code_patterns[code_type_clean] = re.compile(
+                pattern_clean, flags=re.IGNORECASE
+            )
+        except re.error as e:
+            raise ValueError(
+                f"KG config code pattern for code type {code_type_clean!r} could "
+                f"not be compiled: {pattern_clean!r}."
+            ) from e
+
+    # 2. Build statement-type to code-type mapping.
+    statement_type_code_types = {
+        item.statement_type: item.code_type
+        for item in kg_config.academic_standards.statement_type_policy
+        if item.code_type
+    }
+
+    # 3. Validate references.
+    missing_code_types = sorted(
+        set(statement_type_code_types.values()) - set(code_patterns)
+    )
+
+    if missing_code_types:
+        raise ValueError(
+            f"statement_type_policy references code_type values that are missing from "
+            f"kg_config.academic_standards.code_patterns: {missing_code_types}."
+        )
+
+    return code_patterns, statement_type_code_types
+
+
 def build_candidate_registry(
     *,
     extraction_windows: Sequence[ExtractionWindow],
@@ -915,8 +1112,12 @@ def build_candidate_registry(
         )
 
     make_dir(save_fp.parent)
+
     auxiliary_candidate_count = 0
     candidates: list[SFIRegistryCandidate] = []
+    code_patterns, statement_type_code_types = _validate_statement_type_code_types(
+        kg_config
+    )
 
     for result_index, extraction_result in enumerate(sfi_extraction_results):
         extraction_window = extraction_windows[result_index]
@@ -934,14 +1135,19 @@ def build_candidate_registry(
             candidates.append(
                 _build_registry_candidate(
                     candidate=candidate,
+                    code_patterns=code_patterns,
                     extraction_window=extraction_window,
                     source_window_candidate_index=source_window_candidate_index,
+                    statement_type_code_types=statement_type_code_types,
                 )
             )
 
     duplicate_buckets = _build_duplicate_buckets(candidates)
     warnings = _build_registry_warnings(
-        candidates=candidates, duplicate_buckets=duplicate_buckets
+        candidates=candidates,
+        code_patterns=code_patterns,
+        duplicate_buckets=duplicate_buckets,
+        statement_type_code_types=statement_type_code_types,
     )
     summary = _build_registry_summary(
         auxiliary_candidate_count=auxiliary_candidate_count,
@@ -950,7 +1156,7 @@ def build_candidate_registry(
         extraction_window_count=len(extraction_windows),
         warnings=warnings,
     )
-    artifact = SFIRegistryArtifact(
+    sfi_registry_artifact = SFIRegistryArtifact(
         candidates=candidates,
         country=kg_config.metadata.country,
         doc_key=extraction_windows[0].doc_key if extraction_windows else None,
@@ -963,6 +1169,6 @@ def build_candidate_registry(
         warnings=warnings,
     )
 
-    write_to_json(fp=save_fp, json_info=artifact)
+    write_to_json(fp=save_fp, json_info=sfi_registry_artifact)
 
-    return artifact
+    return sfi_registry_artifact
