@@ -134,13 +134,17 @@ def _build_registry_candidate(
         Registry candidate with normalized code and literal text bucket keys.
     """
 
-    normalized_statement_code = _normalize_code(candidate.statement_code)
-
-    _validate_statement_code_matches_config(
-        candidate=candidate,
+    raw_normalized_statement_code = _normalize_code(candidate.statement_code)
+    matching_code_types = _get_configured_code_types(
         code_patterns=code_patterns,
-        normalized_statement_code=normalized_statement_code,
-        statement_type_code_types=statement_type_code_types,
+        normalized_statement_code=raw_normalized_statement_code,
+    )
+    expected_code_type = statement_type_code_types.get(candidate.statement_type)
+    normalized_statement_code = (
+        raw_normalized_statement_code
+        if matching_code_types
+        and (expected_code_type is None or expected_code_type in matching_code_types)
+        else None
     )
 
     # Generate deterministic temporary registry candidate ID.
@@ -427,6 +431,36 @@ def _find_configured_code_matches_in_text(
     return matches
 
 
+def _get_configured_code_types(
+    *,
+    code_patterns: dict[str, re.Pattern[str]],
+    normalized_statement_code: Optional[str],
+) -> list[str]:
+    """Return configured code types matching a normalized statement code.
+
+    Parameters
+    ----------
+    code_patterns
+        Compiled curriculum-specific code patterns keyed by code type.
+    normalized_statement_code
+        Normalized candidate statement_code, or None when absent.
+
+    Returns
+    -------
+    list[str]
+        Configured code type keys whose patterns match the normalized code.
+    """
+
+    if normalized_statement_code is None:
+        return []
+
+    return [
+        code_type
+        for code_type, pattern in sorted(code_patterns.items())
+        if pattern.fullmatch(normalized_statement_code)
+    ]
+
+
 def _join_bucket_key(*values: Optional[str]) -> str:
     """Join normalized bucket-key parts.
 
@@ -631,72 +665,6 @@ def _validate_result_window_alignment(
         ) from e
 
 
-def _validate_statement_code_matches_config(
-    *,
-    candidate: SFICandidate,
-    code_patterns: dict[str, re.Pattern[str]],
-    normalized_statement_code: Optional[str],
-    statement_type_code_types: dict[str, str],
-) -> None:
-    """Validate a candidate statement_code against configured code patterns.
-
-    Parameters
-    ----------
-    candidate
-        Window-local candidate whose statement_code is being validated.
-    code_patterns
-        Compiled curriculum-specific code patterns keyed by code type.
-    normalized_statement_code
-        Normalized candidate statement_code, or None when absent.
-    statement_type_code_types
-        Mapping from canonical statement_type labels to expected code types.
-
-    Raises
-    ------
-    ValueError
-        If a present statement_code has no matching configured pattern, or if a
-        statement_type with an expected code_type has a mismatched code shape.
-    """
-
-    if normalized_statement_code is None:
-        return
-
-    if not code_patterns:
-        raise ValueError(
-            f"Candidate {candidate.candidate_id!r} has statement_code "
-            f"{candidate.statement_code!r}, but kg_config.academic_standards."
-            f"code_patterns is empty. Add curriculum-specific code_patterns or set "
-            f"statement_code to null."
-        )
-
-    matching_code_types = [
-        code_type
-        for code_type, pattern in sorted(code_patterns.items())
-        if pattern.fullmatch(normalized_statement_code or "")
-    ]
-
-    if not matching_code_types:
-        raise ValueError(
-            f"Candidate {candidate.candidate_id!r} has statement_code "
-            f"{candidate.statement_code!r}, normalized as "
-            f"{normalized_statement_code!r}, but it does not match any configured "
-            f"code_patterns: {sorted(code_patterns)}."
-        )
-
-    expected_code_type = statement_type_code_types.get(candidate.statement_type)
-
-    if expected_code_type is None:
-        return
-
-    if expected_code_type not in matching_code_types:
-        raise ValueError(
-            f"Candidate {candidate.candidate_id!r} has statement_type "
-            f"{candidate.statement_type!r}, which expects code_type "
-            f"{expected_code_type!r}, but statement_code {candidate.statement_code!r} "
-            f"matches configured code types {matching_code_types}."
-        )
-
-
 def _validate_statement_type_code_types(
     kg_config: CreateKGConfig,
 ) -> tuple[dict[str, re.Pattern[str]], dict[str, str]]:
@@ -717,7 +685,8 @@ def _validate_statement_type_code_types(
     ------
     ValueError
         If code patterns are invalid, or if a statement_type_policy references a
-        missing code_pattern key.
+        missing code_pattern key. Empty code_patterns are allowed for no-code curricula
+        when no statement type declares a code_type.
     """
 
     # 1. Compile code patterns.
@@ -900,6 +869,13 @@ def _warn_on_per_candidate_issues(
     """
 
     for candidate in candidates:
+        raw_normalized_statement_code = _normalize_code(candidate.statement_code)
+        matching_code_types = _get_configured_code_types(
+            code_patterns=code_patterns,
+            normalized_statement_code=raw_normalized_statement_code,
+        )
+        expected_code_type = statement_type_code_types.get(candidate.statement_type)
+
         if candidate.statement_code is None and _find_configured_code_matches_in_text(
             code_patterns=code_patterns, value=candidate.source_text
         ):
@@ -915,6 +891,65 @@ def _warn_on_per_candidate_issues(
                 warning_type="configured_code_source_text_with_null_statement_code",
                 warnings=warnings,
             )
+
+        if raw_normalized_statement_code is not None and not code_patterns:
+            _maybe_append_warning(
+                bucket_id=None,
+                message=(
+                    f"Candidate {candidate.registry_candidate_id} has statement_code "
+                    f"{candidate.statement_code!r}, but kg_config.academic_standards."
+                    f"code_patterns is empty. The code is preserved on the "
+                    f"candidate payload but excluded from code buckets."
+                ),
+                registry_candidate_ids=[candidate.registry_candidate_id],
+                severity="warning",
+                warning_signatures=warning_signatures,
+                warning_type="statement_code_without_configured_code_patterns",
+                warnings=warnings,
+            )
+            continue
+
+        if raw_normalized_statement_code is not None and not matching_code_types:
+            _maybe_append_warning(
+                bucket_id=None,
+                message=(
+                    f"Candidate {candidate.registry_candidate_id} has statement_code "
+                    f"{candidate.statement_code!r}, normalized as "
+                    f"{raw_normalized_statement_code!r}, but it does not match any "
+                    f"configured code_patterns: {sorted(code_patterns)}. The code is "
+                    f"preserved on the candidate payload but excluded from code "
+                    f"buckets."
+                ),
+                registry_candidate_ids=[candidate.registry_candidate_id],
+                severity="warning",
+                warning_signatures=warning_signatures,
+                warning_type="statement_code_does_not_match_configured_code_patterns",
+                warnings=warnings,
+            )
+            continue
+
+        if (
+            raw_normalized_statement_code is not None
+            and expected_code_type is not None
+            and expected_code_type not in matching_code_types
+        ):
+            _maybe_append_warning(
+                bucket_id=None,
+                message=(
+                    f"Candidate {candidate.registry_candidate_id} has statement_type "
+                    f"{candidate.statement_type!r}, which expects code_type "
+                    f"{expected_code_type!r}, but statement_code "
+                    f"{candidate.statement_code!r} matches configured code types "
+                    f"{matching_code_types}. The code is preserved on the "
+                    f"candidate payload but excluded from code buckets."
+                ),
+                registry_candidate_ids=[candidate.registry_candidate_id],
+                severity="warning",
+                warning_signatures=warning_signatures,
+                warning_type="statement_code_mismatched_expected_code_type",
+                warnings=warnings,
+            )
+            continue
 
         if (
             candidate.normalized_statement_code is not None
