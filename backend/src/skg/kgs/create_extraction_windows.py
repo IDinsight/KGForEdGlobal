@@ -195,9 +195,9 @@ def _build_extraction_window(
         code_matches=code_matches,
         code_parent_hints=code_parent_hints,
         deterministic_hints={
-            "bilingual_pair_policy": kg_config.as_bilingual_pair_policy,
-            "code_parent_rules": kg_config.as_code_parent_rules,
-            "code_patterns": kg_config.as_code_patterns,
+            "bilingual_pair_policy": kg_config.academic_standards.bilingual_pair_policy,
+            "code_parent_rules": kg_config.academic_standards.code_parent_rules,
+            "code_patterns": kg_config.academic_standards.code_patterns,
             "country": kg_config.metadata.country,
             "no_code_policy": (
                 "statement_code is optional. When no official code is visible, later "
@@ -205,18 +205,18 @@ def _build_extraction_window(
                 "not LLM paraphrases."
             ),
             "plan_reasons": plan_item.plan_reasons,
-            "repeated_statement_policy": kg_config.as_repeated_statement_policy,
+            "repeated_statement_policy": kg_config.academic_standards.repeated_statement_policy,
             "source_context_key": hashlib.sha256(
                 canonical_context.encode("utf-8")
             ).hexdigest()[:32],
             "subject": kg_config.metadata.subject,
-            "synthetic_merge_key_fields": kg_config.as_synthetic_merge_key_fields,
+            "synthetic_merge_key_fields": kg_config.academic_standards.synthetic_merge_key_fields,
         },
         doc_key=document_ir.doc_key,
         framework_title=kg_config.metadata.framework_title,
         pdf_name=document_ir.pdf_name,
         primary_language=kg_config.metadata.primary_language,
-        kg_extraction_instructions=kg_config.as_sfi_extraction_instructions,
+        kg_extraction_instructions=kg_config.academic_standards.sfi_extraction_instructions,
         segment_kind=segment_kind,
         source_provenance=source_provenance,
         source_segment_ids=source_segment_ids,
@@ -404,8 +404,8 @@ def _build_table_windows(
 
     for start_index, end_index in _iter_row_chunks(
         end_index=body_end_index,
-        max_rows_per_window=kg_config.as_max_rows_per_table_window,
-        row_overlap=kg_config.as_row_overlap,
+        max_rows_per_window=kg_config.academic_standards.max_rows_per_table_window,
+        row_overlap=kg_config.academic_standards.row_overlap,
         start_index=body_start_index,
     ):
         windows.append(
@@ -443,7 +443,7 @@ def _collect_code_matches(
 
     code_matches: list[CodeMatch] = []
 
-    for code_type, pattern in kg_config.as_code_patterns.items():
+    for code_type, pattern in kg_config.academic_standards.code_patterns.items():
         for match in re.finditer(pattern, source_text):
             code_matches.append(
                 CodeMatch(
@@ -500,7 +500,7 @@ def _collect_code_parent_hints(
     for code_match in code_matches:
         child_code = code_match.value
 
-        for rule in kg_config.as_code_parent_rules:
+        for rule in kg_config.academic_standards.code_parent_rules:
             if code_match.code_type != rule["child"]:
                 continue
 
@@ -512,7 +512,9 @@ def _collect_code_parent_hints(
                 continue
 
             parent_code_type = rule["parent"]
-            parent_pattern = kg_config.as_code_patterns[parent_code_type]
+            parent_pattern = kg_config.academic_standards.code_patterns[
+                parent_code_type
+            ]
 
             # Ensure the derived parent code matches the configured pattern.
             if not re.fullmatch(parent_pattern, parent_code):
@@ -677,21 +679,29 @@ def _get_table_plan_reasons(
     columns_signature = segment.columns_signature or "<missing>"
     section_text = _table_section_text(segment)
 
-    if columns_signature in kg_config.as_excluded_table_columns_signatures:
+    if (
+        columns_signature
+        in kg_config.academic_standards.excluded_table_columns_signatures
+    ):
         return []
 
     if _matches_any_pattern(
-        patterns=kg_config.as_excluded_table_section_patterns, text=section_text
+        patterns=kg_config.academic_standards.excluded_table_section_patterns,
+        text=section_text,
     ):
         return []
 
     reasons: list[str] = []
 
-    if columns_signature in kg_config.as_included_table_columns_signatures:
+    if (
+        columns_signature
+        in kg_config.academic_standards.included_table_columns_signatures
+    ):
         reasons.append("table_columns_signature_included_match")
 
     if _matches_any_pattern(
-        patterns=kg_config.as_included_table_section_patterns, text=section_text
+        patterns=kg_config.academic_standards.included_table_section_patterns,
+        text=section_text,
     ):
         reasons.append("table_section_included_pattern_match")
 

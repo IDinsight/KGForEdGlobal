@@ -120,7 +120,7 @@ def _build_statement_type_alias_map(kg_config: CreateKGConfig) -> dict[str, str]
 
     alias_to_canonical: dict[str, str] = {}
 
-    for item in kg_config.as_statement_type_policy:
+    for item in kg_config.academic_standards.statement_type_policy:
         for label in [item.statement_type, *item.aliases]:
             key = _normalize_statement_type_key(label)
 
@@ -550,7 +550,7 @@ def verify_sfi_extraction_quality(
         statement_type_alias_to_canonical=_build_statement_type_alias_map(kg_config),
         statement_type_normalized_by_label={
             item.statement_type: item.normalized_statement_type
-            for item in kg_config.as_statement_type_policy
+            for item in kg_config.academic_standards.statement_type_policy
         },
         source_visible_text_normalized=_normalize_text(
             _build_source_visible_text_blob(

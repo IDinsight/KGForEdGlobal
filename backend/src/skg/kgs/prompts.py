@@ -212,16 +212,18 @@ def _build_compact_kg_config_context(kg_config: CreateKGConfig) -> dict[str, Any
         "country": kg_config.metadata.country,
         "grades_or_stages": kg_config.metadata.grades_or_stages,
         "primary_language": kg_config.metadata.primary_language,
-        "sfi_extraction_instructions": kg_config.as_sfi_extraction_instructions,
+        "sfi_extraction_instructions": kg_config.academic_standards.sfi_extraction_instructions,
         "statement_type_policy": [
             item.model_dump(mode="json", exclude_none=True)
-            for item in kg_config.as_statement_type_policy
+            for item in kg_config.academic_standards.statement_type_policy
         ],
         "subject": kg_config.metadata.subject,
     }
 
-    if kg_config.as_bilingual_pair_policy:
-        kg_config_context["bilingual_pair_policy"] = kg_config.as_bilingual_pair_policy
+    if kg_config.academic_standards.bilingual_pair_policy:
+        kg_config_context["bilingual_pair_policy"] = (
+            kg_config.academic_standards.bilingual_pair_policy
+        )
 
     return kg_config_context
 

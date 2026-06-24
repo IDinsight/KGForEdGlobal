@@ -121,7 +121,7 @@ def _count_code_pattern_matches(
     all_text = "\n".join(texts)
     counts: dict[str, dict[str, int]] = {}
 
-    for name, pattern in kg_config.as_code_patterns.items():
+    for name, pattern in kg_config.academic_standards.code_patterns.items():
         matches = [match.group(0) for match in re.finditer(pattern, all_text)]
         counts[name] = {"total": len(matches), "unique": len(set(matches))}
 
@@ -182,11 +182,11 @@ def _count_table_selection_matches(
 
     excluded_signature_counts = {
         signature: observed_counts.get(signature, 0)
-        for signature in kg_config.as_excluded_table_columns_signatures
+        for signature in kg_config.academic_standards.excluded_table_columns_signatures
     }
     included_signature_counts = {
         signature: observed_counts.get(signature, 0)
-        for signature in kg_config.as_included_table_columns_signatures
+        for signature in kg_config.academic_standards.included_table_columns_signatures
     }
     return {
         "excluded_table_signature_counts": excluded_signature_counts,
@@ -406,35 +406,35 @@ def _validate_kg_config_compatibility(
             f"DocumentIR languages: {observed_languages}."
         )
 
-    if kg_config.as_code_patterns:
+    if kg_config.academic_standards.code_patterns:
         total_code_matches = sum(
             match_counts["total"] for match_counts in code_pattern_match_counts.values()
         )
 
         if total_code_matches == 0:
             message = (
-                "CreateKGConfig configured as_code_patterns, but none of them matched "
+                "CreateKGConfig configured as.code_patterns, but none of them matched "
                 "text in the DocumentIR."
             )
             raise ValueError(message)
 
     if (
-        kg_config.as_included_table_columns_signatures
-        or kg_config.as_included_table_section_patterns
+        kg_config.academic_standards.included_table_columns_signatures
+        or kg_config.academic_standards.included_table_section_patterns
     ) and segment_counts.get("table", 0) == 0:
         warnings.append(
             "CreateKGConfig contains table-selection rules, but the DocumentIR "
             "contains no table segments."
         )
 
-    if kg_config.as_included_table_columns_signatures:
+    if kg_config.academic_standards.included_table_columns_signatures:
         included_match_total = table_selection_match_counts[
             "included_table_signature_match_total"
         ]
 
         if included_match_total == 0:
             raise ValueError(
-                "CreateKGConfig configured as_included_table_columns_signatures, but no "
+                "CreateKGConfig configured as.included_table_columns_signatures, but no "
                 "matching table segments were observed in the DocumentIR. "
             )
 
@@ -485,10 +485,10 @@ def build_run_manifest(kg_run_inputs: KGInputs) -> dict[str, Any]:
         "table_columns_signature_counts": kg_run_inputs.table_columns_signature_counts,
         "table_selection_match_counts": kg_run_inputs.table_selection_match_counts,
         "table_selection_policy": {
-            "excluded_table_columns_signatures": kg_config.as_excluded_table_columns_signatures,
-            "excluded_table_section_patterns": kg_config.as_excluded_table_section_patterns,
-            "included_table_columns_signatures": kg_config.as_included_table_columns_signatures,
-            "included_table_section_patterns": kg_config.as_included_table_section_patterns,
+            "excluded_table_columns_signatures": kg_config.academic_standards.excluded_table_columns_signatures,
+            "excluded_table_section_patterns": kg_config.academic_standards.excluded_table_section_patterns,
+            "included_table_columns_signatures": kg_config.academic_standards.included_table_columns_signatures,
+            "included_table_section_patterns": kg_config.academic_standards.included_table_section_patterns,
         },
         "warnings": kg_run_inputs.warnings,
     }

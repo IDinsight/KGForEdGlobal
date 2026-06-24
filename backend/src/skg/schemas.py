@@ -595,6 +595,605 @@ class _ContextSpineConfig(BaseSchema):
         return self
 
 
+class _CreateKGAcademicStandardsConfig(BaseSchema):
+    """Academic Standards extraction configuration for KG creation."""
+
+    # Code handling.
+    code_parent_rules: list[dict[str, str]] = Field(default_factory=list)
+    code_patterns: dict[str, str] = Field(default_factory=dict)
+
+    # Table selection policy.
+    excluded_table_columns_signatures: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Column signatures that should never be sent through the table SFI "
+            "extraction path, even if another table rule would otherwise include them."
+        ),
+    )
+    excluded_table_section_patterns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Regex patterns over bounded nearby heading/section text that exclude "
+            "tables from SFI extraction, even if their column signature is otherwise "
+            "eligible."
+        ),
+    )
+    included_table_columns_signatures: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Column signatures that identify table segments eligible for SFI extraction."
+        ),
+    )
+    included_table_section_patterns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Regex patterns over bounded nearby heading/section text that can include "
+            "tables when column signatures alone are not sufficient."
+        ),
+    )
+    max_rows_per_table_window: Optional[int] = Field(
+        default=20,
+        description=(
+            "Maximum number of table body rows per extraction window. Set to null "
+            "to emit one whole-table window per selected table."
+        ),
+    )
+    row_overlap: int = Field(default=1, ge=0)
+    statement_type_policy: list[_AcademicStandardStatementTypePolicyItem] = Field(
+        description=(
+            "Canonical curriculum-specific statement_type labels allowed in "
+            "SFIExtractionResult.sfi_candidates. The LLM must output only these "
+            "labels; aliases are used only for prompt guidance and validation errors."
+        ),
+        min_length=1,
+    )
+
+    # Duplication behavior.
+    synthetic_merge_key_fields: list[str] = Field(
+        default_factory=lambda: [
+            "country",
+            "subject",
+            "grade_level",
+            "normalized_statement_type",
+            "statement_type",
+            "hierarchy_context",
+            "normalized_text",
+        ]
+    )
+
+    # LLM instructions.
+    bilingual_pair_policy: str | None = None
+    duplicate_review_instructions: str
+    repeated_statement_policy: str = ""
+    sfi_extraction_instructions: str
+
+    @field_validator(
+        "duplicate_review_instructions", "sfi_extraction_instructions", mode="before"
+    )
+    @classmethod
+    def _strip_and_require_non_empty(cls, v: str) -> str:
+        """Strip whitespace and require non-empty strings for required fields.
+
+        Parameters
+        ----------
+        v
+            The input string value to validate.
+
+        Returns
+        -------
+        str
+            The validated and stripped string value.
+        """
+
+        return _strip_and_require_non_empty_str(v)
+
+    @field_validator("bilingual_pair_policy", mode="before")
+    @classmethod
+    def _strip_optional_strings(cls, v: str | None) -> str | None:
+        """Strip optional string fields and normalize blank strings to None.
+
+        Parameters
+        ----------
+        v
+            The input optional string value.
+
+        Returns
+        -------
+        str | None
+            The stripped string, or None for blank/None values.
+
+        Raises
+        ------
+        TypeError
+            If the input is not a string or None.
+        """
+
+        if v is None:
+            return None
+
+        if not isinstance(v, str):
+            raise TypeError("Expected a string or None")
+
+        v2 = v.strip()
+        return v2 if v2 else None
+
+    @staticmethod
+    def _clean_selection_pattern_list(
+        *, field_name: str, values: list[str]
+    ) -> list[str]:
+        """Clean, de-duplicate, and compile-check selection regex patterns.
+
+        Parameters
+        ----------
+        field_name
+            Human-readable field name used in error messages.
+        values
+            Configured regex pattern strings.
+
+        Returns
+        -------
+        list[str]
+            Cleaned and de-duplicated regex patterns in stable order.
+
+        Raises
+        ------
+        TypeError
+            If any pattern is not a string.
+        ValueError
+            If any non-empty pattern does not compile.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for pattern in values or []:
+            if not isinstance(pattern, str):
+                raise TypeError(
+                    f"CreateKGConfig.as.{field_name} must contain only strings."
+                )
+
+            pattern_clean = pattern.strip()
+
+            if not pattern_clean:
+                continue
+
+            try:
+                re.compile(pattern_clean)
+            except re.error as exc:
+                raise ValueError(
+                    f"Invalid regex in CreateKGConfig.as.{field_name}: "
+                    f"{pattern_clean!r}: {exc}"
+                ) from exc
+
+            if pattern_clean not in seen:
+                cleaned.append(pattern_clean)
+                seen.add(pattern_clean)
+
+        return cleaned
+
+    @staticmethod
+    def _clean_selection_string_list(
+        *, field_name: str, values: list[str]
+    ) -> list[str]:
+        """Clean and de-duplicate KG config selection string lists.
+
+        Parameters
+        ----------
+        field_name
+            Human-readable field name used in error messages.
+        values
+            Configured string values.
+
+        Returns
+        -------
+        list[str]
+            Cleaned and de-duplicated strings in stable order.
+
+        Raises
+        ------
+        TypeError
+            If any value is not a string.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for value in values or []:
+            if not isinstance(value, str):
+                raise TypeError(
+                    f"CreateKGConfig.as.{field_name} must contain only strings."
+                )
+
+            value_clean = value.strip()
+
+            if not value_clean:
+                continue
+
+            if value_clean not in seen:
+                cleaned.append(value_clean)
+                seen.add(value_clean)
+
+        return cleaned
+
+    @field_validator(
+        "excluded_table_columns_signatures", "included_table_columns_signatures"
+    )
+    @classmethod
+    def validate_selection_string_lists(cls, v: list[str]) -> list[str]:
+        """Validate non-regex selection string lists.
+
+        Parameters
+        ----------
+        v
+            Configured selection strings.
+
+        Returns
+        -------
+        list[str]
+            Cleaned and de-duplicated strings in stable order.
+        """
+
+        return cls._clean_selection_string_list(
+            field_name="selection string list", values=v
+        )
+
+    @field_validator(
+        "excluded_table_section_patterns", "included_table_section_patterns"
+    )
+    @classmethod
+    def validate_selection_pattern_lists(cls, v: list[str]) -> list[str]:
+        """Validate regex-based selection pattern lists.
+
+        Parameters
+        ----------
+        v
+            Configured regex patterns.
+
+        Returns
+        -------
+        list[str]
+            Cleaned and de-duplicated regex patterns in stable order.
+        """
+
+        return cls._clean_selection_pattern_list(
+            field_name="selection pattern list", values=v
+        )
+
+    @field_validator("code_patterns")
+    @classmethod
+    def validate_code_patterns(cls, v: dict[str, str]) -> dict[str, str]:
+        """Validate that all configured code patterns compile as regular expressions.
+
+        Parameters
+        ----------
+        v
+            Mapping of code pattern name to regular expression string.
+
+        Returns
+        -------
+        dict[str, str]
+            The original pattern mapping.
+
+        Raises
+        ------
+        TypeError
+            If a code pattern value is not a string.
+        ValueError
+            If a code pattern is empty or does not compile.
+        """
+
+        for name, pattern in v.items():
+            if not isinstance(pattern, str):
+                raise TypeError(
+                    f"as.code_patterns[{name!r}] must be a string. "
+                    f"Got {type(pattern).__name__}."
+                )
+
+            if not pattern.strip():
+                raise ValueError(f"as.code_patterns[{name!r}] must be non-empty.")
+
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f"Invalid regex for as.code_patterns[{name!r}]: {exc}"
+                ) from exc
+
+        return v
+
+    @field_validator("synthetic_merge_key_fields")
+    @classmethod
+    def validate_synthetic_merge_key_fields(cls, v: list[str]) -> list[str]:
+        """Validate synthetic merge key fields are non-empty strings.
+
+        Parameters
+        ----------
+        v
+            Configured synthetic merge key field names.
+
+        Returns
+        -------
+        list[str]
+            Cleaned and de-duplicated field names in stable order.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for field_name in v or []:
+            if not isinstance(field_name, str):
+                raise TypeError(
+                    "CreateKGConfig.as.synthetic_merge_key_fields must contain only strings."
+                )
+
+            field_name_clean = field_name.strip()
+
+            if not field_name_clean:
+                continue
+
+            if field_name_clean not in seen:
+                cleaned.append(field_name_clean)
+                seen.add(field_name_clean)
+
+        if not cleaned:
+            raise ValueError(
+                "CreateKGConfig.as.synthetic_merge_key_fields must contain at least one value."
+            )
+
+        return cleaned
+
+    @staticmethod
+    def _statement_type_policy_key(value: str) -> str:
+        """Build a stable comparison key for statement-type labels and aliases.
+
+        Parameters
+        ----------
+        value
+            Statement-type label or alias.
+
+        Returns
+        -------
+        str
+            Casefolded key with non-alphanumeric runs collapsed to one space.
+        """
+
+        return re.sub(r"[^0-9a-z]+", " ", str(value or "").casefold()).strip()
+
+    @field_validator("statement_type_policy")
+    @classmethod
+    def validate_statement_type_policy(
+        cls, v: list[_AcademicStandardStatementTypePolicyItem]
+    ) -> list[_AcademicStandardStatementTypePolicyItem]:
+        """Validate canonical statement-type policy labels and aliases.
+
+        Parameters
+        ----------
+        v
+            Configured statement-type policy items.
+
+        Returns
+        -------
+        list[_AcademicStandardStatementTypePolicyItem]
+            Validated policy items in configured order.
+
+        Raises
+        ------
+        ValueError
+            If canonical labels or aliases conflict.
+        """
+
+        if not v:
+            raise ValueError("CreateKGConfig.as.statement_type_policy is required.")
+
+        alias_to_statement_type: dict[str, str] = {}
+        canonical_keys: set[str] = set()
+
+        for item in v:
+            canonical_key = cls._statement_type_policy_key(item.statement_type)
+
+            if canonical_key in canonical_keys:
+                raise ValueError(
+                    "CreateKGConfig.as.statement_type_policy contains duplicate "
+                    f"statement_type labels after normalization: {item.statement_type!r}"
+                )
+
+            canonical_keys.add(canonical_key)
+
+            for alias in [item.statement_type, *item.aliases]:
+                alias_key = cls._statement_type_policy_key(alias)
+
+                if not alias_key:
+                    continue
+
+                existing = alias_to_statement_type.get(alias_key)
+
+                if existing is not None and existing != item.statement_type:
+                    raise ValueError(
+                        "CreateKGConfig.as.statement_type_policy alias conflict: "
+                        f"{alias!r} maps to both {existing!r} and "
+                        f"{item.statement_type!r}."
+                    )
+
+                alias_to_statement_type[alias_key] = item.statement_type
+
+        return v
+
+    def _validate_windowing(self) -> None:
+        """Ensure table row windowing configuration is internally consistent.
+
+        Raises
+        ------
+        ValueError
+            If max_rows_per_table_window is non-positive, or if row_overlap is not
+            smaller than max_rows_per_table_window when chunking is enabled.
+        """
+
+        if self.max_rows_per_table_window is None:
+            return
+
+        if self.max_rows_per_table_window <= 0:
+            raise ValueError(
+                "CreateKGConfig.as.max_rows_per_table_window must be positive or null."
+            )
+
+        if self.row_overlap >= self.max_rows_per_table_window:
+            raise ValueError(
+                "CreateKGConfig.as.row_overlap must be smaller than "
+                "as.max_rows_per_table_window."
+            )
+
+    @staticmethod
+    def _validate_code_parent_rule(
+        *, idx: int, known: set[str], rule: dict[str, Any]
+    ) -> None:
+        """Validate a single code parent rule.
+
+        Parameters
+        ----------
+        idx
+            Index of the rule, used in error messages.
+        known
+            Set of known code pattern names.
+        rule
+            The code parent rule mapping to validate.
+
+        Raises
+        ------
+        ValueError
+            If the rule references unknown patterns, uses a method other than
+            `regex_substitution`, is missing required substitution fields, or has an
+            invalid regex.
+        """
+
+        child = rule.get("child")
+        parent = rule.get("parent")
+        method = rule.get("method")
+
+        if child not in known:
+            raise ValueError(
+                f"as.code_parent_rules[{idx}] unknown child pattern: {child!r}"
+            )
+
+        if parent not in known:
+            raise ValueError(
+                f"as.code_parent_rules[{idx}] unknown parent pattern: {parent!r}"
+            )
+
+        if method != "regex_substitution":
+            raise ValueError(
+                f"as.code_parent_rules[{idx}] invalid method: {method!r}. "
+                "Only 'regex_substitution' is supported."
+            )
+
+        if "regex" not in rule or "replacement" not in rule:
+            raise ValueError(
+                f"as.code_parent_rules[{idx}] regex_substitution requires regex and replacement"
+            )
+
+        re.compile(rule["regex"])
+
+    def _validate_code_parent_rules(self, known: set[str]) -> None:
+        """Validate all configured code parent rules.
+
+        Parameters
+        ----------
+        known
+            Set of known code pattern names.
+        """
+
+        for idx, rule in enumerate(self.code_parent_rules):
+            self._validate_code_parent_rule(idx=idx, known=known, rule=rule)
+
+    def _validate_statement_type_policy_code_types(self, known: set[str]) -> None:
+        """Validate statement-type policy code_type references.
+
+        Parameters
+        ----------
+        known
+            Known KG config code-pattern keys.
+
+        Raises
+        ------
+        ValueError
+            If a statement-type policy item references an unknown code_type.
+        """
+
+        for item in self.statement_type_policy:
+            if item.code_type is not None and item.code_type not in known:
+                raise ValueError(
+                    "CreateKGConfig.as.statement_type_policy references unknown "
+                    f"code_type {item.code_type!r} for statement_type "
+                    f"{item.statement_type!r}. Known code types: {sorted(known)}"
+                )
+
+    def _validate_selection_overlap_policy(self) -> None:
+        """Ensure table-selection policy does not include and exclude the same value.
+
+        Raises
+        ------
+        ValueError
+            If a table columns_signature appears in both included and excluded lists.
+        """
+
+        overlapping_table_signatures = sorted(
+            set(self.included_table_columns_signatures)
+            & set(self.excluded_table_columns_signatures)
+        )
+
+        if overlapping_table_signatures:
+            raise ValueError(
+                f"CreateKGConfig.as table-selection policy cannot include and exclude "
+                f"the same columns_signature values: "
+                f"{overlapping_table_signatures}"
+            )
+
+    @model_validator(mode="after")
+    def validate_academic_standards_configuration(self) -> Self:
+        """Validate cross-field Academic Standards extraction configuration.
+
+        Returns
+        -------
+        Self
+            The validated Academic Standards configuration.
+
+        Raises
+        ------
+        ValueError
+            If code handling, parent rules, table selection, or windowing is invalid.
+        """
+
+        known = set(self.code_patterns.keys())
+        self._validate_windowing()
+        self._validate_code_parent_rules(known)
+        self._validate_selection_overlap_policy()
+        self._validate_statement_type_policy_code_types(known)
+        return self
+
+
+class _CreateKGLearningComponentsConfig(BaseSchema):
+    """Learning Components configuration for KG creation."""
+
+    generation_instructions: str
+
+    @field_validator("generation_instructions", mode="before")
+    @classmethod
+    def _strip_and_require_non_empty(cls, v: str) -> str:
+        """Strip whitespace and require non-empty strings for required fields.
+
+        Parameters
+        ----------
+        v
+            The input string value to validate.
+
+        Returns
+        -------
+        str
+            The validated and stripped string value.
+        """
+
+        return _strip_and_require_non_empty_str(v)
+
+
 class _CreateKGMetadata(BaseSchema):
     """Framework-level metadata for a KG creation run."""
 
@@ -993,592 +1592,44 @@ class StitchingConfig(BaseSchema):
 
 
 class CreateKGConfig(BaseSchema):
-    """Configuration for knowledge graph creation from document IR."""
+    """Configuration for knowledge graph creation from DocumentIR.
 
-    # General attributes.
+    The runtime config uses short namespaces under `kgs`:
+
+    - `as` for Academic Standards extraction settings.
+    - `lc` for Learning Components settings.
+
+    Python code accesses those namespaces through the valid attribute names
+    `academic_standards` and `learning_components`.
+    """
+
+    # GENERAL ATTRIBUTES #
     overwrite: bool = Field(
         False, description="Overwrite existing knowledge graph artifacts."
+    )
+
+    # ACADEMIC STANDARDS #
+    academic_standards: _CreateKGAcademicStandardsConfig = Field(
+        alias="as",
+        description="Academic Standards extraction settings from the kgs.as config namespace.",
+    )
+
+    # LEARNING COMPONENTS #
+    learning_components: _CreateKGLearningComponentsConfig = Field(
+        alias="lc",
+        description="Learning Components settings from the kgs.lc config namespace.",
     )
 
     # FRAMEWORK METADATA #
     metadata: _CreateKGMetadata
 
-    # ACADEMIC STANDARDS #
-
-    # Code handling.
-    as_code_parent_rules: list[dict[str, str]] = Field(default_factory=list)
-    as_code_patterns: dict[str, str] = Field(default_factory=dict)
-
-    # Table selection policy.
-    as_excluded_table_columns_signatures: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Column signatures that should never be sent through the table SFI "
-            "extraction path, even if another table rule would otherwise include them."
-        ),
+    model_config = ConfigDict(
+        extra="forbid",
+        from_attributes=True,
+        serialize_by_alias=True,
+        validate_by_alias=True,
+        validate_by_name=False,
     )
-    as_excluded_table_section_patterns: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Regex patterns over bounded nearby heading/section text that exclude "
-            "tables from SFI extraction, even if their column signature is otherwise "
-            "eligible."
-        ),
-    )
-    as_included_table_columns_signatures: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Column signatures that identify table segments eligible for SFI extraction."
-        ),
-    )
-    as_included_table_section_patterns: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Regex patterns over bounded nearby heading/section text that can include "
-            "tables when column signatures alone are not sufficient."
-        ),
-    )
-    as_max_rows_per_table_window: Optional[int] = Field(
-        default=20,
-        description=(
-            "Maximum number of table body rows per extraction window. Set to null "
-            "to emit one whole-table window per selected table."
-        ),
-    )
-    as_row_overlap: int = Field(default=1, ge=0)
-    as_statement_type_policy: list[_AcademicStandardStatementTypePolicyItem] = Field(
-        description=(
-            "Canonical curriculum-specific statement_type labels allowed in "
-            "SFIExtractionResult.sfi_candidates. The LLM must output only these "
-            "labels; aliases are used only for prompt guidance and validation errors."
-        ),
-        min_length=1,
-    )
-
-    # Duplication behavior.
-    as_duplicate_review_instructions: str
-    as_repeated_statement_policy: str = ""
-    as_synthetic_merge_key_fields: list[str] = Field(
-        default_factory=lambda: [
-            "country",
-            "subject",
-            "grade_level",
-            "normalized_statement_type",
-            "statement_type",
-            "hierarchy_context",
-            "normalized_text",
-        ]
-    )
-
-    # LLM instructions.
-    as_bilingual_pair_policy: str | None = None
-    as_sfi_extraction_instructions: str
-
-    # LEARNING COMPONENTS #
-    lc_generation_instructions: str
-
-    @field_validator(
-        "as_duplicate_review_instructions",
-        "as_sfi_extraction_instructions",
-        "lc_generation_instructions",
-        mode="before",
-    )
-    @classmethod
-    def _strip_and_require_non_empty(cls, v: str) -> str:
-        """Strip whitespace and require non-empty strings for required fields.
-
-        Parameters
-        ----------
-        v
-            The input string value to validate.
-
-        Returns
-        -------
-        str
-            The validated and stripped string value.
-        """
-
-        return _strip_and_require_non_empty_str(v)
-
-    @field_validator("as_bilingual_pair_policy", mode="before")
-    @classmethod
-    def _strip_optional_strings(cls, v: str | None) -> str | None:
-        """Strip optional string fields and normalize blank strings to None.
-
-        Parameters
-        ----------
-        v
-            The input optional string value.
-
-        Returns
-        -------
-        str | None
-            The stripped string, or None for blank/None values.
-
-        Raises
-        ------
-        TypeError
-            If the input is not a string or None.
-        """
-
-        if v is None:
-            return None
-
-        if not isinstance(v, str):
-            raise TypeError("Expected a string or None")
-
-        v2 = v.strip()
-        return v2 if v2 else None
-
-    @staticmethod
-    def _clean_selection_pattern_list(
-        *, field_name: str, values: list[str]
-    ) -> list[str]:
-        """Clean, de-duplicate, and compile-check selection regex patterns.
-
-        Parameters
-        ----------
-        field_name
-            Human-readable field name used in error messages.
-        values
-            Configured regex pattern strings.
-
-        Returns
-        -------
-        list[str]
-            Cleaned and de-duplicated regex patterns in stable order.
-
-        Raises
-        ------
-        TypeError
-            If any pattern is not a string.
-        ValueError
-            If any non-empty pattern does not compile.
-        """
-
-        cleaned: list[str] = []
-        seen: set[str] = set()
-
-        for pattern in values or []:
-            if not isinstance(pattern, str):
-                raise TypeError(
-                    f"CreateKGConfig.{field_name} must contain only strings."
-                )
-
-            pattern_clean = pattern.strip()
-
-            if not pattern_clean:
-                continue
-
-            try:
-                re.compile(pattern_clean)
-            except re.error as exc:
-                raise ValueError(
-                    f"Invalid regex in CreateKGConfig.{field_name}: {pattern_clean!r}: {exc}"
-                ) from exc
-
-            if pattern_clean not in seen:
-                cleaned.append(pattern_clean)
-                seen.add(pattern_clean)
-
-        return cleaned
-
-    @staticmethod
-    def _clean_selection_string_list(
-        *, field_name: str, values: list[str]
-    ) -> list[str]:
-        """Clean and de-duplicate KG config selection string lists.
-
-        Parameters
-        ----------
-        field_name
-            Human-readable field name used in error messages.
-        values
-            Configured string values.
-
-        Returns
-        -------
-        list[str]
-            Cleaned and de-duplicated strings in stable order.
-
-        Raises
-        ------
-        TypeError
-            If any value is not a string.
-        """
-
-        cleaned: list[str] = []
-        seen: set[str] = set()
-
-        for value in values or []:
-            if not isinstance(value, str):
-                raise TypeError(
-                    f"CreateKGConfig.{field_name} must contain only strings."
-                )
-
-            value_clean = value.strip()
-
-            if not value_clean:
-                continue
-
-            if value_clean not in seen:
-                cleaned.append(value_clean)
-                seen.add(value_clean)
-
-        return cleaned
-
-    @field_validator(
-        "as_excluded_table_columns_signatures", "as_included_table_columns_signatures"
-    )
-    @classmethod
-    def validate_selection_string_lists(cls, v: list[str]) -> list[str]:
-        """Validate non-regex selection string lists.
-
-        Parameters
-        ----------
-        v
-            Configured selection strings.
-
-        Returns
-        -------
-        list[str]
-            Cleaned and de-duplicated strings in stable order.
-        """
-
-        return cls._clean_selection_string_list(
-            field_name="selection string list", values=v
-        )
-
-    @field_validator(
-        "as_excluded_table_section_patterns", "as_included_table_section_patterns"
-    )
-    @classmethod
-    def validate_selection_pattern_lists(cls, v: list[str]) -> list[str]:
-        """Validate regex-based selection pattern lists.
-
-        Parameters
-        ----------
-        v
-            Configured regex patterns.
-
-        Returns
-        -------
-        list[str]
-            Cleaned and de-duplicated regex patterns in stable order.
-        """
-
-        return cls._clean_selection_pattern_list(
-            field_name="selection pattern list", values=v
-        )
-
-    @field_validator("as_code_patterns")
-    @classmethod
-    def validate_as_code_patterns(cls, v: dict[str, str]) -> dict[str, str]:
-        """Validate that all configured code patterns compile as regular expressions.
-
-        Parameters
-        ----------
-        v
-            Mapping of code pattern name to regular expression string.
-
-        Returns
-        -------
-        dict[str, str]
-            The original pattern mapping.
-
-        Raises
-        ------
-        TypeError
-            If a code pattern value is not a string.
-        ValueError
-            If a code pattern is empty or cannot be compiled.
-        """
-
-        for name, pattern in v.items():
-            if not isinstance(pattern, str):
-                raise TypeError(
-                    f"as_code_patterns[{name!r}] must be a string. "
-                    f"Got {type(pattern).__name__}."
-                )
-
-            if not pattern.strip():
-                raise ValueError(f"as_code_patterns[{name!r}] must be non-empty.")
-
-            try:
-                re.compile(pattern)
-            except re.error as exc:
-                raise ValueError(
-                    f"Invalid regex for as_code_patterns[{name!r}]: {exc}"
-                ) from exc
-
-        return v
-
-    @field_validator("as_synthetic_merge_key_fields")
-    @classmethod
-    def validate_as_synthetic_merge_key_fields(cls, v: list[str]) -> list[str]:
-        """Validate synthetic merge key fields are non-empty strings.
-
-        Parameters
-        ----------
-        v
-            Configured synthetic merge key field names.
-
-        Returns
-        -------
-        list[str]
-            Cleaned and de-duplicated field names in stable order.
-        """
-
-        cleaned: list[str] = []
-        seen: set[str] = set()
-
-        for field_name in v or []:
-            if not isinstance(field_name, str):
-                raise TypeError(
-                    "CreateKGConfig.as_synthetic_merge_key_fields must contain only strings."
-                )
-
-            field_name_clean = field_name.strip()
-
-            if not field_name_clean:
-                continue
-
-            if field_name_clean not in seen:
-                cleaned.append(field_name_clean)
-                seen.add(field_name_clean)
-
-        if not cleaned:
-            raise ValueError(
-                "CreateKGConfig.as_synthetic_merge_key_fields must contain at least one value."
-            )
-
-        return cleaned
-
-    @staticmethod
-    def _statement_type_policy_key(value: str) -> str:
-        """Build a stable comparison key for statement-type labels and aliases.
-
-        Parameters
-        ----------
-        value
-            Statement-type label or alias.
-
-        Returns
-        -------
-        str
-            Casefolded key with non-alphanumeric runs collapsed to one space.
-        """
-
-        return re.sub(r"[^0-9a-z]+", " ", str(value or "").casefold()).strip()
-
-    @field_validator("as_statement_type_policy")
-    @classmethod
-    def validate_as_statement_type_policy(
-        cls, v: list[_AcademicStandardStatementTypePolicyItem]
-    ) -> list[_AcademicStandardStatementTypePolicyItem]:
-        """Validate canonical statement-type policy labels and aliases.
-
-        Parameters
-        ----------
-        v
-            Configured statement-type policy items.
-
-        Returns
-        -------
-        list[_AcademicStandardStatementTypePolicyItem]
-            Validated policy items in configured order.
-
-        Raises
-        ------
-        ValueError
-            If canonical labels or aliases conflict.
-        """
-
-        if not v:
-            raise ValueError("CreateKGConfig.as_statement_type_policy is required.")
-
-        alias_to_statement_type: dict[str, str] = {}
-        canonical_keys: set[str] = set()
-
-        for item in v:
-            canonical_key = cls._statement_type_policy_key(item.statement_type)
-
-            if canonical_key in canonical_keys:
-                raise ValueError(
-                    f"CreateKGConfig.as_statement_type_policy contains duplicate "
-                    f"statement_type labels after normalization: {item.statement_type!r}"
-                )
-
-            canonical_keys.add(canonical_key)
-
-            for alias in [item.statement_type, *item.aliases]:
-                alias_key = cls._statement_type_policy_key(alias)
-
-                if not alias_key:
-                    continue
-
-                existing = alias_to_statement_type.get(alias_key)
-
-                if existing is not None and existing != item.statement_type:
-                    raise ValueError(
-                        f"CreateKGConfig.as_statement_type_policy alias conflict: "
-                        f"{alias!r} maps to both {existing!r} and "
-                        f"{item.statement_type!r}."
-                    )
-
-                alias_to_statement_type[alias_key] = item.statement_type
-
-        return v
-
-    def _validate_windowing(self) -> None:
-        """Ensure table row windowing configuration is internally consistent.
-
-        Raises
-        ------
-        ValueError
-            If as_max_rows_per_table_window is non-positive, or if as_row_overlap is
-            not smaller than as_max_rows_per_table_window when chunking is enabled.
-        """
-
-        if self.as_max_rows_per_table_window is None:
-            return
-
-        if self.as_max_rows_per_table_window <= 0:
-            raise ValueError(
-                "CreateKGConfig.as_max_rows_per_table_window must be positive or null."
-            )
-
-        if self.as_row_overlap >= self.as_max_rows_per_table_window:
-            raise ValueError(
-                "CreateKGConfig.as_row_overlap must be smaller than as_max_rows_per_table_window."
-            )
-
-    @staticmethod
-    def _validate_as_code_parent_rule(
-        idx: int, rule: dict[str, Any], known: set[str]
-    ) -> None:
-        """Validate a single code parent rule.
-
-        Parameters
-        ----------
-        idx
-            Index of the rule (for error messages).
-        rule
-            The code parent rule mapping to validate.
-        known
-            Set of known code pattern names.
-
-        Raises
-        ------
-        ValueError
-            If the rule references unknown patterns, uses a method other than
-            `regex_substitution`, is missing required `regex_substitution` fields, or
-            has an invalid regex.
-        """
-
-        child = rule.get("child")
-        parent = rule.get("parent")
-        method = rule.get("method")
-
-        if child not in known:
-            raise ValueError(
-                f"as_code_parent_rules[{idx}] unknown child pattern: {child!r}"
-            )
-
-        if parent not in known:
-            raise ValueError(
-                f"as_code_parent_rules[{idx}] unknown parent pattern: {parent!r}"
-            )
-
-        if method != "regex_substitution":
-            raise ValueError(
-                f"as_code_parent_rules[{idx}] invalid method: {method!r}. "
-                f"Only 'regex_substitution' is supported."
-            )
-
-        if "regex" not in rule or "replacement" not in rule:
-            raise ValueError(
-                f"as_code_parent_rules[{idx}] regex_substitution requires regex and replacement"
-            )
-
-        re.compile(rule["regex"])
-
-    def _validate_as_code_parent_rules(self, known: set[str]) -> None:
-        """Validate all configured code parent rules.
-
-        Parameters
-        ----------
-        known
-            Set of known code pattern names.
-        """
-
-        for idx, rule in enumerate(self.as_code_parent_rules):
-            self._validate_as_code_parent_rule(idx, rule, known)
-
-    def _validate_statement_type_policy_code_types(self, known: set[str]) -> None:
-        """Validate statement-type policy code_type references.
-
-        Parameters
-        ----------
-        known
-            Known KG config code-pattern keys.
-
-        Raises
-        ------
-        ValueError
-            If a statement-type policy item references an unknown code_type.
-        """
-
-        for item in self.as_statement_type_policy:
-            if item.code_type is not None and item.code_type not in known:
-                raise ValueError(
-                    f"CreateKGConfig.as_statement_type_policy references unknown "
-                    f"code_type {item.code_type!r} for statement_type "
-                    f"{item.statement_type!r}. Known code types: {sorted(known)}"
-                )
-
-    def _validate_selection_overlap_policy(self) -> None:
-        """Ensure table-selection policy does not both include and exclude the same
-        value.
-
-        Raises
-        ------
-        ValueError
-            If a table columns_signature appears in both included and excluded lists.
-        """
-
-        overlapping_table_signatures = sorted(
-            set(self.as_included_table_columns_signatures)
-            & set(self.as_excluded_table_columns_signatures)
-        )
-
-        if overlapping_table_signatures:
-            raise ValueError(
-                f"CreateKGConfig table-selection policy cannot include and exclude the "
-                f"same columns_signature values: {overlapping_table_signatures}"
-            )
-
-    @model_validator(mode="after")
-    def validate_kg_configuration(self) -> Self:
-        """Validate cross-field CreateKGConfig configuration.
-
-        Returns
-        -------
-        Self
-            The validated KG configuration.
-
-        Raises
-        ------
-        ValueError
-            If code handling, parent rules, or windowing configuration is invalid.
-        """
-
-        known = set(self.as_code_patterns.keys())
-        self._validate_windowing()
-        self._validate_as_code_parent_rules(known)
-        self._validate_selection_overlap_policy()
-        self._validate_statement_type_policy_code_types(known)
-        return self
 
 
 class RunConfig(BaseSchema):
