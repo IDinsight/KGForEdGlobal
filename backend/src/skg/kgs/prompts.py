@@ -559,7 +559,7 @@ def review_sfi_dedup_candidates(review_request: SFIDedupReviewRequest) -> Prompt
 - Do not ask for the full registry, full extraction windows, full DocumentIR, or outside source context.
 - Do not invent new candidates, candidate IDs, statement codes, hierarchy nodes, or final StandardsFrameworkItem IDs.
 - Do not infer hasChild parentage or other relationships.
-- Do not choose final canonical KG text; Step 8 will construct final source-backed records after deduplication.
+- Do not choose final canonical KG text; The next step will construct final source-backed records after deduplication.
 
 ## Decision labels
 Use exactly one of these decisions for each decision group:
