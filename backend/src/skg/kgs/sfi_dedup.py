@@ -53,7 +53,62 @@ class _ReviewComponent:
 def _build_initial_review_edges(
     sfi_candidate_registry: SFIRegistryArtifact,
 ) -> list[tuple[set[str], set[str]]]:
-    """Build initial review edges from buckets, warnings, and source overlap.
+    """Build initial review edges from buckets, warnings, and source overlap. This
+    function answers "which candidates have enough evidence to be reviewed together?".
+    It does not answer "which candidates are duplicates?".
+
+    Examples
+    --------
+
+    1. A code duplicate bucket creates one review edge containing every candidate in
+    that bucket. For example, if the registry has a duplicate bucket for
+    `content standard|b4.1.1.3` with two candidates, this function emits an edge
+    like:
+
+    (
+        {"w0143:sfi_11:39af9680", "w0144:sfi_1:ddee825d"},
+        {"duplicate_bucket:code:bucket_code_abcd1234:strong_signal",},
+    )
+
+    This edge does not mean the candidates should automatically merge. It only means
+    they should be reviewed together because the registry found a strong same-code
+    signal.
+
+    2. A repeated-text warning creates another review edge. For example, if a no-code
+    curriculum repeats the same normalized objective text across windows, the registry
+    warning can produce an edge like:
+
+    (
+        {"w0052:sfi_7:aaaa1111", "w0054:sfi_3:bbbb2222", "w0056:sfi_2:cccc3333"},
+        {"registry_warning:same_text_repeated_across_windows:warning_0027",},
+    )
+
+    This lets the later component-building step place all candidates from the warning
+    into the same bounded dedup review set, unless the component must be split for size
+    or safety.
+
+    3. Source-provenance overlap creates review edges even when there is no duplicate
+    bucket. For example, if two candidates with the same `statement_type` were
+    extracted from the same table row in the same source segment, this function groups
+    them under a provenance reason like:
+
+    (
+        {"w0012:sfi_4:c1736bd1", "w0012:sfi_8:a4fde5d4"},
+        {
+            "provenance_overlap:same_source_table_row:Compétence de base:"
+            "6aaf44b7-3925-52d2-99bb-6feb16798606:1",
+        },
+    )
+
+    This is useful for catching duplicate extractions from repeated rows, table
+    overlap, or layout artifacts. It is only a retrieval signal: same row or same
+    header does not by itself prove that candidates are duplicates.
+
+    4. Different edge sources can overlap. For example, candidate `A` and candidate `B`
+    might share a duplicate bucket, while candidate `B` and candidate `C` share a
+    source-row overlap. This function returns two separate edges, and
+    `_merge_edges_to_components()` later combines them into one connected component
+    `{A, B, C}` with both review reasons.
 
     Parameters
     ----------
@@ -142,6 +197,76 @@ def _build_merge_group(
     merge_reason: str,
 ) -> SFIMergeGroup:
     """Build one SFI merge-group record from registry candidates.
+
+    This function is a small constructor that turns one or more SFIRegistryCandidates
+    into one SFIMergeGroup.
+
+    It is used in three situations:
+
+    1. The LLM says several candidates should be merged.
+    2. The LLM says candidates should stay separate, so each candidate gets its own
+        singleton group.
+    3. The system creates deterministic singleton/conflict/needs-review groups without
+        final SFI IDs.
+
+    The function does not decide whether candidates should merge. Its caller already
+    decided that through an LLM decision or deterministic fallback. This function just
+    packages the candidates and evidence into a consistent merge-group record.
+
+    Examples
+    --------
+
+    1. A merged group with two duplicate candidates might be built from two registry
+    candidates that share the same statement type and normalized statement code:
+
+    _build_merge_group(
+        candidates=[candidate_a, candidate_b],
+        llm_decision="merge",
+        llm_review_set_id="dedupe_review_abc123",
+        merge_decision="merged",
+        merge_reason="Same statement type, same official code, and compatible text.",
+    )
+
+    The resulting `SFIMergeGroup` has one stable group ID, both registry candidate IDs,
+    the original candidate descriptions and source texts, source references for each
+    candidate, and the LLM decision metadata. If both candidates share exactly one
+    normalized statement code, the group also stores that value in the singular
+    `normalized_statement_code` field.
+
+    2. A keep-separate decision is represented by calling this function once per
+    candidate. For example, if the LLM reviewed `candidate_a` and `candidate_b`
+    together but decided they are distinct, the caller creates two singleton groups:
+
+    _build_merge_group(
+        candidates=[candidate_a],
+        llm_decision="keep_separate",
+        llm_review_set_id="dedupe_review_abc123",
+        merge_decision="singleton",
+        merge_reason="Same text, but different visible curriculum contexts.",
+    )
+    _build_merge_group(
+        candidates=[candidate_b],
+        llm_decision="keep_separate",
+        llm_review_set_id="dedupe_review_abc123",
+        merge_decision="singleton",
+        merge_reason="Same text, but different visible curriculum contexts.",
+    )
+
+    3. A deterministic singleton outside all review sets is also built with one
+    candidate, but has no LLM decision metadata:
+
+    _build_merge_group(
+        candidates=[candidate_c],
+        llm_decision=None,
+        llm_review_set_id=None,
+        merge_decision="singleton",
+        merge_reason="Candidate was not included in any SFI merge review set.",
+    )
+
+    4. A conflict or needs-review group can contain multiple candidates. In those
+    cases, if the candidates have different statement codes or statement types, the
+    singular fields such as `statement_code` or `statement_type` are set to `None`,
+    while the plural evidence fields retain all observed values.
 
     Parameters
     ----------
@@ -254,6 +379,128 @@ def _build_merge_groups_from_responses(
     unresolved_components: Sequence[_ReviewComponent],
 ) -> list[SFIMergeGroup]:
     """Convert reviewed and unresolved components into merge groups.
+
+    At this point:
+        - `_build_review_requests()` has sent safe bounded components to the LLM.
+        - `_run_dedup_reviews()` has returned validated SFIDedupReviewResponse objects.
+        - Some components may have skipped the LLM because
+            1needs_review_without_llm=True1.
+
+    This function combines both paths:
+        1. LLM-reviewed candidates -> use each LLM decision_group.
+        2. Unresolved components -> emit deterministic needs_review merge groups
+            without an LLM decision.
+
+    The key behavior is based on the LLM decision:
+
+    LLM decision	Output merge group behavior
+
+    merge	        One multi-candidate group with merge_decision="merged"
+    keep_separate	One singleton group per candidate with merge_decision="singleton"
+    conflict	    One group with merge_decision="conflict"
+    needs_review	One group with merge_decision="needs_review"
+
+    For unresolved components that were not sent to the LLM, it emits one
+    needs_review group with llm_decision=None and llm_review_set_id=None.
+
+    This function only converts decisions into merge-group records. It does not create
+    singleton groups for candidates outside all review components; that is handled
+    later by `_build_singleton_merge_groups()`.
+
+    Examples
+    --------
+
+    1. An LLM `merge` decision becomes one merged group containing all candidates in
+    that decision group. For example, if a review response contains:
+
+    SFIDedupDecisionGroup(
+        candidate_ids=("candidate_a", "candidate_b"),
+        decision="merge",
+        reason="Same statement type, same official code, and compatible text.",
+    )
+
+    this function emits one `SFIMergeGroup` like:
+
+    SFIMergeGroup(
+        registry_candidate_ids=("candidate_a", "candidate_b"),
+        llm_decision="merge",
+        llm_review_set_id="dedupe_review_abc123",
+        merge_decision="merged",
+        merge_reason="Same statement type, same official code, and compatible text.",
+        ...
+    )
+
+    2. An LLM `keep_separate` decision becomes one singleton merge group per candidate.
+    For example, if the LLM returns:
+
+    SFIDedupDecisionGroup(
+        candidate_ids=("candidate_a", "candidate_b"),
+        decision="keep_separate",
+        reason="Same text, but candidates belong to different source contexts.",
+    )
+
+    this function emits two singleton groups, each carrying the same LLM reason:
+
+    SFIMergeGroup(
+        registry_candidate_ids=("candidate_a",),
+        llm_decision="keep_separate",
+        llm_review_set_id="dedupe_review_abc123",
+        merge_decision="singleton",
+        merge_reason="Same text, but candidates belong to different source contexts.",
+        ...
+    )
+    SFIMergeGroup(
+        registry_candidate_ids=("candidate_b",),
+        llm_decision="keep_separate",
+        llm_review_set_id="dedupe_review_abc123",
+        merge_decision="singleton",
+        merge_reason="Same text, but candidates belong to different source contexts.",
+        ...
+    )
+
+    3. An LLM `conflict` decision becomes one conflict group. For example, if the LLM
+    sees the same official code attached to materially different descriptions:
+
+    SFIDedupDecisionGroup(
+        candidate_ids=("candidate_a", "candidate_b"),
+        decision="conflict",
+        reason="Same code appears with incompatible descriptions.",
+    )
+
+    this function emits one group with `merge_decision="conflict"`. The group is
+    preserved for later inspection rather than being merged or split automatically.
+
+    4. An LLM `needs_review` decision becomes one needs-review group. For example, if
+    the bounded payload does not contain enough visible source context to decide safely:
+
+    SFIDedupDecisionGroup(
+        candidate_ids=("candidate_a", "candidate_b", "candidate_c"),
+        decision="needs_review",
+        reason="The candidates may be related, but the bounded payload is not
+        sufficient to determine whether they are duplicates.",
+    )
+
+    this function emits one group with `merge_decision="needs_review"`.
+
+    5. A component that was not sent to the LLM because it was too large or unsafe is
+    also emitted as a needs-review group. For example:
+
+    _ReviewComponent(
+        candidate_ids=("candidate_z",),
+        needs_review_without_llm=True,
+        review_reasons=(
+            "oversized_component_singleton_split_residue_needs_review:"
+            "('Objectif spécifique', '', ('segment_9',), 22)",
+        ),
+    )
+
+    becomes an `SFIMergeGroup` with:
+
+    llm_decision=None
+    llm_review_set_id=None
+    merge_decision="needs_review"
+    merge_reason="Review component was too large or unsafe for bounded v0 LLM
+    dedup review: ..."
 
     Parameters
     ----------
@@ -409,6 +656,77 @@ def _build_review_requests(
 ) -> tuple[list[SFIDedupReviewRequest], list[_ReviewComponent]]:
     """Build LLM review requests and carry unresolved components forward.
 
+    This function converts bounded `_ReviewComponents` into the actual payloads that
+    will be sent to the dedup LLM. At this point, the pipeline has already decided
+    which candidates should be reviewed together and whether the set is small/safe
+    enough for LLM review. This function does not create new review evidence and does
+    not make merge decisions. It simply separates components into two groups:
+
+    1. LLM-reviewable components
+        needs_review_without_llm=False -> converted into SFIDedupReviewRequest.
+
+    2. Unresolved components
+        needs_review_without_llm=True -> carried forward unchanged in
+        unresolved_components, so later code can emit needs_review merge groups without
+        calling the LLM.
+
+    The candidate payload sent to the LLM is intentionally compact. It includes
+    registry identity, statement type, code fields, description/source text, normalized
+    text keys, source segment IDs, window references, and table row/header indexes. It
+    does not include the full registry, full extraction window, DocumentIR, final SFI
+    IDs, hierarchy, or canonical KG text.
+
+    Examples
+    --------
+
+    1. A reviewable component becomes one LLM review request. For example, an input
+    component like:
+
+    _ReviewComponent(
+        candidate_ids=("candidate_a", "candidate_b"),
+        needs_review_without_llm=False,
+        review_reasons=("duplicate_bucket:code:bucket_123:strong_signal",),
+    )
+
+    is converted into one `SFIDedupReviewRequest`. The request contains a deterministic
+    `review_set_id` derived from the sorted candidate IDs, the deduplication
+    instructions from the KG config, the bilingual pair policy, the review reasons, and
+    compact candidate records copied from the registry:
+
+    SFIDedupReviewRequest(
+        bilingual_pair_policy=kg_config.academic_standards.bilingual_pair_policy,
+        candidates=[
+            SFIDedupReviewCandidate(... registry_candidate_id="candidate_a" ...),
+            SFIDedupReviewCandidate(... registry_candidate_id="candidate_b" ...),
+        ],
+        review_reasons=("duplicate_bucket:code:bucket_123:strong_signal",),
+        review_set_id="dedupe_review_<stable_hash>",
+        sfi_deduplication_instructions=(
+            kg_config.academic_standards.sfi_deduplication_instructions
+        ),
+    )
+
+    The request is only a bounded review payload. It does not tell the LLM to merge the
+    candidates; it asks the LLM to classify the candidates into merge, keep-separate,
+    conflict, or needs-review groups.
+
+    2. A component marked `needs_review_without_llm=True` is not converted into an LLM
+    request. For example:
+
+    _ReviewComponent(
+        candidate_ids=("candidate_z",),
+        needs_review_without_llm=True,
+        review_reasons=(
+            "duplicate_bucket:source_text:bucket_xyz:weak_signal",
+            "oversized_component_singleton_split_residue_needs_review:"
+            "('Objectif spécifique', '', ('segment_9',), 22)",
+        ),
+    )
+
+    is appended to `unresolved_components` and returned separately. Later,
+    `_build_merge_groups_from_responses()` converts it into a `needs_review` merge
+    group without making an LLM call.
+
     Parameters
     ----------
     components
@@ -491,6 +809,95 @@ def _build_singleton_merge_groups(
 ) -> list[SFIMergeGroup]:
     """Build singleton merge groups for unreviewed registry candidates.
 
+    By the time this function runs, the pipeline has already created merge groups for:
+
+        - LLM-reviewed candidates from _build_merge_groups_from_responses()
+        - unresolved oversized/split residues marked needs_review
+        - candidates the LLM explicitly kept separate
+
+    But many candidates may never have appeared in any duplicate bucket, warning, or
+    provenance-overlap component. Those candidates were never sent to the LLM because
+    there was no review evidence connecting them to another candidate. Thus,
+    `_build_singleton_merge_groups()` turns each of those remaining candidates into an
+    ordinary singleton merge group.
+
+    It does this by computing: `set(sfi_candidates_by_id) - covered_candidate_ids`
+
+    Then for each remaining candidate ID, it calls `_build_merge_group()` with:
+
+        candidates=[candidate]
+        llm_decision=None
+        llm_review_set_id=None
+        merge_decision="singleton"
+        merge_reason="Candidate was not included in any SFI merge review set."
+
+    So this function does not mean “the LLM decided this is separate.” It means the
+    deterministic review-signal builder found no reason to compare this candidate with
+    anything else. In other words, it handles candidates with no dedup evidence at all.
+
+    This function is a final coverage step. It ensures every registry candidate appears
+    in exactly one merge group before `_validate_merge_group_coverage()` checks the
+    completed output.
+
+    Examples
+    --------
+
+    1. This function creates singleton merge groups for registry candidates that were
+    not covered by any reviewed, unresolved, conflict, merged, or keep-separate
+    group.
+
+    For example, suppose the registry contains five candidates:
+
+    {
+        "candidate_a",
+        "candidate_b",
+        "candidate_c",
+        "candidate_d",
+        "candidate_e",
+    }
+
+    and earlier merge-group construction already covered three of them:
+
+    covered_candidate_ids = {
+        "candidate_a",  # included in an LLM-reviewed merged group
+        "candidate_b",  # included in the same LLM-reviewed merged group
+        "candidate_c",  # included in a needs-review group
+    }
+
+    This function computes the remaining candidate IDs:
+
+    {"candidate_d", "candidate_e"}
+
+    and emits one singleton merge group for each remaining candidate:
+
+    SFIMergeGroup(
+        registry_candidate_ids=("candidate_d",),
+        llm_decision=None,
+        llm_review_set_id=None,
+        merge_decision="singleton",
+        merge_reason="Candidate was not included in any SFI merge review set.",
+        ...
+    )
+    SFIMergeGroup(
+        registry_candidate_ids=("candidate_e",),
+        llm_decision=None,
+        llm_review_set_id=None,
+        merge_decision="singleton",
+        merge_reason="Candidate was not included in any SFI merge review set.",
+        ...
+    )
+
+    These singleton groups are different from singleton groups created after an LLM
+    `keep_separate` decision. A keep-separate singleton means the candidate was
+    reviewed with one or more related candidates and the LLM decided it should stand
+    alone. A singleton from this function means the candidate was never included in any
+    review component because no duplicate bucket, warning, or source-provenance overlap
+    connected it to another candidate.
+
+    Candidates marked `needs_review_without_llm=True` should already be included in
+    `covered_candidate_ids` after `_build_merge_groups_from_responses()`. They
+    therefore do not become ordinary unreviewed singletons here.
+
     Parameters
     ----------
     covered_candidate_ids
@@ -549,7 +956,100 @@ def _load_existing_merge_report(
 def _merge_edges_to_components(
     edges: Sequence[tuple[set[str], set[str]]],
 ) -> list[_ReviewComponent]:
-    """Merge overlapping review edges into connected components.
+    """Merge overlapping review edges into connected components. This function turns
+    overlapping links into review neighborhoods.
+
+    If the output of `_build_initial_review_edges()` is something like:
+
+    [
+        ({"A", "B"}, {"reason_1"}),
+        ({"B", "C"}, {"reason_2"}),
+    ]
+
+    then this function turns it into:
+
+    _ReviewComponent(
+        candidate_ids=("A", "B", "C"),
+        needs_review_without_llm=False,
+        review_reasons=("reason_1", "reason_2"),
+    )
+
+    In other words, this function does not decide what to merge either. It just
+    combines candidates whose review signals overlap into one candidate cluster before
+    bounding/splitting occurs. It uses a small union-find structure: every edge unions
+    all candidate IDs in that edge, then reasons are collected across all candidates in
+    the connected component. Components with fewer than 2 candidates are omitted.
+
+    Examples
+    --------
+
+    1. A single edge becomes one review component. For example, an initial edge like:
+
+    (
+        {"candidate_a", "candidate_b"},
+        {"duplicate_bucket:code:bucket_123:strong_signal"},
+    )
+
+    produces a component like:
+
+    _ReviewComponent(
+        candidate_ids=("candidate_a", "candidate_b"),
+        needs_review_without_llm=False,
+        review_reasons=("duplicate_bucket:code:bucket_123:strong_signal",),
+    )
+
+    2. Overlapping edges are merged into one connected component. For example, if one
+    edge connects `candidate_a` to `candidate_b` and another edge connects
+    `candidate_b` to `candidate_c`:
+
+    [
+        (
+            {"candidate_a", "candidate_b"},
+            {"duplicate_bucket:description_text:bucket_abc:medium_signal"},
+        ),
+        (
+            {"candidate_b", "candidate_c"},
+            {"registry_warning:same_text_repeated_across_windows:warning_0007"},
+        ),
+    ]
+
+    the output is one component containing all three candidates:
+
+    _ReviewComponent(
+        candidate_ids=("candidate_a", "candidate_b", "candidate_c"),
+        needs_review_without_llm=False,
+        review_reasons=(
+            "duplicate_bucket:description_text:bucket_abc:medium_signal",
+            "registry_warning:same_text_repeated_across_windows:warning_0007",
+        ),
+    )
+
+    The component does not mean all candidates should merge. It only means the
+    candidate IDs are connected by review evidence and should be considered together
+    before the bounded review step.
+
+    3. Disjoint edges remain separate components. For example:
+
+    [
+        ({"candidate_a", "candidate_b"}, {"reason_1"}),
+        ({"candidate_c", "candidate_d"}, {"reason_2"}),
+    ]
+
+    produces two independent components:
+
+    _ReviewComponent(
+        candidate_ids=("candidate_a", "candidate_b"),
+        needs_review_without_llm=False,
+        review_reasons=("reason_1",),
+    )
+    _ReviewComponent(
+        candidate_ids=("candidate_c", "candidate_d"),
+        needs_review_without_llm=False,
+        review_reasons=("reason_2",),
+    )
+
+    4. Edges with fewer than two candidate IDs are ignored by construction because
+    there is no deduplication comparison to perform.
 
     Parameters
     ----------
@@ -724,10 +1224,158 @@ def _split_and_bound_components(
 ) -> list[_ReviewComponent]:
     """Split connected components into bounded review components.
 
-    Oversized components are split by a conservative source-derived key. Split groups
-    that remain too large, singleton split residues, and one-candidate chunk residues
-    are carried forward as needs-review components so candidates with review evidence
-    cannot silently fall through into ordinary unreviewed singleton merge groups.
+    After `_merge_edges_to_components()`, a component can become large because
+    duplicate buckets, warnings, and provenance edges can chain together. This function
+    keeps small components as-is, but splits oversized components into smaller, safer
+    chunks before they become LLM review requests. The current max is
+    `_MAX_DEDUP_REVIEW_SET_CANDIDATES = 12`. Components with 12 or fewer candidates
+    pass through unchanged.
+
+    Oversized components are split by a conservative source-derived key:
+    statement_type, normalized/code bucket identity, exact source segment IDs, and a
+    coarse window_index // 3 band. If a split group or chunk has only one candidate, it
+    is still carried forward as needs_review_without_llm=True so candidates with review
+    evidence do not silently fall through as ordinary singletons.
+
+    The flow is:
+
+    1. If a connected component has 12 or fewer candidates, it passes through with
+    needs_review_without_llm=False
+
+    2. If a connected component has more than 12 candidates, the code splits it by:
+
+    (
+        candidate.statement_type,
+        candidate.normalized_statement_code or candidate.code_bucket_key or "",
+        tuple(candidate.source_segment_ids),
+        candidate.window_index // 3,
+    )
+
+    During that split, needs_review_without_llm=True is assigned when the resulting
+    group cannot become a meaningful LLM comparison set because it has only one
+    candidate.
+
+    There are two specific cases:
+
+    Case 1: the split group itself has exactly one candidate (before chunking)
+
+    split_key_A -> 8 candidates
+    split_key_B -> 11 candidates
+    split_key_C -> 1 candidate  # Case 1
+
+    split_key_C has no peer left after safe splitting, so it cannot form an LLM dedup
+    comparison. But because it came from an oversized connected component, the code
+    preserves it as needs_review rather than letting it become an ordinary singleton.
+
+    Case 2: a split group has at least 2 candidates, but it is still larger than the
+    max review size, so the code chunks it into groups of 12; if the final chunk has
+    only one candidate, then `needs_review_without_llm=True`.
+
+    split_key_A -> 25 candidates
+
+    Chunked with max size 12:
+
+    chunk 1 -> 12 candidates
+    chunk 2 -> 12 candidates
+    chunk 3 -> 1 candidate
+
+    That last candidate had peers under the same split key, but chunking separated it
+    into a one-candidate tail. Since a one-candidate LLM dedup request is not useful,
+    it is marked needs_review.
+
+    Practical difference:
+
+    Case 1 means: “This candidate became isolated after safe-context splitting.”
+    Case 2 means: “This candidate belonged to a valid multi-candidate safe-context
+        group, but was left alone by max-size chunking.”
+
+    Both are handled the same downstream: no LLM call; emit a needs_review merge group.
+
+    Examples
+    --------
+
+    1. A small component is passed through unchanged. For example, if the input
+    component has 3 candidates and the maximum review-set size is 12:
+
+    _ReviewComponent(
+        candidate_ids=("candidate_a", "candidate_b", "candidate_c"),
+        needs_review_without_llm=False,
+        review_reasons=("duplicate_bucket:code:bucket_123:strong_signal",),
+    )
+
+    the same component is returned. It is small enough to become one bounded LLM dedup
+    review request.
+
+    2. An oversized component is split by conservative source-derived context. For
+    example, suppose a 20-candidate component contains candidates from two source
+    segments and two nearby window bands. Candidates are grouped by:
+
+    (
+        candidate.statement_type,
+        candidate.normalized_statement_code or candidate.code_bucket_key or "",
+        tuple(candidate.source_segment_ids),
+        candidate.window_index // 3,
+    )
+
+    This can turn one broad connected component into smaller review components such as:
+
+    _ReviewComponent(
+        candidate_ids=("candidate_a", "candidate_b", "candidate_c"),
+        needs_review_without_llm=False,
+        review_reasons=(
+            "duplicate_bucket:description_text:bucket_abc:medium_signal",
+            "oversized_component_split_by_safe_source_context:"
+            "('Objectif spécifique', '', ('segment_1',), 17)",
+        ),
+    )
+    _ReviewComponent(
+        candidate_ids=("candidate_d", "candidate_e"),
+        needs_review_without_llm=False,
+        review_reasons=(
+            "duplicate_bucket:description_text:bucket_abc:medium_signal",
+            "oversized_component_split_by_safe_source_context:"
+            "('Objectif spécifique', '', ('segment_2',), 18)",
+        ),
+    )
+
+    The split does not decide that candidates are duplicates. It only creates smaller,
+    safer candidate sets for the LLM to review.
+
+    If an oversized split group contains more than the maximum number of candidates, it
+    is chunked into review-sized groups. For example, a 25-candidate split group with a
+    maximum size of 12 becomes two 12-candidate review components and one 1-candidate
+    residue.
+
+    3. Singleton split residues are not treated as ordinary unreviewed singletons. They
+    are carried forward as needs-review components because they came from an oversized
+    component with real review evidence. For example:
+
+    _ReviewComponent(
+        candidate_ids=("candidate_z",),
+        needs_review_without_llm=True,
+        review_reasons=(
+            "duplicate_bucket:source_text:bucket_xyz:weak_signal",
+            "oversized_component_singleton_split_residue_needs_review:"
+            "('Objectif spécifique', '', ('segment_9',), 22)",
+        ),
+    )
+
+    Likewise, a one-candidate tail chunk from a larger split group is carried forward
+    as needs-review rather than silently dropped:
+
+    _ReviewComponent(
+        candidate_ids=("candidate_y",),
+        needs_review_without_llm=True,
+        review_reasons=(
+            "registry_warning:same_text_repeated_across_windows:warning_0042",
+            "oversized_component_chunk_residue_needs_review:"
+            "('Indicator', 'b4.1.1.3.2', ('segment_4',), 48)",
+        ),
+    )
+
+    This guarantees that every candidate connected by review evidence remains
+    represented either in an LLM-reviewable component or in an explicit needs-review
+    component.
 
     Parameters
     ----------
