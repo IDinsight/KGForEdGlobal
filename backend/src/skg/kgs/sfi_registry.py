@@ -19,6 +19,7 @@ from typing import Any, Optional, Sequence
 from loguru import logger
 
 # Package Library
+from skg.document_ir.schemas import TableSegment
 from skg.kgs.schemas import (
     ExtractionWindow,
     SFICandidate,
@@ -33,6 +34,42 @@ from skg.kgs.validators import verify_sfi_extraction_quality
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, write_to_json
+
+
+def _build_block_source_context(block: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Extract context labels and key parts from a block payload.
+
+    Parameters
+    ----------
+    block
+        Block payload from an extraction window.
+
+    Returns
+    -------
+    tuple[list[str], list[str]]
+        Context labels and key parts derived from the block.
+    """
+
+    labels: list[str] = []
+    block_type = str(block.get("block_type") or "").strip()
+    local_code = str(block.get("local_code") or "").strip()
+    section_texts = _extract_section_texts(block.get("section_path") or [])
+
+    for section_label in section_texts:
+        labels.append(f"section:{section_label}")
+
+    if block_type:
+        labels.append(f"block_type:{block_type}")
+
+    if local_code:
+        labels.append(f"block_local_code:{local_code}")
+
+    key_parts = [
+        f"block_type:{block_type}",
+        f"block_local_code:{local_code}",
+        "section_path:" + _normalize_text(" > ".join(section_texts)),
+    ]
+    return labels, key_parts
 
 
 def _build_candidate_source_context(
@@ -67,86 +104,18 @@ def _build_candidate_source_context(
     ]
 
     if extraction_window.block is not None:
-        block = extraction_window.block
-        block_type = str(block.get("block_type") or "").strip()
-        local_code = str(block.get("local_code") or "").strip()
-        section_texts: list[str] = []
-
-        for section_ref in block.get("section_path") or []:
-            if isinstance(section_ref, dict):
-                section_text = str(section_ref.get("text") or "").strip()
-            else:
-                section_text = str(section_ref or "").strip()
-
-            if not section_text:
-                continue
-
-            section_label = _truncate_context_label(section_text)
-            section_texts.append(section_label)
-            labels.append(f"section:{section_label}")
-
-        if block_type:
-            labels.append(f"block_type:{block_type}")
-
-        if local_code:
-            labels.append(f"block_local_code:{local_code}")
-
-        key_parts.extend(
-            [
-                f"block_type:{block_type}",
-                f"block_local_code:{local_code}",
-                "section_path:" + _normalize_text(" > ".join(section_texts)),
-            ]
+        block_labels, block_key_parts = _build_block_source_context(
+            extraction_window.block
         )
+        labels.extend(block_labels)
+        key_parts.extend(block_key_parts)
 
     if extraction_window.table is not None:
-        table = extraction_window.table
-        columns_signature = str(table.columns_signature or "").strip()
-        local_code = str(table.local_code or "").strip()
-        row_indexes = ",".join(str(index) for index in candidate.table_row_indexes)
-        header_indexes = ",".join(
-            str(index) for index in candidate.table_header_indexes
+        table_labels, table_key_parts = _build_table_source_context(
+            candidate=candidate, table=extraction_window.table
         )
-
-        if columns_signature:
-            labels.append("table_columns:" + _truncate_context_label(columns_signature))
-
-        if local_code:
-            labels.append(f"table_local_code:{local_code}")
-
-        for header_index in candidate.table_header_indexes:
-            if 0 <= header_index < len(table.header_rows):
-                header_text = _extract_table_row_text(table.header_rows[header_index])
-
-                if header_text:
-                    labels.append(
-                        f"table_header[{header_index}]:"
-                        + _truncate_context_label(header_text)
-                    )
-
-        rows_by_index = dict(zip(table.row_indexes, table.rows))
-
-        for row_index in candidate.table_row_indexes:
-            row = rows_by_index.get(row_index)
-
-            if row is None:
-                continue
-
-            row_text = _extract_table_row_text(row)
-
-            if row_text:
-                labels.append(
-                    f"table_row[{row_index}]:" + _truncate_context_label(row_text)
-                )
-
-        key_parts.extend(
-            [
-                f"table_columns:{columns_signature}",
-                f"table_header_indexes:{header_indexes}",
-                f"table_local_code:{local_code}",
-                f"table_row_indexes:{row_indexes}",
-            ]
-        )
+        labels.extend(table_labels)
+        key_parts.extend(table_key_parts)
 
     if not labels:
         labels.append(f"window:{extraction_window.window_index}")
@@ -481,6 +450,114 @@ def _build_registry_warnings(
     ]
 
 
+def _build_table_header_labels(*, candidate: SFICandidate, table: Any) -> list[str]:
+    """Build human-readable context labels for referenced table headers.
+
+    Parameters
+    ----------
+    candidate
+        Window-local SFI candidate referencing specific table headers.
+    table
+        Table payload from an extraction window.
+
+    Returns
+    -------
+    list[str]
+        Context labels for each referenced header row with visible text.
+    """
+
+    labels: list[str] = []
+
+    for header_index in candidate.table_header_indexes:
+        if 0 <= header_index < len(table.header_rows):
+            header_text = _extract_table_row_text(table.header_rows[header_index])
+
+            if header_text:
+                labels.append(
+                    f"table_header[{header_index}]:"
+                    + _truncate_context_label(header_text)
+                )
+
+    return labels
+
+
+def _build_table_row_labels(*, candidate: SFICandidate, table: Any) -> list[str]:
+    """Build human-readable context labels for referenced table data rows.
+
+    Parameters
+    ----------
+    candidate
+        Window-local SFI candidate referencing specific table rows.
+    table
+        Table payload from an extraction window.
+
+    Returns
+    -------
+    list[str]
+        Context labels for each referenced data row with visible text.
+    """
+
+    labels: list[str] = []
+    rows_by_index = dict(zip(table.row_indexes, table.rows))
+
+    for row_index in candidate.table_row_indexes:
+        row = rows_by_index.get(row_index)
+
+        if row is None:
+            continue
+
+        row_text = _extract_table_row_text(row)
+
+        if row_text:
+            labels.append(
+                f"table_row[{row_index}]:" + _truncate_context_label(row_text)
+            )
+
+    return labels
+
+
+def _build_table_source_context(
+    *, candidate: SFICandidate, table: TableSegment
+) -> tuple[list[str], list[str]]:
+    """Extract context labels and key parts from a table payload.
+
+    Parameters
+    ----------
+    candidate
+        Window-local SFI candidate referencing specific table rows and headers.
+    table
+        Table payload from an extraction window.
+
+    Returns
+    -------
+    tuple[list[str], list[str]]
+        Context labels and key parts derived from the table.
+    """
+
+    labels: list[str] = []
+    columns_signature = str(table.columns_signature or "").strip()
+    local_code = str(table.local_code or "").strip()
+    row_indexes = ",".join(str(index) for index in candidate.table_row_indexes)
+    header_indexes = ",".join(str(index) for index in candidate.table_header_indexes)
+
+    if columns_signature:
+        labels.append("table_columns:" + _truncate_context_label(columns_signature))
+
+    if local_code:
+        labels.append(f"table_local_code:{local_code}")
+
+    labels.extend(_build_table_header_labels(candidate=candidate, table=table))
+    labels.extend(_build_table_row_labels(candidate=candidate, table=table))
+
+    key_parts = [
+        f"table_columns:{columns_signature}",
+        f"table_header_indexes:{header_indexes}",
+        f"table_local_code:{local_code}",
+        f"table_row_indexes:{row_indexes}",
+    ]
+    return labels, key_parts
+
+
 def _build_text_bucket_key(
     *,
     normalized_statement_code: Optional[str],
@@ -536,6 +613,37 @@ def _deterministic_bucket_id(*, bucket_key: str, bucket_type: str) -> str:
 
     digest = hashlib.sha256(f"{bucket_type}|{bucket_key}".encode("utf-8")).hexdigest()
     return f"bucket_{bucket_type}_{digest[:16]}"
+
+
+def _extract_section_texts(section_path: Sequence[Any]) -> list[str]:
+    """Extract and truncate visible text labels from a block section path.
+
+    Parameters
+    ----------
+    section_path
+        Section path entries from a block payload.  Each entry may be a dict
+        with a "text" key or a plain string.
+
+    Returns
+    -------
+    list[str]
+        Truncated section labels in path order, excluding empty entries.
+    """
+
+    section_texts: list[str] = []
+
+    for section_ref in section_path:
+        if isinstance(section_ref, dict):
+            section_text = str(section_ref.get("text") or "").strip()
+        else:
+            section_text = str(section_ref or "").strip()
+
+        if not section_text:
+            continue
+
+        section_texts.append(_truncate_context_label(section_text))
+
+    return section_texts
 
 
 def _extract_table_row_text(row: dict[str, Any]) -> str:

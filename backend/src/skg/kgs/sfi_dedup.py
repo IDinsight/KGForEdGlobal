@@ -1202,13 +1202,18 @@ def _load_resumable_review_progress(
     *,
     merge_report_fp: Path,
     planned_review_requests: Sequence[SFIDedupReviewRequest],
+    review_requests_fp: Path,
     review_responses_fp: Path,
 ) -> list[SFIDedupReviewResponse]:
-    """Load a valid completed-response prefix for an incomplete dedup run.
+    """Load a valid completed review-response prefix for an incomplete dedup run.
 
     The response JSONL is preferred because it is written incrementally after each LLM
-    review. If it is unavailable or stale, a valid response prefix embedded in an
-    existing merge report can also be used to avoid unnecessary repeated LLM calls.
+    review. A saved response prefix is reusable only when both the saved response
+    prefix and the saved request payload prefix match the current deterministic review
+    plan. This prevents stale LLM decisions from being reused when candidate IDs remain
+    stable but candidate text, source context, or dedup instructions have changed. If
+    JSONL progress is unavailable or stale, a valid response/request prefix embedded in
+    an existing merge report can be used as a fallback.
 
     Parameters
     ----------
@@ -1216,13 +1221,16 @@ def _load_resumable_review_progress(
         JSON path for the full merge report, used as a fallback response source.
     planned_review_requests
         Deterministic review requests computed from the current registry.
+    review_requests_fp
+        JSONL path for persisted review requests.
     review_responses_fp
         JSONL path for persisted review responses.
 
     Returns
     -------
     list[SFIDedupReviewResponse]
-        Valid completed review responses that match the current planned request prefix.
+        Valid completed review responses whose saved request payloads match the current
+        planned request prefix.
     """
 
     try:
@@ -1235,6 +1243,13 @@ def _load_resumable_review_progress(
         )
 
         if review_responses:
+            review_requests = _load_jsonl_review_requests(review_requests_fp)
+            _validate_review_request_prefix(
+                planned_review_requests=planned_review_requests,
+                saved_review_requests=review_requests,
+                trusted_prefix_length=len(review_responses),
+            )
+
             logger.info(
                 f"Resuming SFI dedup from {len(review_responses)} completed "
                 f"review responses in {review_responses_fp}."
@@ -1243,8 +1258,8 @@ def _load_resumable_review_progress(
             return review_responses
     except Exception as e:  # pylint: disable=W0718
         logger.warning(
-            f"Ignoring existing SFI dedup review response JSONL progress because it "
-            f"does not match the current plan: {e}"
+            f"Ignoring existing SFI dedup JSONL progress because the saved "
+            f"request/response prefix does not match the current plan: {e}"
         )
 
     if not merge_report_fp.exists():
@@ -1256,10 +1271,17 @@ def _load_resumable_review_progress(
             planned_review_requests=planned_review_requests,
             saved_review_responses=merge_report.review_responses,
         )
+
+        if merge_report.review_responses:
+            _validate_review_request_prefix(
+                planned_review_requests=planned_review_requests,
+                saved_review_requests=merge_report.review_requests,
+                trusted_prefix_length=len(merge_report.review_responses),
+            )
     except Exception as e:  # pylint: disable=W0718
         logger.warning(
-            f"Ignoring existing SFI merge report response progress because it does "
-            f"not match the current plan: {e}"
+            f"Ignoring existing SFI merge report response progress because its saved "
+            f"request/response prefix does not match the current plan: {e}"
         )
 
         return []
@@ -2043,6 +2065,64 @@ def _validate_merge_group_coverage(
         )
 
 
+def _validate_review_request_prefix(
+    *,
+    planned_review_requests: Sequence[SFIDedupReviewRequest],
+    saved_review_requests: Sequence[SFIDedupReviewRequest],
+    trusted_prefix_length: int,
+) -> None:
+    """Validate saved review requests for a trusted completed-response prefix.
+
+    A completed response can be reused only when the saved request payload that
+    produced it exactly matches the current deterministic request payload at the same
+    position. Candidate IDs alone are not sufficient because candidate descriptions,
+    source context, source references, or dedup instructions may change while temporary
+    registry IDs remain stable.
+
+    Parameters
+    ----------
+    planned_review_requests
+        Deterministic review requests computed from the current registry.
+    saved_review_requests
+        Persisted review requests from JSONL or an existing merge report.
+    trusted_prefix_length
+        Number of saved request records required to match the current planned prefix.
+
+    Raises
+    ------
+    ValueError
+        If the trusted prefix length is invalid, the saved request artifact is shorter
+        than the completed-response prefix, or any saved request payload differs from
+        the current planned request payload at the same position.
+    """
+
+    if trusted_prefix_length < 0:
+        raise ValueError(
+            f"Trusted SFI dedup review request prefix length cannot be negative: "
+            f"{trusted_prefix_length}."
+        )
+
+    if trusted_prefix_length > len(planned_review_requests):
+        raise ValueError(
+            f"Trusted SFI dedup review request prefix length "
+            f"{trusted_prefix_length} exceeds the current planned request count "
+            f"{len(planned_review_requests)}."
+        )
+
+    if len(saved_review_requests) < trusted_prefix_length:
+        raise ValueError(
+            f"Saved SFI dedup review requests contain {len(saved_review_requests)} "
+            f"records, but {trusted_prefix_length} completed responses require the "
+            f"same number of matching saved request payloads."
+        )
+
+    _assert_model_sequences_equal(
+        actual=saved_review_requests[:trusted_prefix_length],
+        artifact_label=("saved SFI dedup review request completed-response prefix"),
+        expected=planned_review_requests[:trusted_prefix_length],
+    )
+
+
 def _validate_review_response_prefix(
     *,
     planned_review_requests: Sequence[SFIDedupReviewRequest],
@@ -2196,6 +2276,7 @@ def merge_sfi_candidates(
         completed_review_responses = _load_resumable_review_progress(
             merge_report_fp=merge_report_fp,
             planned_review_requests=review_requests,
+            review_requests_fp=review_requests_fp,
             review_responses_fp=review_responses_fp,
         )
         _prepare_output_files(
