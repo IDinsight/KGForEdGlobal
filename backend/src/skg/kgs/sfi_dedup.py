@@ -724,6 +724,11 @@ def _split_and_bound_components(
 ) -> list[_ReviewComponent]:
     """Split connected components into bounded review components.
 
+    Oversized components are split by a conservative source-derived key. Split groups
+    that remain too large, singleton split residues, and one-candidate chunk residues
+    are carried forward as needs-review components so candidates with review evidence
+    cannot silently fall through into ordinary unreviewed singleton merge groups.
+
     Parameters
     ----------
     components
@@ -734,8 +739,8 @@ def _split_and_bound_components(
     Returns
     -------
     list[_ReviewComponent]
-        Bounded review components. Oversized unsafe components are marked for
-        needs_review without an LLM call.
+        Bounded review components. Oversized unsafe components and split residues are
+        marked for needs-review without an LLM call.
     """
 
     bounded_components: list[_ReviewComponent] = []
@@ -749,20 +754,39 @@ def _split_and_bound_components(
 
         for candidate_id in component.candidate_ids:
             candidate = sfi_candidates_by_id[candidate_id]
-            split_key = (
-                candidate.statement_type,
-                candidate.normalized_statement_code or candidate.code_bucket_key or "",
-                tuple(candidate.source_segment_ids),
-                candidate.window_index // 3,
-            )
-            split_groups[split_key].append(candidate_id)
-
-        added_split_group = False
+            split_groups[
+                (
+                    candidate.statement_type,
+                    candidate.normalized_statement_code
+                    or candidate.code_bucket_key
+                    or "",
+                    tuple(candidate.source_segment_ids),
+                    candidate.window_index // 3,
+                )
+            ].append(candidate_id)
 
         for split_key, split_candidate_ids in sorted(split_groups.items()):
             split_candidate_ids_sorted = sorted(split_candidate_ids)
+            split_reason = "oversized_component_split_by_safe_source_context:" + repr(
+                split_key
+            )
 
-            if len(split_candidate_ids_sorted) < 2:
+            if len(split_candidate_ids_sorted) == 1:
+                bounded_components.append(
+                    _ReviewComponent(
+                        candidate_ids=tuple(split_candidate_ids_sorted),
+                        needs_review_without_llm=True,
+                        review_reasons=tuple(
+                            sorted(
+                                set(component.review_reasons)
+                                | {
+                                    "oversized_component_singleton_split_residue_needs_review:"
+                                    + repr(split_key)
+                                }
+                            )
+                        ),
+                    )
+                )
                 continue
 
             for start_index in range(
@@ -773,6 +797,21 @@ def _split_and_bound_components(
                 ]
 
                 if len(chunk_candidate_ids) < 2:
+                    bounded_components.append(
+                        _ReviewComponent(
+                            candidate_ids=tuple(chunk_candidate_ids),
+                            needs_review_without_llm=True,
+                            review_reasons=tuple(
+                                sorted(
+                                    set(component.review_reasons)
+                                    | {
+                                        "oversized_component_chunk_residue_needs_review:"
+                                        + repr(split_key)
+                                    }
+                                )
+                            ),
+                        )
+                    )
                     continue
 
                 bounded_components.append(
@@ -780,31 +819,10 @@ def _split_and_bound_components(
                         candidate_ids=tuple(chunk_candidate_ids),
                         needs_review_without_llm=False,
                         review_reasons=tuple(
-                            sorted(
-                                set(component.review_reasons)
-                                | {
-                                    "oversized_component_split_by_safe_source_context:"
-                                    + repr(split_key)
-                                }
-                            )
+                            sorted(set(component.review_reasons) | {split_reason})
                         ),
                     )
                 )
-                added_split_group = True
-
-        if not added_split_group:
-            bounded_components.append(
-                _ReviewComponent(
-                    candidate_ids=component.candidate_ids,
-                    needs_review_without_llm=True,
-                    review_reasons=tuple(
-                        sorted(
-                            set(component.review_reasons)
-                            | {"oversized_component_unbounded_needs_review"}
-                        )
-                    ),
-                )
-            )
 
     return bounded_components
 
