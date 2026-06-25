@@ -42,9 +42,15 @@ class SFIExtractionQualityCtx:
         Mapping from canonical statement-type labels to configured normalized types.
     table_header_text_normalized
         Normalized raw table-header text for the source window. Empty for block windows.
+    table_header_text_normalized_by_index
+        Normalized raw table-header text keyed by source header-row index. Empty for
+        block windows.
     table_row_text_normalized
         Normalized raw table-body-row text for the source window. Empty for block
         windows.
+    table_row_text_normalized_by_index
+        Normalized raw table-body-row text keyed by source body-row index. Empty for
+        block windows.
     window
         Source extraction window passed to the LLM.
     """
@@ -54,7 +60,9 @@ class SFIExtractionQualityCtx:
     statement_type_alias_to_canonical: dict[str, str]
     statement_type_normalized_by_label: dict[str, str]
     table_header_text_normalized: str
+    table_header_text_normalized_by_index: dict[int, str]
     table_row_text_normalized: str
+    table_row_text_normalized_by_index: dict[int, str]
     window: ExtractionWindow
 
 
@@ -75,6 +83,36 @@ def _append_row_cell_texts(*, row: dict[str, Any], texts: list[str]) -> None:
 
         if text:
             texts.append(text)
+
+
+def _build_normalized_text_blob_for_indexes(
+    *, indexes: list[int], ordered_indexes: list[int], text_by_index: dict[int, str]
+) -> str:
+    """Build normalized source-visible text for a selected set of indexes.
+
+    Parameters
+    ----------
+    indexes
+        Header or body-row indexes cited by a candidate.
+    ordered_indexes
+        Source-order list of indexes available in the current table window.
+    text_by_index
+        Normalized source-visible text keyed by header or body-row index.
+
+    Returns
+    -------
+    str
+        Normalized source-visible text from the cited indexes, in source order.
+    """
+
+    selected_indexes = set(indexes)
+    return _normalize_text(
+        "\n".join(
+            text_by_index.get(index, "")
+            for index in ordered_indexes
+            if index in selected_indexes
+        )
+    )
 
 
 def _build_source_visible_text_blob(
@@ -137,7 +175,7 @@ def _build_statement_type_alias_map(kg_config: CreateKGConfig) -> dict[str, str]
 
 
 def _build_table_header_visible_text_blob(window: ExtractionWindow) -> str:
-    """Build source-visible text from raw table header rows.
+    """Build normalized source-visible text from raw table header rows.
 
     Parameters
     ----------
@@ -147,22 +185,46 @@ def _build_table_header_visible_text_blob(window: ExtractionWindow) -> str:
     Returns
     -------
     str
-        Newline-joined source-visible raw table header text snippets.
+        Newline-joined normalized source-visible raw table-header text snippets.
     """
 
     if window.table is None:
         return ""
 
-    texts: list[str] = []
+    return "\n".join(_build_table_header_visible_text_by_index(window).values())
 
-    for row in window.table.header_rows:
+
+def _build_table_header_visible_text_by_index(
+    window: ExtractionWindow,
+) -> dict[int, str]:
+    """Build normalized source-visible table-header text by header index.
+
+    Parameters
+    ----------
+    window
+        Source extraction window to inspect.
+
+    Returns
+    -------
+    dict[int, str]
+        Normalized raw table-header text keyed by source header-row index.
+    """
+
+    if window.table is None:
+        return {}
+
+    text_by_index: dict[int, str] = {}
+
+    for header_index, row in enumerate(window.table.header_rows):
+        texts: list[str] = []
         _append_row_cell_texts(row=row, texts=texts)
+        text_by_index[header_index] = _normalize_text("\n".join(texts))
 
-    return "\n".join(texts)
+    return text_by_index
 
 
 def _build_table_row_visible_text_blob(window: ExtractionWindow) -> str:
-    """Build source-visible text from raw selected table body rows.
+    """Build normalized source-visible text from raw selected table body rows.
 
     Parameters
     ----------
@@ -172,18 +234,40 @@ def _build_table_row_visible_text_blob(window: ExtractionWindow) -> str:
     Returns
     -------
     str
-        Newline-joined source-visible raw table body-row text snippets.
+        Newline-joined normalized source-visible raw table body-row text snippets.
     """
 
     if window.table is None:
         return ""
 
-    texts: list[str] = []
+    return "\n".join(_build_table_row_visible_text_by_index(window).values())
 
-    for row in window.table.rows:
+
+def _build_table_row_visible_text_by_index(window: ExtractionWindow) -> dict[int, str]:
+    """Build normalized source-visible table-body text by source row index.
+
+    Parameters
+    ----------
+    window
+        Source extraction window to inspect.
+
+    Returns
+    -------
+    dict[int, str]
+        Normalized raw table-body-row text keyed by source body-row index.
+    """
+
+    if window.table is None:
+        return {}
+
+    text_by_index: dict[int, str] = {}
+
+    for row_index, row in zip(window.table.row_indexes, window.table.rows):
+        texts: list[str] = []
         _append_row_cell_texts(row=row, texts=texts)
+        text_by_index[row_index] = _normalize_text("\n".join(texts))
 
-    return "\n".join(texts)
+    return text_by_index
 
 
 def _normalize_statement_type_key(value: str) -> str:
@@ -593,24 +677,47 @@ def _validate_table_candidate_source_location(
     ------
     QualityError
         If a candidate cites header indexes for row-only text, cites row indexes for
-        header-only text, or omits the source location implied by its source_text.
+        header-only text, cites indexes that do not contain the candidate source_text,
+        or omits the source location implied by its source_text.
     """
+
+    if ctx.window.table is None:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} source-location validation "
+            f"requires a table window."
+        )
 
     source_text_normalized = _normalize_text(candidate.source_text)
     visible_in_headers = source_text_normalized in ctx.table_header_text_normalized
     visible_in_rows = source_text_normalized in ctx.table_row_text_normalized
 
-    if candidate.table_header_indexes and not visible_in_headers:
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} includes table_header_indexes, "
-            f"but its source_text is not visible in raw table header text."
+    if candidate.table_header_indexes:
+        cited_header_text_normalized = _build_normalized_text_blob_for_indexes(
+            indexes=candidate.table_header_indexes,
+            ordered_indexes=list(range(len(ctx.window.table.header_rows))),
+            text_by_index=ctx.table_header_text_normalized_by_index,
         )
 
-    if candidate.table_row_indexes and not visible_in_rows:
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} includes table_row_indexes, but "
-            f"its source_text is not visible in raw table body-row text."
+        if source_text_normalized not in cited_header_text_normalized:
+            raise QualityError(
+                f"Candidate {candidate.candidate_id!r} includes "
+                f"table_header_indexes={candidate.table_header_indexes!r}, but its "
+                f"source_text is not visible in those specific raw table header rows."
+            )
+
+    if candidate.table_row_indexes:
+        cited_row_text_normalized = _build_normalized_text_blob_for_indexes(
+            indexes=candidate.table_row_indexes,
+            ordered_indexes=ctx.window.table.row_indexes,
+            text_by_index=ctx.table_row_text_normalized_by_index,
         )
+
+        if source_text_normalized not in cited_row_text_normalized:
+            raise QualityError(
+                f"Candidate {candidate.candidate_id!r} includes "
+                f"table_row_indexes={candidate.table_row_indexes!r}, but its "
+                f"source_text is not visible in those specific raw table body rows."
+            )
 
     if (
         visible_in_headers
@@ -722,14 +829,13 @@ def verify_sfi_extraction_quality(
     """
 
     table_header_text_blob = _build_table_header_visible_text_blob(window)
+    table_header_text_normalized_by_index = _build_table_header_visible_text_by_index(
+        window
+    )
     table_row_text_blob = _build_table_row_visible_text_blob(window)
+    table_row_text_normalized_by_index = _build_table_row_visible_text_by_index(window)
     ctx = SFIExtractionQualityCtx(
         extraction_result=extraction_result,
-        statement_type_alias_to_canonical=_build_statement_type_alias_map(kg_config),
-        statement_type_normalized_by_label={
-            item.statement_type: item.normalized_statement_type
-            for item in kg_config.academic_standards.statement_type_policy
-        },
         source_visible_text_normalized=_normalize_text(
             _build_source_visible_text_blob(
                 table_header_text_blob=table_header_text_blob,
@@ -737,8 +843,15 @@ def verify_sfi_extraction_quality(
                 window=window,
             )
         ),
+        statement_type_alias_to_canonical=_build_statement_type_alias_map(kg_config),
+        statement_type_normalized_by_label={
+            item.statement_type: item.normalized_statement_type
+            for item in kg_config.academic_standards.statement_type_policy
+        },
         table_header_text_normalized=_normalize_text(table_header_text_blob),
+        table_header_text_normalized_by_index=table_header_text_normalized_by_index,
         table_row_text_normalized=_normalize_text(table_row_text_blob),
+        table_row_text_normalized_by_index=table_row_text_normalized_by_index,
         window=window,
     )
 
