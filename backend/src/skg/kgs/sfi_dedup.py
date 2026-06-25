@@ -19,6 +19,7 @@ from typing import Any, Iterable, Sequence
 
 # Third Party Library
 from loguru import logger
+from pydantic import BaseModel
 
 # Package Library
 from skg.kgs.llm import KGUsageTracker, review_sfi_dedup_set
@@ -35,6 +36,8 @@ from skg.kgs.schemas import (
     SFIRegistryCandidate,
 )
 from skg.kgs.utils import KGDirs
+from skg.kgs.validators import verify_sfi_dedup_review_quality
+from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, open_json_type, write_to_json
 
@@ -48,6 +51,59 @@ class _ReviewComponent:
     candidate_ids: tuple[str, ...]
     needs_review_without_llm: bool
     review_reasons: tuple[str, ...]
+
+
+def _append_jsonl_model(*, fp: Path, model: BaseModel) -> None:
+    """Append one Pydantic model payload to a JSONL artifact.
+
+    Parameters
+    ----------
+    fp
+        JSONL file path.
+    model
+        Pydantic model instance to append.
+    """
+
+    make_dir(fp.parent)
+
+    with fp.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(model.model_dump(mode="json"), ensure_ascii=False) + "\n")
+
+
+def _assert_model_sequences_equal(
+    *, actual: Sequence[Any], artifact_label: str, expected: Sequence[Any]
+) -> None:
+    """Validate that two persisted model sequences are exactly equivalent.
+
+    Parameters
+    ----------
+    actual
+        Models loaded from an artifact.
+    artifact_label
+        Human-readable artifact label for error messages.
+    expected
+        Expected models computed during the current run.
+
+    Raises
+    ------
+    ValueError
+        If the sequences differ in length or model payload.
+    """
+
+    if len(actual) != len(expected):
+        raise ValueError(
+            f"{artifact_label} has {len(actual)} records, but expected "
+            f"{len(expected)} records."
+        )
+
+    for index, (actual_model, expected_model) in enumerate(
+        zip(actual, expected, strict=True), start=1
+    ):
+        if _model_dump_key(actual_model) != _model_dump_key(expected_model):
+            raise ValueError(
+                f"{artifact_label} record {index} does not match the current "
+                f"planned artifact payload."
+            )
 
 
 def _build_initial_review_edges(
@@ -927,30 +983,290 @@ def _build_singleton_merge_groups(
     return singleton_groups
 
 
-def _load_existing_merge_report(
-    *, merge_report_fp: Path, sfi_candidate_registry: SFIRegistryArtifact
-) -> SFIMergeReport:
-    """Load and validate an existing SFI merge report artifact.
+def _load_complete_existing_merge_report(
+    *,
+    conflicts_fp: Path,
+    merge_groups_fp: Path,
+    merge_report_fp: Path,
+    needs_review_fp: Path,
+    planned_review_requests: Sequence[SFIDedupReviewRequest],
+    review_requests_fp: Path,
+    review_responses_fp: Path,
+    sfi_candidate_registry: SFIRegistryArtifact,
+) -> SFIMergeReport | None:
+    """Load a complete existing merge report, or return None for resume.
+
+    A report is reusable only when the full report, companion JSON artifacts, and
+    review JSONL artifacts are all present, parseable, aligned to the current planned
+    review requests, and cover every current registry candidate exactly once.
 
     Parameters
     ----------
-    sfi_candidate_registry
-        Current SFI candidate registry used to validate existing merge-group coverage.
+    conflicts_fp
+        JSON path for conflict groups.
+    merge_groups_fp
+        JSON path for all merge groups.
     merge_report_fp
-        Path to an existing `sfi_merge_report.json` artifact.
+        JSON path for the full merge report.
+    needs_review_fp
+        JSON path for needs-review groups.
+    planned_review_requests
+        Deterministic review requests computed from the current registry.
+    review_requests_fp
+        JSONL path for persisted review requests.
+    review_responses_fp
+        JSONL path for persisted review responses.
+    sfi_candidate_registry
+        Current SFI candidate registry.
 
     Returns
     -------
-    SFIMergeReport
-        Validated existing merge report.
+    SFIMergeReport | None
+        Valid existing merge report, or None when this step should resume/rebuild.
     """
 
-    merge_report = SFIMergeReport.model_validate(open_json_type(merge_report_fp))
-    _validate_merge_group_coverage(
-        merge_groups=merge_report.merge_groups,
-        sfi_candidate_registry=sfi_candidate_registry,
+    if not merge_report_fp.exists():
+        return None
+
+    try:
+        merge_report = SFIMergeReport.model_validate(open_json_type(merge_report_fp))
+        _validate_complete_merge_artifacts(
+            conflicts_fp=conflicts_fp,
+            merge_groups_fp=merge_groups_fp,
+            merge_report=merge_report,
+            merge_report_fp=merge_report_fp,
+            needs_review_fp=needs_review_fp,
+            planned_review_requests=planned_review_requests,
+            review_requests_fp=review_requests_fp,
+            review_responses_fp=review_responses_fp,
+            sfi_candidate_registry=sfi_candidate_registry,
+        )
+    except Exception as e:  # pylint: disable=W0718
+        logger.warning(
+            f"Existing SFI merge artifacts are incomplete or stale; resuming dedup step: "
+            f"{e}"
+        )
+        return None
+
+    logger.info(
+        f"Loading complete existing SFI merge report because overwrite=False: "
+        f"{merge_report_fp}"
     )
+
     return merge_report
+
+
+def _load_jsonl_review_requests(
+    review_requests_fp: Path,
+) -> list[SFIDedupReviewRequest]:
+    """Load persisted SFI dedup review requests from JSONL.
+
+    Parameters
+    ----------
+    review_requests_fp
+        JSONL path for persisted review requests.
+
+    Returns
+    -------
+    list[SFIDedupReviewRequest]
+        Parsed review requests in file order.
+
+    Raises
+    ------
+    ValueError
+        If the JSONL file is missing or contains invalid request records.
+    """
+
+    if not review_requests_fp.exists():
+        raise ValueError(f"Missing review request JSONL artifact: {review_requests_fp}")
+
+    review_requests: list[SFIDedupReviewRequest] = []
+
+    with review_requests_fp.open("r", encoding="utf-8") as f:
+        for line_number, line in enumerate(f, start=1):
+            line_clean = line.strip()
+
+            if not line_clean:
+                continue
+
+            try:
+                review_requests.append(
+                    SFIDedupReviewRequest.model_validate_json(line_clean)
+                )
+            except Exception as e:
+                raise ValueError(
+                    f"Invalid SFI dedup review request JSONL record at line "
+                    f"{line_number}: {e}"
+                ) from e
+
+    return review_requests
+
+
+def _load_jsonl_review_responses(
+    *, allow_partial_prefix: bool, review_responses_fp: Path
+) -> list[SFIDedupReviewResponse]:
+    """Load persisted SFI dedup review responses from JSONL.
+
+    Parameters
+    ----------
+    allow_partial_prefix
+        If true, return the valid prefix when a later line is invalid or truncated. If
+        false, invalid records raise an error.
+    review_responses_fp
+        JSONL path for persisted review responses.
+
+    Returns
+    -------
+    list[SFIDedupReviewResponse]
+        Parsed review responses in file order.
+
+    Raises
+    ------
+    ValueError
+        If the JSONL file is missing or invalid and partial prefixes are not allowed.
+    """
+
+    if not review_responses_fp.exists():
+        if allow_partial_prefix:
+            return []
+
+        raise ValueError(
+            f"Missing review response JSONL artifact: {review_responses_fp}"
+        )
+
+    review_responses: list[SFIDedupReviewResponse] = []
+
+    with review_responses_fp.open("r", encoding="utf-8") as f:
+        for line_number, line in enumerate(f, start=1):
+            line_clean = line.strip()
+
+            if not line_clean:
+                continue
+
+            try:
+                review_responses.append(
+                    SFIDedupReviewResponse.model_validate_json(line_clean)
+                )
+            except Exception as e:
+                if allow_partial_prefix:
+                    logger.warning(
+                        f"Ignoring invalid trailing SFI dedup review response JSONL "
+                        f"record at line {line_number}; valid prefix length is "
+                        f"{len(review_responses)}: {e}"
+                    )
+                    return review_responses
+
+                raise ValueError(
+                    f"Invalid SFI dedup review response JSONL record at line "
+                    f"{line_number}: {e}"
+                ) from e
+
+    return review_responses
+
+
+def _load_merge_groups_file(fp: Path) -> list[SFIMergeGroup]:
+    """Load a JSON artifact containing a list of SFI merge groups.
+
+    Parameters
+    ----------
+    fp
+        JSON file path to load.
+
+    Returns
+    -------
+    list[SFIMergeGroup]
+        Parsed merge groups.
+
+    Raises
+    ------
+    ValueError
+        If the file is missing or does not contain a valid merge-group list.
+    """
+
+    if not fp.exists():
+        raise ValueError(f"Missing SFI merge group artifact: {fp}")
+
+    data = open_json_type(fp)
+
+    if not isinstance(data, list):
+        raise ValueError(f"Expected a JSON list in SFI merge group artifact: {fp}")
+
+    return [SFIMergeGroup.model_validate(item) for item in data]
+
+
+def _load_resumable_review_progress(
+    *,
+    merge_report_fp: Path,
+    planned_review_requests: Sequence[SFIDedupReviewRequest],
+    review_responses_fp: Path,
+) -> list[SFIDedupReviewResponse]:
+    """Load a valid completed-response prefix for an incomplete dedup run.
+
+    The response JSONL is preferred because it is written incrementally after each LLM
+    review. If it is unavailable or stale, a valid response prefix embedded in an
+    existing merge report can also be used to avoid unnecessary repeated LLM calls.
+
+    Parameters
+    ----------
+    merge_report_fp
+        JSON path for the full merge report, used as a fallback response source.
+    planned_review_requests
+        Deterministic review requests computed from the current registry.
+    review_responses_fp
+        JSONL path for persisted review responses.
+
+    Returns
+    -------
+    list[SFIDedupReviewResponse]
+        Valid completed review responses that match the current planned request prefix.
+    """
+
+    try:
+        review_responses = _load_jsonl_review_responses(
+            allow_partial_prefix=True, review_responses_fp=review_responses_fp
+        )
+        _validate_review_response_prefix(
+            planned_review_requests=planned_review_requests,
+            saved_review_responses=review_responses,
+        )
+
+        if review_responses:
+            logger.info(
+                f"Resuming SFI dedup from {len(review_responses)} completed "
+                f"review responses in {review_responses_fp}."
+            )
+
+            return review_responses
+    except Exception as e:  # pylint: disable=W0718
+        logger.warning(
+            f"Ignoring existing SFI dedup review response JSONL progress because it "
+            f"does not match the current plan: {e}"
+        )
+
+    if not merge_report_fp.exists():
+        return []
+
+    try:
+        merge_report = SFIMergeReport.model_validate(open_json_type(merge_report_fp))
+        _validate_review_response_prefix(
+            planned_review_requests=planned_review_requests,
+            saved_review_responses=merge_report.review_responses,
+        )
+    except Exception as e:  # pylint: disable=W0718
+        logger.warning(
+            f"Ignoring existing SFI merge report response progress because it does "
+            f"not match the current plan: {e}"
+        )
+
+        return []
+
+    if merge_report.review_responses:
+        logger.info(
+            f"Resuming SFI dedup from {len(merge_report.review_responses)} "
+            f"validated review responses embedded in {merge_report_fp}."
+        )
+
+    return list(merge_report.review_responses)
 
 
 def _merge_edges_to_components(
@@ -1138,6 +1454,23 @@ def _merge_edges_to_components(
     ]
 
 
+def _model_dump_key(value: Any) -> str:
+    """Build a stable comparison key for a Pydantic-style model.
+
+    Parameters
+    ----------
+    value
+        Model-like value with a `model_dump` method.
+
+    Returns
+    -------
+    str
+        Stable JSON representation for exact artifact comparison.
+    """
+
+    return json.dumps(value.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+
+
 def _prepare_output_files(output_fps: Sequence[Path]) -> None:
     """Remove stale output artifacts and create empty JSONL artifacts.
 
@@ -1157,19 +1490,56 @@ def _prepare_output_files(output_fps: Sequence[Path]) -> None:
             output_fp.write_text("", encoding="utf-8")
 
 
+def _rewrite_review_progress_files(
+    *,
+    completed_review_requests: Sequence[SFIDedupReviewRequest],
+    completed_review_responses: Sequence[SFIDedupReviewResponse],
+    review_requests_fp: Path,
+    review_responses_fp: Path,
+) -> None:
+    """Rewrite review JSONL artifacts to a clean valid completed prefix.
+
+    Parameters
+    ----------
+    completed_review_requests
+        Planned review requests corresponding to completed responses.
+    completed_review_responses
+        Completed review responses to preserve.
+    review_requests_fp
+        JSONL path for persisted review requests.
+    review_responses_fp
+        JSONL path for persisted review responses.
+    """
+
+    make_dir(review_requests_fp.parent)
+    make_dir(review_responses_fp.parent)
+
+    review_requests_fp.write_text("", encoding="utf-8")
+    review_responses_fp.write_text("", encoding="utf-8")
+
+    for review_request in completed_review_requests:
+        _append_jsonl_model(fp=review_requests_fp, model=review_request)
+
+    for review_response in completed_review_responses:
+        _append_jsonl_model(fp=review_responses_fp, model=review_response)
+
+
 def _run_dedup_reviews(
     *,
+    completed_review_responses: Sequence[SFIDedupReviewResponse],
     review_requests: Sequence[SFIDedupReviewRequest],
     review_requests_fp: Path,
     review_responses_fp: Path,
     usage_tracker: KGUsageTracker,
 ) -> list[SFIDedupReviewResponse]:
-    """Run LLM dedup reviews and persist requests/responses incrementally.
+    """Run remaining LLM dedup reviews and persist progress incrementally.
 
     Parameters
     ----------
+    completed_review_responses
+        Valid response prefix already completed in a previous partial run.
     review_requests
-        Review requests to send to the dedup LLM.
+        Full planned review request sequence.
     review_requests_fp
         JSONL path for persisted review requests.
     review_responses_fp
@@ -1180,37 +1550,43 @@ def _run_dedup_reviews(
     Returns
     -------
     list[SFIDedupReviewResponse]
-        Validated LLM dedup review responses in request order.
+        Completed review responses in request order, including the resumed prefix.
+
+    Raises
+    ------
+    ValueError
+        If the completed response prefix is longer than the planned request sequence.
     """
 
-    review_responses: list[SFIDedupReviewResponse] = []
+    review_responses = list(completed_review_responses)
+
+    if len(review_responses) > len(review_requests):
+        raise ValueError(
+            f"Completed review response prefix has {len(review_responses)} records, "
+            f"but only {len(review_requests)} review requests are planned."
+        )
 
     if review_requests:
         make_dir(review_requests_fp.parent)
         make_dir(review_responses_fp.parent)
 
-    for current_request_number, review_request in enumerate(review_requests, start=1):
+    for request_index in range(len(review_responses), len(review_requests)):
+        current_request_number = request_index + 1
+        review_request = review_requests[request_index]
+
         logger.info(
             f"Running SFI dedup review {current_request_number}/"
             f"{len(review_requests)}: review_set_id={review_request.review_set_id}; "
             f"SFI candidates={len(review_request.candidates)}."
         )
 
-        with review_requests_fp.open("a", encoding="utf-8") as f:
-            f.write(
-                json.dumps(review_request.model_dump(mode="json"), ensure_ascii=False)
-                + "\n"
-            )
+        _append_jsonl_model(fp=review_requests_fp, model=review_request)
 
         review_response = review_sfi_dedup_set(
             review_request=review_request, usage_tracker=usage_tracker
         )
 
-        with review_responses_fp.open("a", encoding="utf-8") as f:
-            f.write(
-                json.dumps(review_response.model_dump(mode="json"), ensure_ascii=False)
-                + "\n"
-            )
+        _append_jsonl_model(fp=review_responses_fp, model=review_response)
 
         review_responses.append(review_response)
 
@@ -1507,6 +1883,100 @@ def _unique_nonempty(values: Iterable[Any]) -> list[str]:
     return output
 
 
+def _validate_complete_merge_artifacts(
+    *,
+    conflicts_fp: Path,
+    merge_groups_fp: Path,
+    merge_report: SFIMergeReport,
+    merge_report_fp: Path,
+    needs_review_fp: Path,
+    planned_review_requests: Sequence[SFIDedupReviewRequest],
+    review_requests_fp: Path,
+    review_responses_fp: Path,
+    sfi_candidate_registry: SFIRegistryArtifact,
+) -> None:
+    """Validate that all persisted dedup artifacts are complete and current.
+
+    Parameters
+    ----------
+    conflicts_fp
+        JSON path for conflict groups.
+    merge_groups_fp
+        JSON path for all merge groups.
+    merge_report
+        Parsed full merge report.
+    merge_report_fp
+        JSON path for the full merge report.
+    needs_review_fp
+        JSON path for needs-review groups.
+    planned_review_requests
+        Deterministic review requests computed from the current registry.
+    review_requests_fp
+        JSONL path for persisted review requests.
+    review_responses_fp
+        JSONL path for persisted review responses.
+    sfi_candidate_registry
+        Current SFI candidate registry.
+
+    Raises
+    ------
+    ValueError
+        If any artifact is missing, stale, incomplete, or internally inconsistent.
+    """
+
+    if not merge_report_fp.exists():
+        raise ValueError(f"Missing SFI merge report artifact: {merge_report_fp}")
+
+    _validate_merge_group_coverage(
+        merge_groups=merge_report.merge_groups,
+        sfi_candidate_registry=sfi_candidate_registry,
+    )
+    _assert_model_sequences_equal(
+        actual=merge_report.review_requests,
+        artifact_label="sfi_merge_report.review_requests",
+        expected=planned_review_requests,
+    )
+    _validate_review_response_prefix(
+        planned_review_requests=planned_review_requests,
+        saved_review_responses=merge_report.review_responses,
+    )
+
+    if len(merge_report.review_responses) != len(planned_review_requests):
+        raise ValueError(
+            f"sfi_merge_report.review_responses has "
+            f"{len(merge_report.review_responses)} records, but expected "
+            f"{len(planned_review_requests)} records."
+        )
+
+    _assert_model_sequences_equal(
+        actual=_load_merge_groups_file(merge_groups_fp),
+        artifact_label="sfi_merge_groups.json",
+        expected=merge_report.merge_groups,
+    )
+    _assert_model_sequences_equal(
+        actual=_load_merge_groups_file(conflicts_fp),
+        artifact_label="sfi_merge_conflicts.json",
+        expected=merge_report.conflict_groups,
+    )
+    _assert_model_sequences_equal(
+        actual=_load_merge_groups_file(needs_review_fp),
+        artifact_label="sfi_merge_needs_review.json",
+        expected=merge_report.needs_review_groups,
+    )
+    _assert_model_sequences_equal(
+        actual=_load_jsonl_review_requests(review_requests_fp),
+        artifact_label="sfi_dedup_review_requests.jsonl",
+        expected=planned_review_requests,
+    )
+    _assert_model_sequences_equal(
+        actual=_load_jsonl_review_responses(
+            allow_partial_prefix=False, review_responses_fp=review_responses_fp
+        ),
+        artifact_label="sfi_dedup_review_responses.jsonl",
+        expected=merge_report.review_responses,
+    )
+
+
 def _validate_merge_group_coverage(
     *,
     merge_groups: Sequence[SFIMergeGroup],
@@ -1565,6 +2035,46 @@ def _validate_merge_group_coverage(
         )
 
 
+def _validate_review_response_prefix(
+    *,
+    planned_review_requests: Sequence[SFIDedupReviewRequest],
+    saved_review_responses: Sequence[SFIDedupReviewResponse],
+) -> None:
+    """Validate completed review responses against the current request prefix.
+
+    Parameters
+    ----------
+    planned_review_requests
+        Deterministic review requests computed from the current registry.
+    saved_review_responses
+        Persisted review responses to validate as a completed prefix.
+
+    Raises
+    ------
+    ValueError
+        If the responses do not match the current planned request prefix.
+    """
+
+    if len(saved_review_responses) > len(planned_review_requests):
+        raise ValueError(
+            f"Found {len(saved_review_responses)} saved review responses, but only "
+            f"{len(planned_review_requests)} review requests are planned."
+        )
+
+    for response_index, review_response in enumerate(saved_review_responses):
+        review_request = planned_review_requests[response_index]
+
+        try:
+            verify_sfi_dedup_review_quality(
+                review_request=review_request, review_response=review_response
+            )
+        except QualityError as e:
+            raise ValueError(
+                f"Saved SFI dedup response {response_index + 1} does not match the "
+                f"current planned review request: {e}"
+            ) from e
+
+
 def _write_merge_artifacts(
     *,
     conflicts_fp: Path,
@@ -1582,7 +2092,7 @@ def _write_merge_artifacts(
     merge_groups_fp
         JSON path for all merge groups.
     merge_report
-        Complete Step 7 merge report.
+        Complete dedup merge report.
     merge_report_fp
         JSON path for the full report.
     needs_review_fp
@@ -1612,8 +2122,9 @@ def merge_sfi_candidates(
     kg_dirs
         Runtime KG directory structure for artifacts.
     overwrite
-        If false and a merge report already exists, load and return it. Otherwise
-        reset and regenerate all Step 7 artifacts.
+        If true, reset all dedupe artifacts and restart dedup from scratch. If false,
+        reuse only complete current artifacts; otherwise resume from completed review
+        responses and finish the dedup artifacts.
     sfi_candidate_registry
         Global SFI candidate registry artifact.
     usage_tracker
@@ -1622,7 +2133,7 @@ def merge_sfi_candidates(
     Returns
     -------
     SFIMergeReport
-        Complete Step 7 merge/dedup report.
+        Complete merge/dedup report.
     """
 
     conflicts_fp = kg_dirs.root / "sfi_merge_conflicts.json"
@@ -1631,28 +2142,6 @@ def merge_sfi_candidates(
     needs_review_fp = kg_dirs.root / "sfi_merge_needs_review.json"
     review_requests_fp = kg_dirs.root / "sfi_dedup_review_requests.jsonl"
     review_responses_fp = kg_dirs.root / "sfi_dedup_review_responses.jsonl"
-
-    if not overwrite and merge_report_fp.exists():
-        logger.info(
-            f"Loading existing SFI merge report because overwrite=False: "
-            f"{merge_report_fp}"
-        )
-
-        return _load_existing_merge_report(
-            merge_report_fp=merge_report_fp,
-            sfi_candidate_registry=sfi_candidate_registry,
-        )
-
-    _prepare_output_files(
-        [
-            conflicts_fp,
-            merge_groups_fp,
-            merge_report_fp,
-            needs_review_fp,
-            review_requests_fp,
-            review_responses_fp,
-        ]
-    )
 
     sfi_candidates_by_id = {
         candidate.registry_candidate_id: candidate
@@ -1668,7 +2157,53 @@ def merge_sfi_candidates(
         kg_config=kg_config,
         sfi_candidates_by_id=sfi_candidates_by_id,
     )
+
+    if overwrite:
+        _prepare_output_files(
+            [
+                conflicts_fp,
+                merge_groups_fp,
+                merge_report_fp,
+                needs_review_fp,
+                review_requests_fp,
+                review_responses_fp,
+            ]
+        )
+        completed_review_responses: list[SFIDedupReviewResponse] = []
+    else:
+        existing_merge_report = _load_complete_existing_merge_report(
+            conflicts_fp=conflicts_fp,
+            merge_groups_fp=merge_groups_fp,
+            merge_report_fp=merge_report_fp,
+            needs_review_fp=needs_review_fp,
+            planned_review_requests=review_requests,
+            review_requests_fp=review_requests_fp,
+            review_responses_fp=review_responses_fp,
+            sfi_candidate_registry=sfi_candidate_registry,
+        )
+
+        if existing_merge_report is not None:
+            return existing_merge_report
+
+        completed_review_responses = _load_resumable_review_progress(
+            merge_report_fp=merge_report_fp,
+            planned_review_requests=review_requests,
+            review_responses_fp=review_responses_fp,
+        )
+        _prepare_output_files(
+            [conflicts_fp, merge_groups_fp, merge_report_fp, needs_review_fp]
+        )
+        _rewrite_review_progress_files(
+            completed_review_requests=review_requests[
+                : len(completed_review_responses)
+            ],
+            completed_review_responses=completed_review_responses,
+            review_requests_fp=review_requests_fp,
+            review_responses_fp=review_responses_fp,
+        )
+
     review_responses = _run_dedup_reviews(
+        completed_review_responses=completed_review_responses,
         review_requests=review_requests,
         review_requests_fp=review_requests_fp,
         review_responses_fp=review_responses_fp,
