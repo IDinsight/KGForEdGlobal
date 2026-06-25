@@ -1356,6 +1356,47 @@ class _CreateKGMetadata(BaseSchema):
 
 
 # Config schemas.
+class CreateKGConfig(BaseSchema):
+    """Configuration for knowledge graph creation from DocumentIR.
+
+    The runtime config uses short namespaces under `kgs`:
+
+    - `as` for Academic Standards extraction settings.
+    - `lc` for Learning Components settings.
+
+    Python code accesses those namespaces through the valid attribute names
+    `academic_standards` and `learning_components`.
+    """
+
+    # GENERAL ATTRIBUTES #
+    overwrite: bool = Field(
+        False, description="Overwrite existing knowledge graph artifacts."
+    )
+
+    # ACADEMIC STANDARDS #
+    academic_standards: _CreateKGAcademicStandardsConfig = Field(
+        alias="as",
+        description="Academic Standards extraction settings from the kgs.as config namespace.",
+    )
+
+    # LEARNING COMPONENTS #
+    learning_components: _CreateKGLearningComponentsConfig = Field(
+        alias="lc",
+        description="Learning Components settings from the kgs.lc config namespace.",
+    )
+
+    # FRAMEWORK METADATA #
+    metadata: _CreateKGMetadata
+
+    model_config = ConfigDict(
+        extra="forbid",
+        from_attributes=True,
+        serialize_by_alias=True,
+        validate_by_alias=True,
+        validate_by_name=False,
+    )
+
+
 class ExtractionConfig(BaseSchema):
     """Configuration for page IR extraction from a PDF document."""
 
@@ -1438,6 +1479,63 @@ class ExtractionConfig(BaseSchema):
         make_dir(v)
 
         return v
+
+
+class StitchingConfig(BaseSchema):
+    """Configuration for document IR stitching from verified page IR JSONs.
+
+    NB: `table_filldown_group_cols_max` (fill-down/rowspan reconstruction)
+
+    1. Many curriculum PDFs use **merged cells/rowspans** in the *leftmost grouping
+        columns* (e.g., **Topic**, **Sub-topic**, **Strand**, **Theme**). When
+        extracted, those merged cells often appear as **blank cells** on subsequent
+        rows.
+    2. `table_filldown_group_cols_max` controls **how many leading columns** should
+        have these visually empty cells **filled down** from the most recent non-empty
+        value above. This reconstructs the intended grouping structure without changing
+        the underlying table content.
+            - Only the **first `table_filldown_group_cols_max` columns** are eligible
+                for fill-down.
+            - Columns beyond this are treated as **leaf/content columns** (e.g.,
+                competences/outcomes, activities, expected standards), where blanks
+                typically mean **“no content / not applicable”**, not “repeat previous”.
+    3. Why not set it very large (e.g., 10)? Because non-grouping columns often contain
+        legitimate blanks (or extraction misses). A large value can silently “invent”
+        repeated activities/standards by copying prior rows, corrupting the extracted
+        table semantics.
+    """
+
+    keep_artifacts: bool = Field(
+        False,
+        description="Whether to keep artifacts such as page numbers, headers, footers, etc. after stitching.",
+    )
+    max_section_path_length: int = Field(
+        12,
+        description="Maximum number of section paths in the stack to maintain. For most PDFs, 12 is a good number that will capture enough breadcrumb context for heading traces.",
+    )
+    min_link_score: float = Field(
+        1.0, description="Minimum link score to consider for stitching.", ge=0
+    )
+    overwrite: bool = Field(False, description="Overwrite existing document IR JSON.")
+    repair_hyphenation: bool = Field(
+        True, description="Whether to repair hyphenation for stitched text."
+    )
+    sort_items_by_bbox: bool = Field(
+        False,
+        description="Whether to sort items by their bounding box positions before stitching.",
+    )
+    table_filldown_enabled: bool = Field(
+        True, description="Whether to enable table filldown during stitching."
+    )
+    table_filldown_group_cols_max: int = Field(
+        1, description="Maximum number of group columns for table filldown.", ge=0
+    )
+    verification_auto_stitch_confidence: float = Field(
+        0.75,
+        description="If a verified link has confidence >= this value, it will be automatically stitched.",
+        ge=0,
+        le=1,
+    )
 
 
 class VerificationConfig(BaseSchema):
@@ -1534,122 +1632,6 @@ class VerificationConfig(BaseSchema):
         return self
 
 
-class StitchingConfig(BaseSchema):
-    """Configuration for document IR stitching from verified page IR JSONs.
-
-    NB: `table_filldown_group_cols_max` (fill-down/rowspan reconstruction)
-
-    1. Many curriculum PDFs use **merged cells/rowspans** in the *leftmost grouping
-        columns* (e.g., **Topic**, **Sub-topic**, **Strand**, **Theme**). When
-        extracted, those merged cells often appear as **blank cells** on subsequent
-        rows.
-    2. `table_filldown_group_cols_max` controls **how many leading columns** should
-        have these visually empty cells **filled down** from the most recent non-empty
-        value above. This reconstructs the intended grouping structure without changing
-        the underlying table content.
-            - Only the **first `table_filldown_group_cols_max` columns** are eligible
-                for fill-down.
-            - Columns beyond this are treated as **leaf/content columns** (e.g.,
-                competences/outcomes, activities, expected standards), where blanks
-                typically mean **“no content / not applicable”**, not “repeat previous”.
-    3. Why not set it very large (e.g., 10)? Because non-grouping columns often contain
-        legitimate blanks (or extraction misses). A large value can silently “invent”
-        repeated activities/standards by copying prior rows, corrupting the extracted
-        table semantics.
-    """
-
-    keep_artifacts: bool = Field(
-        False,
-        description="Whether to keep artifacts such as page numbers, headers, footers, etc. after stitching.",
-    )
-    max_section_path_length: int = Field(
-        12,
-        description="Maximum number of section paths in the stack to maintain. For most PDFs, 12 is a good number that will capture enough breadcrumb context for heading traces.",
-    )
-    min_link_score: float = Field(
-        1.0, description="Minimum link score to consider for stitching.", ge=0
-    )
-    overwrite: bool = Field(False, description="Overwrite existing document IR JSON.")
-    repair_hyphenation: bool = Field(
-        True, description="Whether to repair hyphenation for stitched text."
-    )
-    sort_items_by_bbox: bool = Field(
-        False,
-        description="Whether to sort items by their bounding box positions before stitching.",
-    )
-    table_filldown_enabled: bool = Field(
-        True, description="Whether to enable table filldown during stitching."
-    )
-    table_filldown_group_cols_max: int = Field(
-        1, description="Maximum number of group columns for table filldown.", ge=0
-    )
-    verification_auto_stitch_confidence: float = Field(
-        0.75,
-        description="If a verified link has confidence >= this value, it will be automatically stitched.",
-        ge=0,
-        le=1,
-    )
-
-
-class CreateKGConfig(BaseSchema):
-    """Configuration for knowledge graph creation from DocumentIR.
-
-    The runtime config uses short namespaces under `kgs`:
-
-    - `as` for Academic Standards extraction settings.
-    - `lc` for Learning Components settings.
-
-    Python code accesses those namespaces through the valid attribute names
-    `academic_standards` and `learning_components`.
-    """
-
-    # GENERAL ATTRIBUTES #
-    overwrite: bool = Field(
-        False, description="Overwrite existing knowledge graph artifacts."
-    )
-
-    # ACADEMIC STANDARDS #
-    academic_standards: _CreateKGAcademicStandardsConfig = Field(
-        alias="as",
-        description="Academic Standards extraction settings from the kgs.as config namespace.",
-    )
-
-    # LEARNING COMPONENTS #
-    learning_components: _CreateKGLearningComponentsConfig = Field(
-        alias="lc",
-        description="Learning Components settings from the kgs.lc config namespace.",
-    )
-
-    # FRAMEWORK METADATA #
-    metadata: _CreateKGMetadata
-
-    model_config = ConfigDict(
-        extra="forbid",
-        from_attributes=True,
-        serialize_by_alias=True,
-        validate_by_alias=True,
-        validate_by_name=False,
-    )
-
-
-class RunConfig(BaseSchema):
-    """Pydantic model for run configuration."""
-
-    page_ir_extraction: ExtractionConfig = Field(
-        description="Configuration for page-level IR extraction from the source PDF."
-    )
-    page_ir_verification: VerificationConfig = Field(
-        description="Configuration for page-boundary verification between adjacent pages."
-    )
-    document_ir: StitchingConfig = Field(
-        description="Configuration for stitching verified page IRs into a single document IR."
-    )
-    kgs: Optional[CreateKGConfig] = Field(
-        default=None,
-        description="Configuration for knowledge graph creation. If None, the KG step is skipped.",
-    )
-
-
 class RunCtx(BaseSchema):
     """Pydantic model for run metadata."""
 
@@ -1669,4 +1651,22 @@ class RunCtx(BaseSchema):
     )
     started_at: Optional[datetime] = Field(
         default=None, description="UTC timestamp when the run started."
+    )
+
+
+class RunConfig(BaseSchema):
+    """Pydantic model for run configuration."""
+
+    page_ir_extraction: ExtractionConfig = Field(
+        description="Configuration for page-level IR extraction from the source PDF."
+    )
+    page_ir_verification: VerificationConfig = Field(
+        description="Configuration for page-boundary verification between adjacent pages."
+    )
+    document_ir: StitchingConfig = Field(
+        description="Configuration for stitching verified page IRs into a single document IR."
+    )
+    kgs: Optional[CreateKGConfig] = Field(
+        default=None,
+        description="Configuration for knowledge graph creation. If None, the KG step is skipped.",
     )
