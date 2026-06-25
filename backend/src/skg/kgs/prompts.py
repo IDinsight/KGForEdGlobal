@@ -574,14 +574,19 @@ Use exactly one of these decisions for each decision group:
 - Use singleton groups when one candidate must be kept separate from the rest.
 - Give a short source-grounded reason for every group.
 
-## General merge guardrails
-- Same statement_type + same normalized_statement_code is strong merge evidence only when text and source context are compatible.
+## Evidence signals and merge guardrails
+- Treat review_reasons, duplicate buckets, registry warnings, same source table-row/header overlap, source-segment overlap, and same-window proximity as retrieval signals for review, not as automatic merge rules.
+- Do not merge candidates solely because they were selected into the same bounded review set or share a table row, table header, source segment, or window.
+- Same statement_type + same normalized_statement_code is strong merge evidence only when the supplied text and source references are compatible.
 - Do not merge candidates with different official codes solely because their normalized text is similar.
-- Treat same-code candidates with materially conflicting descriptions or incompatible context as conflict or needs_review.
+- Treat same-code candidates with materially conflicting descriptions or incompatible source references as conflict or needs_review.
+- Do not merge candidates with different statement_type or different normalized_statement_type unless the supplied evidence clearly shows they are duplicate extractions of the same source-visible item under inconsistent labels.
+- If candidates appear to represent different source roles, levels, scopes, or structural positions in the curriculum, use keep_separate, conflict, or needs_review rather than merge unless the supplied evidence clearly shows they are duplicate extractions of the same source-visible item.
 - For no-code candidates, same statement_type + same normalized source/description text is review evidence, not an automatic merge rule.
 - Repeated labels such as grade, stage, section, strand, domain, palier, week, activity, topic, or objective headings may be distinct under different source contexts.
-- Merge no-code candidates only when the visible source text and source context are compatible.
-- Follow the curriculum-specific deduplication instructions in the payload when they are more specific than these general rules and/or conflicts with these general rules.
+- Merge no-code candidates only when the visible source text and supplied source references are compatible.
+- If safe resolution depends on context that is not visible in the bounded review payload, choose needs_review rather than guessing.
+- Follow the curriculum-specific deduplication instructions in the payload when they are more specific than these general rules or intentionally stricter than these general rules.
         """
     )
 
