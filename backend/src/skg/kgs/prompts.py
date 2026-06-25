@@ -5,7 +5,7 @@ from textwrap import dedent
 from typing import Any, Optional
 
 # Package Library
-from skg.kgs.schemas import ExtractionWindow
+from skg.kgs.schemas import ExtractionWindow, SFIDedupReviewRequest
 from skg.schemas import CreateKGConfig
 from skg.utils.general import PromptPair, json_dumps
 
@@ -36,6 +36,38 @@ def _build_compact_block_payload(
             "source_text": extraction_window.source_text,
         }
     )
+
+
+def _build_compact_dedup_review_payload(
+    review_request: SFIDedupReviewRequest,
+) -> dict[str, Any]:
+    """Build a compact prompt payload for one SFI dedup review request.
+
+    Parameters
+    ----------
+    review_request
+        Bounded dedup review request to compact for the LLM prompt.
+
+    Returns
+    -------
+    dict[str, Any]
+        JSON-serializable dedup review payload.
+    """
+
+    payload: dict[str, Any] = {
+        "candidates": [
+            candidate.model_dump(mode="json", exclude_none=True)
+            for candidate in review_request.candidates
+        ],
+        "review_reasons": review_request.review_reasons,
+        "review_set_id": review_request.review_set_id,
+        "sfi_deduplication_instructions": review_request.sfi_deduplication_instructions,
+    }
+
+    if review_request.bilingual_pair_policy:
+        payload["bilingual_pair_policy"] = review_request.bilingual_pair_policy
+
+    return payload
 
 
 def _build_compact_extraction_window_payload(
@@ -482,7 +514,6 @@ def extract_sfi_candidates_from_window(
 - Treat table.filldown_context_rows as helper context only. These cells repeat row-span context for interpretation, but they are not source-visible evidence. Do not quote helper_context_only cells as candidate source_text or auxiliary source_text unless the same text is also visible in block.source_text, table.header_rows, or table.source_rows.
 
 ## Output contract
-Return exactly one SFIExtractionResult object as structured JSON only. Follow the schema exactly and do not include extra fields.
 Copy window_id, window_index, and window_source_segment_ids exactly from the compact source window.
 Keep extraction_notes short; use them only for window-level extraction issues, not to summarize examples, competencies, or activities.
 Return auxiliary candidates only when they clarify why prominent source-visible text was not extracted as an SFI; do not list ordinary examples, activities, competencies, or guidance notes.
@@ -493,9 +524,71 @@ Do not emit auxiliary candidates for routine front matter, ordinary examples, or
     user_message = dedent(
         f"""Extract candidate SFIs from this compact source window.
 
-Return structured JSON only. Do not include markdown.
-
 ## Compact source window JSON
+{json_dumps(user_payload)}
+        """
+    )
+
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
+    )
+
+
+def review_sfi_dedup_candidates(review_request: SFIDedupReviewRequest) -> PromptPair:
+    """Generate prompts for one bounded SFI merge/dedup review set.
+
+    Parameters
+    ----------
+    review_request
+        Bounded review set built from registry duplicate buckets, warnings, and safe
+        provenance overlap.
+
+    Returns
+    -------
+    PromptPair
+        System and user messages for the SFI dedup review agent.
+    """
+
+    user_payload = _build_compact_dedup_review_payload(review_request)
+
+    system_message = dedent(
+        """You are an Academic Standards SFI deduplication review agent for a Learning Commons-shaped Knowledge Graph. Inspect exactly one bounded candidate review set and decide which registry candidates represent the same logical source item.
+
+## Task boundary
+- Decide only within the supplied review_set_id and supplied candidate records.
+- Do not ask for the full registry, full extraction windows, full DocumentIR, or outside source context.
+- Do not invent new candidates, candidate IDs, statement codes, hierarchy nodes, or final StandardsFrameworkItem IDs.
+- Do not infer hasChild parentage or other relationships.
+- Do not choose final canonical KG text; Step 8 will construct final source-backed records after deduplication.
+
+## Decision labels
+Use exactly one of these decisions for each decision group:
+- merge: all candidates in the group represent the same final source item.
+- keep_separate: candidates are valid separate source items despite lexical, code, or provenance similarity.
+- conflict: candidates appear to claim the same identity but contain materially incompatible text or source context.
+- needs_review: evidence is insufficient for a safe automated decision.
+
+## Required coverage
+- Assign every input registry_candidate_id to exactly one decision group.
+- Do not include candidate IDs outside the supplied review set.
+- Use singleton groups when one candidate must be kept separate from the rest.
+- Give a short source-grounded reason for every group.
+
+## General merge guardrails
+- Same statement_type + same normalized_statement_code is strong merge evidence only when text and source context are compatible.
+- Do not merge candidates with different official codes solely because their normalized text is similar.
+- Treat same-code candidates with materially conflicting descriptions or incompatible context as conflict or needs_review.
+- For no-code candidates, same statement_type + same normalized source/description text is review evidence, not an automatic merge rule.
+- Repeated labels such as grade, stage, section, strand, domain, palier, week, activity, topic, or objective headings may be distinct under different source contexts.
+- Merge no-code candidates only when the visible source text and source context are compatible.
+- Follow the curriculum-specific deduplication instructions in the payload when they are more specific than these general rules and/or conflicts with these general rules.
+        """
+    )
+
+    user_message = dedent(
+        f"""Review this bounded SFI deduplication candidate set.
+
+## Bounded dedup review payload JSON
 {json_dumps(user_payload)}
         """
     )

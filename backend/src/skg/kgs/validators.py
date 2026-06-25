@@ -12,7 +12,13 @@ from dataclasses import dataclass
 from typing import Any
 
 # Package Library
-from skg.kgs.schemas import ExtractionWindow, SFICandidate, SFIExtractionResult
+from skg.kgs.schemas import (
+    ExtractionWindow,
+    SFICandidate,
+    SFIDedupReviewRequest,
+    SFIDedupReviewResponse,
+    SFIExtractionResult,
+)
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 
@@ -396,6 +402,145 @@ def _validate_candidate_table_indexes(ctx: SFIExtractionQualityCtx) -> None:
         _validate_table_candidate_source_location(candidate=candidate, ctx=ctx)
 
 
+def _validate_dedup_merge_group_code_guardrails(
+    *, review_request: SFIDedupReviewRequest, review_response: SFIDedupReviewResponse
+) -> None:
+    """Validate hard code-related guardrails for dedup merge groups.
+
+    Parameters
+    ----------
+    review_request
+        Bounded review request supplied to the LLM.
+    review_response
+        Structured LLM dedup response to validate.
+
+    Raises
+    ------
+    QualityError
+        If a merge group combines incompatible statement types or official codes.
+    """
+
+    candidates_by_id = {
+        candidate.registry_candidate_id: candidate
+        for candidate in review_request.candidates
+    }
+
+    for decision_group in review_response.decision_groups:
+        if decision_group.decision != "merge" or len(decision_group.candidate_ids) < 2:
+            continue
+
+        group_candidates = [
+            candidates_by_id[candidate_id]
+            for candidate_id in decision_group.candidate_ids
+        ]
+        normalized_codes = {
+            candidate.normalized_statement_code
+            for candidate in group_candidates
+            if candidate.normalized_statement_code is not None
+        }
+        statement_types = {candidate.statement_type for candidate in group_candidates}
+
+        if len(statement_types) > 1:
+            raise QualityError(
+                f"Dedup merge groups must not merge different statement_type values: "
+                f"{sorted(statement_types)}. Use conflict or needs_review instead."
+            )
+
+        if len(normalized_codes) > 1:
+            raise QualityError(
+                f"Dedup merge groups must not merge different official normalized "
+                f"statement codes: {sorted(normalized_codes)}. Use keep_separate, "
+                f"conflict, or needs_review instead."
+            )
+
+
+def _validate_dedup_response_candidate_coverage(
+    *, review_request: SFIDedupReviewRequest, review_response: SFIDedupReviewResponse
+) -> None:
+    """Validate exact candidate coverage for one dedup response.
+
+    Parameters
+    ----------
+    review_request
+        Bounded review request supplied to the LLM.
+    review_response
+        Structured LLM dedup response to validate.
+
+    Raises
+    ------
+    QualityError
+        If candidates are invented, omitted, or assigned multiple times.
+    """
+
+    expected_candidate_ids = {
+        candidate.registry_candidate_id for candidate in review_request.candidates
+    }
+    assigned_candidate_ids: list[str] = []
+
+    for decision_group in review_response.decision_groups:
+        assigned_candidate_ids.extend(decision_group.candidate_ids)
+
+    assigned_candidate_id_set = set(assigned_candidate_ids)
+    duplicate_candidate_ids = sorted(
+        {
+            candidate_id
+            for candidate_id in assigned_candidate_ids
+            if assigned_candidate_ids.count(candidate_id) > 1
+        }
+    )
+    invented_candidate_ids = sorted(assigned_candidate_id_set - expected_candidate_ids)
+    omitted_candidate_ids = sorted(expected_candidate_ids - assigned_candidate_id_set)
+
+    if invented_candidate_ids:
+        raise QualityError(
+            f"Dedup response invented candidate IDs outside the review set: "
+            f"{invented_candidate_ids}."
+        )
+
+    if omitted_candidate_ids:
+        raise QualityError(
+            f"Dedup response omitted review candidate IDs: {omitted_candidate_ids}."
+        )
+
+    if duplicate_candidate_ids:
+        raise QualityError(
+            f"Dedup response assigned candidate IDs to more than one group: "
+            f"{duplicate_candidate_ids}."
+        )
+
+
+def _validate_dedup_response_reasons(review_response: SFIDedupReviewResponse) -> None:
+    """Validate non-empty reasons for dedup decision groups.
+
+    Parameters
+    ----------
+    review_response
+        Structured LLM dedup response to validate.
+
+    Raises
+    ------
+    QualityError
+        If a decision group has an empty reason.
+    """
+
+    for group_index, decision_group in enumerate(
+        review_response.decision_groups, start=1
+    ):
+        if not decision_group.reason.strip():
+            raise QualityError(
+                f"Dedup decision group {group_index} has an empty reason."
+            )
+
+        if (
+            len(decision_group.candidate_ids) > 1
+            and len(decision_group.reason.strip()) < 8
+        ):
+            raise QualityError(
+                f"Dedup decision group {group_index} has a non-singleton decision "
+                f"with an insufficiently specific reason."
+            )
+
+
 def _validate_source_text_is_visible(
     *, ctx: SFIExtractionQualityCtx, entity_label: str, source_text: str
 ) -> None:
@@ -518,6 +663,39 @@ def _validate_window_identity(ctx: SFIExtractionQualityCtx) -> None:
             f"Result window_source_segment_ids must exactly match input "
             f"source_segment_ids: {window.source_segment_ids!r}."
         )
+
+
+def verify_sfi_dedup_review_quality(
+    *, review_request: SFIDedupReviewRequest, review_response: SFIDedupReviewResponse
+) -> None:
+    """Run quality checks on one structured SFI dedup review response.
+
+    Parameters
+    ----------
+    review_request
+        Bounded review request supplied to the LLM.
+    review_response
+        Parsed LLM dedup review response.
+
+    Raises
+    ------
+    QualityError
+        If the response fails coverage or hard-guardrail checks.
+    """
+
+    if review_response.review_set_id != review_request.review_set_id:
+        raise QualityError(
+            f"Dedup response review_set_id {review_response.review_set_id!r} does "
+            f"not match request review_set_id {review_request.review_set_id!r}."
+        )
+
+    _validate_dedup_response_candidate_coverage(
+        review_request=review_request, review_response=review_response
+    )
+    _validate_dedup_response_reasons(review_response)
+    _validate_dedup_merge_group_code_guardrails(
+        review_request=review_request, review_response=review_response
+    )
 
 
 def verify_sfi_extraction_quality(

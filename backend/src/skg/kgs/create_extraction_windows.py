@@ -205,7 +205,6 @@ def _build_extraction_window(
                 "not LLM paraphrases."
             ),
             "plan_reasons": plan_item.plan_reasons,
-            "repeated_statement_policy": kg_config.academic_standards.repeated_statement_policy,
             "source_context_key": hashlib.sha256(
                 canonical_context.encode("utf-8")
             ).hexdigest()[:32],

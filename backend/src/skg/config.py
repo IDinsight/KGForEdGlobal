@@ -25,7 +25,7 @@ class BackendSettings(BaseSettings):
     # LLM
     LLM_ANTHROPIC_EFFORT: str = "high"
     LLM_ANTHROPIC_THINKING_BUDGET_TOKENS: int = 16384
-    LLM_MAX_OUTPUT_TOKENS: int = 32768
+    LLM_MAX_OUTPUT_TOKENS: int = 18432
     LLM_KG_MODEL: str = "anthropic:claude-opus-4-7"
     LLM_OPENAI_REASONING_EFFORT: str = "high"
     LLM_OPENAI_TEMPERATURE: float = 0.0
@@ -68,12 +68,12 @@ class BackendSettings(BaseSettings):
         """
 
         match model_type:
+            case "kgs":
+                return self.LLM_KG_MODEL
             case "page_ir_extraction":
                 return self.LLM_PAGE_IR_EXTRACTION_MODEL
             case "page_ir_verification":
                 return self.LLM_PAGE_IR_VERIFICATION_MODEL
-            case "kgs":
-                return self.LLM_KG_MODEL
             case _:
                 raise ValueError(f"Unsupported model type: {model_type}")
 

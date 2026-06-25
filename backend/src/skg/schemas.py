@@ -663,12 +663,11 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
 
     # LLM instructions.
     bilingual_pair_policy: str | None = None
-    duplicate_review_instructions: str
-    repeated_statement_policy: str = ""
+    sfi_deduplication_instructions: str
     sfi_extraction_instructions: str
 
     @field_validator(
-        "duplicate_review_instructions", "sfi_extraction_instructions", mode="before"
+        "sfi_deduplication_instructions", "sfi_extraction_instructions", mode="before"
     )
     @classmethod
     def _strip_and_require_non_empty(cls, v: str) -> str:

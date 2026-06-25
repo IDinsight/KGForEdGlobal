@@ -472,7 +472,6 @@ def build_run_manifest(kg_run_inputs: KGInputs) -> dict[str, Any]:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "doc_key": document_ir.doc_key,
         "document_ir_fp": str(kg_run_inputs.document_ir_fp),
-        "kg_config_source": "run_config.kgs",
         "framework_title": kg_config.metadata.framework_title,
         "kg_run_dir": str(kg_run_inputs.kg_dirs.root),
         "observed_languages": kg_run_inputs.observed_languages,

@@ -35,6 +35,8 @@ _AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
 _MetadataT = dict[str, Any]
 _ProgressionSubtype = Literal["developmental_prerequisite", "recurring_practice"]
 _ValidationLevel = Literal["error", "info"]
+SFIDedupDecision = Literal["conflict", "keep_separate", "merge", "needs_review"]
+SFIMergeDecision = Literal["conflict", "merged", "needs_review", "singleton"]
 
 
 def _strip_and_require_non_empty_str(v: str) -> str:
@@ -840,7 +842,7 @@ class SFIRegistryCandidate(BaseSchema):
 
 
 class SFIRegistryDuplicateBucket(BaseSchema):
-    """Possible SFI duplicate bucket for later LLM-assisted merge review."""
+    """Possible SFI duplicate bucket for LLM-assisted merge review."""
 
     bucket_id: str = Field(description="Deterministic duplicate bucket ID.")
     bucket_key: str = Field(description="Normalized bucket key.")
@@ -905,6 +907,317 @@ class SFIRegistryWarning(BaseSchema):
     severity: Literal["info", "warning"] = Field(description="Warning severity.")
     warning_id: str = Field(description="Stable local warning ID.")
     warning_type: str = Field(description="Machine-readable warning type.")
+
+
+# Schemas for SFI merge/dedup.
+class SFIDedupDecisionGroup(BaseSchema):
+    """One LLM decision group for a bounded SFI dedup review set."""
+
+    candidate_ids: list[str] = Field(
+        description="Registry candidate IDs assigned to this decision group.",
+        min_length=1,
+    )
+    confidence: float = Field(
+        default=0.5, description="LLM confidence in the decision.", ge=0.0, le=1.0
+    )
+    decision: SFIDedupDecision = Field(description="Closed dedup decision label.")
+    reason: str = Field(
+        description="Short source-grounded decision reason.", min_length=1
+    )
+
+    @field_validator("candidate_ids")
+    @classmethod
+    def clean_candidate_ids(cls, v: list[str]) -> list[str]:
+        """Clean and validate decision candidate IDs.
+
+        Parameters
+        ----------
+        v
+            Raw candidate IDs.
+
+        Returns
+        -------
+        list[str]
+            Cleaned candidate IDs.
+
+        Raises
+        ------
+        ValueError
+            If candidate IDs are blank or duplicated.
+        """
+
+        cleaned = unique_clean_strings(v)
+
+        if len(cleaned) != len(v):
+            raise ValueError("candidate_ids must be unique and non-empty")
+
+        return cleaned
+
+
+class SFIDedupReviewCandidate(BaseSchema):
+    """Compact registry-candidate view for one bounded dedup review set."""
+
+    code_bucket_key: Optional[str] = Field(
+        default=None, description="Candidate code duplicate bucket key, when present."
+    )
+    description: str = Field(description="Candidate description.", min_length=1)
+    language: LanguageField = Field(description="Candidate language tag.")
+    normalized_description: str = Field(
+        description="Registry-normalized candidate description."
+    )
+    normalized_source_text: str = Field(
+        description="Registry-normalized candidate source_text."
+    )
+    normalized_statement_code: Optional[str] = Field(
+        default=None, description="Registry-normalized statement code, when present."
+    )
+    normalized_statement_type: NormalizedStatementType = Field(
+        description="Candidate normalized statement type."
+    )
+    registry_candidate_id: str = Field(
+        description="Temporary registry candidate ID from Step 6."
+    )
+    source_segment_ids: list[str] = Field(
+        description="Source segment IDs associated with the candidate.", min_length=1
+    )
+    source_text: str = Field(description="Source-visible evidence text.", min_length=1)
+    source_text_bucket_key: str = Field(
+        description="Candidate source-text duplicate bucket key."
+    )
+    statement_code: Optional[str] = Field(
+        default=None, description="Original statement code, when present."
+    )
+    statement_type: str = Field(description="Canonical source-facing statement type.")
+    table_header_indexes: list[int] = Field(
+        default_factory=list, description="Source table header indexes."
+    )
+    table_row_indexes: list[int] = Field(
+        default_factory=list, description="Source table row indexes."
+    )
+    text_bucket_key: str = Field(
+        description="Candidate description duplicate bucket key."
+    )
+    window_id: str = Field(description="Source extraction window ID.")
+    window_index: int = Field(description="Source extraction window index.", ge=0)
+
+
+class SFIDedupReviewRequest(BaseSchema):
+    """Persisted prompt payload for one bounded SFI dedup review set."""
+
+    bilingual_pair_policy: Optional[str] = Field(
+        default=None, description="Optional bilingual pairing policy from KG config."
+    )
+    candidates: list[SFIDedupReviewCandidate] = Field(
+        description="Bounded candidate records to review together.", min_length=2
+    )
+    review_reasons: list[str] = Field(
+        description="Deterministic reasons this candidate set was selected for review.",
+        min_length=1,
+    )
+    review_set_id: str = Field(description="Deterministic review-set ID.")
+    sfi_deduplication_instructions: str = Field(
+        description="Curriculum-specific Step 7 deduplication instructions.",
+        min_length=1,
+    )
+
+    @field_validator("review_reasons")
+    @classmethod
+    def clean_review_reasons(cls, v: list[str]) -> list[str]:
+        """Clean and deduplicate review reasons.
+
+        Parameters
+        ----------
+        v
+            Raw review reasons.
+
+        Returns
+        -------
+        list[str]
+            Cleaned review reasons.
+        """
+
+        return unique_clean_strings(v)
+
+    @model_validator(mode="after")
+    def validate_candidate_ids_unique(self) -> Self:
+        """Validate that request candidate IDs are unique.
+
+        Returns
+        -------
+        Self
+            The validated request.
+
+        Raises
+        ------
+        ValueError
+            If duplicate candidate IDs are present.
+        """
+
+        candidate_ids = [
+            candidate.registry_candidate_id for candidate in self.candidates
+        ]
+        duplicate_candidate_ids = sorted(
+            {
+                candidate_id
+                for candidate_id in candidate_ids
+                if candidate_ids.count(candidate_id) > 1
+            }
+        )
+
+        if duplicate_candidate_ids:
+            raise ValueError(
+                f"Duplicate review candidate IDs: {duplicate_candidate_ids}"
+            )
+
+        return self
+
+
+class SFIDedupReviewResponse(BaseSchema):
+    """Structured LLM output for one bounded SFI dedup review set."""
+
+    decision_groups: list[SFIDedupDecisionGroup] = Field(
+        description="Decision groups covering every review candidate exactly once.",
+        min_length=1,
+    )
+    review_set_id: str = Field(description="Review-set ID copied from the request.")
+
+
+class SFIMergeGroup(BaseSchema):
+    """One merge-group record carried forward to final SFI construction."""
+
+    candidate_descriptions: list[str] = Field(
+        default_factory=list, description="Unique candidate descriptions for audit."
+    )
+    candidate_source_refs: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Per-candidate source references preserved for later stages.",
+    )
+    candidate_source_texts: list[str] = Field(
+        default_factory=list, description="Unique source-visible evidence snippets."
+    )
+    confidence_max: float = Field(
+        description="Maximum candidate confidence in this group.", ge=0.0, le=1.0
+    )
+    confidence_min: float = Field(
+        description="Minimum candidate confidence in this group.", ge=0.0, le=1.0
+    )
+    llm_decision: Optional[SFIDedupDecision] = Field(
+        default=None, description="Original LLM decision, when reviewed by the LLM."
+    )
+    llm_review_set_id: Optional[str] = Field(
+        default=None, description="Review-set ID that produced this group, when any."
+    )
+    merge_decision: SFIMergeDecision = Field(description="Step 7 merge outcome.")
+    merge_group_id: str = Field(description="Temporary deterministic merge-group ID.")
+    merge_reason: str = Field(description="Short merge or review reason.", min_length=1)
+    normalized_statement_code: Optional[str] = Field(
+        default=None, description="Shared normalized statement code, when unique."
+    )
+    normalized_statement_codes: list[str] = Field(
+        default_factory=list, description="All normalized statement codes in the group."
+    )
+    normalized_statement_type: Optional[NormalizedStatementType] = Field(
+        default=None, description="Shared normalized statement type, when unique."
+    )
+    normalized_statement_types: list[str] = Field(
+        default_factory=list, description="All normalized statement types in the group."
+    )
+    registry_candidate_ids: list[str] = Field(
+        description="Registry candidates included in this merge group.", min_length=1
+    )
+    source_segment_ids: list[str] = Field(
+        default_factory=list, description="Merged source segment IDs."
+    )
+    source_window_ids: list[str] = Field(
+        default_factory=list, description="Merged source extraction-window IDs."
+    )
+    source_window_indexes: list[int] = Field(
+        default_factory=list, description="Merged extraction-window indexes."
+    )
+    statement_code: Optional[str] = Field(
+        default=None, description="Shared original statement code, when unique."
+    )
+    statement_codes: list[str] = Field(
+        default_factory=list, description="All original statement codes in the group."
+    )
+    statement_type: Optional[str] = Field(
+        default=None, description="Shared statement type, when unique."
+    )
+    statement_types: list[str] = Field(
+        default_factory=list, description="All statement types in the group."
+    )
+
+    @field_validator(
+        "candidate_descriptions",
+        "candidate_source_texts",
+        "normalized_statement_codes",
+        "normalized_statement_types",
+        "registry_candidate_ids",
+        "source_segment_ids",
+        "source_window_ids",
+        "statement_codes",
+        "statement_types",
+    )
+    @classmethod
+    def clean_string_lists(cls, v: list[str]) -> list[str]:
+        """Clean string-list fields while preserving order.
+
+        Parameters
+        ----------
+        v
+            Raw string values.
+
+        Returns
+        -------
+        list[str]
+            Cleaned string values.
+        """
+
+        return unique_clean_strings(v)
+
+    @field_validator("source_window_indexes")
+    @classmethod
+    def clean_source_window_indexes(cls, v: list[int]) -> list[int]:
+        """Clean source window indexes.
+
+        Parameters
+        ----------
+        v
+            Raw source window indexes.
+
+        Returns
+        -------
+        list[int]
+            Sorted unique source window indexes.
+        """
+
+        return sorted(set(int(index) for index in v or []))
+
+
+class SFIMergeReport(BaseSchema):
+    """Persisted merge/dedup report artifact."""
+
+    conflict_groups: list[SFIMergeGroup] = Field(default_factory=list)
+    merge_groups: list[SFIMergeGroup] = Field(default_factory=list)
+    needs_review_groups: list[SFIMergeGroup] = Field(default_factory=list)
+    review_requests: list[SFIDedupReviewRequest] = Field(default_factory=list)
+    review_responses: list[SFIDedupReviewResponse] = Field(default_factory=list)
+    summary: SFIMergeSummary = Field(description="Step 7 merge/dedup summary.")
+
+
+class SFIMergeSummary(BaseSchema):
+    """Aggregate summary for merge groups."""
+
+    candidate_count: int = Field(default=0, ge=0)
+    conflict_group_count: int = Field(default=0, ge=0)
+    dedup_review_request_count: int = Field(default=0, ge=0)
+    dedup_review_response_count: int = Field(default=0, ge=0)
+    merge_group_count: int = Field(default=0, ge=0)
+    merged_group_count: int = Field(default=0, ge=0)
+    needs_review_group_count: int = Field(default=0, ge=0)
+    reviewed_candidate_count: int = Field(default=0, ge=0)
+    singleton_group_count: int = Field(default=0, ge=0)
+    unreviewed_singleton_count: int = Field(default=0, ge=0)
 
 
 # CURRENTLY UNUSED #

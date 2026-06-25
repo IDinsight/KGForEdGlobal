@@ -32,7 +32,8 @@ from skg.kgs.create_extraction_windows import (
     build_llm_extraction_windows,
     plan_extraction_windows,
 )
-from skg.kgs.llm import SFIExtractionUsageTracker
+from skg.kgs.llm import KGUsageTracker
+from skg.kgs.sfi_dedup import merge_sfi_candidates
 from skg.kgs.sfi_extraction import extract_sfi_candidates_from_windows
 from skg.kgs.sfi_registry import build_candidate_registry
 from skg.kgs.utils import (
@@ -55,7 +56,7 @@ def build_kgs(
     config: CreateKGConfig,
     document_ir_fp: Path,
     kg_dirs: KGDirs,
-    usage_tracker: SFIExtractionUsageTracker,
+    usage_tracker: KGUsageTracker,
 ) -> Path:
     """Build Academic Standards KG artifacts for a DocumentIR and KG config.
 
@@ -67,6 +68,7 @@ def build_kgs(
     4. Build LLM-ready extraction windows.
     5. Extract source-grounded SFI candidates from extraction windows using an LLM.
     6. Build and persist the global SFI candidate registry for merge review.
+    7. Merge duplicate SFI registry candidates into merge groups.
 
     Parameters
     ----------
@@ -77,7 +79,7 @@ def build_kgs(
     kg_dirs
         Directories for storing KG run artifacts.
     usage_tracker
-        Tracker to accumulate token usage for extracting SFI candidates.
+        Tracker to accumulate token usage in the KG pipeline.
 
     Returns
     -------
@@ -128,10 +130,20 @@ def build_kgs(
         sfi_extraction_results=sfi_extraction_results,
     )
 
+    # 7.
+    sfi_merge_report = merge_sfi_candidates(
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+        overwrite=config.overwrite,
+        sfi_candidate_registry=sfi_candidate_registry,
+        usage_tracker=usage_tracker,
+    )
+
     logger.debug(
-        f"{len(sfi_candidate_registry.candidates) = }; "
-        f"{len(sfi_candidate_registry.duplicate_buckets) = }; "
-        f"{len(sfi_candidate_registry.warnings) = }"
+        f"{sfi_merge_report.summary.merge_group_count = }; "
+        f"{sfi_merge_report.summary.merged_group_count = }; "
+        f"{sfi_merge_report.summary.conflict_group_count = }; "
+        f"{sfi_merge_report.summary.needs_review_group_count = }"
     )
 
     return kg_run_manifest_fp
@@ -197,7 +209,7 @@ def create(
     kg_dirs, kg_run = persist_kg_run(config=config, output_dir=kg_results_dir)
 
     # 4.
-    usage_tracker = SFIExtractionUsageTracker()
+    usage_tracker = KGUsageTracker()
 
     try:
         logger.info(

@@ -13,7 +13,7 @@ from typing import Sequence
 from loguru import logger
 
 # Package Library
-from skg.kgs.llm import SFIExtractionUsageTracker, extract_sfi_candidates
+from skg.kgs.llm import KGUsageTracker, extract_sfi_candidates
 from skg.kgs.schemas import (
     ExtractionWindow,
     SFIExtractionResult,
@@ -258,7 +258,7 @@ def extract_sfi_candidates_from_windows(
     overwrite: bool,
     save_fp: Path,
     summary_fp: Path,
-    usage_tracker: SFIExtractionUsageTracker,
+    usage_tracker: KGUsageTracker,
 ) -> list[SFIExtractionResult]:
     """Extract SFI candidates and incrementally persist resumable artifacts.
 
