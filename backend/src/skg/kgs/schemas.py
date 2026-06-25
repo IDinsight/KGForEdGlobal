@@ -808,6 +808,20 @@ class SFIRegistryCandidate(BaseSchema):
     registry_candidate_id: str = Field(
         description="Temporary document-level candidate handle for review and merge."
     )
+    source_context_key: str = Field(
+        description=(
+            "Deterministic source-derived context key used to scope no-code "
+            "duplicate bucketing and later review."
+        ),
+        min_length=1,
+    )
+    source_context_labels: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Human-readable source-derived context labels, such as section path, "
+            "source segment, table header, or table row context."
+        ),
+    )
     source_segment_ids: list[str] = Field(
         description="ExtractionWindow.source_segment_ids for source recovery.",
         min_length=1,
@@ -976,6 +990,14 @@ class SFIDedupReviewCandidate(BaseSchema):
     )
     registry_candidate_id: str = Field(
         description="Temporary registry candidate ID from Step 6."
+    )
+    source_context_key: str = Field(
+        description="Deterministic source-derived context key from the registry.",
+        min_length=1,
+    )
+    source_context_labels: list[str] = Field(
+        default_factory=list,
+        description="Human-readable source-derived context labels from the registry.",
     )
     source_segment_ids: list[str] = Field(
         description="Source segment IDs associated with the candidate.", min_length=1

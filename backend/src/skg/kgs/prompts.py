@@ -575,8 +575,9 @@ Use exactly one of these decisions for each decision group:
 - Give a short source-grounded reason for every group.
 
 ## Evidence signals and merge guardrails
-- Treat review_reasons, duplicate buckets, registry warnings, same source table-row/header overlap, source-segment overlap, and same-window proximity as retrieval signals for review, not as automatic merge rules.
-- Do not merge candidates solely because they were selected into the same bounded review set or share a table row, table header, source segment, or window.
+- Treat review_reasons, duplicate buckets, registry warnings, same source table-row/header overlap, source-segment overlap, same source-context key/labels, and same-window proximity as retrieval signals for review, not as automatic merge rules.
+- Use source_context_key and source_context_labels to distinguish repeated no-code labels that occur under different visible hierarchy/source contexts.
+- Do not merge candidates solely because they were selected into the same bounded review set or share a table row, table header, source segment, source-context key, source-context label, or window.
 - Same statement_type + same normalized_statement_code is strong merge evidence only when the supplied text and source references are compatible.
 - Do not merge candidates with different official codes solely because their normalized text is similar.
 - Treat same-code candidates with materially conflicting descriptions or incompatible source references as conflict or needs_review.

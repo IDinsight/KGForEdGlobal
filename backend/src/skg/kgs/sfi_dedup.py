@@ -379,6 +379,8 @@ def _build_merge_group(
         candidate_source_refs=[
             {
                 "registry_candidate_id": candidate.registry_candidate_id,
+                "source_context_key": candidate.source_context_key,
+                "source_context_labels": candidate.source_context_labels,
                 "source_segment_ids": candidate.source_segment_ids,
                 "table_header_indexes": candidate.table_header_indexes,
                 "table_row_indexes": candidate.table_row_indexes,
@@ -834,6 +836,8 @@ def _build_review_requests(
                         normalized_statement_code=candidate.normalized_statement_code,
                         normalized_statement_type=candidate.normalized_statement_type,
                         registry_candidate_id=candidate.registry_candidate_id,
+                        source_context_key=candidate.source_context_key,
+                        source_context_labels=candidate.source_context_labels,
                         source_segment_ids=candidate.source_segment_ids,
                         source_text=candidate.source_text,
                         source_text_bucket_key=candidate.source_text_bucket_key,
@@ -1608,10 +1612,10 @@ def _split_and_bound_components(
     pass through unchanged.
 
     Oversized components are split by a conservative source-derived key:
-    statement_type, normalized/code bucket identity, exact source segment IDs, and a
-    coarse window_index // 3 band. If a split group or chunk has only one candidate, it
-    is still carried forward as needs_review_without_llm=True so candidates with review
-    evidence do not silently fall through as ordinary singletons.
+    statement_type, normalized/code/context bucket identity, exact source segment IDs,
+    and a coarse window_index // 3 band. If a split group or chunk has only one
+    candidate, it is still carried forward as needs_review_without_llm=True so
+    candidates with review evidence do not silently fall through as ordinary singletons.
 
     The flow is:
 
@@ -1622,7 +1626,9 @@ def _split_and_bound_components(
 
     (
         candidate.statement_type,
-        candidate.normalized_statement_code or candidate.code_bucket_key or "",
+        candidate.normalized_statement_code
+        or candidate.code_bucket_key
+        or candidate.source_context_key,
         tuple(candidate.source_segment_ids),
         candidate.window_index // 3,
     )
@@ -1688,7 +1694,9 @@ def _split_and_bound_components(
 
     (
         candidate.statement_type,
-        candidate.normalized_statement_code or candidate.code_bucket_key or "",
+        candidate.normalized_statement_code
+        or candidate.code_bucket_key
+        or candidate.source_context_key,
         tuple(candidate.source_segment_ids),
         candidate.window_index // 3,
     )
@@ -1783,7 +1791,7 @@ def _split_and_bound_components(
                     candidate.statement_type,
                     candidate.normalized_statement_code
                     or candidate.code_bucket_key
-                    or "",
+                    or candidate.source_context_key,
                     tuple(candidate.source_segment_ids),
                     candidate.window_index // 3,
                 )

@@ -35,6 +35,127 @@ from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, write_to_json
 
 
+def _build_candidate_source_context(
+    *, candidate: SFICandidate, extraction_window: ExtractionWindow
+) -> tuple[str, list[str]]:
+    """Build source-derived context for one registry candidate.
+
+    The context is intentionally derived only from the persisted extraction window and
+    the candidate's source references. It gives no-code candidates a stable source
+    scope for duplicate bucketing so repeated labels such as grade, strand, sub-strand,
+    topic, week, or palier headings are not bucketed by label alone across unrelated
+    hierarchy contexts.
+
+    Parameters
+    ----------
+    candidate
+        Window-local SFI candidate being flattened into the registry.
+    extraction_window
+        Source extraction window that produced the candidate.
+
+    Returns
+    -------
+    tuple[str, list[str]]
+        A deterministic context key and compact human-readable context labels.
+    """
+
+    labels: list[str] = []
+    key_parts: list[str] = [
+        extraction_window.doc_key,
+        extraction_window.segment_kind,
+        ",".join(extraction_window.source_segment_ids),
+    ]
+
+    if extraction_window.block is not None:
+        block = extraction_window.block
+        block_type = str(block.get("block_type") or "").strip()
+        local_code = str(block.get("local_code") or "").strip()
+        section_texts: list[str] = []
+
+        for section_ref in block.get("section_path") or []:
+            if isinstance(section_ref, dict):
+                section_text = str(section_ref.get("text") or "").strip()
+            else:
+                section_text = str(section_ref or "").strip()
+
+            if not section_text:
+                continue
+
+            section_label = _truncate_context_label(section_text)
+            section_texts.append(section_label)
+            labels.append(f"section:{section_label}")
+
+        if block_type:
+            labels.append(f"block_type:{block_type}")
+
+        if local_code:
+            labels.append(f"block_local_code:{local_code}")
+
+        key_parts.extend(
+            [
+                f"block_type:{block_type}",
+                f"block_local_code:{local_code}",
+                "section_path:" + _normalize_text(" > ".join(section_texts)),
+            ]
+        )
+
+    if extraction_window.table is not None:
+        table = extraction_window.table
+        columns_signature = str(table.columns_signature or "").strip()
+        local_code = str(table.local_code or "").strip()
+        row_indexes = ",".join(str(index) for index in candidate.table_row_indexes)
+        header_indexes = ",".join(
+            str(index) for index in candidate.table_header_indexes
+        )
+
+        if columns_signature:
+            labels.append("table_columns:" + _truncate_context_label(columns_signature))
+
+        if local_code:
+            labels.append(f"table_local_code:{local_code}")
+
+        for header_index in candidate.table_header_indexes:
+            if 0 <= header_index < len(table.header_rows):
+                header_text = _extract_table_row_text(table.header_rows[header_index])
+
+                if header_text:
+                    labels.append(
+                        f"table_header[{header_index}]:"
+                        + _truncate_context_label(header_text)
+                    )
+
+        rows_by_index = dict(zip(table.row_indexes, table.rows))
+
+        for row_index in candidate.table_row_indexes:
+            row = rows_by_index.get(row_index)
+
+            if row is None:
+                continue
+
+            row_text = _extract_table_row_text(row)
+
+            if row_text:
+                labels.append(
+                    f"table_row[{row_index}]:" + _truncate_context_label(row_text)
+                )
+
+        key_parts.extend(
+            [
+                f"table_columns:{columns_signature}",
+                f"table_header_indexes:{header_indexes}",
+                f"table_local_code:{local_code}",
+                f"table_row_indexes:{row_indexes}",
+            ]
+        )
+
+    if not labels:
+        labels.append(f"window:{extraction_window.window_index}")
+
+    context_basis = "|".join(_normalize_text(part) for part in key_parts if part)
+    source_context_key = hashlib.sha256(context_basis.encode("utf-8")).hexdigest()[:32]
+    return source_context_key, _unique_limited(labels, limit=12)
+
+
 def _build_duplicate_buckets(
     candidates: Sequence[SFIRegistryCandidate],
 ) -> list[SFIRegistryDuplicateBucket]:
@@ -147,6 +268,10 @@ def _build_registry_candidate(
         else None
     )
 
+    source_context_key, source_context_labels = _build_candidate_source_context(
+        candidate=candidate, extraction_window=extraction_window
+    )
+
     # Generate deterministic temporary registry candidate ID.
     candidate_slug = re.sub(
         r"[^0-9A-Za-z_\-]+", "_", candidate.candidate_id.strip()
@@ -160,9 +285,17 @@ def _build_registry_candidate(
     normalized_description = _normalize_text(candidate.description)
     normalized_source_text = _normalize_text(candidate.source_text)
     statement_type_key = _normalize_text(candidate.statement_type)
-    text_bucket_key = _join_bucket_key(statement_type_key, normalized_description)
-    source_text_bucket_key = _join_bucket_key(
-        statement_type_key, normalized_source_text
+    text_bucket_key = _build_text_bucket_key(
+        normalized_statement_code=normalized_statement_code,
+        normalized_text=normalized_description,
+        source_context_key=source_context_key,
+        statement_type_key=statement_type_key,
+    )
+    source_text_bucket_key = _build_text_bucket_key(
+        normalized_statement_code=normalized_statement_code,
+        normalized_text=normalized_source_text,
+        source_context_key=source_context_key,
+        statement_type_key=statement_type_key,
     )
     code_bucket_key = (
         _join_bucket_key(statement_type_key, normalized_statement_code)
@@ -181,6 +314,8 @@ def _build_registry_candidate(
         normalized_statement_code=normalized_statement_code,
         normalized_statement_type=candidate.normalized_statement_type,
         registry_candidate_id=registry_candidate_id,
+        source_context_key=source_context_key,
+        source_context_labels=source_context_labels,
         source_segment_ids=extraction_window.source_segment_ids,
         source_text=candidate.source_text,
         source_text_bucket_key=source_text_bucket_key,
@@ -346,6 +481,43 @@ def _build_registry_warnings(
     ]
 
 
+def _build_text_bucket_key(
+    *,
+    normalized_statement_code: Optional[str],
+    normalized_text: str,
+    source_context_key: str,
+    statement_type_key: str,
+) -> str:
+    """Build a duplicate bucket key for candidate text.
+
+    Coded candidates retain the text-bucket behavior because official codes provide
+    stronger identity evidence and text buckets are only secondary review signals.
+    No-code candidates are scoped by source context so repeated labels are not treated
+    as possible duplicates solely because their visible text matches.
+
+    Parameters
+    ----------
+    normalized_statement_code
+        Registry-normalized official statement code, when one was accepted.
+    normalized_text
+        Registry-normalized description or source-text value.
+    source_context_key
+        Deterministic source-derived context key for the candidate.
+    statement_type_key
+        Registry-normalized candidate statement type.
+
+    Returns
+    -------
+    str
+        Context-aware text duplicate bucket key.
+    """
+
+    if normalized_statement_code:
+        return _join_bucket_key(statement_type_key, normalized_text)
+
+    return _join_bucket_key(statement_type_key, source_context_key, normalized_text)
+
+
 def _deterministic_bucket_id(*, bucket_key: str, bucket_type: str) -> str:
     """Create a deterministic possible-duplicate bucket ID.
 
@@ -364,6 +536,39 @@ def _deterministic_bucket_id(*, bucket_key: str, bucket_type: str) -> str:
 
     digest = hashlib.sha256(f"{bucket_type}|{bucket_key}".encode("utf-8")).hexdigest()
     return f"bucket_{bucket_type}_{digest[:16]}"
+
+
+def _extract_table_row_text(row: dict[str, Any]) -> str:
+    """Extract visible text from a compact table row payload.
+
+    Parameters
+    ----------
+    row
+        Table row payload from an extraction window table payload.
+
+    Returns
+    -------
+    str
+        Visible row text joined in cell order.
+    """
+
+    cell_texts: list[str] = []
+
+    for cell in row.get("cells") or []:
+        if not isinstance(cell, dict):
+            continue
+
+        text_unit = cell.get("text") or {}
+
+        if isinstance(text_unit, dict):
+            cell_text = str(text_unit.get("text") or "").strip()
+        else:
+            cell_text = str(text_unit or "").strip()
+
+        if cell_text:
+            cell_texts.append(cell_text)
+
+    return " | ".join(cell_texts)
 
 
 def _find_bucket_id(
@@ -566,6 +771,28 @@ def _normalize_text(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
     normalized = re.sub(r"\s+", " ", normalized).strip()
     return normalized
+
+
+def _truncate_context_label(value: str) -> str:
+    """Normalize and truncate one human-readable context label.
+
+    Parameters
+    ----------
+    value
+        Raw context label text.
+
+    Returns
+    -------
+    str
+        Single-line context label suitable for registry and review artifacts.
+    """
+
+    value_clean = re.sub(r"\s+", " ", str(value or "")).strip()
+
+    if len(value_clean) <= 180:
+        return value_clean
+
+    return value_clean[:177].rstrip() + "..."
 
 
 def _unique_limited(values: Sequence[str], *, limit: int) -> list[str]:
