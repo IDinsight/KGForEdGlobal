@@ -31,7 +31,7 @@ def _build_compact_block_payload(
         if extraction_window.block is None
         else {
             "block_type": extraction_window.block.get("block_type"),
-            "language": extraction_window.primary_language,
+            "language": _get_block_language(extraction_window),
             "local_code": extraction_window.block.get("local_code"),
             "source_text": extraction_window.source_text,
         }
@@ -473,6 +473,43 @@ def _build_filldown_context_rows(
             context_rows.append(context_row)
 
     return context_rows
+
+
+def _get_block_language(extraction_window: ExtractionWindow) -> str:
+    """Return the source block language for an extraction window.
+
+    Block windows should preserve the language assigned by DocumentIR to the actual
+    source block. The KG config primary language is only a fallback for malformed or
+    legacy block payloads that do not carry a block-level language value.
+
+    Parameters
+    ----------
+    extraction_window
+        Source-faithful extraction window containing an optional block payload.
+
+    Returns
+    -------
+    str
+        Source block language when available; otherwise the window primary language.
+    """
+
+    if extraction_window.block is None:
+        return extraction_window.primary_language
+
+    block_text = extraction_window.block.get("text")
+
+    if isinstance(block_text, dict):
+        language = block_text.get("language")
+
+        if isinstance(language, str) and language.strip():
+            return language.strip()
+
+    language = extraction_window.block.get("language")
+
+    if isinstance(language, str) and language.strip():
+        return language.strip()
+
+    return extraction_window.primary_language
 
 
 def extract_sfi_candidates_from_window(
