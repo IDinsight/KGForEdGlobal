@@ -41,7 +41,6 @@ from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, open_json_type, write_to_json
 
-_MAX_DEDUP_REVIEW_SET_CANDIDATES = 12
 _SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG = "same_code_different_content"
 
 
@@ -1784,6 +1783,54 @@ def _prepare_output_files(output_fps: Sequence[Path]) -> None:
             output_fp.write_text("", encoding="utf-8")
 
 
+def _resolve_max_dedup_review_set_candidates(
+    *, candidate_count: int, kg_config: CreateKGConfig
+) -> int:
+    """Resolve the maximum LLM dedup review-set size for one component.
+
+    When `kg_config.academic_standards.max_dedup_review_set_candidates` is None, the
+    effective maximum is the full length of the current connected candidate set. This
+    disables size-based chunking for that set while preserving all other dedup
+    safeguards.
+
+    Parameters
+    ----------
+    candidate_count
+        Number of candidates in the connected component being bounded.
+    kg_config
+        Runtime KG configuration carrying Academic Standards dedup settings.
+
+    Returns
+    -------
+    int
+        Effective maximum number of candidates allowed in one LLM review request.
+
+    Raises
+    ------
+    ValueError
+        If `candidate_count` is negative or the configured maximum is less than 2.
+    """
+
+    if candidate_count < 0:
+        raise ValueError(
+            f"Candidate count for SFI dedup review cannot be negative: "
+            f"{candidate_count}."
+        )
+
+    configured_max = kg_config.academic_standards.max_dedup_review_set_candidates
+
+    if configured_max is None:
+        return candidate_count
+
+    if configured_max < 2:
+        raise ValueError(
+            f"Academic Standards max_dedup_review_set_candidates must be null or "
+            f"at least 2; got {configured_max}."
+        )
+
+    return configured_max
+
+
 def _rewrite_review_progress_files(
     *,
     completed_review_requests: Sequence[SFIDedupReviewRequest],
@@ -1871,7 +1918,7 @@ def _run_dedup_reviews(
         logger.info(
             f"Running SFI dedup review {current_request_number}/"
             f"{len(review_requests)}: review_set_id={review_request.review_set_id}; "
-            f"SFI candidates={len(review_request.candidates)}."
+            f"candidate_set_length={len(review_request.candidates)}."
         )
 
         _append_jsonl_model(fp=review_requests_fp, model=review_request)
@@ -1890,6 +1937,7 @@ def _run_dedup_reviews(
 def _split_and_bound_components(
     *,
     components: Sequence[_ReviewComponent],
+    kg_config: CreateKGConfig,
     sfi_candidates_by_id: dict[str, SFIRegistryCandidate],
 ) -> list[_ReviewComponent]:
     """Split connected components into bounded review components.
@@ -1897,9 +1945,10 @@ def _split_and_bound_components(
     After `_merge_edges_to_components()`, a component can become large because
     duplicate buckets, warnings, and provenance edges can chain together. This function
     keeps small components as-is, but splits oversized components into smaller, safer
-    chunks before they become LLM review requests. The current max is
-    `_MAX_DEDUP_REVIEW_SET_CANDIDATES = 12`. Components with 12 or fewer candidates
-    pass through unchanged.
+    chunks before they become LLM review requests. The effective maximum comes from
+    `kg_config.academic_standards.max_dedup_review_set_candidates`. When that value is
+    null, each connected component uses its own full candidate count as the maximum,
+    disabling size-based chunking for that component.
 
     Oversized components are split by a conservative source-derived key:
     statement_type, normalized/code/context bucket identity, exact source segment IDs,
@@ -1909,10 +1958,11 @@ def _split_and_bound_components(
 
     The flow is:
 
-    1. If a connected component has 12 or fewer candidates, it passes through with
-    needs_review_without_llm=False
+    1. If a connected component has no more candidates than the effective maximum, it
+        passes through with needs_review_without_llm=False
 
-    2. If a connected component has more than 12 candidates, the code splits it by:
+    2. If a connected component has more candidates than the effective maximum, the
+        code splits it by:
 
     (
         candidate.statement_type,
@@ -2018,7 +2068,8 @@ def _split_and_bound_components(
     If an oversized split group contains more than the maximum number of candidates, it
     is chunked into review-sized groups. For example, a 25-candidate split group with a
     maximum size of 12 becomes two 12-candidate review components and one 1-candidate
-    residue.
+    residue. If the configured maximum is null, this size-based chunking does not occur
+    for that connected component.
 
     3. Singleton split residues are not treated as ordinary unreviewed singletons. They
     are carried forward as needs-review components because they came from an oversized
@@ -2055,6 +2106,8 @@ def _split_and_bound_components(
     ----------
     components
         Connected components built from review edges.
+    kg_config
+        Runtime KG configuration carrying the dedup review-set size limit.
     sfi_candidates_by_id
         Lookup of registry candidates by temporary registry candidate ID.
 
@@ -2068,7 +2121,11 @@ def _split_and_bound_components(
     bounded_components: list[_ReviewComponent] = []
 
     for component in components:
-        if len(component.candidate_ids) <= _MAX_DEDUP_REVIEW_SET_CANDIDATES:
+        max_dedup_review_set_candidates = _resolve_max_dedup_review_set_candidates(
+            candidate_count=len(component.candidate_ids), kg_config=kg_config
+        )
+
+        if len(component.candidate_ids) <= max_dedup_review_set_candidates:
             bounded_components.append(component)
             continue
 
@@ -2112,10 +2169,10 @@ def _split_and_bound_components(
                 continue
 
             for start_index in range(
-                0, len(split_candidate_ids_sorted), _MAX_DEDUP_REVIEW_SET_CANDIDATES
+                0, len(split_candidate_ids_sorted), max_dedup_review_set_candidates
             ):
                 chunk_candidate_ids = split_candidate_ids_sorted[
-                    start_index : start_index + _MAX_DEDUP_REVIEW_SET_CANDIDATES
+                    start_index : start_index + max_dedup_review_set_candidates
                 ]
 
                 if len(chunk_candidate_ids) < 2:
@@ -2506,7 +2563,9 @@ def merge_sfi_candidates(
     initial_edges = _build_initial_review_edges(sfi_candidate_registry)
     connected_components = _merge_edges_to_components(initial_edges)
     bounded_components = _split_and_bound_components(
-        components=connected_components, sfi_candidates_by_id=sfi_candidates_by_id
+        components=connected_components,
+        kg_config=kg_config,
+        sfi_candidates_by_id=sfi_candidates_by_id,
     )
     review_requests, unresolved_components = _build_review_requests(
         components=bounded_components,

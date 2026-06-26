@@ -631,6 +631,15 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
             "tables when column signatures alone are not sufficient."
         ),
     )
+    max_dedup_review_set_candidates: Optional[int] = Field(
+        default=None,
+        description=(
+            "Maximum number of SFI registry candidates to include in one dedup "
+            "LLM review set. Set to null to use the full length of each connected "
+            "candidate set."
+        ),
+        ge=2,
+    )
     max_rows_per_table_window: Optional[int] = Field(
         default=20,
         description=(
