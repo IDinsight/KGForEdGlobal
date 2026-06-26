@@ -413,9 +413,12 @@ def _build_dedup_review_focus_instructions(
 - This review set was selected because candidates share exact registry-normalized source text.
 - Decide whether the repeated visible text names the same curriculum item repeated in multiple source locations, or whether the same label/wording is reused for distinct items in different source scopes.
 - Do not merge solely because normalized_source_text matches.
+- Apply hard compatibility constraints first, then the runtime sfi_deduplication_instructions, then general duplicate heuristics.
+- Treat source_context_key and source_context_labels as helpful but fallible evidence. They may be inherited from surrounding source structure and can be stale or noisy around divider pages, continuation pages, repeated headings, or irregular source layouts.
+- Do not let source_context_labels alone block a merge when visible source text, statement_type, normalized_statement_type, source proximity, and runtime sfi_deduplication_instructions indicate the same source-visible curriculum item.
 - Merge only when the candidates represent the same logical curriculum organizer or statement and the supplied source references are compatible.
 - Keep separate when the same visible text is reused under different grades, strands, domains, courses, topics, years, tables, or other local scopes.
-- Treat repeated section-divider headings and following content-section headings as potential duplicates only when they point to the same curriculum scope.
+- Treat repeated section-divider headings and following content-section headings as potential duplicates only when they point to the same curriculum scope under the runtime deduplication instructions.
 - Use statement_type, normalized_statement_type, statement_code, source_context_labels, source_segment_ids, window_index, and table row/header references to decide whether the shared text has the same source role and scope.
             """
         ).strip()
@@ -621,7 +624,8 @@ Use exactly one of these decisions for each decision group:
 
 ## Evidence signals and merge guardrails
 - Treat review_reasons, duplicate buckets, registry warnings, same source table-row/header overlap, source-segment overlap, same source-context key/labels, and same-window proximity as retrieval signals for review, not as automatic merge rules.
-- Use source_context_key and source_context_labels to distinguish repeated no-code labels that occur under different visible hierarchy/source contexts.
+- Apply decision evidence in this order: hard schema/code compatibility constraints, runtime sfi_deduplication_instructions, visible source text and source references, general dedup heuristics, then source_context_key/source_context_labels.
+- Treat source_context_key and source_context_labels as useful but fallible context signals. They can help distinguish repeated no-code labels under different hierarchy/source contexts, but they are not absolute truth when they conflict with visible source evidence or more specific runtime deduplication instructions.
 - Do not merge candidates solely because they were selected into the same bounded review set or share a table row, table header, source segment, source-context key, source-context label, or window.
 - Same statement_type + same normalized_statement_code is strong merge evidence only when the supplied text and source references are compatible.
 - Do not merge candidates with different official codes solely because their normalized text is similar.
@@ -632,7 +636,7 @@ Use exactly one of these decisions for each decision group:
 - Repeated labels such as grade, stage, section, strand, domain, palier, week, activity, topic, or objective headings may be distinct under different source contexts.
 - Merge no-code candidates only when the visible source text and supplied source references are compatible.
 - If safe resolution depends on context that is not visible in the bounded review payload, choose needs_review rather than guessing.
-- Follow the curriculum-specific deduplication instructions in the payload when they are more specific than these general rules or intentionally stricter than these general rules.
+- Follow the curriculum-specific deduplication instructions in the payload when they are more specific than these general rules, intentionally stricter than these general rules, or define how a framework uses repeated headings/organizers.
 
 {focus_instructions}
         """
