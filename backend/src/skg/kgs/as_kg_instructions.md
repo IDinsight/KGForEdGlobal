@@ -981,12 +981,14 @@ violates hard merge guardrails, such as merging different statement_type values 
 For coded curricula such as Ghana and Zambia:
 
 ```text
-Use statement_type + normalized_statement_code as the strongest review-set signal.
+Use statement_type + normalized_statement_code as the strongest review-set signal, not as a globally unique identity key.
 The dedup LLM should usually merge same statement_type + same normalized_statement_code when text and source context are compatible.
 Do not merge candidates with different official codes solely because normalized text is similar.
-Treat same-code candidates with materially conflicting text or incompatible context as conflict or needs_review, not silent merges.
+Do not merge same-code candidates when they have materially different source-visible statements or incompatible source references.
+When same-code candidates appear to be distinct source-visible curriculum items, keep them separate as individual SFI candidates and preserve same-code/different-content audit evidence for manual review and Step 8 disambiguated final IDs.
+Use conflict or needs_review for same-code candidates only when they appear to be competing/incompatible representations of the same source item, or when the bounded evidence is insufficient to decide whether they are distinct source items.
 Treat descriptions that differ only because one includes the visible code and the other omits it as compatible when statement_type, normalized_statement_code, and source context match.
-Use configured code_parent_rules later for hierarchy, not for merging different candidate items in Step 7.
+Use configured code_parent_rules later for hierarchy evidence, not for merging different candidate items in Step 7.
 ```
 
 For no-code curricula such as Senegal Reading and Senegal Math:
@@ -1072,11 +1074,13 @@ Purpose:
 Assign stable final IDs only after deduplication.
 ```
 
-For stable-code items, prefer:
+For stable-code items, prefer a code-first identity string that still includes deterministic disambiguating material whenever the same source code appears on more than one distinct source-visible item:
 
 ```text
-lc:curriculum:{doc_key}:sfi:{role}:{statement_code}:{disambiguating_context_if_needed}
+lc:curriculum:{doc_key}:sfi:{role}:{statement_code}:{disambiguating_context_or_text_hash_if_needed}
 ```
+
+Official source codes are strong identity material but are not guaranteed to be globally unique or correct in source PDFs. Step 8 must therefore validate that coded final IDs are collision-free. When Step 7 keeps same-code/different-content candidates separate, Step 8 should mint separate final SFIs with deterministic disambiguators from source-backed text hashes, source-context keys, row/header references, or other stable provenance. It should also preserve the same-code/different-content audit flag and peer references so manual review can inspect the source numbering anomaly.
 
 For no-code items, prefer:
 
@@ -1407,8 +1411,9 @@ Implement Step 8 as:
 3. Decide which merge decisions are eligible for final SFI minting in v0.
 4. Preserve conflict and needs_review groups as review artifacts; do not silently force them into final SFIs unless the v0 policy explicitly chooses to export provisional records.
 5. For each eligible merged/singleton group, choose deterministic identity material from statement_type, normalized_statement_type, accepted normalized_statement_code when present, source_context_key/source references, and source-backed text hashes.
-6. Mint stable final SFI UUIDs and CASE-compatible identifier fields from deterministic identity strings.
-7. Build final SFI records that preserve source candidate IDs, merge group IDs, source windows, source segments, table row/header references, candidate descriptions, source_text evidence quotes, confidence ranges, and enough DocumentIR references for later source-context recovery.
+6. If multiple eligible groups share the same statement_type and normalized_statement_code but have materially different source-visible text, include deterministic source/text/provenance disambiguators so they mint as separate final SFIs without ID collisions.
+7. Mint stable final SFI UUIDs and CASE-compatible identifier fields from deterministic identity strings.
+8. Build final SFI records that preserve source candidate IDs, merge group IDs, source windows, source segments, table row/header references, candidate descriptions, source_text evidence quotes, confidence ranges, same-code/different-content audit flags when present, and enough DocumentIR references for later source-context recovery.
 8. Persist final_sfi_records.json.
 9. Persist a small final_sfi_summary.json if useful for debugging and downstream validation.
 ```
@@ -1440,8 +1445,8 @@ Lessons from reviewed Step 4/5/6/7 artifacts:
 ```text
 Senegal Reading: no stable statement codes; use text buckets and preserve row/header/window references.
 Senegal Math: no stable statement codes; repeated grouping/weekly labels create weak text duplicate buckets only.
-Ghana: stable alphanumeric statement codes are strong duplicate-bucket signals, but same-code conflicts should remain review/conflict evidence rather than forced merges.
-Zambia: hierarchical numeric statement codes are useful; use statement_type + normalized_statement_code as the primary duplicate signal, while keeping text buckets as secondary review inputs.
+Ghana: stable-looking alphanumeric statement codes are strong duplicate-bucket signals, but the source can reuse or misprint the same code for distinct mathematical statements. Same-code/different-content items should stay separate as individual SFIs with audit flags and deterministic final-ID disambiguators, not be forced into one merge or automatically excluded as conflicts.
+Zambia: hierarchical numeric statement codes are useful; use statement_type + normalized_statement_code as the primary duplicate signal, while keeping text buckets and source-provenance disambiguators as secondary review inputs.
 ```
 
 Before implementing Step 8 final SFI minting, inspect the Step 7 merge report summary:
@@ -1449,7 +1454,8 @@ Before implementing Step 8 final SFI minting, inspect the Step 7 merge report su
 ```text
 Do merge groups cover every registry candidate exactly once?
 How many groups are merged, singleton, conflict, and needs_review?
-Are same-code/different-description cases preserved as conflict or needs_review when incompatible?
+Are same-code/different-description cases kept separate as individual audited SFIs when they are distinct source-visible items, rather than forced merges?
+Are same-code candidate groups marked conflict or needs_review only when they appear to be competing representations of the same source item or cannot be safely resolved from bounded evidence?
 Are repeated no-code labels kept separate unless source context makes a merge safe?
 Are candidate_source_refs sufficient to recover source windows, segments, table rows, and table headers?
 Are source_context_key and source_context_labels available for no-code disambiguation?

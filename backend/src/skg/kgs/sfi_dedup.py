@@ -12,7 +12,7 @@ import hashlib
 import itertools
 import json
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -42,6 +42,7 @@ from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, open_json_type, write_to_json
 
 _MAX_DEDUP_REVIEW_SET_CANDIDATES = 12
+_SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG = "same_code_different_content"
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,92 @@ class _ReviewComponent:
     candidate_ids: tuple[str, ...]
     needs_review_without_llm: bool
     review_reasons: tuple[str, ...]
+
+
+def _annotate_same_code_different_content_audit_flags(
+    merge_groups: Sequence[SFIMergeGroup],
+) -> list[SFIMergeGroup]:
+    """Attach audit flags to mintable same-code groups with divergent content.
+
+    This does not change merge decisions. It records that the next step must mint
+    separate, disambiguated final SFI IDs and must not resolve hierarchy by code alone
+    for these groups.
+
+    Parameters
+    ----------
+    merge_groups
+        Merge groups produced by LLM decisions and deterministic singleton fallback.
+
+    Returns
+    -------
+    list[SFIMergeGroup]
+        Merge groups with same-code/different-content audit annotations added.
+    """
+
+    groups_by_code_key: dict[tuple[str, str, str], list[SFIMergeGroup]] = defaultdict(
+        list
+    )
+
+    for merge_group in merge_groups:
+        if not (
+            merge_group.merge_decision in {"merged", "singleton"}
+            and bool(merge_group.normalized_statement_code)
+            and bool(merge_group.normalized_statement_type)
+            and bool(merge_group.statement_type)
+        ):
+            continue
+
+        groups_by_code_key[
+            (
+                merge_group.statement_type or "",
+                merge_group.normalized_statement_type or "",
+                merge_group.normalized_statement_code or "",
+            )
+        ].append(merge_group)
+
+    annotated_by_id = {
+        merge_group.merge_group_id: merge_group for merge_group in merge_groups
+    }
+
+    for (
+        statement_type,
+        normalized_statement_type,
+        normalized_statement_code,
+    ), groups in groups_by_code_key.items():
+        if len(groups) < 2:
+            continue
+
+        fingerprints = {
+            group.merge_group_id: _audit_content_fingerprint(group) for group in groups
+        }
+
+        if len(set(fingerprints.values())) <= 1:
+            continue
+
+        group_ids = [group.merge_group_id for group in groups]
+        audit_note = (
+            f"Shares statement_type="
+            f"{statement_type!r}, normalized_statement_type="
+            f"{normalized_statement_type!r}, and normalized_statement_code="
+            f"{normalized_statement_code!r} with another mintable merge group, but "
+            f"the source-visible descriptions/source_text differ. Step 8 should mint "
+            f"separate deterministic final SFIs with source/text/provenance "
+            f"disambiguators and preserve this same-code/different-content evidence "
+            f"for manual review."
+        )
+
+        for group in groups:
+            peer_group_ids = [
+                group_id for group_id in group_ids if group_id != group.merge_group_id
+            ]
+            annotated_by_id[group.merge_group_id] = _append_merge_group_audit(
+                audit_flag=_SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG,
+                audit_note=audit_note,
+                audit_peer_merge_group_ids=peer_group_ids,
+                merge_group=annotated_by_id[group.merge_group_id],
+            )
+
+    return [annotated_by_id[merge_group.merge_group_id] for merge_group in merge_groups]
 
 
 def _append_jsonl_model(*, fp: Path, model: BaseModel) -> None:
@@ -68,6 +155,46 @@ def _append_jsonl_model(*, fp: Path, model: BaseModel) -> None:
 
     with fp.open("a", encoding="utf-8") as f:
         f.write(json.dumps(model.model_dump(mode="json"), ensure_ascii=False) + "\n")
+
+
+def _append_merge_group_audit(
+    *,
+    audit_flag: str,
+    audit_note: str,
+    audit_peer_merge_group_ids: Sequence[str],
+    merge_group: SFIMergeGroup,
+) -> SFIMergeGroup:
+    """Return a merge group with one deterministic audit annotation appended.
+
+    Parameters
+    ----------
+    audit_flag
+        Machine-readable audit flag to attach.
+    audit_note
+        Human-readable note explaining why the flag was attached.
+    audit_peer_merge_group_ids
+        Related merge-group IDs that share the same audit concern.
+    merge_group
+        Existing merge group to annotate.
+
+    Returns
+    -------
+    SFIMergeGroup
+        Copy of the merge group with updated audit fields.
+    """
+
+    return merge_group.model_copy(
+        update={
+            "audit_flags": _unique_nonempty([*merge_group.audit_flags, audit_flag]),
+            "audit_notes": _unique_nonempty([*merge_group.audit_notes, audit_note]),
+            "audit_peer_merge_group_ids": _unique_nonempty(
+                [
+                    *merge_group.audit_peer_merge_group_ids,
+                    *audit_peer_merge_group_ids,
+                ]
+            ),
+        }
+    )
 
 
 def _assert_model_sequences_equal(
@@ -104,6 +231,36 @@ def _assert_model_sequences_equal(
                 f"{artifact_label} record {index} does not match the current "
                 f"planned artifact payload."
             )
+
+
+def _audit_content_fingerprint(merge_group: SFIMergeGroup) -> tuple[str, ...]:
+    """Build normalized content evidence used to detect same-code divergences.
+
+    Parameters
+    ----------
+    merge_group
+        Merge group whose source-visible text and descriptions should be summarized.
+
+    Returns
+    -------
+    tuple[str, ...]
+        Stable normalized content fragments for audit comparison.
+    """
+
+    values = [
+        *merge_group.candidate_descriptions,
+        *merge_group.candidate_source_texts,
+    ]
+
+    return tuple(
+        sorted(
+            {
+                normalized
+                for value in values
+                if (normalized := " ".join(str(value or "").casefold().split()))
+            }
+        )
+    )
 
 
 def _build_initial_review_edges(
@@ -686,11 +843,18 @@ def _build_merge_report(
         for group in response.decision_groups
         for candidate_id in group.candidate_ids
     }
+    audit_flag_counts = Counter(
+        audit_flag for group in merge_groups for audit_flag in group.audit_flags
+    )
     summary = SFIMergeSummary(
+        audit_flag_count_by_type=dict(sorted(audit_flag_counts.items())),
         candidate_count=len(sfi_candidate_registry.candidates),
         conflict_group_count=len(conflict_groups),
         dedup_review_request_count=len(review_requests),
         dedup_review_response_count=len(review_responses),
+        merge_group_audit_flag_count=sum(
+            1 for group in merge_groups if group.audit_flags
+        ),
         merge_group_count=len(merge_groups),
         merged_group_count=sum(
             1 for group in merge_groups if group.merge_decision == "merged"
@@ -2401,6 +2565,7 @@ def merge_sfi_candidates(
         sfi_candidates_by_id=sfi_candidates_by_id,
     )
     merge_groups.extend(singleton_groups)
+    merge_groups = _annotate_same_code_different_content_audit_flags(merge_groups)
     merge_groups.sort(key=lambda group: (group.merge_decision, group.merge_group_id))
 
     _validate_merge_group_coverage(

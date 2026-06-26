@@ -629,7 +629,9 @@ Use exactly one of these decisions for each decision group:
 - Do not merge candidates solely because they were selected into the same bounded review set or share a table row, table header, source segment, source-context key, source-context label, or window.
 - Same statement_type + same normalized_statement_code is strong merge evidence only when the supplied text and source references are compatible.
 - Do not merge candidates with different official codes solely because their normalized text is similar.
-- Treat same-code candidates with materially conflicting descriptions or incompatible source references as conflict or needs_review.
+- Do not treat source-visible official codes as globally unique identity keys. Source documents can reuse, duplicate, or misprint official codes.
+- When same-code candidates have materially different source-visible statements and the bounded evidence indicates they are distinct source items, use keep_separate rather than conflict. State in the reason that they require same-code/different-content audit and downstream disambiguated final IDs.
+- Use conflict or needs_review for same-code candidates only when they appear to be competing or incompatible representations of the same source item, or when the bounded evidence is insufficient to decide whether they are distinct source items.
 - Do not merge candidates with different statement_type or different normalized_statement_type unless the supplied evidence clearly shows they are duplicate extractions of the same source-visible item under inconsistent labels.
 - If candidates appear to represent different source roles, levels, scopes, or structural positions in the curriculum, use keep_separate, conflict, or needs_review rather than merge unless the supplied evidence clearly shows they are duplicate extractions of the same source-visible item.
 - For no-code candidates, same statement_type + same normalized source/description text is review evidence, not an automatic merge rule.

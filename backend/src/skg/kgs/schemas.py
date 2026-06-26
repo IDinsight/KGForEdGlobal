@@ -1115,6 +1115,18 @@ class SFIDedupReviewResponse(BaseSchema):
 class SFIMergeGroup(BaseSchema):
     """One merge-group record carried forward to final SFI construction."""
 
+    audit_flags: list[str] = Field(
+        default_factory=list,
+        description="Machine-readable audit flags for downstream review.",
+    )
+    audit_notes: list[str] = Field(
+        default_factory=list,
+        description="Human-readable audit notes for downstream review.",
+    )
+    audit_peer_merge_group_ids: list[str] = Field(
+        default_factory=list,
+        description="Related merge-group IDs relevant to audit flags.",
+    )
     candidate_descriptions: list[str] = Field(
         default_factory=list, description="Unique candidate descriptions for audit."
     )
@@ -1178,6 +1190,9 @@ class SFIMergeGroup(BaseSchema):
     )
 
     @field_validator(
+        "audit_flags",
+        "audit_notes",
+        "audit_peer_merge_group_ids",
         "candidate_descriptions",
         "candidate_source_texts",
         "normalized_statement_codes",
@@ -1238,10 +1253,12 @@ class SFIMergeReport(BaseSchema):
 class SFIMergeSummary(BaseSchema):
     """Aggregate summary for merge groups."""
 
+    audit_flag_count_by_type: dict[str, int] = Field(default_factory=dict)
     candidate_count: int = Field(default=0, ge=0)
     conflict_group_count: int = Field(default=0, ge=0)
     dedup_review_request_count: int = Field(default=0, ge=0)
     dedup_review_response_count: int = Field(default=0, ge=0)
+    merge_group_audit_flag_count: int = Field(default=0, ge=0)
     merge_group_count: int = Field(default=0, ge=0)
     merged_group_count: int = Field(default=0, ge=0)
     needs_review_group_count: int = Field(default=0, ge=0)
