@@ -172,46 +172,6 @@ def _append_jsonl_model(*, fp: Path, model: BaseModel) -> None:
         f.write(json.dumps(model.model_dump(mode="json"), ensure_ascii=False) + "\n")
 
 
-def _append_merge_group_audit(
-    *,
-    audit_flag: str,
-    audit_note: str,
-    audit_peer_merge_group_ids: Sequence[str],
-    merge_group: SFIMergeGroup,
-) -> SFIMergeGroup:
-    """Return a merge group with one deterministic audit annotation appended.
-
-    Parameters
-    ----------
-    audit_flag
-        Machine-readable audit flag to attach.
-    audit_note
-        Human-readable note explaining why the flag was attached.
-    audit_peer_merge_group_ids
-        Related merge-group IDs that share the same audit concern.
-    merge_group
-        Existing merge group to annotate.
-
-    Returns
-    -------
-    SFIMergeGroup
-        Copy of the merge group with updated audit fields.
-    """
-
-    return merge_group.model_copy(
-        update={
-            "audit_flags": _unique_nonempty([*merge_group.audit_flags, audit_flag]),
-            "audit_notes": _unique_nonempty([*merge_group.audit_notes, audit_note]),
-            "audit_peer_merge_group_ids": _unique_nonempty(
-                [
-                    *merge_group.audit_peer_merge_group_ids,
-                    *audit_peer_merge_group_ids,
-                ]
-            ),
-        }
-    )
-
-
 def _assert_model_sequences_equal(
     *, actual: Sequence[Any], artifact_label: str, expected: Sequence[Any]
 ) -> None:
@@ -246,36 +206,6 @@ def _assert_model_sequences_equal(
                 f"{artifact_label} record {index} does not match the current "
                 f"planned artifact payload."
             )
-
-
-def _audit_content_fingerprint(merge_group: SFIMergeGroup) -> tuple[str, ...]:
-    """Build normalized content evidence used to detect same-code divergences.
-
-    Parameters
-    ----------
-    merge_group
-        Merge group whose source-visible text and descriptions should be summarized.
-
-    Returns
-    -------
-    tuple[str, ...]
-        Stable normalized content fragments for audit comparison.
-    """
-
-    values = [
-        *merge_group.candidate_descriptions,
-        *merge_group.candidate_source_texts,
-    ]
-
-    return tuple(
-        sorted(
-            {
-                normalized
-                for value in values
-                if (normalized := " ".join(str(value or "").casefold().split()))
-            }
-        )
-    )
 
 
 def _build_initial_review_edges(
