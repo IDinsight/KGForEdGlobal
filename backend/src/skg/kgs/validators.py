@@ -85,6 +85,63 @@ def _append_row_cell_texts(*, row: dict[str, Any], texts: list[str]) -> None:
             texts.append(text)
 
 
+def _build_candidate_cited_table_support_text(
+    *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
+) -> str:
+    """Build normalized support text from a table candidate's cited source indexes.
+
+    Table candidate descriptions must be supported by the same source-visible header
+    rows and body rows that the candidate cites. This prevents a candidate from using a
+    description copied from a different row in the same extraction window while
+    pointing its provenance fields at another row.
+
+    Parameters
+    ----------
+    candidate
+        Table-derived candidate whose cited indexes define the allowed support text.
+    ctx
+        Quality-check context with normalized table text keyed by source indexes.
+
+    Returns
+    -------
+    str
+        Normalized source-visible text from the candidate's cited header and body rows.
+
+    Raises
+    ------
+    QualityError
+        If the function is called for a non-table window.
+    """
+
+    if ctx.window.table is None:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} cited-table support validation "
+            f"requires a table window."
+        )
+
+    support_parts: list[str] = []
+
+    if candidate.table_header_indexes:
+        support_parts.append(
+            _build_normalized_text_blob_for_indexes(
+                indexes=candidate.table_header_indexes,
+                ordered_indexes=list(range(len(ctx.window.table.header_rows))),
+                text_by_index=ctx.table_header_text_normalized_by_index,
+            )
+        )
+
+    if candidate.table_row_indexes:
+        support_parts.append(
+            _build_normalized_text_blob_for_indexes(
+                indexes=candidate.table_row_indexes,
+                ordered_indexes=ctx.window.table.row_indexes,
+                text_by_index=ctx.table_row_text_normalized_by_index,
+            )
+        )
+
+    return _normalize_text("\n".join(support_parts))
+
+
 def _build_normalized_text_blob_for_indexes(
     *, indexes: list[int], ordered_indexes: list[int], text_by_index: dict[int, str]
 ) -> str:
@@ -392,13 +449,13 @@ def _validate_candidate_code_is_visible(
 def _validate_candidate_description_is_source_supported(
     *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
 ) -> None:
-    """Validate that candidate description is supported by visible source text.
+    """Validate that candidate description is supported by cited visible source text.
 
-    Descriptions may be complete official statements assembled from multiple visible
-    table cells or adjacent source rows, so this check allows either exact normalized
-    containment or ordered-token support from the cited source text. It rejects empty
-    descriptions and descriptions that add inferred hierarchy context, translations,
-    paraphrases, or hidden text not present in the extraction window.
+    Block candidate descriptions may be supported by any visible text in the block
+    window. Table candidate descriptions must be supported only by the raw table header
+    rows and body rows cited on that candidate. This keeps table provenance and
+    description text aligned, while still allowing descriptions assembled from multiple
+    visible cells or adjacent cited rows.
 
     Parameters
     ----------
@@ -410,7 +467,8 @@ def _validate_candidate_description_is_source_supported(
     Raises
     ------
     QualityError
-        If the candidate description is empty or not supported by visible source text.
+        If the candidate description is empty, not supported by visible source text, or
+        not supported by the candidate's cited table rows/header rows.
     """
 
     description_normalized = _normalize_text(candidate.description)
@@ -420,38 +478,24 @@ def _validate_candidate_description_is_source_supported(
             f"Candidate {candidate.candidate_id!r} has empty description."
         )
 
-    if description_normalized in ctx.source_visible_text_normalized:
+    if ctx.window.table is None:
+        support_label = "the visible source window"
+        support_text_normalized = ctx.source_visible_text_normalized
+    else:
+        if not candidate.table_header_indexes and not candidate.table_row_indexes:
+            raise QualityError(
+                f"Table-window candidate {candidate.candidate_id!r} must include at "
+                f"least one table_header_index or table_row_index before its "
+                f"description can be source-validated."
+            )
+
+        support_label = "the cited table header/body rows"
+        support_text_normalized = _build_candidate_cited_table_support_text(
+            candidate=candidate, ctx=ctx
+        )
+
+    if description_normalized in support_text_normalized:
         return
-
-    support_text_normalized = ctx.source_visible_text_normalized
-
-    if ctx.window.table is not None and (
-        candidate.table_header_indexes or candidate.table_row_indexes
-    ):
-        support_parts: list[str] = []
-
-        if candidate.table_header_indexes:
-            support_parts.append(
-                _build_normalized_text_blob_for_indexes(
-                    indexes=candidate.table_header_indexes,
-                    ordered_indexes=list(range(len(ctx.window.table.header_rows))),
-                    text_by_index=ctx.table_header_text_normalized_by_index,
-                )
-            )
-
-        if candidate.table_row_indexes:
-            support_parts.append(
-                _build_normalized_text_blob_for_indexes(
-                    indexes=candidate.table_row_indexes,
-                    ordered_indexes=ctx.window.table.row_indexes,
-                    text_by_index=ctx.table_row_text_normalized_by_index,
-                )
-            )
-
-        support_text_normalized = _normalize_text("\n".join(support_parts))
-
-        if description_normalized in support_text_normalized:
-            return
 
     if _is_ordered_token_subsequence(
         source_text_normalized=support_text_normalized,
@@ -461,9 +505,10 @@ def _validate_candidate_description_is_source_supported(
 
     raise QualityError(
         f"Candidate {candidate.candidate_id!r} has description that is not "
-        f"source-supported by the visible source window. Use only visible "
-        f"source-language wording from the cited block/table text and do not add "
-        f"inferred parent context, translations, paraphrases, or hidden context."
+        f"source-supported by {support_label}. Use only visible source-language "
+        f"wording from the cited block/table text and do not add inferred parent "
+        f"context, translations, paraphrases, normalized spellings, or hidden "
+        f"context."
     )
 
 
