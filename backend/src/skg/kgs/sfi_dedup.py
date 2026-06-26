@@ -79,25 +79,24 @@ def _annotate_same_code_different_content_audit_flags(
     )
 
     for merge_group in merge_groups:
+        # If these are truthy, they are non-empty strings.
         if not (
             merge_group.merge_decision in {"merged", "singleton"}
-            and bool(merge_group.normalized_statement_code)
-            and bool(merge_group.normalized_statement_type)
-            and bool(merge_group.statement_type)
+            and merge_group.normalized_statement_code
+            and merge_group.normalized_statement_type
+            and merge_group.statement_type
         ):
             continue
 
         groups_by_code_key[
             (
-                merge_group.statement_type or "",
-                merge_group.normalized_statement_type or "",
-                merge_group.normalized_statement_code or "",
+                merge_group.statement_type,
+                merge_group.normalized_statement_type,
+                merge_group.normalized_statement_code,
             )
         ].append(merge_group)
 
-    annotated_by_id = {
-        merge_group.merge_group_id: merge_group for merge_group in merge_groups
-    }
+    annotated_by_id = {group.merge_group_id: group for group in merge_groups}
 
     for (
         statement_type,
@@ -107,37 +106,54 @@ def _annotate_same_code_different_content_audit_flags(
         if len(groups) < 2:
             continue
 
-        fingerprints = {
-            group.merge_group_id: _audit_content_fingerprint(group) for group in groups
-        }
+        # Build normalized content evidence to detect same-code divergences.
+        fingerprints = set()
 
-        if len(set(fingerprints.values())) <= 1:
+        for group in groups:
+            values = [*group.candidate_descriptions, *group.candidate_source_texts]
+            fingerprints.add(
+                tuple(
+                    sorted(
+                        {
+                            norm
+                            for val in values
+                            if (norm := " ".join(str(val or "").casefold().split()))
+                        }
+                    )
+                )
+            )
+
+        if len(fingerprints) <= 1:
             continue
 
         group_ids = [group.merge_group_id for group in groups]
         audit_note = (
-            f"Shares statement_type="
-            f"{statement_type!r}, normalized_statement_type="
-            f"{normalized_statement_type!r}, and normalized_statement_code="
-            f"{normalized_statement_code!r} with another mintable merge group, but "
-            f"the source-visible descriptions/source_text differ. Step 8 should mint "
-            f"separate deterministic final SFIs with source/text/provenance "
-            f"disambiguators and preserve this same-code/different-content evidence "
-            f"for manual review."
+            f"Shares statement_type={statement_type!r}, "
+            f"normalized_statement_type={normalized_statement_type!r}, "
+            f"and normalized_statement_code={normalized_statement_code!r} "
+            f"with another mintable merge group, but the source-visible "
+            f"descriptions/source_text differ. Step 8 should mint separate "
+            f"deterministic final SFIs with source/text/provenance disambiguators "
+            f"and preserve this same-code/different-content evidence for manual review."
         )
 
         for group in groups:
-            peer_group_ids = [
-                group_id for group_id in group_ids if group_id != group.merge_group_id
-            ]
-            annotated_by_id[group.merge_group_id] = _append_merge_group_audit(
-                audit_flag=_SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG,
-                audit_note=audit_note,
-                audit_peer_merge_group_ids=peer_group_ids,
-                merge_group=annotated_by_id[group.merge_group_id],
+            peer_group_ids = [gid for gid in group_ids if gid != group.merge_group_id]
+            current = annotated_by_id[group.merge_group_id]
+
+            annotated_by_id[group.merge_group_id] = current.model_copy(
+                update={
+                    "audit_flags": _unique_nonempty(
+                        [*current.audit_flags, _SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG]
+                    ),
+                    "audit_notes": _unique_nonempty([*current.audit_notes, audit_note]),
+                    "audit_peer_merge_group_ids": _unique_nonempty(
+                        [*current.audit_peer_merge_group_ids, *peer_group_ids]
+                    ),
+                }
             )
 
-    return [annotated_by_id[merge_group.merge_group_id] for merge_group in merge_groups]
+    return [annotated_by_id[group.merge_group_id] for group in merge_groups]
 
 
 def _append_jsonl_model(*, fp: Path, model: BaseModel) -> None:
