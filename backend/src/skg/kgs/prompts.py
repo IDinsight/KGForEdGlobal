@@ -495,8 +495,11 @@ def extract_sfi_candidates_from_window(
 - statement_code should be the official/source-visible code when present. Use null when no code is visible.
 - language should use the source language tag when visible; otherwise use the KG config primary language.
 - confidence should reflect how clearly the source window supports the candidate.
-- table_header_indexes should be populated only for candidates whose evidence comes from table.header_rows.
-- table_row_indexes should be populated only for candidates whose evidence comes from table.source_rows.
+- table_header_indexes and table_row_indexes are source-text location fields, not general context fields.
+- Populate table_header_indexes only when the candidate source_text is quoted from table.header_rows.
+- Populate table_row_indexes only when the candidate source_text is quoted from table.source_rows.
+- Do not include table_header_indexes merely because a row appears under a relevant column header such as Content Standard or Indicators and Exemplars; use the header text as classification context only.
+- Include both table_header_indexes and table_row_indexes only when the candidate source_text visibly includes quoted text from both table.header_rows and table.source_rows.
 - description should contain the complete source-visible SFI statement or grouping label, including visible continuation fragments when an official statement is split across adjacent table rows or cells.
 - source_text is a source-visible evidence quote for validation. It is not the final canonical KG statement text and it is not the only downstream provenance.
 - Keep source_text concise but sufficient. For coded table statements, quote only official code and statement text, not examples, exemplars, teacher guidance, activities, or competencies. When a statement is split across multiple visible rows/cells, quote the complete visible statement only if the contributing fragments can be represented as a source-visible excerpt; otherwise quote the strongest exact visible fragment and rely on table_row_indexes/table_header_indexes for downstream source recovery.
@@ -508,9 +511,10 @@ def extract_sfi_candidates_from_window(
 - The final KG-building stages recover full source provenance from window_id, window_source_segment_ids, table_row_indexes, table_header_indexes, and the persisted ExtractionWindow/DocumentIR. Do not use source_text to carry hidden context, parentage, or non-visible text.
 - Use code_matches as evidence, not as final KG nodes.
 - Table headers are source-visible structural evidence. When the curriculum-specific KG config says a table-header label is an official grouping SFI, extract it as a Standard Grouping candidate.
-- For table-row-derived SFI candidates, table_row_indexes must be non-empty and must use the visible table.source_rows[].row_index values that support the candidate.
-- For table-header-derived SFI candidates, table_header_indexes must be non-empty and must use the visible table.header_rows[].header_row_index values that support the candidate; table_row_indexes may be empty for these candidates.
-- If a table candidate is supported by both a header and body rows, include both table_header_indexes and table_row_indexes.
+- For table-row-derived SFI candidates, table_row_indexes must be non-empty and must use the visible table.source_rows[].row_index values containing the quoted candidate source_text.
+- For table-header-derived SFI candidates, table_header_indexes must be non-empty and must use the visible table.header_rows[].header_row_index values containing the quoted candidate source_text; table_row_indexes should be empty unless the quoted source_text also includes visible text from table.source_rows.
+- Do not cite a table header row as source evidence when the header only explains the meaning of a body-row column. In that case, use the header as classification context and cite only the body row indexes that contain the candidate source_text.
+- If a table candidate's quoted source_text includes visible text from both header rows and body rows, include both table_header_indexes and table_row_indexes; otherwise cite only the header rows or body rows that contain the quoted source_text.
 - Treat table.filldown_context_rows as helper context only. These cells repeat row-span context for interpretation, but they are not source-visible evidence. Do not quote helper_context_only cells as candidate source_text or auxiliary source_text unless the same text is also visible in block.source_text, table.header_rows, or table.source_rows.
 
 ## Output contract
