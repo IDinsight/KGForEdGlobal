@@ -815,15 +815,16 @@ def mint_final_sfi_ids(
 
     make_dir(kg_dirs.root)
     write_to_json(
-        fp=kg_dirs.root / "final_sfi_records.json", json_info=final_sfi_records
+        fp=kg_dirs.root / "sfi_final_records.json",
+        json_info=[record.model_dump(mode="json") for record in final_sfi_records],
     )
     write_to_json(
-        fp=kg_dirs.root / "final_sfi_summary.json", json_info=final_sfi_summary
+        fp=kg_dirs.root / "sfi_final_summary.json",
+        json_info=final_sfi_summary.model_dump(mode="json"),
     )
 
     logger.success(
-        f"Minted final SFI records: final_sfis={len(final_sfi_records)}; "
-        f"records={kg_dirs.root / 'final_sfi_records.json'}."
+        f"Minted final SFI records: final_sfi_records={len(final_sfi_records)}."
     )
 
     return final_sfi_records
