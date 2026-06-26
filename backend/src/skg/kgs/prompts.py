@@ -59,6 +59,7 @@ def _build_compact_dedup_review_payload(
             candidate.model_dump(mode="json", exclude_none=True)
             for candidate in review_request.candidates
         ],
+        "review_focus": review_request.review_focus,
         "review_reasons": review_request.review_reasons,
         "review_set_id": review_request.review_set_id,
         "sfi_deduplication_instructions": review_request.sfi_deduplication_instructions,
@@ -389,6 +390,45 @@ def _build_compact_table_payload(
     return payload
 
 
+def _build_dedup_review_focus_instructions(
+    review_request: SFIDedupReviewRequest,
+) -> str:
+    """Build prompt instructions for the selected dedup review focus.
+
+    Parameters
+    ----------
+    review_request
+        Bounded dedup review request whose focus controls the system message.
+
+    Returns
+    -------
+    str
+        Additional source-structure-aware dedup instructions for the request focus.
+    """
+
+    if review_request.review_focus == "same_normalized_source_text":
+        return dedent(
+            """
+## Same-normalized-source-text review focus
+- This review set was selected because candidates share exact registry-normalized source text.
+- Decide whether the repeated visible text names the same curriculum item repeated in multiple source locations, or whether the same label/wording is reused for distinct items in different source scopes.
+- Do not merge solely because normalized_source_text matches.
+- Merge only when the candidates represent the same logical curriculum organizer or statement and the supplied source references are compatible.
+- Keep separate when the same visible text is reused under different grades, strands, domains, courses, topics, years, tables, or other local scopes.
+- Treat repeated section-divider headings and following content-section headings as potential duplicates only when they point to the same curriculum scope.
+- Use statement_type, normalized_statement_type, statement_code, source_context_labels, source_segment_ids, window_index, and table row/header references to decide whether the shared text has the same source role and scope.
+            """
+        ).strip()
+
+    return dedent(
+        """
+## General duplicate review focus
+- This review set was selected from general duplicate evidence such as code buckets, text buckets, registry warnings, or source-provenance overlap.
+- Weigh all supplied evidence signals together and follow the general merge guardrails.
+        """
+    ).strip()
+
+
 def _build_filldown_context_rows(
     *,
     filldown_rows: list[dict[str, Any]],
@@ -553,10 +593,11 @@ def review_sfi_dedup_candidates(review_request: SFIDedupReviewRequest) -> Prompt
         System and user messages for the SFI dedup review agent.
     """
 
+    focus_instructions = _build_dedup_review_focus_instructions(review_request)
     user_payload = _build_compact_dedup_review_payload(review_request)
 
     system_message = dedent(
-        """You are an Academic Standards SFI deduplication review agent for a Learning Commons-shaped Knowledge Graph. Inspect exactly one bounded candidate review set and decide which registry candidates represent the same logical source item.
+        f"""You are an Academic Standards SFI deduplication review agent for a Learning Commons-shaped Knowledge Graph. Inspect exactly one bounded candidate review set and decide which registry candidates represent the same logical source item.
 
 ## Task boundary
 - Decide only within the supplied review_set_id and supplied candidate records.
@@ -592,6 +633,8 @@ Use exactly one of these decisions for each decision group:
 - Merge no-code candidates only when the visible source text and supplied source references are compatible.
 - If safe resolution depends on context that is not visible in the bounded review payload, choose needs_review rather than guessing.
 - Follow the curriculum-specific deduplication instructions in the payload when they are more specific than these general rules or intentionally stricter than these general rules.
+
+{focus_instructions}
         """
     )
 

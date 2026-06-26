@@ -109,8 +109,9 @@ def _assert_model_sequences_equal(
 def _build_initial_review_edges(
     sfi_candidate_registry: SFIRegistryArtifact,
 ) -> list[tuple[set[str], set[str]]]:
-    """Build initial review edges from buckets, warnings, and source overlap. This
-    function answers "which candidates have enough evidence to be reviewed together?".
+    """Build initial review edges from buckets, warnings, exact source-text repeats,
+    and source overlap. This function answers "which candidates have enough evidence
+    to be reviewed together?".
     It does not answer "which candidates are duplicates?".
 
     Examples
@@ -178,6 +179,11 @@ def _build_initial_review_edges(
     """
 
     edges: list[tuple[set[str], set[str]]] = []
+    edges.extend(
+        _build_same_normalized_source_text_edges(
+            sfi_candidate_registry=sfi_candidate_registry
+        )
+    )
 
     for bucket in sfi_candidate_registry.duplicate_buckets:
         candidate_ids = set(bucket.registry_candidate_ids)
@@ -851,6 +857,14 @@ def _build_review_requests(
                     )
                     for candidate in component_candidates
                 ],
+                review_focus=(
+                    "same_normalized_source_text"
+                    if any(
+                        reason.startswith("same_normalized_source_text:")
+                        for reason in component.review_reasons
+                    )
+                    else "general"
+                ),
                 review_reasons=sorted(set(component.review_reasons)),
                 review_set_id=review_set_id,
                 sfi_deduplication_instructions=(
@@ -860,6 +874,80 @@ def _build_review_requests(
         )
 
     return review_requests, unresolved_components
+
+
+def _build_same_normalized_source_text_edges(
+    sfi_candidate_registry: SFIRegistryArtifact,
+) -> list[tuple[set[str], set[str]]]:
+    """Build review edges for exact normalized source-text repeats.
+
+    Candidates with the same normalized source text are not automatically duplicates: a
+    label such as "Data", "Grade 4", or "Strand 1" may be reused in different
+    curriculum scopes. This function only creates retrieval edges so the dedup LLM can
+    decide whether each repeated text instance represents the same logical source item
+    or separate items with reused wording.
+
+    To keep the comparison general and safe across jurisdictions, groups are
+    partitioned by both source-facing statement type and normalized statement type
+    before an edge is emitted. This prevents unrelated source roles from being sent
+    together solely because their visible text matches.
+
+    Parameters
+    ----------
+    sfi_candidate_registry
+        SFI candidate registry artifact.
+
+    Returns
+    -------
+    list[tuple[set[str], set[str]]]
+        Candidate-ID sets paired with deterministic same-source-text review reasons.
+    """
+
+    edges: list[tuple[set[str], set[str]]] = []
+    candidate_ids_by_text_key: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+
+    for candidate in sfi_candidate_registry.candidates:
+        normalized_source_text = candidate.normalized_source_text.strip()
+
+        if not normalized_source_text:
+            continue
+
+        candidate_ids_by_text_key[
+            (
+                candidate.normalized_statement_type,
+                candidate.statement_type,
+                normalized_source_text,
+            )
+        ].append(candidate.registry_candidate_id)
+
+    for text_key, candidate_ids_raw in sorted(candidate_ids_by_text_key.items()):
+        candidate_ids = set(candidate_ids_raw)
+
+        if len(candidate_ids) < 2:
+            continue
+
+        normalized_statement_type, statement_type, normalized_source_text = text_key
+        digest = hashlib.sha256(
+            "|".join(
+                [
+                    normalized_statement_type,
+                    statement_type,
+                    normalized_source_text,
+                ]
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+
+        edges.append(
+            (
+                candidate_ids,
+                {
+                    "same_normalized_source_text:"
+                    f"{statement_type}:{normalized_statement_type}:{digest}"
+                },
+            )
+        )
+
+    return edges
 
 
 def _build_singleton_merge_groups(

@@ -34,6 +34,7 @@ _AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo
 _AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
 _MetadataT = dict[str, Any]
 _ProgressionSubtype = Literal["developmental_prerequisite", "recurring_practice"]
+_SFIDedupReviewFocus = Literal["general", "same_normalized_source_text"]
 _ValidationLevel = Literal["error", "info"]
 SFIDedupDecision = Literal["conflict", "keep_separate", "merge", "needs_review"]
 SFIMergeDecision = Literal["conflict", "merged", "needs_review", "singleton"]
@@ -1031,6 +1032,13 @@ class SFIDedupReviewRequest(BaseSchema):
     )
     candidates: list[SFIDedupReviewCandidate] = Field(
         description="Bounded candidate records to review together.", min_length=2
+    )
+    review_focus: _SFIDedupReviewFocus = Field(
+        description=(
+            "Prompt focus for this review set. Use 'same_normalized_source_text' "
+            "when the set was selected because candidates share exact registry-"
+            "normalized source text; otherwise use 'general'."
+        )
     )
     review_reasons: list[str] = Field(
         description="Deterministic reasons this candidate set was selected for review.",
