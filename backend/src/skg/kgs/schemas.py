@@ -989,9 +989,7 @@ class SFIDedupReviewCandidate(BaseSchema):
     normalized_statement_type: NormalizedStatementType = Field(
         description="Candidate normalized statement type."
     )
-    registry_candidate_id: str = Field(
-        description="Temporary registry candidate ID from Step 6."
-    )
+    registry_candidate_id: str = Field(description="Temporary registry candidate ID.")
     source_context_key: str = Field(
         description="Deterministic source-derived context key from the registry.",
         min_length=1,
@@ -1046,7 +1044,7 @@ class SFIDedupReviewRequest(BaseSchema):
     )
     review_set_id: str = Field(description="Deterministic review-set ID.")
     sfi_deduplication_instructions: str = Field(
-        description="Curriculum-specific Step 7 deduplication instructions.",
+        description="Curriculum-specific deduplication instructions.",
         min_length=1,
     )
 
@@ -1149,7 +1147,7 @@ class SFIMergeGroup(BaseSchema):
     llm_review_set_id: Optional[str] = Field(
         default=None, description="Review-set ID that produced this group, when any."
     )
-    merge_decision: SFIMergeDecision = Field(description="Step 7 merge outcome.")
+    merge_decision: SFIMergeDecision = Field(description="SFI merge outcome.")
     merge_group_id: str = Field(description="Temporary deterministic merge-group ID.")
     merge_reason: str = Field(description="Short merge or review reason.", min_length=1)
     normalized_statement_code: Optional[str] = Field(
@@ -1247,7 +1245,7 @@ class SFIMergeReport(BaseSchema):
     needs_review_groups: list[SFIMergeGroup] = Field(default_factory=list)
     review_requests: list[SFIDedupReviewRequest] = Field(default_factory=list)
     review_responses: list[SFIDedupReviewResponse] = Field(default_factory=list)
-    summary: SFIMergeSummary = Field(description="Step 7 merge/dedup summary.")
+    summary: SFIMergeSummary = Field(description="SFI merge/dedup summary.")
 
 
 class SFIMergeSummary(BaseSchema):
@@ -1265,6 +1263,252 @@ class SFIMergeSummary(BaseSchema):
     reviewed_candidate_count: int = Field(default=0, ge=0)
     singleton_group_count: int = Field(default=0, ge=0)
     unreviewed_singleton_count: int = Field(default=0, ge=0)
+
+
+# Schemas for SFI finalization.
+class FinalSFIRecord(BaseSchema):
+    """Final source-backed StandardsFrameworkItem record after SFI dedup.
+
+    This schema mints deterministic final SFI identifiers and preserves source,
+    candidate, merge, and audit provenance for later relationship resolution. It is not
+    yet a complete exported KG node and does not assert hierarchy relationships.
+    """
+
+    academic_subject: str = Field(description="Academic subject from KG metadata.")
+    attribution_statement: str = Field(description="Attribution text from KG metadata.")
+    audit_flags: list[str] = Field(
+        default_factory=list,
+        description="Machine-readable audit flags inherited from the merge group.",
+    )
+    audit_notes: list[str] = Field(
+        default_factory=list,
+        description="Human-readable audit notes inherited from the merge group.",
+    )
+    audit_peer_merge_group_ids: list[str] = Field(
+        default_factory=list,
+        description="Peer merge groups relevant to inherited audit flags.",
+    )
+    author: str = Field(description="Author or issuing body from KG metadata.")
+    candidate_descriptions: list[str] = Field(
+        default_factory=list,
+        description="Unique candidate descriptions preserved for audit.",
+    )
+    candidate_source_refs: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Per-candidate source references preserved from SFI dedup step.",
+    )
+    candidate_source_texts: list[str] = Field(
+        default_factory=list,
+        description="Unique source-visible evidence quotes preserved for audit.",
+    )
+    case_identifier_uri: str = Field(
+        description="CASE-compatible URI for the deterministic final SFI UUID."
+    )
+    case_identifier_uuid: UUID = Field(
+        description="CASE-compatible deterministic final SFI UUID."
+    )
+    confidence_max: float = Field(
+        description="Maximum candidate confidence in this final SFI.", ge=0.0, le=1.0
+    )
+    confidence_min: float = Field(
+        description="Minimum candidate confidence in this final SFI.", ge=0.0, le=1.0
+    )
+    description: str = Field(description="Final source-backed SFI description text.")
+    final_sfi_uuid: UUID = Field(description="Deterministic final SFI UUID.")
+    identifier: UUID = Field(description="Primary deterministic final SFI identifier.")
+    identity_key: str = Field(
+        description="Canonical deterministic identity string used to mint the UUID."
+    )
+    in_language: LanguageField = Field(description="Language tag for the final SFI.")
+    jurisdiction: str = Field(description="Jurisdiction from KG metadata.")
+    language: str = Field(description="Source language tag chosen for the final SFI.")
+    license: str = Field(description="License from KG metadata.")
+    merge_decision: SFIMergeDecision = Field(description="SFI merge decision.")
+    merge_group_id: str = Field(description="Source SFI merge group ID.")
+    merge_reason: str = Field(description="SFI merge or singleton reason.")
+    metadata: _MetadataT = Field(
+        default_factory=dict,
+        description="Free-form deterministic metadata for downstream KG stages.",
+    )
+    normalized_statement_code: Optional[str] = Field(
+        default=None, description="Shared normalized source statement code, if any."
+    )
+    normalized_statement_type: NormalizedStatementType = Field(
+        description="Normalized SFI statement type."
+    )
+    provider: str = Field(description="Provider from KG metadata.")
+    source_context_keys: list[str] = Field(
+        default_factory=list,
+        description="Source-context keys from registry candidate source refs.",
+    )
+    source_page_indexes: list[int] = Field(
+        default_factory=list,
+        description="0-based PDF page indexes recovered from DocumentIR source segments.",
+    )
+    source_registry_candidate_ids: list[str] = Field(
+        description="Registry candidate IDs represented by this final SFI.",
+        min_length=1,
+    )
+    source_segment_ids: list[str] = Field(
+        default_factory=list, description="Merged source DocumentIR segment IDs."
+    )
+    source_window_ids: list[str] = Field(
+        default_factory=list, description="Merged extraction-window IDs."
+    )
+    source_window_indexes: list[int] = Field(
+        default_factory=list, description="Merged extraction-window indexes."
+    )
+    statement_code: Optional[str] = Field(
+        default=None, description="Source statement code, if shared by the final SFI."
+    )
+    statement_type: str = Field(description="Source-facing SFI statement type.")
+
+    @field_validator(
+        "academic_subject",
+        "attribution_statement",
+        "author",
+        "case_identifier_uri",
+        "description",
+        "identity_key",
+        "in_language",
+        "jurisdiction",
+        "language",
+        "license",
+        "merge_group_id",
+        "merge_reason",
+        "normalized_statement_type",
+        "provider",
+        "statement_type",
+        mode="before",
+    )
+    @classmethod
+    def _strip_and_require_non_empty(cls, v: str) -> str:
+        """Strip whitespace and require non-empty strings.
+
+        Parameters
+        ----------
+        v
+            Raw required string value.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty string.
+        """
+
+        return _strip_and_require_non_empty_str(v)
+
+    @field_validator("normalized_statement_code", "statement_code", mode="before")
+    @classmethod
+    def _strip_optional_strings(cls, v: Optional[str]) -> Optional[str]:
+        """Strip optional strings and normalize blanks to None.
+
+        Parameters
+        ----------
+        v
+            Raw optional string value.
+
+        Returns
+        -------
+        Optional[str]
+            Cleaned string or None.
+        """
+
+        if v is None:
+            return None
+
+        v2 = v.strip()
+        return v2 if v2 else None
+
+    @field_validator(
+        "audit_flags",
+        "audit_notes",
+        "audit_peer_merge_group_ids",
+        "candidate_descriptions",
+        "candidate_source_texts",
+        "source_context_keys",
+        "source_registry_candidate_ids",
+        "source_segment_ids",
+        "source_window_ids",
+    )
+    @classmethod
+    def clean_string_lists(cls, v: list[str]) -> list[str]:
+        """Clean string-list fields while preserving order.
+
+        Parameters
+        ----------
+        v
+            Raw string list.
+
+        Returns
+        -------
+        list[str]
+            Cleaned unique string list.
+        """
+
+        return unique_clean_strings(v)
+
+    @field_validator("source_page_indexes", "source_window_indexes")
+    @classmethod
+    def clean_int_lists(cls, v: list[int]) -> list[int]:
+        """Clean integer-list fields into sorted unique values.
+
+        Parameters
+        ----------
+        v
+            Raw integer values.
+
+        Returns
+        -------
+        list[int]
+            Sorted unique integer values.
+        """
+
+        return sorted(set(int(index) for index in v or []))
+
+    @model_validator(mode="after")
+    def validate_identifier_consistency(self) -> Self:
+        """Validate that all identifier fields use the same UUID.
+
+        Returns
+        -------
+        Self
+            The validated final SFI record.
+
+        Raises
+        ------
+        ValueError
+            If identifier fields disagree or the URI does not end with the UUID.
+        """
+
+        if self.final_sfi_uuid != self.case_identifier_uuid:
+            raise ValueError("final_sfi_uuid must equal case_identifier_uuid.")
+
+        if self.final_sfi_uuid != self.identifier:
+            raise ValueError("final_sfi_uuid must equal identifier.")
+
+        if not self.case_identifier_uri.endswith(str(self.final_sfi_uuid)):
+            raise ValueError("case_identifier_uri must end with final_sfi_uuid.")
+
+        return self
+
+
+class FinalSFISummary(BaseSchema):
+    """Aggregate summary for final SFI records."""
+
+    audit_flag_count_by_type: dict[str, int] = Field(default_factory=dict)
+    eligible_merge_group_count: int = Field(default=0, ge=0)
+    excluded_conflict_group_count: int = Field(default=0, ge=0)
+    excluded_needs_review_group_count: int = Field(default=0, ge=0)
+    final_sfi_count: int = Field(default=0, ge=0)
+    final_sfi_count_by_normalized_statement_type: dict[str, int] = Field(
+        default_factory=dict
+    )
+    final_sfi_count_by_statement_type: dict[str, int] = Field(default_factory=dict)
+    final_sfis_with_statement_code: int = Field(default=0, ge=0)
+    final_sfis_without_statement_code: int = Field(default=0, ge=0)
+    same_code_disambiguated_final_sfi_count: int = Field(default=0, ge=0)
+    source_registry_candidate_count: int = Field(default=0, ge=0)
 
 
 # CURRENTLY UNUSED #

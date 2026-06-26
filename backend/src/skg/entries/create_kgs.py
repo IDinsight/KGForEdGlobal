@@ -35,6 +35,7 @@ from skg.kgs.create_extraction_windows import (
 from skg.kgs.llm import KGUsageTracker
 from skg.kgs.sfi_dedup import merge_sfi_candidates
 from skg.kgs.sfi_extraction import extract_sfi_candidates_from_windows
+from skg.kgs.sfi_finalization import mint_final_sfi_ids
 from skg.kgs.sfi_registry import build_candidate_registry
 from skg.kgs.utils import (
     KGDirs,
@@ -69,6 +70,7 @@ def build_kgs(
     5. Extract source-grounded SFI candidates from extraction windows using an LLM.
     6. Build and persist the global SFI candidate registry for merge review.
     7. Merge duplicate SFI registry candidates into merge groups.
+    8. Mint deterministic final SFI records from merge groups.
 
     Parameters
     ----------
@@ -139,12 +141,16 @@ def build_kgs(
         usage_tracker=usage_tracker,
     )
 
-    logger.debug(
-        f"{sfi_merge_report.summary.merge_group_count = }; "
-        f"{sfi_merge_report.summary.merged_group_count = }; "
-        f"{sfi_merge_report.summary.conflict_group_count = }; "
-        f"{sfi_merge_report.summary.needs_review_group_count = }"
+    # 8.
+    final_sfi_records = mint_final_sfi_ids(
+        document_ir=kg_run_inputs.document_ir,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+        sfi_candidate_registry=sfi_candidate_registry,
+        sfi_merge_report=sfi_merge_report,
     )
+
+    logger.debug(f"final_sfi_count={len(final_sfi_records)}")
 
     return kg_run_manifest_fp
 
