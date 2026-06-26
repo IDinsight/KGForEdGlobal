@@ -1870,29 +1870,20 @@ def _split_and_bound_components(
     kg_config: CreateKGConfig,
     sfi_candidates_by_id: dict[str, SFIRegistryCandidate],
 ) -> list[_ReviewComponent]:
-    """Split connected components into bounded review components.
+    """Split connected components into safe bounded review components.
 
     After `_merge_edges_to_components()`, a component can become large because
     duplicate buckets, warnings, and provenance edges can chain together. This function
-    keeps small components as-is, but splits oversized components into smaller, safer
-    chunks before they become LLM review requests. The effective maximum comes from
+    keeps small components as-is. Oversized components are split only by conservative
+    source-derived context; it does not arbitrarily chunk a still-coherent split group
+    into independent LLM review sets.
+
+    The effective maximum comes from
     `kg_config.academic_standards.max_dedup_review_set_candidates`. When that value is
-    null, each connected component uses its own full candidate count as the maximum,
-    disabling size-based chunking for that component.
+    null, each connected component uses its own full candidate count as the maximum, so
+    size-based bounding is disabled for that component.
 
-    Oversized components are split by a conservative source-derived key:
-    statement_type, normalized/code/context bucket identity, exact source segment IDs,
-    and a coarse window_index // 3 band. If a split group or chunk has only one
-    candidate, it is still carried forward as needs_review_without_llm=True so
-    candidates with review evidence do not silently fall through as ordinary singletons.
-
-    The flow is:
-
-    1. If a connected component has no more candidates than the effective maximum, it
-        passes through with needs_review_without_llm=False
-
-    2. If a connected component has more candidates than the effective maximum, the
-        code splits it by:
+    Oversized components are split by this conservative source-derived key:
 
     (
         candidate.statement_type,
@@ -1903,45 +1894,18 @@ def _split_and_bound_components(
         candidate.window_index // 3,
     )
 
-    During that split, needs_review_without_llm=True is assigned when the resulting
-    group cannot become a meaningful LLM comparison set because it has only one
-    candidate.
+    The split is a retrieval-safety step, not a merge decision. Each resulting split
+    group is handled as follows:
 
-    There are two specific cases:
-
-    Case 1: the split group itself has exactly one candidate (before chunking)
-
-    split_key_A -> 8 candidates
-    split_key_B -> 11 candidates
-    split_key_C -> 1 candidate  # Case 1
-
-    split_key_C has no peer left after safe splitting, so it cannot form an LLM dedup
-    comparison. But because it came from an oversized connected component, the code
-    preserves it as needs_review rather than letting it become an ordinary singleton.
-
-    Case 2: a split group has at least 2 candidates, but it is still larger than the
-    max review size, so the code chunks it into groups of 12; if the final chunk has
-    only one candidate, then `needs_review_without_llm=True`.
-
-    split_key_A -> 25 candidates
-
-    Chunked with max size 12:
-
-    chunk 1 -> 12 candidates
-    chunk 2 -> 12 candidates
-    chunk 3 -> 1 candidate
-
-    That last candidate had peers under the same split key, but chunking separated it
-    into a one-candidate tail. Since a one-candidate LLM dedup request is not useful,
-    it is marked needs_review.
-
-    Practical difference:
-
-    Case 1 means: “This candidate became isolated after safe-context splitting.”
-    Case 2 means: “This candidate belonged to a valid multi-candidate safe-context
-        group, but was left alone by max-size chunking.”
-
-    Both are handled the same downstream: no LLM call; emit a needs_review merge group.
+    1. If it contains one candidate, it is marked `needs_review_without_llm=True` so a
+        candidate with real review evidence does not silently become an ordinary
+        unreviewed singleton.
+    2. If it contains at least two candidates and is no larger than the effective max,
+        it is sent to the LLM as one bounded review component.
+    3. If it still contains more candidates than the effective max, the whole split
+        group is marked `needs_review_without_llm=True`. This avoids unreconciled
+        arbitrary chunking, where candidates split across independent chunks could
+        require merging but would never be compared.
 
     Examples
     --------
@@ -1995,42 +1959,23 @@ def _split_and_bound_components(
     The split does not decide that candidates are duplicates. It only creates smaller,
     safer candidate sets for the LLM to review.
 
-    If an oversized split group contains more than the maximum number of candidates, it
-    is chunked into review-sized groups. For example, a 25-candidate split group with a
-    maximum size of 12 becomes two 12-candidate review components and one 1-candidate
-    residue. If the configured maximum is null, this size-based chunking does not occur
-    for that connected component.
-
-    3. Singleton split residues are not treated as ordinary unreviewed singletons. They
-    are carried forward as needs-review components because they came from an oversized
-    component with real review evidence. For example:
+    3. A still-oversized split group is not arbitrarily chunked. For example, a
+    25-candidate split group with a maximum size of 12 is preserved as one unresolved
+    needs-review component:
 
     _ReviewComponent(
-        candidate_ids=("candidate_z",),
+        candidate_ids=("candidate_001", "...", "candidate_025"),
         needs_review_without_llm=True,
         review_reasons=(
             "duplicate_bucket:source_text:bucket_xyz:weak_signal",
-            "oversized_component_singleton_split_residue_needs_review:"
+            "oversized_split_group_needs_review_without_chunking:"
             "('Objectif spécifique', '', ('segment_9',), 22)",
         ),
     )
 
-    Likewise, a one-candidate tail chunk from a larger split group is carried forward
-    as needs-review rather than silently dropped:
-
-    _ReviewComponent(
-        candidate_ids=("candidate_y",),
-        needs_review_without_llm=True,
-        review_reasons=(
-            "registry_warning:same_text_repeated_across_windows:warning_0042",
-            "oversized_component_chunk_residue_needs_review:"
-            "('Indicator', 'b4.1.1.3.2', ('segment_4',), 48)",
-        ),
-    )
-
-    This guarantees that every candidate connected by review evidence remains
-    represented either in an LLM-reviewable component or in an explicit needs-review
-    component.
+    This is intentionally conservative: without a cross-chunk reconciliation pass,
+    independent chunks could under-deduplicate candidates that should be merged across
+    chunk boundaries.
 
     Parameters
     ----------
@@ -2044,8 +1989,9 @@ def _split_and_bound_components(
     Returns
     -------
     list[_ReviewComponent]
-        Bounded review components. Oversized unsafe components and split residues are
-        marked for needs-review without an LLM call.
+        Bounded review components. Safe-size groups are sent to the LLM; singleton
+        split residues and still-oversized split groups are marked for needs-review
+        without an LLM call.
     """
 
     bounded_components: list[_ReviewComponent] = []
@@ -2098,40 +2044,33 @@ def _split_and_bound_components(
                 )
                 continue
 
-            for start_index in range(
-                0, len(split_candidate_ids_sorted), max_dedup_review_set_candidates
-            ):
-                chunk_candidate_ids = split_candidate_ids_sorted[
-                    start_index : start_index + max_dedup_review_set_candidates
-                ]
-
-                if len(chunk_candidate_ids) < 2:
-                    bounded_components.append(
-                        _ReviewComponent(
-                            candidate_ids=tuple(chunk_candidate_ids),
-                            needs_review_without_llm=True,
-                            review_reasons=tuple(
-                                sorted(
-                                    set(component.review_reasons)
-                                    | {
-                                        "oversized_component_chunk_residue_needs_review:"
-                                        + repr(split_key)
-                                    }
-                                )
-                            ),
-                        )
-                    )
-                    continue
-
+            if len(split_candidate_ids_sorted) > max_dedup_review_set_candidates:
                 bounded_components.append(
                     _ReviewComponent(
-                        candidate_ids=tuple(chunk_candidate_ids),
-                        needs_review_without_llm=False,
+                        candidate_ids=tuple(split_candidate_ids_sorted),
+                        needs_review_without_llm=True,
                         review_reasons=tuple(
-                            sorted(set(component.review_reasons) | {split_reason})
+                            sorted(
+                                set(component.review_reasons)
+                                | {
+                                    "oversized_split_group_needs_review_without_chunking:"
+                                    + repr(split_key)
+                                }
+                            )
                         ),
                     )
                 )
+                continue
+
+            bounded_components.append(
+                _ReviewComponent(
+                    candidate_ids=tuple(split_candidate_ids_sorted),
+                    needs_review_without_llm=False,
+                    review_reasons=tuple(
+                        sorted(set(component.review_reasons) | {split_reason})
+                    ),
+                )
+            )
 
     return bounded_components
 
