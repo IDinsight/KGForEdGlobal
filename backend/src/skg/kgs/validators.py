@@ -270,6 +270,52 @@ def _build_table_row_visible_text_by_index(window: ExtractionWindow) -> dict[int
     return text_by_index
 
 
+def _is_ordered_token_subsequence(
+    *, source_text_normalized: str, target_text_normalized: str
+) -> bool:
+    """Check whether target tokens appear in source order.
+
+    This supports table descriptions assembled from multiple visible cells or rows
+    without requiring the description to be one contiguous source quote. It still
+    rejects description words that are absent from the visible source text or appear
+    only in an incompatible order.
+
+    Parameters
+    ----------
+    source_text_normalized
+        Normalized source-visible text used as the support text.
+    target_text_normalized
+        Normalized candidate text that must be supported by the source text.
+
+    Returns
+    -------
+    bool
+        True when every target token appears in order in the source tokens.
+    """
+
+    source_tokens = source_text_normalized.split()
+    target_tokens = target_text_normalized.split()
+
+    if not target_tokens:
+        return False
+
+    source_index = 0
+
+    for target_token in target_tokens:
+        while (
+            source_index < len(source_tokens)
+            and source_tokens[source_index] != target_token
+        ):
+            source_index += 1
+
+        if source_index == len(source_tokens):
+            return False
+
+        source_index += 1
+
+    return True
+
+
 def _normalize_statement_type_key(value: str) -> str:
     """Build a stable comparison key for statement-type labels and aliases.
 
@@ -341,6 +387,84 @@ def _validate_candidate_code_is_visible(
             f"{candidate.statement_code!r}, but that code is not visible in the "
             f"source window. Use null if no official code is visible."
         )
+
+
+def _validate_candidate_description_is_source_supported(
+    *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
+) -> None:
+    """Validate that candidate description is supported by visible source text.
+
+    Descriptions may be complete official statements assembled from multiple visible
+    table cells or adjacent source rows, so this check allows either exact normalized
+    containment or ordered-token support from the cited source text. It rejects empty
+    descriptions and descriptions that add inferred hierarchy context, translations,
+    paraphrases, or hidden text not present in the extraction window.
+
+    Parameters
+    ----------
+    candidate
+        Candidate whose description should be source-supported.
+    ctx
+        Quality-check context.
+
+    Raises
+    ------
+    QualityError
+        If the candidate description is empty or not supported by visible source text.
+    """
+
+    description_normalized = _normalize_text(candidate.description)
+
+    if not description_normalized:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} has empty description."
+        )
+
+    if description_normalized in ctx.source_visible_text_normalized:
+        return
+
+    support_text_normalized = ctx.source_visible_text_normalized
+
+    if ctx.window.table is not None and (
+        candidate.table_header_indexes or candidate.table_row_indexes
+    ):
+        support_parts: list[str] = []
+
+        if candidate.table_header_indexes:
+            support_parts.append(
+                _build_normalized_text_blob_for_indexes(
+                    indexes=candidate.table_header_indexes,
+                    ordered_indexes=list(range(len(ctx.window.table.header_rows))),
+                    text_by_index=ctx.table_header_text_normalized_by_index,
+                )
+            )
+
+        if candidate.table_row_indexes:
+            support_parts.append(
+                _build_normalized_text_blob_for_indexes(
+                    indexes=candidate.table_row_indexes,
+                    ordered_indexes=ctx.window.table.row_indexes,
+                    text_by_index=ctx.table_row_text_normalized_by_index,
+                )
+            )
+
+        support_text_normalized = _normalize_text("\n".join(support_parts))
+
+        if description_normalized in support_text_normalized:
+            return
+
+    if _is_ordered_token_subsequence(
+        source_text_normalized=support_text_normalized,
+        target_text_normalized=description_normalized,
+    ):
+        return
+
+    raise QualityError(
+        f"Candidate {candidate.candidate_id!r} has description that is not "
+        f"source-supported by the visible source window. Use only visible "
+        f"source-language wording from the cited block/table text and do not add "
+        f"inferred parent context, translations, paraphrases, or hidden context."
+    )
 
 
 def _validate_candidate_source_text_is_visible(
@@ -860,6 +984,9 @@ def verify_sfi_extraction_quality(
     for candidate in ctx.extraction_result.sfi_candidates:
         _validate_candidate_statement_type_policy(candidate=candidate, ctx=ctx)
         _validate_candidate_code_is_visible(candidate=candidate, ctx=ctx)
+        _validate_candidate_description_is_source_supported(
+            candidate=candidate, ctx=ctx
+        )
         _validate_candidate_source_text_is_visible(candidate=candidate, ctx=ctx)
 
     _validate_candidate_table_indexes(ctx)
