@@ -23,8 +23,8 @@ from loguru import logger
 from skg.config import Settings
 from skg.document_ir.schemas import DocumentIR
 from skg.kgs.schemas import (
-    FinalSFIRecord,
-    FinalSFISummary,
+    SFIFinalRecord,
+    SFIFinalSummary,
     SFIMergeGroup,
     SFIMergeReport,
     SFIRegistryArtifact,
@@ -106,7 +106,7 @@ def _build_final_sfi_record(
     merge_group: SFIMergeGroup,
     segment_page_indexes_by_id: dict[str, list[int]],
     sfi_candidates_by_id: dict[str, SFIRegistryCandidate],
-) -> FinalSFIRecord:
+) -> SFIFinalRecord:
     """Build one final SFI record from one eligible merge group.
 
     Parameters
@@ -126,7 +126,7 @@ def _build_final_sfi_record(
 
     Returns
     -------
-    FinalSFIRecord
+    SFIFinalRecord
         Deterministic final SFI record.
     """
 
@@ -149,7 +149,7 @@ def _build_final_sfi_record(
         }
     )
     statement_type = _shared_statement_type(merge_group)
-    return FinalSFIRecord(
+    return SFIFinalRecord(
         academic_subject=kg_config.metadata.subject,
         attribution_statement=kg_config.metadata.attribution_statement,
         audit_flags=merge_group.audit_flags,
@@ -211,8 +211,8 @@ def _build_final_sfi_summary(
     eligible_merge_group_count: int,
     excluded_conflict_group_count: int,
     excluded_needs_review_group_count: int,
-    final_sfi_records: Sequence[FinalSFIRecord],
-) -> FinalSFISummary:
+    final_sfi_records: Sequence[SFIFinalRecord],
+) -> SFIFinalSummary:
     """Build aggregate counts for final SFI records.
 
     Parameters
@@ -228,7 +228,7 @@ def _build_final_sfi_summary(
 
     Returns
     -------
-    FinalSFISummary
+    SFIFinalSummary
         Aggregate final SFI summary.
     """
 
@@ -244,7 +244,7 @@ def _build_final_sfi_summary(
     statement_type_counts: Counter[str] = Counter(
         final_sfi_record.statement_type for final_sfi_record in final_sfi_records
     )
-    return FinalSFISummary(
+    return SFIFinalSummary(
         audit_flag_count_by_type=dict(sorted(audit_flag_counts.items())),
         eligible_merge_group_count=eligible_merge_group_count,
         excluded_conflict_group_count=excluded_conflict_group_count,
@@ -645,7 +645,7 @@ def _unique_nonempty(values: Iterable[Any]) -> list[str]:
     return output
 
 
-def _validate_final_sfi_records(final_sfi_records: Sequence[FinalSFIRecord]) -> None:
+def _validate_final_sfi_records(final_sfi_records: Sequence[SFIFinalRecord]) -> None:
     """Validate final SFI records for ID and identity-key uniqueness.
 
     Parameters
@@ -741,7 +741,7 @@ def mint_final_sfi_ids(
     kg_dirs: KGDirs,
     sfi_candidate_registry: SFIRegistryArtifact,
     sfi_merge_report: SFIMergeReport,
-) -> list[FinalSFIRecord]:
+) -> list[SFIFinalRecord]:
     """Mint deterministic final SFI records from SFI merge groups.
 
     This function consumes deduplicated merge groups, validates candidate coverage,
@@ -764,7 +764,7 @@ def mint_final_sfi_ids(
 
     Returns
     -------
-    list[FinalSFIRecord]
+    list[SFIFinalRecord]
         Deterministic final SFI records eligible for downstream relationship work.
 
     Raises

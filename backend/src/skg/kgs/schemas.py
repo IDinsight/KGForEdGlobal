@@ -171,11 +171,11 @@ class ExtractionWindow(BaseSchema):
     )
     doc_key: str = Field(description="Source DocumentIR doc_key.")
     framework_title: str = Field(description="KG config framework title.")
-    pdf_name: Optional[str] = Field(default=None, description="Source PDF filename.")
-    primary_language: str = Field(description="KG config primary language.")
     kg_extraction_instructions: str = Field(
         description="KG config.academic_standards.sfi_extraction_instructions."
     )
+    pdf_name: Optional[str] = Field(default=None, description="Source PDF filename.")
+    primary_language: str = Field(description="KG config primary language.")
     segment_kind: Literal["block", "table"] = Field(description="Source segment kind.")
     source_provenance: list[dict[str, Any]] = Field(
         default_factory=list, description="Segment/page provenance for the source."
@@ -392,28 +392,6 @@ class ExtractionWindowTablePayload(BaseSchema):
                 )
 
         return self
-
-
-class StructuredContextItem(BaseSchema):
-    """KG config derived context item attached to an extraction window."""
-
-    label: str = Field(description="Display label derived from the matched heading.")
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    normalized_statement_type: str = Field(
-        description="Expected normalized SFI type if this context becomes a grouping."
-    )
-    role: str = Field(description="Context role, such as grade_level or strand.")
-    rule_name: str = Field(description="KG config context-heading rule that matched.")
-    source_heading_item_index: int = Field(
-        description="Source PageIR item index for the heading reference.", ge=0
-    )
-    source_heading_page_index: int = Field(
-        description="Source page index for the heading reference.", ge=0
-    )
-    source_text: str = Field(description="Raw source heading text that matched.")
-    statement_type: str = Field(
-        description="Source-facing statement type if this context becomes a grouping."
-    )
 
 
 # Schemas for SFI candidate extraction.
@@ -1266,7 +1244,7 @@ class SFIMergeSummary(BaseSchema):
 
 
 # Schemas for SFI finalization.
-class FinalSFIRecord(BaseSchema):
+class SFIFinalRecord(BaseSchema):
     """Final source-backed StandardsFrameworkItem record after SFI dedup.
 
     This schema mints deterministic final SFI identifiers and preserves source,
@@ -1493,7 +1471,7 @@ class FinalSFIRecord(BaseSchema):
         return self
 
 
-class FinalSFISummary(BaseSchema):
+class SFIFinalSummary(BaseSchema):
     """Aggregate summary for final SFI records."""
 
     audit_flag_count_by_type: dict[str, int] = Field(default_factory=dict)
