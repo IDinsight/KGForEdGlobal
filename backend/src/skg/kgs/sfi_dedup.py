@@ -172,6 +172,32 @@ def _append_jsonl_model(*, fp: Path, model: BaseModel) -> None:
         f.write(json.dumps(model.model_dump(mode="json"), ensure_ascii=False) + "\n")
 
 
+def _assert_model_payload_equal(
+    *, actual: BaseModel, artifact_label: str, expected: BaseModel
+) -> None:
+    """Validate that two Pydantic-style payloads are exactly equivalent.
+
+    Parameters
+    ----------
+    actual
+        Model loaded from an artifact.
+    artifact_label
+        Human-readable artifact label for error messages.
+    expected
+        Expected model computed during the current run.
+
+    Raises
+    ------
+    ValueError
+        If the model payloads differ.
+    """
+
+    if _model_dump_key(actual) != _model_dump_key(expected):
+        raise ValueError(
+            f"{artifact_label} does not match the current planned artifact payload."
+        )
+
+
 def _assert_model_sequences_equal(
     *, actual: Sequence[Any], artifact_label: str, expected: Sequence[Any]
 ) -> None:
@@ -206,6 +232,64 @@ def _assert_model_sequences_equal(
                 f"{artifact_label} record {index} does not match the current "
                 f"planned artifact payload."
             )
+
+
+def _build_current_merge_groups(
+    *,
+    review_responses: Sequence[SFIDedupReviewResponse],
+    sfi_candidate_registry: SFIRegistryArtifact,
+    sfi_candidates_by_id: dict[str, SFIRegistryCandidate],
+    unresolved_components: Sequence[_ReviewComponent],
+) -> tuple[list[SFIMergeGroup], int]:
+    """Rebuild complete merge groups from current registry inputs.
+
+    This function is the single deterministic path for converting validated dedup
+    responses, unresolved components, and unreviewed registry candidates into final
+    SFI merge groups. Reusing this path for both fresh runs and complete-artifact
+    validation prevents an old merge report from being accepted merely because its
+    candidate IDs still cover the current registry.
+
+    Parameters
+    ----------
+    review_responses
+        Validated LLM dedup review responses to convert into merge groups.
+    sfi_candidate_registry
+        Current SFI candidate registry that must be covered exactly once.
+    sfi_candidates_by_id
+        Current registry candidates keyed by temporary registry candidate ID.
+    unresolved_components
+        Bounded review components that were intentionally not sent to the LLM and must
+        become needs-review merge groups.
+
+    Returns
+    -------
+    tuple[list[SFIMergeGroup], int]
+        The complete sorted merge groups and the number of deterministic singleton
+        groups created for candidates with no review evidence.
+    """
+
+    merge_groups = _build_merge_groups_from_responses(
+        review_responses=review_responses,
+        sfi_candidates_by_id=sfi_candidates_by_id,
+        unresolved_components=unresolved_components,
+    )
+    covered_candidate_ids = {
+        candidate_id
+        for merge_group in merge_groups
+        for candidate_id in merge_group.registry_candidate_ids
+    }
+    singleton_groups = _build_singleton_merge_groups(
+        covered_candidate_ids=covered_candidate_ids,
+        sfi_candidates_by_id=sfi_candidates_by_id,
+    )
+    merge_groups.extend(singleton_groups)
+    merge_groups = _annotate_same_code_different_content_audit_flags(merge_groups)
+    merge_groups.sort(key=lambda group: (group.merge_decision, group.merge_group_id))
+    _validate_merge_group_coverage(
+        merge_groups=merge_groups, sfi_candidate_registry=sfi_candidate_registry
+    )
+
+    return merge_groups, len(singleton_groups)
 
 
 def _build_initial_review_edges(
@@ -1194,12 +1278,15 @@ def _load_complete_existing_merge_report(
     review_requests_fp: Path,
     review_responses_fp: Path,
     sfi_candidate_registry: SFIRegistryArtifact,
+    sfi_candidates_by_id: dict[str, SFIRegistryCandidate],
+    unresolved_components: Sequence[_ReviewComponent],
 ) -> SFIMergeReport | None:
     """Load a complete existing merge report, or return None for resume.
 
     A report is reusable only when the full report, companion JSON artifacts, and
     review JSONL artifacts are all present, parseable, aligned to the current planned
-    review requests, and cover every current registry candidate exactly once.
+    review requests, rebuilt from the current registry candidate payloads, and cover
+    every current registry candidate exactly once.
 
     Parameters
     ----------
@@ -1219,6 +1306,10 @@ def _load_complete_existing_merge_report(
         JSONL path for persisted review responses.
     sfi_candidate_registry
         Current SFI candidate registry.
+    sfi_candidates_by_id
+        Current registry candidates keyed by temporary registry candidate ID.
+    unresolved_components
+        Current unresolved review components that must become needs-review groups.
 
     Returns
     -------
@@ -1241,6 +1332,8 @@ def _load_complete_existing_merge_report(
             review_requests_fp=review_requests_fp,
             review_responses_fp=review_responses_fp,
             sfi_candidate_registry=sfi_candidate_registry,
+            sfi_candidates_by_id=sfi_candidates_by_id,
+            unresolved_components=unresolved_components,
         )
     except Exception as e:  # pylint: disable=W0718
         logger.warning(
@@ -2118,8 +2211,16 @@ def _validate_complete_merge_artifacts(
     review_requests_fp: Path,
     review_responses_fp: Path,
     sfi_candidate_registry: SFIRegistryArtifact,
+    sfi_candidates_by_id: dict[str, SFIRegistryCandidate],
+    unresolved_components: Sequence[_ReviewComponent],
 ) -> None:
     """Validate that all persisted dedup artifacts are complete and current.
+
+    Complete-artifact reuse is allowed only when the saved report can be rebuilt
+    exactly from the current registry candidate payloads, the current unresolved
+    components, and the saved validated review responses. Candidate-ID coverage alone
+    is not sufficient because registry candidate IDs can remain stable while source
+    text, descriptions, source references, confidence values, or audit flags change.
 
     Parameters
     ----------
@@ -2141,6 +2242,10 @@ def _validate_complete_merge_artifacts(
         JSONL path for persisted review responses.
     sfi_candidate_registry
         Current SFI candidate registry.
+    sfi_candidates_by_id
+        Current registry candidates keyed by temporary registry candidate ID.
+    unresolved_components
+        Current unresolved review components that must become needs-review groups.
 
     Raises
     ------
@@ -2172,20 +2277,39 @@ def _validate_complete_merge_artifacts(
             f"{len(planned_review_requests)} records."
         )
 
+    expected_merge_groups, expected_singleton_count = _build_current_merge_groups(
+        review_responses=merge_report.review_responses,
+        sfi_candidate_registry=sfi_candidate_registry,
+        sfi_candidates_by_id=sfi_candidates_by_id,
+        unresolved_components=unresolved_components,
+    )
+    expected_merge_report = _build_merge_report(
+        merge_groups=expected_merge_groups,
+        review_requests=planned_review_requests,
+        review_responses=merge_report.review_responses,
+        sfi_candidate_registry=sfi_candidate_registry,
+        unreviewed_singleton_count=expected_singleton_count,
+    )
+
+    _assert_model_payload_equal(
+        actual=merge_report,
+        artifact_label="sfi_merge_report.json",
+        expected=expected_merge_report,
+    )
     _assert_model_sequences_equal(
         actual=_load_merge_groups_file(merge_groups_fp),
         artifact_label="sfi_merge_groups.json",
-        expected=merge_report.merge_groups,
+        expected=expected_merge_report.merge_groups,
     )
     _assert_model_sequences_equal(
         actual=_load_merge_groups_file(conflicts_fp),
         artifact_label="sfi_merge_conflicts.json",
-        expected=merge_report.conflict_groups,
+        expected=expected_merge_report.conflict_groups,
     )
     _assert_model_sequences_equal(
         actual=_load_merge_groups_file(needs_review_fp),
         artifact_label="sfi_merge_needs_review.json",
-        expected=merge_report.needs_review_groups,
+        expected=expected_merge_report.needs_review_groups,
     )
     _assert_model_sequences_equal(
         actual=_load_jsonl_review_requests(review_requests_fp),
@@ -2197,7 +2321,7 @@ def _validate_complete_merge_artifacts(
             allow_partial_prefix=False, review_responses_fp=review_responses_fp
         ),
         artifact_label="sfi_dedup_review_responses.jsonl",
-        expected=merge_report.review_responses,
+        expected=expected_merge_report.review_responses,
     )
 
 
@@ -2464,6 +2588,8 @@ def merge_sfi_candidates(
             review_requests_fp=review_requests_fp,
             review_responses_fp=review_responses_fp,
             sfi_candidate_registry=sfi_candidate_registry,
+            sfi_candidates_by_id=sfi_candidates_by_id,
+            unresolved_components=unresolved_components,
         )
 
         if existing_merge_report is not None:
@@ -2494,33 +2620,18 @@ def merge_sfi_candidates(
         review_responses_fp=review_responses_fp,
         usage_tracker=usage_tracker,
     )
-    merge_groups = _build_merge_groups_from_responses(
+    merge_groups, unreviewed_singleton_count = _build_current_merge_groups(
         review_responses=review_responses,
+        sfi_candidate_registry=sfi_candidate_registry,
         sfi_candidates_by_id=sfi_candidates_by_id,
         unresolved_components=unresolved_components,
-    )
-    covered_candidate_ids = {
-        candidate_id
-        for merge_group in merge_groups
-        for candidate_id in merge_group.registry_candidate_ids
-    }
-    singleton_groups = _build_singleton_merge_groups(
-        covered_candidate_ids=covered_candidate_ids,
-        sfi_candidates_by_id=sfi_candidates_by_id,
-    )
-    merge_groups.extend(singleton_groups)
-    merge_groups = _annotate_same_code_different_content_audit_flags(merge_groups)
-    merge_groups.sort(key=lambda group: (group.merge_decision, group.merge_group_id))
-
-    _validate_merge_group_coverage(
-        merge_groups=merge_groups, sfi_candidate_registry=sfi_candidate_registry
     )
     merge_report = _build_merge_report(
         merge_groups=merge_groups,
         review_requests=review_requests,
         review_responses=review_responses,
         sfi_candidate_registry=sfi_candidate_registry,
-        unreviewed_singleton_count=len(singleton_groups),
+        unreviewed_singleton_count=unreviewed_singleton_count,
     )
     _write_merge_artifacts(
         conflicts_fp=conflicts_fp,
