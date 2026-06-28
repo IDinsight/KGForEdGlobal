@@ -126,31 +126,33 @@ DocumentIR + RunConfig.kgs / CreateKGConfig
 
 The KG entry point is `create_kgs.py`.
 
-The current v0 implementation now covers prep, source-faithful extraction-window creation, Step 4/5 SFI extraction, Step 6 registry construction, Step 7 bounded LLM-assisted SFI merge/dedup with content-safe artifact reuse, and Step 8 deterministic final SFI record creation:
+The current v0 implementation now covers prep, source-faithful extraction-window creation, Step 4/5 SFI extraction, Step 6 registry construction, Step 7 bounded LLM-assisted SFI merge/dedup with content-safe artifact reuse, and Step 8 deterministic final SFI record creation.
+
+Completed implementation checklist:
 
 ```text
-1. Load and validate the stitched DocumentIR and `RunConfig.kgs` / `CreateKGConfig`.
-2. Cross-check basic KG config/document compatibility.
-3. Build and persist kg_run_manifest.json.
-4. Plan extraction windows from DocumentIR segments.
-5. Persist extraction_window_plan.json.
-6. Build base LLM-ready extraction windows.
-7. Persist extraction_windows.jsonl.
-8. Run compact-prompt LLM extraction over extraction_windows.jsonl.
-9. Validate each SFIExtractionResult with schema validation and source-grounding quality checks for codes, `source_text`, `description`, source references, and table row/header indexes.
-10. Persist sfi_extraction_results.jsonl incrementally after each successful window.
-11. Refresh sfi_extraction_summary.json after each successful window.
-12. Resume Step 4/5 from an existing valid JSONL prefix when overwrite is false, or skip only when all current windows are complete.
-13. Build and persist sfi_candidate_registry.json from validated extraction results and extraction windows.
-14. Validate result/window alignment, unique window-local candidate IDs, statement-type/code-pattern compatibility, and current extraction quality before registry flattening.
-15. Compute source-context-aware text/code bucket keys, duplicate buckets, registry warnings, and registry summary counts.
-16. Build bounded Step 7 dedup review components from duplicate buckets, warnings, and source-provenance overlap.
-17. Run LLM-assisted dedup review over bounded review sets, validate closed-enum decisions and exact candidate coverage, and persist review request/response JSONL progress.
-18. Convert reviewed, unresolved, and singleton candidates into complete merge groups that cover every registry candidate exactly once.
-19. Persist sfi_merge_report.json, sfi_merge_groups.json, sfi_merge_conflicts.json, and sfi_merge_needs_review.json.
-20. Reuse complete current Step 7 artifacts when overwrite is false only after validating the saved merge report against current registry candidate payloads, current planned review requests, saved validated review responses, rebuilt merge groups, exact registry-candidate coverage, and companion JSON/JSONL artifacts; otherwise resume from a valid review request/response prefix when a prior dedup run is incomplete.
-21. Mint deterministic final SFI records from eligible Step 7 merge groups, preserving merge provenance, source provenance, audit flags, and same-code/different-content disambiguators.
-22. Persist sfi_final_records.json and sfi_final_summary.json using JSON-mode serialization for UUID-bearing Pydantic models.
+- Load and validate the stitched DocumentIR and `RunConfig.kgs` / `CreateKGConfig`.
+- Cross-check basic KG config/document compatibility.
+- Build and persist kg_run_manifest.json.
+- Plan extraction windows from DocumentIR segments.
+- Persist extraction_window_plan.json.
+- Build base LLM-ready extraction windows.
+- Persist extraction_windows.jsonl.
+- Run compact-prompt LLM extraction over extraction_windows.jsonl.
+- Validate each SFIExtractionResult with schema validation and source-grounding quality checks for codes, `source_text`, `description`, source references, and table row/header indexes.
+- Persist sfi_extraction_results.jsonl incrementally after each successful window.
+- Refresh sfi_extraction_summary.json after each successful window.
+- Resume Step 4/5 from an existing valid JSONL prefix when overwrite is false, or skip only when all current windows are complete.
+- Build and persist sfi_candidate_registry.json from validated extraction results and extraction windows.
+- Validate result/window alignment, unique window-local candidate IDs, statement-type/code-pattern compatibility, and current extraction quality before registry flattening.
+- Compute source-context-aware text/code bucket keys, duplicate buckets, registry warnings, and registry summary counts.
+- Build bounded Step 7 dedup review components from duplicate buckets, warnings, and source-provenance overlap.
+- Run LLM-assisted dedup review over bounded review sets, validate closed-enum decisions and exact candidate coverage, and persist review request/response JSONL progress.
+- Convert reviewed, unresolved, and singleton candidates into complete merge groups that cover every registry candidate exactly once.
+- Persist sfi_merge_report.json, sfi_merge_groups.json, sfi_merge_conflicts.json, and sfi_merge_needs_review.json.
+- Reuse complete current Step 7 artifacts when overwrite is false only after validating the saved merge report against current registry candidate payloads, current planned review requests, saved validated review responses, rebuilt merge groups, exact registry-candidate coverage, and companion JSON/JSONL artifacts; otherwise resume from a valid review request/response prefix when a prior dedup run is incomplete.
+- Mint deterministic final SFI records from eligible Step 7 merge groups, preserving merge provenance, source provenance, audit flags, and same-code/different-content disambiguators.
+- Persist sfi_final_records.json and sfi_final_summary.json using JSON-mode serialization for UUID-bearing Pydantic models.
 ```
 
 Do **not** add a separate context-enrichment pass to `extraction_windows.jsonl` for v0. The persisted extraction windows should stay source-faithful and include source text, block/table payloads, provenance, table helper views, KG extraction instructions, code matches, and code-parent hints. Broader source context such as `section_path` should be recovered later from the DocumentIR after SFIs have been finalized and should be used during `hasChild` relationship resolution.
@@ -297,6 +299,13 @@ KG extraction instructions from `RunConfig.kgs` / `CreateKGConfig`
 
 Do not require extraction windows to include additional `source_context_hints`, nearby heading packages, or a precomputed active context path. Relationship context should be recovered later from the stitched DocumentIR using the finalized SFI's source provenance.
 
+Distinguish these fields explicitly:
+
+```text
+source_context_hints -> not added to extraction windows in v0. These would be precomputed extraction-time hierarchy hints, and they are intentionally omitted.
+source_context_labels -> allowed later as recovered/debug evidence derived from DocumentIR, final-record provenance, registry context keys, table/filldown context, or source-visible labels after SFIs have been finalized.
+```
+
 The hasChild-resolution system instruction must include `config.academic_standards.sfi_has_child_instructions`. That field should describe the curriculum-specific hierarchy grammar:
 
 ```text
@@ -416,7 +425,14 @@ Do not treat validation as a later cleanup step. The v0 product should include s
 
 ## Academic Standards v0 implementation sequence
 
-The prep/manifest and extraction-window stages now exist. The remaining implementation sequence should continue from the persisted `extraction_window_plan.json` and `extraction_windows.jsonl` artifacts.
+Status banner:
+
+```text
+Steps 1-8 are implemented and should be treated as the completed historical implementation path.
+Steps 9-11 remain as the next implementation work: hasChild resolution, Academic Standards KG compilation, and final validation/export.
+```
+
+The remaining implementation should continue from the validated Step 8 final SFI artifacts. Extraction windows and DocumentIR are supporting provenance/context inputs for Step 9.
 
 ### Step 1. Plan extraction windows from DocumentIR segments — implemented
 
@@ -644,7 +660,6 @@ normalized_statement_type: Standard | Standard Grouping | Other
 statement_type as the source-facing role label when known
 table_row_indexes for row-derived table candidates
 table_header_indexes for header-derived table candidates
-parent_references and ancestor_context_references only when source-visible
 confidence and extraction_notes for uncertainty
 ```
 
@@ -1078,7 +1093,7 @@ mint_final_sfi_ids(
     kg_dirs: KGDirs,
     sfi_candidate_registry: SFIRegistryArtifact,
     sfi_merge_report: SFIMergeReport,
-) -> list[FinalSFIRecord]
+) -> list[SFIFinalRecord]
 ```
 
 Purpose:
@@ -1141,8 +1156,8 @@ resolve_has_child_edges(
     config: CreateKGConfig,
     document_ir: DocumentIR,
     kg_dirs: KGDirs,
-    sfi_final_records: Sequence[FinalSFIRecord],
-    sfi_final_summary: FinalSFISummary | None = None,
+    sfi_final_records: Sequence[SFIFinalRecord],
+    sfi_final_summary: SFIFinalSummary | None = None,
 ) -> HasChildResolutionResult
 ```
 
@@ -1159,7 +1174,7 @@ Relationship resolution must operate on **finalized SFIs only**. The final SFI r
 Before building any parent candidates or LLM requests, validate the Step 8 outputs:
 
 ```text
-sfi_final_records.json parses and validates as FinalSFIRecord records.
+sfi_final_records.json parses and validates as SFIFinalRecord records.
 sfi_final_summary.json, if supplied, agrees with actual sfi_final_records counts.
 Every final_sfi_uuid, case_identifier_uuid, identifier, and case_identifier_uri is present.
 For v0, final_sfi_uuid == case_identifier_uuid == identifier, and case_identifier_uri == urn:uuid:{final_sfi_uuid}.
@@ -1169,10 +1184,18 @@ Every merge_group_id is unique across final records.
 Every source_registry_candidate_id appears in exactly one final record.
 No final record has an empty description.
 No final record is missing source_window_ids, source_segment_ids, candidate_source_refs, or source_registry_candidate_ids.
-Excluded conflict and needs-review group counts are zero unless the config explicitly allows relationship resolution over an incomplete SFI universe.
+Excluded conflict and needs-review group counts are zero unless the concrete config field `allow_incomplete_sfi_universe_for_relationships` is explicitly true.
 ```
 
-If any of these checks fail, fail Step 9 before calling the LLM. Relationship generation over an incomplete or ambiguous final SFI universe is more harmful than producing no relationships.
+The only supported incomplete-universe exception is:
+
+```text
+allow_incomplete_sfi_universe_for_relationships: bool = false
+```
+
+When this field is false or absent, any excluded conflict or needs-review merge groups must fail Step 9 preflight. When this field is true, Step 9 may run only over the finalized SFI records actually present in `sfi_final_records.json`; excluded conflict or needs-review groups remain omitted from the relationship universe and must be counted in `has_child_resolution_summary.json` as `excluded_incomplete_universe_groups`. The resolver must not synthesize replacement nodes or relationship endpoints for omitted groups.
+
+If any of these checks fail, fail Step 9 before calling the LLM. Relationship generation over an incomplete or ambiguous final SFI universe is more harmful than producing no relationships unless the above exception is explicitly enabled and reported.
 
 Build explicit lookup indexes before retrieval:
 
@@ -1194,6 +1217,8 @@ The lookup indexes are retrieval aids only. They do not by themselves decide dir
 #### Recover Step 9 source context after finalization
 
 Step 9 should create a recovered context package for every finalized SFI before parent selection. This can be an internal object or a persisted debug artifact.
+
+Step 9 loads `extraction_windows.jsonl` from `kg_dirs` when recovering extraction-time code-parent hints. The `resolve_has_child_edges()` function does not need to receive extraction windows as a separate argument as long as it reads and validates the current persisted `kg_dirs` artifact before using those hints.
 
 For each final SFI, recover and retain:
 
@@ -1327,6 +1352,18 @@ evidence_used
 unresolved_reason, if any
 ```
 
+Root fallback representation has two explicit cases:
+
+```text
+selected_parent_kind = StandardsFramework
+  -> Python emits a normal StandardsFramework -> SFI hasChild edge.
+
+selected_parent_kind = unresolved
+  -> selected_parent_uuid must be null; Python emits a StandardsFramework -> SFI root fallback edge marked with resolution_status = unresolved_root_fallback and records the decision in unresolved_edges.json.
+```
+
+The framework UUID used in deterministic relationship IDs is the StandardsFramework `case_identifier_uuid` minted for `lc:curriculum:{doc_key}:framework`.
+
 Validate every response before accepting it:
 
 ```text
@@ -1349,7 +1386,7 @@ After validating responses, assemble one direct parent decision per final SFI.
 Rules:
 
 ```text
-Every finalized SFI must have at most one direct hierarchy parent.
+Every finalized SFI must have exactly one direct parent decision. Accepted semantic decisions create a normal edge; unresolved decisions create a marked root-fallback edge.
 Top-level grouping SFIs should normally attach to the StandardsFramework root.
 A StandardsFrameworkItem may be the parent of another StandardsFrameworkItem.
 Create StandardsFramework -> SFI edges only when the framework is the direct parent or explicit root fallback.
@@ -1588,7 +1625,7 @@ Implement Step 9 as:
 2. Validate that `config.academic_standards.sfi_has_child_instructions` is present and non-empty (via the CreateKGConfig pydantic schema class).
 3. Validate that final records are UUID/identity/candidate-coverage safe and that no conflict or needs_review groups were silently included.
 4. Build lookup indexes over finalized SFIs by final UUID, statement type, normalized code, raw code, source windows, source segments, source context keys, and source order.
-5. Recover source context for each final SFI from DocumentIR and final-record provenance.
+5. Recover source context for each final SFI from DocumentIR and final-record provenance, loading `extraction_windows.jsonl` from `kg_dirs` when code-parent hints are needed.
 6. Persist sfi_final_contexts.json as a debug artifact if useful.
 7. Build bounded, source-grounded candidate parent sets for every final SFI using generic evidence retrieval plus `sfi_has_child_instructions` for direct hierarchy grammar.
 8. Treat code-parent matches as evidence only when normalized codes are present, unique, compatible, and not contradicted by audit/source-context evidence.
@@ -1609,8 +1646,8 @@ resolve_has_child_edges(
     config: CreateKGConfig,
     document_ir: DocumentIR,
     kg_dirs: KGDirs,
-    sfi_final_records: Sequence[FinalSFIRecord],
-    sfi_final_summary: FinalSFISummary | None = None,
+    sfi_final_records: Sequence[SFIFinalRecord],
+    sfi_final_summary: SFIFinalSummary | None = None,
 ) -> HasChildResolutionResult
 ```
 
@@ -1631,7 +1668,7 @@ Lessons from reviewed Senegal Step 8 artifacts:
 The final SFI universe is complete and suitable for Step 9: 326 final records from 354 registry candidates, reflecting 28 pairwise dedup merges and no conflict or needs_review groups.
 All finalized Senegal Reading SFIs are no-code records: statement_code and normalized_statement_code are null. Relationship resolution must be context-driven and must not require normalized codes.
 Repeated or near-repeated descriptions across different source contexts are valid separate final nodes unless Step 7 has explicitly merged them. Step 9 must use final_sfi_uuid plus source context, not text equality, for relationship endpoints.
-Activity records are finalized as Standard Grouping nodes. Treat them as source-visible curriculum organizers for hierarchy evidence, not as LearningComponents or instructional activities outside the Academic Standards SFI universe.
+For the reviewed Senegal Reading configuration only, records labeled as activities were intentionally finalized as `Standard Grouping` nodes because the config treated them as source-visible curriculum organizers. This is not the global default; treat activity text as auxiliary/drop/metadata/Other unless the active KG config explicitly exports it as an SFI role.
 Some table-derived source_page_indexes are broad; use source windows, source segments, table rows/headers, source_context_keys, and recovered context before page overlap.
 Raw section_path/source_context_labels can be stale around transitions; give them to the LLM as ordered evidence rather than direct parent chains.
 ```
