@@ -415,6 +415,8 @@ StandardsFramework       --hasChild--> StandardsFrameworkItem
 StandardsFrameworkItem   --hasChild--> StandardsFrameworkItem
 ```
 
+A finalized StandardsFrameworkItem may have one or more incoming `hasChild` parents when the source framework genuinely represents multiple direct hierarchy memberships. Multiple parents should be resolved by the Step 9 relationship LLM from source-grounded candidate parent sets, not by a runtime toggle or a Python-only tree assumption.
+
 The relationship schema expects `hasChild` endpoints to use `case_identifier_uuid` for both source and target when applicable. For simplicity in v0, set each exported framework/item's `identifier` equal to `case_identifier_uuid` unless there is a strong reason not to.
 
 ### 13. Validation is part of the product
@@ -1279,7 +1281,7 @@ Rules for code use in Step 9:
 ```text
 Use normalized_statement_code for code hierarchy retrieval only when it is present and accepted by configured code patterns.
 If statement_code is present but normalized_statement_code is null, treat the raw statement_code as source-visible text evidence only; do not parse or normalize it ad hoc in Step 9.
-A code-derived direct parent is safe only when the configured rule points to exactly one finalized parent candidate of a compatible role and no source-context evidence contradicts it.
+Code-derived direct parent evidence is safe only when the configured rule points to finalized parent candidate(s) of compatible role and no source-context evidence contradicts them. If exactly one such candidate exists, treat it as strong evidence; if multiple plausible finalized parents exist, include them all for LLM selection rather than choosing by code alone.
 If multiple finalized SFIs share the same normalized code, do not choose among them by code alone.
 If the child or candidate parent has same_code_different_content audit flags, require source-context/table/order evidence or LLM selection from explicit candidates; never collapse or shortcut by normalized code alone.
 If source code and recovered source context disagree, include both signals in the LLM request and prefer unresolved/review over guessing.
@@ -1295,7 +1297,7 @@ Always include:
 
 ```text
 1. StandardsFramework root fallback candidate.
-2. Any directly matched configured code-parent candidate that is unique and validation-safe.
+2. Any directly matched configured code-parent candidate(s) that are validation-safe.
 3. Finalized grouping SFIs whose source text/description matches active labels in the child's recovered section_path or source_context_labels.
 4. Nearby preceding finalized grouping SFIs in source order, especially those whose source window/segment context overlaps or immediately precedes the child.
 5. Finalized SFIs from the same source table, row/header group, filldown group, local_code, or code family when available.
@@ -1303,12 +1305,12 @@ Always include:
 7. Audit peer records when the child or a candidate is same_code_different_content, so the LLM can explicitly distinguish them.
 ```
 
-Candidate sets may include broader ancestors as well as plausible direct parents. The LLM chooses the direct parent from the candidate set or marks the child unresolved. The LLM must not invent new parent nodes.
+Candidate sets may include broader ancestors as well as plausible direct parents. The LLM chooses one or more direct parents from the candidate set, or marks the child unresolved when no direct parent is sufficiently supported. The LLM must not invent new parent nodes.
 
 Bound candidate sets to keep the LLM task reliable. Prefer strong source-evidence candidates first:
 
 ```text
-unique code-parent candidate with compatible source context
+unique or multiple compatible code-parent candidate(s) with source context
 active recovered Grade / Strand / Sub-Strand labels that match finalized grouping SFIs
 same table / same local code / same source segment candidates
 nearby preceding grouping candidates by source order
@@ -1329,8 +1331,8 @@ child SFIs to place
 for each child: final_sfi_uuid, description, statement type, normalized statement type, statement_code, normalized_statement_code, audit flags, source provenance, recovered source context, and raw section_path evidence
 for each child: candidate parent SFIs with IDs, labels/text, statement types, codes, audit flags, source context, and evidence for why each candidate was retrieved
 StandardsFramework root fallback candidate
-closed-enum instruction to choose exactly one direct parent when evidence supports it, otherwise mark unresolved
-instruction to avoid transitive/ancestor edges when a more specific direct parent candidate exists
+closed-enum instruction to choose one or more direct parents when evidence supports them, otherwise mark unresolved
+instruction to avoid transitive/ancestor edges when a more specific direct parent candidate exists, while allowing multiple direct parents when the source framework genuinely places the child under more than one direct hierarchy context
 instruction to choose among same-code audited peers by source context, not by code alone
 instruction not to create, rename, merge, or delete any SFI
 ```
@@ -1343,24 +1345,29 @@ The LLM response should be schema-validated and closed-enum, for example:
 
 ```text
 child_final_sfi_uuid
-selected_parent_kind = StandardsFramework | StandardsFrameworkItem | unresolved
-selected_parent_uuid, null only when unresolved
-relationship_type = hasChild
-confidence
-reason
-evidence_used
-unresolved_reason, if any
+resolution_status = resolved | unresolved
+parent_decisions, empty only when unresolved
+for each parent decision:
+  selected_parent_kind = StandardsFramework | StandardsFrameworkItem
+  selected_parent_uuid
+  relationship_type = hasChild
+  confidence
+  reason
+  evidence_used
+unresolved_reason, required when unresolved
 ```
 
 Root fallback representation has two explicit cases:
 
 ```text
-selected_parent_kind = StandardsFramework
+resolution_status = resolved with a StandardsFramework parent decision
   -> Python emits a normal StandardsFramework -> SFI hasChild edge.
 
-selected_parent_kind = unresolved
-  -> selected_parent_uuid must be null; Python emits a StandardsFramework -> SFI root fallback edge marked with resolution_status = unresolved_root_fallback and records the decision in unresolved_edges.json.
+resolution_status = unresolved
+  -> parent_decisions must be empty; Python emits a StandardsFramework -> SFI root fallback edge marked with resolution_status = unresolved_root_fallback and records the decision in unresolved_edges.json.
 ```
+
+When one or more semantic SFI parents are selected, do not also add a StandardsFramework root edge merely for reachability. The root should be selected only when it is the direct parent, or emitted as the explicit unresolved fallback.
 
 The framework UUID used in deterministic relationship IDs is the StandardsFramework `case_identifier_uuid` minted for `lc:curriculum:{doc_key}:framework`.
 
@@ -1371,25 +1378,26 @@ Every child in the request appears exactly once in the response.
 No unknown child IDs.
 No unknown selected parent IDs.
 No selected parent equals child.
-Selected parent is either the StandardsFramework root or one of the provided candidate parents.
+Every selected parent is either the StandardsFramework root or one of the provided candidate parents.
+Resolved children have one or more parent decisions; unresolved children have no parent decisions and a non-empty unresolved_reason.
 The response does not invent relationship types.
-The response does not introduce multiple direct parents for one child.
-The reason/evidence is non-empty.
+The response does not return duplicate parent decisions for the same child/parent pair.
+The reason/evidence is non-empty for every selected parent decision.
 ```
 
 With `overwrite=False`, Step 9 may resume from a valid request/response prefix only after validating that the current final SFI universe, request identities, candidate parent sets, and accepted responses still match the current inputs exactly. Otherwise, rebuild Step 9 artifacts from scratch.
 
 #### Edge assembly and unresolved handling
 
-After validating responses, assemble one direct parent decision per final SFI.
+After validating responses, assemble one or more direct parent decisions per final SFI, or an explicit unresolved decision.
 
 Rules:
 
 ```text
-Every finalized SFI must have exactly one direct parent decision. Accepted semantic decisions create a normal edge; unresolved decisions create a marked root-fallback edge.
+Every finalized SFI must have at least one direct parent decision when resolved. Accepted semantic decisions create one or more normal hasChild edges; unresolved decisions create a marked root-fallback edge.
 Top-level grouping SFIs should normally attach to the StandardsFramework root.
 A StandardsFrameworkItem may be the parent of another StandardsFrameworkItem.
-Create StandardsFramework -> SFI edges only when the framework is the direct parent or explicit root fallback.
+Create StandardsFramework -> SFI edges only when the framework is a selected direct parent or explicit root fallback.
 Create SFI -> SFI edges only between finalized SFIs.
 Do not create self-loops.
 Do not create cycles.
@@ -1401,7 +1409,7 @@ Do not silently drop a finalized SFI from the relationship universe.
 For unresolved children, use an explicit policy rather than guessing:
 
 ```text
-Since we require a fully reachable v0 KG, emit a StandardsFramework root fallback edge marked with resolution_status = unresolved_root_fallback and also write the unresolved decision to unresolved_edges.json.
+Since we require a fully reachable v0 KG, emit a StandardsFramework root fallback edge marked with resolution_status = unresolved_root_fallback only for children whose direct parent set is unresolved, and also write the unresolved decision to unresolved_edges.json.
 Unresolved decisions must be counted and inspectable.
 ```
 
@@ -1432,12 +1440,13 @@ has_child_resolution_summary.json
 Before Step 10 compilation, validate:
 
 ```text
-Every final SFI appears exactly once as a child decision.
+Every final SFI appears exactly once as a child resolution record.
 Every accepted edge source exists: StandardsFramework root or finalized SFI.
 Every accepted edge target exists: finalized SFI.
 No self-loops.
 No directed cycles among SFI -> SFI edges.
-No child has more than one direct parent.
+No duplicate hasChild edge for the same parent/child pair.
+Every resolved final SFI has one or more direct parents; unresolved final SFIs have exactly one marked root-fallback edge.
 Every final SFI is reachable from StandardsFramework.
 Every unresolved/root-fallback edge is explicitly marked and listed in unresolved_edges.json.
 Every same-code/different-content audited final SFI remains a separate node and is not collapsed by code.
@@ -1632,9 +1641,9 @@ Implement Step 9 as:
 9. Treat same-code/different-content audited records as separate final nodes; never collapse or select by code alone.
 10. Treat raw statement_code values with null normalized_statement_code as source-visible evidence only.
 11. Run LLM-assisted parent selection over batches of children, with each child receiving its own candidate parent set, the StandardsFramework root fallback, and `sfi_has_child_instructions`.
-12. Validate every response for exact child coverage, known parent IDs, no self-loops, no invented relationship types, and one direct parent decision per child.
-13. Assemble deterministic hasChild edges, preserving unresolved/root-fallback status where needed.
-14. Validate graph-level constraints: every finalized SFI has one parent decision, every endpoint exists, no cycles, no duplicate direct parents, and all relationship IDs are deterministic.
+12. Validate every response for exact child coverage, known parent IDs, no self-loops, no invented relationship types, no duplicate parent decisions for the same child/parent pair, and at least one selected parent for every resolved child.
+13. Assemble deterministic hasChild edges, preserving multiple-parent decisions and unresolved/root-fallback status where needed.
+14. Validate graph-level constraints: every finalized SFI has one child resolution record, every resolved SFI has one or more direct parents, every endpoint exists, no cycles, no duplicate parent/child edges, and all relationship IDs are deterministic.
 15. Persist final_has_child_edges.json, unresolved_edges.json, request/response JSONL, candidate parent sets, and has_child_resolution_summary.json.
 ```
 
