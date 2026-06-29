@@ -15,6 +15,7 @@ import unicodedata
 import uuid
 
 from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -46,21 +47,19 @@ from skg.utils.general import make_dir, open_json_type, write_to_json
 _ROOT_EVIDENCE_REASON = "root_fallback"
 
 
+@dataclass
 class _ParentEvidence:
     """Mutable parent-candidate evidence before schema conversion."""
 
-    def __init__(self, candidate: SFIHasChildParentCandidate) -> None:
-        """Initialize mutable evidence for one parent candidate.
+    candidate: SFIHasChildParentCandidate
+    evidence_reasons: set[str] = field(init=False)
+    evidence_summary: list[str] = field(init=False)
 
-        Parameters
-        ----------
-        candidate
-            Parent candidate schema payload to enrich with evidence.
-        """
+    def __post_init__(self) -> None:
+        """Assign mutable evidence fields from the candidate's immutable fields."""
 
-        self.candidate = candidate
-        self.evidence_reasons = set(candidate.evidence_reasons)
-        self.evidence_summary = list(candidate.evidence_summary)
+        self.evidence_reasons = set(self.candidate.evidence_reasons)
+        self.evidence_summary = list(self.candidate.evidence_summary)
 
 
 def _add_parent_evidence(
