@@ -660,6 +660,10 @@ def resolve_sfi_has_child_parents(
 - A child may have one or more direct parents when the source evidence supports multiple direct hierarchy memberships.
 - If none of the supplied candidates is source-supported as a direct parent, set unresolved=true and select no parents.
 
+## Runtime hierarchy instructions
+- The request payload includes `sfi_has_child_instructions`. Treat that field as the authoritative document-specific hierarchy policy for this request.
+- If `sfi_has_child_instructions` conflicts with these generic instructions, follow `sfi_has_child_instructions` unless doing so would require selecting a parent outside the child's supplied `parent_candidates`, inventing an endpoint, or violating the output contract.
+
 ## Parent-selection policy
 - Prefer the most direct source-grounded parent, not merely the broadest or most nearby candidate.
 - Treat code-parent hints, matched section labels, same table context, same source context, and nearest preceding grouping evidence as retrieval evidence, not as automatic truth.

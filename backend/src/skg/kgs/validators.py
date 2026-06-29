@@ -994,6 +994,71 @@ def _validate_dedup_response_reasons(review_response: SFIDedupReviewResponse) ->
             )
 
 
+def _validate_has_child_parent_selection_policy(
+    *,
+    resolution_request: SFIHasChildResolutionRequest,
+    resolution_response: SFIHasChildResolutionResponse,
+) -> None:
+    """Validate root, resolved, and unresolved hasChild parent-selection policy.
+
+    Parameters
+    ----------
+    resolution_request
+        Bounded hasChild parent-selection request supplied to the LLM.
+    resolution_response
+        Parsed LLM hasChild parent-selection response.
+
+    Raises
+    ------
+    QualityError
+        If an unresolved child selects parents, if a resolved child selects no parents,
+        or if a resolved child selects both the StandardsFramework root and one or
+        more SFI parents.
+    """
+
+    root_parent_ids_by_child_id = {
+        str(parent_set.child_context.final_sfi_uuid): {
+            candidate.endpoint_id
+            for candidate in parent_set.parent_candidates
+            if candidate.is_root
+        }
+        for parent_set in resolution_request.child_parent_sets
+    }
+
+    for child_resolution in resolution_response.child_resolutions:
+        child_id = str(child_resolution.child_final_sfi_uuid)
+        root_parent_ids = root_parent_ids_by_child_id.get(child_id, set())
+        selected_parent_ids = set(child_resolution.selected_parent_endpoint_ids)
+        selected_non_root_parent_ids = selected_parent_ids - root_parent_ids
+        selected_root_parent_ids = selected_parent_ids & root_parent_ids
+
+        if child_resolution.unresolved:
+            if selected_parent_ids:
+                raise QualityError(
+                    f"hasChild response for unresolved child {child_id!r} must not "
+                    f"select parent endpoints; got "
+                    f"{sorted(selected_parent_ids)}."
+                )
+
+            continue
+
+        if not selected_parent_ids:
+            raise QualityError(
+                f"hasChild response for resolved child {child_id!r} must select at "
+                f"least one parent endpoint. Set unresolved=true when no supplied "
+                f"parent candidate is source-supported."
+            )
+
+        if selected_root_parent_ids and selected_non_root_parent_ids:
+            raise QualityError(
+                f"hasChild response for child {child_id!r} selected both the "
+                f"StandardsFramework root {sorted(selected_root_parent_ids)} and "
+                f"one or more SFI parents {sorted(selected_non_root_parent_ids)}. "
+                f"Use the root only as the sole direct parent for top-level items, "
+                f"or set unresolved=true with no selected parents for fallback."
+            )
+
+
 def _validate_header_only_source_location(
     *, candidate: SFICandidate, source_supported_by_cited_headers: bool
 ) -> None:
@@ -1341,7 +1406,8 @@ def verify_sfi_has_child_resolution_quality(
     Raises
     ------
     QualityError
-        If the response fails coverage, endpoint, or self-loop checks.
+        If the response fails coverage, endpoint, root-selection, resolved-state, or
+        self-loop checks.
     """
 
     if resolution_response.request_id != resolution_request.request_id:
@@ -1391,6 +1457,10 @@ def verify_sfi_has_child_resolution_quality(
             f"hasChild response assigned child IDs more than once: "
             f"{duplicate_child_ids}."
         )
+
+    _validate_has_child_parent_selection_policy(
+        resolution_request=resolution_request, resolution_response=resolution_response
+    )
 
     for child_resolution in resolution_response.child_resolutions:
         child_id = str(child_resolution.child_final_sfi_uuid)
