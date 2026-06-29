@@ -398,7 +398,7 @@ def _choose_final_description(merge_group: SFIMergeGroup) -> str:
     if not candidates:
         raise ValueError(
             f"Merge group {merge_group.merge_group_id!r} has no final description "
-            f"or source text to use for Step 8."
+            f"or source text to use for SFI finalization."
         )
 
     normalized_to_values: dict[str, list[str]] = {}
