@@ -20,6 +20,7 @@ from typing import Any, Iterable, Sequence
 
 # Third Party Library
 from loguru import logger
+from pydantic import BaseModel
 
 # Package Library
 from skg.config import Settings
@@ -38,6 +39,7 @@ from skg.kgs.schemas import (
     SFIHasChildResolutionSummary,
 )
 from skg.kgs.utils import KGDirs
+from skg.kgs.validators import verify_sfi_has_child_resolution_quality
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, open_json_type, write_to_json
 
@@ -165,6 +167,69 @@ def _add_preceding_grouping_evidence(
                 evidence_reason=reason,
                 evidence_summary=summary,
                 parent_context=parent_context,
+            )
+
+
+def _assert_model_payload_equal(
+    *, actual: BaseModel, artifact_label: str, expected: BaseModel
+) -> None:
+    """Validate that two Pydantic model payloads are exactly equivalent.
+
+    Parameters
+    ----------
+    actual
+        Model loaded from an existing Step 9 artifact.
+    artifact_label
+        Human-readable artifact label for error messages.
+    expected
+        Model payload computed from the current Step 9 inputs.
+
+    Raises
+    ------
+    ValueError
+        If the actual artifact payload differs from the expected current payload.
+    """
+
+    if _model_dump_key(actual) != _model_dump_key(expected):
+        raise ValueError(
+            f"{artifact_label} does not match the current planned SFI hasChild "
+            f"resolution payload."
+        )
+
+
+def _assert_model_sequences_equal(
+    *, actual: Sequence[BaseModel], artifact_label: str, expected: Sequence[BaseModel]
+) -> None:
+    """Validate that two ordered Pydantic model sequences are exactly equivalent.
+
+    Parameters
+    ----------
+    actual
+        Models loaded from an existing SFI hasChild resolution artifact.
+    artifact_label
+        Human-readable artifact label for error messages.
+    expected
+        Model sequence computed from the current SFI hasChild resolution inputs.
+
+    Raises
+    ------
+    ValueError
+        If the sequence lengths differ or any payload differs at the same position.
+    """
+
+    if len(actual) != len(expected):
+        raise ValueError(
+            f"{artifact_label} has {len(actual)} records, but expected "
+            f"{len(expected)} records."
+        )
+
+    for index, (actual_model, expected_model) in enumerate(
+        zip(actual, expected, strict=True), start=1
+    ):
+        if _model_dump_key(actual_model) != _model_dump_key(expected_model):
+            raise ValueError(
+                f"{artifact_label} record {index} does not match the current "
+                f"planned SFI hasChild resolution payload."
             )
 
 
@@ -569,6 +634,49 @@ def _build_resolution_requests(
     return requests
 
 
+def _build_resolution_summary(
+    *,
+    edges: Sequence[SFIHasChildEdge],
+    parent_sets: Sequence[SFIHasChildCandidateParentSet],
+    requests: Sequence[SFIHasChildResolutionRequest],
+    responses: Sequence[SFIHasChildResolutionResponse],
+) -> SFIHasChildResolutionSummary:
+    """Build the aggregate hasChild resolution summary.
+
+    Parameters
+    ----------
+    edges
+        Final hasChild edge records.
+    parent_sets
+        Planned bounded parent-candidate sets.
+    requests
+        Planned LLM resolution requests.
+    responses
+        Completed LLM resolution responses.
+
+    Returns
+    -------
+    SFIHasChildResolutionSummary
+        Aggregate Step 9 summary payload.
+    """
+
+    return SFIHasChildResolutionSummary(
+        candidate_parent_set_count=len(parent_sets),
+        edge_count=len(edges),
+        final_sfi_count=len(parent_sets),
+        llm_request_count=len(requests),
+        llm_response_count=len(responses),
+        root_edge_count=sum(1 for edge in edges if edge.is_root_edge),
+        sfi_to_sfi_edge_count=sum(1 for edge in edges if not edge.is_root_edge),
+        truncated_candidate_parent_set_count=sum(
+            1 for parent_set in parent_sets if parent_set.was_truncated
+        ),
+        unresolved_child_count=sum(
+            1 for edge in edges if edge.unresolved_root_fallback
+        ),
+    )
+
+
 def _context_matches_section_path(
     *, child_context: SFIHasChildFinalContext, parent_context: SFIHasChildFinalContext
 ) -> bool:
@@ -924,6 +1032,96 @@ def _is_preceding_grouping(
     )
 
 
+def _load_complete_existing_relationship_artifacts(
+    *,
+    contexts: Sequence[SFIHasChildFinalContext],
+    contexts_fp: Path,
+    document_ir: DocumentIR,
+    edges_fp: Path,
+    framework_uuid: uuid.UUID,
+    parent_sets: Sequence[SFIHasChildCandidateParentSet],
+    parent_sets_fp: Path,
+    requests: Sequence[SFIHasChildResolutionRequest],
+    requests_fp: Path,
+    responses_fp: Path,
+    sfi_final_records: Sequence[SFIFinalRecord],
+    summary_fp: Path,
+    unresolved_edges_fp: Path,
+) -> list[SFIHasChildEdge] | None:
+    """Load complete current artifacts, or return None to resume.
+
+    Existing artifacts are reusable only when every persisted artifact is present,
+    parseable, exactly aligned with the current deterministic context, parent-set, and
+    request payloads, and rebuilds to the same validated graph.
+
+    Parameters
+    ----------
+    contexts
+        Current recovered final SFI contexts.
+    contexts_fp
+        JSON path for persisted final SFI contexts.
+    document_ir
+        Source DocumentIR used to scope relationship IDs.
+    edges_fp
+        JSON path for final hasChild edges.
+    framework_uuid
+        Deterministic StandardsFramework UUID.
+    parent_sets
+        Current bounded parent-candidate sets.
+    parent_sets_fp
+        JSONL path for persisted parent-candidate sets.
+    requests
+        Current hasChild resolution requests.
+    requests_fp
+        JSONL path for persisted hasChild resolution requests.
+    responses_fp
+        JSONL path for persisted hasChild resolution responses.
+    sfi_final_records
+        Final SFI records that must be covered by the graph.
+    summary_fp
+        JSON path for persisted hasChild resolution summary.
+    unresolved_edges_fp
+        JSON path for unresolved root-fallback edges.
+
+    Returns
+    -------
+    list[SFIHasChildEdge] | None
+        Reusable final hasChild edges, or None when artifacts are incomplete or stale.
+    """
+
+    if not edges_fp.exists():
+        return None
+
+    try:
+        edges = _validate_complete_relationship_artifacts(
+            contexts=contexts,
+            contexts_fp=contexts_fp,
+            document_ir=document_ir,
+            edges_fp=edges_fp,
+            framework_uuid=framework_uuid,
+            parent_sets=parent_sets,
+            parent_sets_fp=parent_sets_fp,
+            requests=requests,
+            requests_fp=requests_fp,
+            responses_fp=responses_fp,
+            sfi_final_records=sfi_final_records,
+            summary_fp=summary_fp,
+            unresolved_edges_fp=unresolved_edges_fp,
+        )
+    except Exception as e:  # pylint: disable=W0718
+        logger.warning(
+            f"Existing hasChild artifacts are incomplete or stale; resuming SFI "
+            f"hasChild resolution: {e}"
+        )
+        return None
+
+    logger.info(
+        f"Loading complete existing hasChild artifacts because overwrite=False: "
+        f"{edges_fp}"
+    )
+    return edges
+
+
 def _load_extraction_windows(kg_dirs: KGDirs) -> list[ExtractionWindow]:
     """Load persisted extraction windows from the KG directory.
 
@@ -965,6 +1163,161 @@ def _load_extraction_windows(kg_dirs: KGDirs) -> list[ExtractionWindow]:
     return extraction_windows
 
 
+def _load_json_model_sequence(*, fp: Path, model_type: BaseModel) -> list[BaseModel]:
+    """Load a JSON list artifact into a typed Pydantic model sequence.
+
+    Parameters
+    ----------
+    fp
+        JSON artifact path containing a list payload.
+    model_type
+        Pydantic model class used to validate each item.
+
+    Returns
+    -------
+    list[BaseModel]
+        Parsed and validated model sequence.
+
+    Raises
+    ------
+    ValueError
+        If the file is missing, not a JSON list, or contains invalid records.
+    """
+
+    if not fp.exists():
+        raise ValueError(f"Missing SFI hasChild resolution JSON artifact: {fp}")
+
+    data = open_json_type(fp)
+
+    if not isinstance(data, list):
+        raise ValueError(
+            f"Expected a JSON list in SFI hasChild resolution artifact: {fp}"
+        )
+
+    return [model_type.model_validate(item) for item in data]
+
+
+def _load_jsonl_models(
+    *, allow_partial_prefix: bool, fp: Path, model_type: BaseModel
+) -> list[BaseModel]:
+    """Load a JSONL artifact into a typed Pydantic model sequence.
+
+    Parameters
+    ----------
+    allow_partial_prefix
+        Whether to return the valid prefix when a later line is invalid or truncated.
+    fp
+        JSONL artifact path.
+    model_type
+        Pydantic model class used to validate each JSONL record.
+
+    Returns
+    -------
+    list[BaseModel]
+        Parsed and validated model sequence.
+
+    Raises
+    ------
+    ValueError
+        If the file is missing or invalid and partial-prefix loading is disabled.
+    """
+
+    if not fp.exists():
+        if allow_partial_prefix:
+            return []
+
+        raise ValueError(f"Missing SFI hasChild resolution JSONL artifact: {fp}")
+
+    models: list[BaseModel] = []
+
+    with fp.open("r", encoding="utf-8") as f:
+        for line_number, line in enumerate(f, start=1):
+            line_clean = line.strip()
+
+            if not line_clean:
+                continue
+
+            try:
+                models.append(model_type.model_validate_json(line_clean))
+            except Exception as e:
+                if allow_partial_prefix:
+                    logger.warning(
+                        f"Ignoring invalid trailing SFI hasChild resolution JSONL "
+                        f"record in {fp} at line {line_number}; valid prefix length is "
+                        f"{len(models)}: {e}"
+                    )
+                    return models
+
+                raise ValueError(
+                    f"Invalid SFI hasChild resolution JSONL record in {fp} at line "
+                    f"{line_number}: {e}"
+                ) from e
+
+    return models
+
+
+def _load_resumable_resolution_progress(
+    *,
+    requests: Sequence[SFIHasChildResolutionRequest],
+    requests_fp: Path,
+    responses_fp: Path,
+) -> list[SFIHasChildResolutionResponse]:
+    """Load a valid completed hasChild response prefix for resuming SFI hasChild
+    resolution.
+
+    A completed response prefix is reusable only when each response validates against
+    the current planned request at the same position and the saved request payloads for
+    that completed prefix exactly match the current request payloads.
+
+    Parameters
+    ----------
+    requests
+        Current deterministic hasChild resolution requests.
+    requests_fp
+        JSONL path for persisted hasChild resolution requests.
+    responses_fp
+        JSONL path for persisted hasChild resolution responses.
+
+    Returns
+    -------
+    list[SFIHasChildResolutionResponse]
+        Valid completed response prefix, or an empty list when no reusable progress
+        exists.
+    """
+
+    try:
+        responses = _load_jsonl_models(
+            allow_partial_prefix=True,
+            fp=responses_fp,
+            model_type=SFIHasChildResolutionResponse,
+        )
+        _validate_resolution_response_prefix(requests=requests, responses=responses)
+
+        if responses:
+            saved_requests = _load_jsonl_models(
+                allow_partial_prefix=False,
+                fp=requests_fp,
+                model_type=SFIHasChildResolutionRequest,
+            )
+            _validate_resolution_request_prefix(
+                requests=requests,
+                saved_requests=saved_requests,
+                trusted_prefix_length=len(responses),
+            )
+            logger.info(
+                f"Resuming hasChild resolution from {len(responses)} completed "
+                f"responses in {responses_fp}."
+            )
+            return responses
+    except Exception as e:  # pylint: disable=W0718
+        logger.warning(
+            f"Ignoring existing hasChild JSONL progress because the saved "
+            f"request/response prefix does not match the current plan: {e}"
+        )
+
+    return []
+
+
 def _load_sfi_final_summary(kg_dirs: KGDirs) -> SFIFinalSummary | None:
     """Load SFI final summary if present.
 
@@ -985,6 +1338,23 @@ def _load_sfi_final_summary(kg_dirs: KGDirs) -> SFIFinalSummary | None:
         return None
 
     return SFIFinalSummary.model_validate(open_json_type(summary_fp))
+
+
+def _model_dump_key(value: BaseModel) -> str:
+    """Build a stable JSON comparison key for a Pydantic model.
+
+    Parameters
+    ----------
+    value
+        Pydantic model to serialize.
+
+    Returns
+    -------
+    str
+        Stable JSON representation suitable for exact artifact comparison.
+    """
+
+    return json.dumps(value.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
 
 
 def _normalize_code(value: Any) -> str | None:
@@ -1075,6 +1445,25 @@ def _parent_candidate_rank(candidate: SFIHasChildParentCandidate) -> tuple[int, 
     return (-score, candidate.endpoint_id)
 
 
+def _prepare_output_files(output_fps: Sequence[Path]) -> None:
+    """Remove stale artifacts and initialize JSONL outputs.
+
+    Parameters
+    ----------
+    output_fps
+        Artifact paths to reset.
+    """
+
+    for output_fp in output_fps:
+        make_dir(output_fp.parent)
+
+        if output_fp.exists():
+            output_fp.unlink()
+
+        if output_fp.suffix == ".jsonl":
+            output_fp.write_text("", encoding="utf-8")
+
+
 def _reachable_sfi_ids(
     *, edges: Sequence[SFIHasChildEdge], framework_uuid: uuid.UUID
 ) -> set[str]:
@@ -1152,6 +1541,39 @@ def _recover_section_path_labels(
     return _unique_nonempty(labels)
 
 
+def _rewrite_resolution_progress_files(
+    *,
+    completed_requests: Sequence[SFIHasChildResolutionRequest],
+    completed_responses: Sequence[SFIHasChildResolutionResponse],
+    requests_fp: Path,
+    responses_fp: Path,
+) -> None:
+    """Rewrite hasChild request/response JSONL artifacts to a clean prefix.
+
+    Parameters
+    ----------
+    completed_requests
+        Planned requests corresponding to completed responses.
+    completed_responses
+        Completed responses to preserve for resume.
+    requests_fp
+        JSONL path for hasChild resolution requests.
+    responses_fp
+        JSONL path for hasChild resolution responses.
+    """
+
+    make_dir(requests_fp.parent)
+    make_dir(responses_fp.parent)
+    requests_fp.write_text("", encoding="utf-8")
+    responses_fp.write_text("", encoding="utf-8")
+
+    for request in completed_requests:
+        _write_jsonl_model(fp=requests_fp, model=request)
+
+    for response in completed_responses:
+        _write_jsonl_model(fp=responses_fp, model=response)
+
+
 def _root_parent_candidate(
     *, framework_title: str, framework_uuid: uuid.UUID
 ) -> SFIHasChildParentCandidate:
@@ -1191,17 +1613,20 @@ def _root_parent_candidate(
 
 def _run_resolution_requests(
     *,
+    completed_responses: Sequence[SFIHasChildResolutionResponse],
     requests: Sequence[SFIHasChildResolutionRequest],
     requests_fp: Path,
     responses_fp: Path,
     usage_tracker: KGUsageTracker,
 ) -> list[SFIHasChildResolutionResponse]:
-    """Run LLM hasChild requests and persist request/response JSONL artifacts.
+    """Run remaining LLM hasChild requests and persist progress incrementally.
 
     Parameters
     ----------
+    completed_responses
+        Valid response prefix already completed in a previous partial run.
     requests
-        HasChild resolution requests.
+        Full planned hasChild resolution request sequence.
     requests_fp
         JSONL path for persisted requests.
     responses_fp
@@ -1212,17 +1637,32 @@ def _run_resolution_requests(
     Returns
     -------
     list[SFIHasChildResolutionResponse]
-        Validated LLM responses.
+        Completed responses in request order, including the resumed prefix.
+
+    Raises
+    ------
+    ValueError
+        If the completed response prefix is longer than the planned requests.
     """
 
-    make_dir(requests_fp.parent)
-    requests_fp.write_text("", encoding="utf-8")
-    responses_fp.write_text("", encoding="utf-8")
-    responses: list[SFIHasChildResolutionResponse] = []
+    responses = list(completed_responses)
 
-    for request_index, request in enumerate(requests, start=1):
+    if len(responses) > len(requests):
+        raise ValueError(
+            f"Completed hasChild response prefix has {len(responses)} records, but "
+            f"only {len(requests)} requests are planned."
+        )
+
+    if requests:
+        make_dir(requests_fp.parent)
+        make_dir(responses_fp.parent)
+
+    for request_index in range(len(responses), len(requests)):
+        current_request_number = request_index + 1
+        request = requests[request_index]
+
         logger.info(
-            f"Running hasChild resolution {request_index}/{len(requests)}: "
+            f"Running hasChild resolution {current_request_number}/{len(requests)}: "
             f"request_id={request.request_id}."
         )
 
@@ -1325,6 +1765,155 @@ def _unique_nonempty(values: Iterable[Any]) -> list[str]:
     return output
 
 
+def _validate_complete_relationship_artifacts(
+    *,
+    contexts: Sequence[SFIHasChildFinalContext],
+    contexts_fp: Path,
+    document_ir: DocumentIR,
+    edges_fp: Path,
+    framework_uuid: uuid.UUID,
+    parent_sets: Sequence[SFIHasChildCandidateParentSet],
+    parent_sets_fp: Path,
+    requests: Sequence[SFIHasChildResolutionRequest],
+    requests_fp: Path,
+    responses_fp: Path,
+    sfi_final_records: Sequence[SFIFinalRecord],
+    summary_fp: Path,
+    unresolved_edges_fp: Path,
+) -> list[SFIHasChildEdge]:
+    """Validate that persisted artifacts are complete and current.
+
+    Parameters
+    ----------
+    contexts
+        Current recovered final SFI contexts.
+    contexts_fp
+        JSON path for persisted final SFI contexts.
+    document_ir
+        Source DocumentIR used to scope relationship IDs.
+    edges_fp
+        JSON path for final hasChild edges.
+    framework_uuid
+        Deterministic StandardsFramework UUID.
+    parent_sets
+        Current bounded parent-candidate sets.
+    parent_sets_fp
+        JSONL path for persisted parent-candidate sets.
+    requests
+        Current hasChild resolution requests.
+    requests_fp
+        JSONL path for persisted hasChild resolution requests.
+    responses_fp
+        JSONL path for persisted hasChild resolution responses.
+    sfi_final_records
+        Final SFI records that must be covered by the graph.
+    summary_fp
+        JSON path for persisted hasChild resolution summary.
+    unresolved_edges_fp
+        JSON path for unresolved root-fallback edges.
+
+    Returns
+    -------
+    list[SFIHasChildEdge]
+        Existing final hasChild edges when all artifacts validate.
+
+    Raises
+    ------
+    ValueError
+        If any artifact is missing, stale, incomplete, or internally inconsistent.
+    """
+
+    loaded_contexts = _load_json_model_sequence(
+        fp=contexts_fp, model_type=SFIHasChildFinalContext
+    )
+    _assert_model_sequences_equal(
+        actual=loaded_contexts,
+        artifact_label="sfi_final_contexts.json",
+        expected=contexts,
+    )
+
+    loaded_parent_sets = _load_jsonl_models(
+        allow_partial_prefix=False,
+        fp=parent_sets_fp,
+        model_type=SFIHasChildCandidateParentSet,
+    )
+    _assert_model_sequences_equal(
+        actual=loaded_parent_sets,
+        artifact_label="has_child_candidate_parent_sets.jsonl",
+        expected=parent_sets,
+    )
+
+    loaded_requests = _load_jsonl_models(
+        allow_partial_prefix=False,
+        fp=requests_fp,
+        model_type=SFIHasChildResolutionRequest,
+    )
+    _assert_model_sequences_equal(
+        actual=loaded_requests,
+        artifact_label="has_child_resolution_requests.jsonl",
+        expected=requests,
+    )
+
+    loaded_responses = _load_jsonl_models(
+        allow_partial_prefix=False,
+        fp=responses_fp,
+        model_type=SFIHasChildResolutionResponse,
+    )
+    _validate_resolution_response_prefix(requests=requests, responses=loaded_responses)
+
+    if len(loaded_responses) != len(requests):
+        raise ValueError(
+            f"has_child_resolution_responses.jsonl has {len(loaded_responses)} "
+            f"records, but expected {len(requests)} records."
+        )
+
+    expected_edges = _build_edges_from_responses(
+        document_ir=document_ir,
+        framework_uuid=framework_uuid,
+        parent_sets=parent_sets,
+        responses=loaded_responses,
+    )
+    _validate_graph(
+        edges=expected_edges,
+        framework_uuid=framework_uuid,
+        sfi_final_records=sfi_final_records,
+    )
+    expected_summary = _build_resolution_summary(
+        edges=expected_edges,
+        parent_sets=parent_sets,
+        requests=requests,
+        responses=loaded_responses,
+    )
+    expected_unresolved_edges = [
+        edge for edge in expected_edges if edge.unresolved_root_fallback
+    ]
+
+    loaded_edges = _load_json_model_sequence(fp=edges_fp, model_type=SFIHasChildEdge)
+    _assert_model_sequences_equal(
+        actual=loaded_edges,
+        artifact_label="has_child_edges_final.json",
+        expected=expected_edges,
+    )
+    loaded_unresolved_edges = _load_json_model_sequence(
+        fp=unresolved_edges_fp, model_type=SFIHasChildEdge
+    )
+    _assert_model_sequences_equal(
+        actual=loaded_unresolved_edges,
+        artifact_label="has_child_unresolved_edges.json",
+        expected=expected_unresolved_edges,
+    )
+    loaded_summary = SFIHasChildResolutionSummary.model_validate(
+        open_json_type(summary_fp)
+    )
+    _assert_model_payload_equal(
+        actual=loaded_summary,
+        artifact_label="has_child_resolution_summary.json",
+        expected=expected_summary,
+    )
+
+    return loaded_edges
+
+
 def _validate_graph(
     *,
     edges: Sequence[SFIHasChildEdge],
@@ -1405,6 +1994,95 @@ def _validate_graph(
         )
 
 
+def _validate_resolution_request_prefix(
+    *,
+    requests: Sequence[SFIHasChildResolutionRequest],
+    saved_requests: Sequence[SFIHasChildResolutionRequest],
+    trusted_prefix_length: int,
+) -> None:
+    """Validate saved hasChild requests for a completed-response prefix.
+
+    Parameters
+    ----------
+    requests
+        Current deterministic hasChild resolution requests.
+    saved_requests
+        Persisted request records from a previous run.
+    trusted_prefix_length
+        Number of saved request records required to match the current plan.
+
+    Raises
+    ------
+    ValueError
+        If the saved request prefix cannot safely support response reuse.
+    """
+
+    if trusted_prefix_length < 0:
+        raise ValueError(
+            f"Trusted hasChild request prefix length cannot be negative: "
+            f"{trusted_prefix_length}."
+        )
+
+    if trusted_prefix_length > len(requests):
+        raise ValueError(
+            f"Trusted hasChild request prefix length {trusted_prefix_length} exceeds "
+            f"the current request count {len(requests)}."
+        )
+
+    if len(saved_requests) < trusted_prefix_length:
+        raise ValueError(
+            f"Saved hasChild requests contain {len(saved_requests)} records, but "
+            f"{trusted_prefix_length} completed responses require matching saved "
+            f"request payloads."
+        )
+
+    _assert_model_sequences_equal(
+        actual=saved_requests[:trusted_prefix_length],
+        artifact_label="saved hasChild request completed-response prefix",
+        expected=requests[:trusted_prefix_length],
+    )
+
+
+def _validate_resolution_response_prefix(
+    *,
+    requests: Sequence[SFIHasChildResolutionRequest],
+    responses: Sequence[SFIHasChildResolutionResponse],
+) -> None:
+    """Validate completed hasChild responses against the current request prefix.
+
+    Parameters
+    ----------
+    requests
+        Current deterministic hasChild resolution requests.
+    responses
+        Saved or newly produced hasChild resolution responses.
+
+    Raises
+    ------
+    ValueError
+        If any response is stale, malformed relative to its request, or too long.
+    """
+
+    if len(responses) > len(requests):
+        raise ValueError(
+            f"Found {len(responses)} hasChild responses, but only "
+            f"{len(requests)} requests are planned."
+        )
+
+    for response_index, response in enumerate(responses):
+        request = requests[response_index]
+
+        try:
+            verify_sfi_has_child_resolution_quality(
+                resolution_request=request, resolution_response=response
+            )
+        except Exception as e:
+            raise ValueError(
+                f"Saved hasChild response {response_index + 1} does not match the "
+                f"current planned request: {e}"
+            ) from e
+
+
 def _validate_sfi_final_summary(sfi_final_summary: SFIFinalSummary | None) -> None:
     """Validate that final SFI universe is complete enough for hasChild resolution.
 
@@ -1437,6 +2115,37 @@ def _validate_sfi_final_summary(sfi_final_summary: SFIFinalSummary | None) -> No
         )
 
 
+def _write_context_and_parent_set_artifacts(
+    *,
+    contexts: Sequence[SFIHasChildFinalContext],
+    contexts_fp: Path,
+    parent_sets: Sequence[SFIHasChildCandidateParentSet],
+    parent_sets_fp: Path,
+) -> None:
+    """Write deterministic Step 9 context and parent-set artifacts.
+
+    Parameters
+    ----------
+    contexts
+        Current recovered final SFI contexts.
+    contexts_fp
+        JSON path for persisted final SFI contexts.
+    parent_sets
+        Current bounded parent-candidate sets.
+    parent_sets_fp
+        JSONL path for persisted parent-candidate sets.
+    """
+
+    write_to_json(
+        fp=contexts_fp,
+        json_info=[context.model_dump(mode="json") for context in contexts],
+    )
+    parent_sets_fp.write_text("", encoding="utf-8")
+
+    for parent_set in parent_sets:
+        _write_jsonl_model(fp=parent_sets_fp, model=parent_set)
+
+
 def _write_jsonl_model(*, fp: Path, model: Any) -> None:
     """Append one Pydantic model to a JSONL file.
 
@@ -1454,15 +2163,58 @@ def _write_jsonl_model(*, fp: Path, model: Any) -> None:
         f.write(json.dumps(model.model_dump(mode="json"), ensure_ascii=False) + "\n")
 
 
+def _write_resolution_artifacts(
+    *,
+    edges: Sequence[SFIHasChildEdge],
+    edges_fp: Path,
+    summary: SFIHasChildResolutionSummary,
+    summary_fp: Path,
+    unresolved_edges_fp: Path,
+) -> None:
+    """Write final Step 9 edge, unresolved-edge, and summary artifacts.
+
+    Parameters
+    ----------
+    edges
+        Final hasChild edges.
+    edges_fp
+        JSON path for final hasChild edge artifact.
+    summary
+        Aggregate hasChild resolution summary.
+    summary_fp
+        JSON path for hasChild resolution summary.
+    unresolved_edges_fp
+        JSON path for unresolved root-fallback edge artifact.
+    """
+
+    write_to_json(
+        fp=edges_fp, json_info=[edge.model_dump(mode="json") for edge in edges]
+    )
+    write_to_json(
+        fp=unresolved_edges_fp,
+        json_info=[
+            edge.model_dump(mode="json")
+            for edge in edges
+            if edge.unresolved_root_fallback
+        ],
+    )
+    write_to_json(fp=summary_fp, json_info=summary.model_dump(mode="json"))
+
+
 def resolve_has_child_edges(
     *,
     document_ir: DocumentIR,
     kg_config: CreateKGConfig,
     kg_dirs: KGDirs,
+    overwrite: bool,
     sfi_final_records: Sequence[SFIFinalRecord],
     usage_tracker: KGUsageTracker,
 ) -> list[SFIHasChildEdge]:
     """Resolve final hasChild edges for finalized SFI records.
+
+    When `overwrite` is true, all artifacts are regenerated from scratch. When
+    `overwrite`` is false, complete current artifacts are reused, and incomplete
+    artifacts resume from the longest validated request/response JSONL prefix.
 
     Parameters
     ----------
@@ -1473,6 +2225,9 @@ def resolve_has_child_edges(
         bounds.
     kg_dirs
         KG artifact directory wrapper.
+    overwrite
+        Whether to discard existing artifacts and restart from the first hasChild
+        resolution request.
     sfi_final_records
         Finalized SFI records.
     usage_tracker
@@ -1486,7 +2241,7 @@ def resolve_has_child_edges(
     Raises
     ------
     ValueError
-        If any of SFI records cannot be resolved.
+        If any SFI records cannot be resolved or the final graph is invalid.
     """
 
     if not sfi_final_records:
@@ -1523,18 +2278,64 @@ def resolve_has_child_edges(
     responses_fp = kg_dirs.root / "has_child_resolution_responses.jsonl"
     summary_fp = kg_dirs.root / "has_child_resolution_summary.json"
     unresolved_edges_fp = kg_dirs.root / "has_child_unresolved_edges.json"
-
     make_dir(kg_dirs.root)
-    write_to_json(
-        fp=contexts_fp,
-        json_info=[context.model_dump(mode="json") for context in contexts],
+
+    if overwrite:
+        logger.info("Starting hasChild resolution from scratch because overwrite=True.")
+
+        _prepare_output_files(
+            [
+                contexts_fp,
+                edges_fp,
+                parent_sets_fp,
+                requests_fp,
+                responses_fp,
+                summary_fp,
+                unresolved_edges_fp,
+            ]
+        )
+        completed_responses: list[SFIHasChildResolutionResponse] = []
+    else:
+        existing_edges = _load_complete_existing_relationship_artifacts(
+            contexts=contexts,
+            contexts_fp=contexts_fp,
+            document_ir=document_ir,
+            edges_fp=edges_fp,
+            framework_uuid=framework_uuid,
+            parent_sets=parent_sets,
+            parent_sets_fp=parent_sets_fp,
+            requests=requests,
+            requests_fp=requests_fp,
+            responses_fp=responses_fp,
+            sfi_final_records=sfi_final_records,
+            summary_fp=summary_fp,
+            unresolved_edges_fp=unresolved_edges_fp,
+        )
+
+        if existing_edges is not None:
+            return existing_edges
+
+        completed_responses = _load_resumable_resolution_progress(
+            requests=requests, requests_fp=requests_fp, responses_fp=responses_fp
+        )
+        _prepare_output_files(
+            [contexts_fp, edges_fp, parent_sets_fp, summary_fp, unresolved_edges_fp]
+        )
+        _rewrite_resolution_progress_files(
+            completed_requests=requests[: len(completed_responses)],
+            completed_responses=completed_responses,
+            requests_fp=requests_fp,
+            responses_fp=responses_fp,
+        )
+
+    _write_context_and_parent_set_artifacts(
+        contexts=contexts,
+        contexts_fp=contexts_fp,
+        parent_sets=parent_sets,
+        parent_sets_fp=parent_sets_fp,
     )
-    parent_sets_fp.write_text("", encoding="utf-8")
-
-    for parent_set in parent_sets:
-        _write_jsonl_model(fp=parent_sets_fp, model=parent_set)
-
     responses = _run_resolution_requests(
+        completed_responses=completed_responses,
         requests=requests,
         requests_fp=requests_fp,
         responses_fp=responses_fp,
@@ -1550,33 +2351,16 @@ def resolve_has_child_edges(
         edges=edges, framework_uuid=framework_uuid, sfi_final_records=sfi_final_records
     )
 
-    summary = SFIHasChildResolutionSummary(
-        candidate_parent_set_count=len(parent_sets),
-        edge_count=len(edges),
-        final_sfi_count=len(parent_sets),
-        llm_request_count=len(requests),
-        llm_response_count=len(responses),
-        root_edge_count=sum(1 for edge in edges if edge.is_root_edge),
-        sfi_to_sfi_edge_count=sum(1 for edge in edges if not edge.is_root_edge),
-        truncated_candidate_parent_set_count=sum(
-            1 for parent_set in parent_sets if parent_set.was_truncated
-        ),
-        unresolved_child_count=sum(
-            1 for edge in edges if edge.unresolved_root_fallback
-        ),
+    summary = _build_resolution_summary(
+        edges=edges, parent_sets=parent_sets, requests=requests, responses=responses
     )
-    write_to_json(
-        fp=edges_fp, json_info=[edge.model_dump(mode="json") for edge in edges]
+    _write_resolution_artifacts(
+        edges=edges,
+        edges_fp=edges_fp,
+        summary=summary,
+        summary_fp=summary_fp,
+        unresolved_edges_fp=unresolved_edges_fp,
     )
-    write_to_json(
-        fp=unresolved_edges_fp,
-        json_info=[
-            edge.model_dump(mode="json")
-            for edge in edges
-            if edge.unresolved_root_fallback
-        ],
-    )
-    write_to_json(fp=summary_fp, json_info=summary.model_dump(mode="json"))
 
     logger.success(
         f"Resolved final hasChild edges: edges={len(edges)}; "

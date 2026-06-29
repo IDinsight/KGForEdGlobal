@@ -157,6 +157,7 @@ def build_kgs(
         document_ir=kg_run_inputs.document_ir,
         kg_config=kg_run_inputs.kg_config,
         kg_dirs=kg_dirs,
+        overwrite=config.overwrite,
         sfi_final_records=sfi_final_records,
         usage_tracker=usage_tracker,
     )
