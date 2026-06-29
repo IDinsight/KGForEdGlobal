@@ -113,6 +113,61 @@ def _add_parent_evidence(
         evidence.evidence_summary.append(evidence_summary)
 
 
+def _add_preceding_grouping_evidence(
+    *,
+    child_context: SFIHasChildFinalContext,
+    evidence_by_endpoint_id: dict[str, _ParentEvidence],
+    parent_context: SFIHasChildFinalContext,
+) -> None:
+    """Record distance-banded preceding-grouping evidence for one parent candidate.
+
+    Parameters
+    ----------
+    child_context
+        Final SFI source context for the child.
+    evidence_by_endpoint_id
+        Dictionary of accumulated parent evidence to update.
+    parent_context
+        Final SFI source context for the potential parent.
+    """
+
+    if not _is_preceding_grouping(
+        child_context=child_context, parent_context=parent_context
+    ):
+        return
+
+    # Distance thresholds, ordered widest-last. Each threshold that the distance
+    # satisfies contributes its evidence.
+    distance = child_context.source_order - parent_context.source_order
+    distance_evidence = (
+        (
+            8,
+            "nearest_preceding_grouping",
+            (
+                f"Parent is a preceding Standard Grouping within {distance} "
+                f"source-order units."
+            ),
+        ),
+        (
+            12,
+            "statement_type_compatible",
+            (
+                "Parent is a preceding Standard Grouping compatible with "
+                "hasChild hierarchy instructions."
+            ),
+        ),
+    )
+
+    for threshold, reason, summary in distance_evidence:
+        if distance <= threshold:
+            _add_parent_evidence(
+                evidence_by_endpoint_id=evidence_by_endpoint_id,
+                evidence_reason=reason,
+                evidence_summary=summary,
+                parent_context=parent_context,
+            )
+
+
 def _bound_parent_candidates(
     *,
     framework_uuid: uuid.UUID,
@@ -638,104 +693,78 @@ def _evaluate_parent_child_relationship(
     """
 
     parent_code = _normalize_code(parent_context.normalized_statement_code)
-    code_pair = (child_code, parent_code)
 
-    if code_pair[0] and code_pair[1] and code_pair in code_parent_pairs:
-        _add_parent_evidence(
-            evidence_by_endpoint_id=evidence_by_endpoint_id,
-            evidence_reason="code_parent_hint",
-            evidence_summary=(
-                f"Configured code-parent hint maps child code {child_code!r} "
-                f"to parent code {parent_code!r}."
+    # Simple, independent evidence channels expressed as (predicate, reason, summary).
+    # Each predicate is evaluated against this child/parent pair, and every channel
+    # whose predicate holds contributes its evidence.
+    simple_rules: tuple[tuple[bool, str, str], ...] = (
+        (
+            bool(child_code)
+            and bool(parent_code)
+            and (child_code, parent_code) in code_parent_pairs,
+            "code_parent_hint",
+            f"Configured code-parent hint maps child code {child_code!r} "
+            f"to parent code {parent_code!r}.",
+        ),
+        (
+            bool(
+                set(child_context.source_context_keys)
+                & set(parent_context.source_context_keys)
             ),
-            parent_context=parent_context,
-        )
-
-    if set(child_context.source_context_keys) & set(parent_context.source_context_keys):
-        _add_parent_evidence(
-            evidence_by_endpoint_id=evidence_by_endpoint_id,
-            evidence_reason="same_source_context_key",
-            evidence_summary="Child and parent share a registry source-context key.",
-            parent_context=parent_context,
-        )
-
-    if set(child_context.source_segment_ids) & set(parent_context.source_segment_ids):
-        _add_parent_evidence(
-            evidence_by_endpoint_id=evidence_by_endpoint_id,
-            evidence_reason="same_source_segment",
-            evidence_summary="Child and parent share a DocumentIR source segment.",
-            parent_context=parent_context,
-        )
-
-    if set(child_context.source_window_ids) & set(parent_context.source_window_ids):
-        _add_parent_evidence(
-            evidence_by_endpoint_id=evidence_by_endpoint_id,
-            evidence_reason="same_source_window",
-            evidence_summary="Child and parent share an extraction window.",
-            parent_context=parent_context,
-        )
-
-    if child_table_keys & parent_table_keys:
-        _add_parent_evidence(
-            evidence_by_endpoint_id=evidence_by_endpoint_id,
-            evidence_reason="same_table_context",
-            evidence_summary="Child and parent share cited table row/header context.",
-            parent_context=parent_context,
-        )
-
-    if _context_matches_section_path(
-        child_context=child_context, parent_context=parent_context
-    ):
-        _add_parent_evidence(
-            evidence_by_endpoint_id=evidence_by_endpoint_id,
-            evidence_reason="matched_section_path_label",
-            evidence_summary="Parent description matches recovered child section-path evidence.",
-            parent_context=parent_context,
-        )
-
-    if _is_preceding_grouping(
-        child_context=child_context, parent_context=parent_context
-    ):
-        distance = child_context.source_order - parent_context.source_order
-
-        # Distance thresholds, ordered widest-last. Each threshold that the distance
-        # satisfies contributes its evidence.
-        distance_evidence = (
-            (
-                8,
-                "nearest_preceding_grouping",
-                (
-                    f"Parent is a preceding Standard Grouping within {distance} "
-                    f"source-order units."
-                ),
+            "same_source_context_key",
+            "Child and parent share a registry source-context key.",
+        ),
+        (
+            bool(
+                set(child_context.source_segment_ids)
+                & set(parent_context.source_segment_ids)
             ),
-            (
-                12,
-                "statement_type_compatible",
-                (
-                    "Parent is a preceding Standard Grouping compatible with "
-                    "hasChild hierarchy instructions."
-                ),
+            "same_source_segment",
+            "Child and parent share a DocumentIR source segment.",
+        ),
+        (
+            bool(
+                set(child_context.source_window_ids)
+                & set(parent_context.source_window_ids)
             ),
-        )
-        for threshold, reason, summary in distance_evidence:
-            if distance <= threshold:
-                _add_parent_evidence(
-                    evidence_by_endpoint_id=evidence_by_endpoint_id,
-                    evidence_reason=reason,
-                    evidence_summary=summary,
-                    parent_context=parent_context,
-                )
+            "same_source_window",
+            "Child and parent share an extraction window.",
+        ),
+        (
+            bool(child_table_keys & parent_table_keys),
+            "same_table_context",
+            "Child and parent share cited table row/header context.",
+        ),
+        (
+            _context_matches_section_path(
+                child_context=child_context, parent_context=parent_context
+            ),
+            "matched_section_path_label",
+            "Parent description matches recovered child section-path evidence.",
+        ),
+        (
+            _is_nearby_source_window(
+                child_context=child_context, parent_context=parent_context
+            ),
+            "nearby_source_context_key",
+            "Parent appears in a nearby preceding source window.",
+        ),
+    )
 
-    if _is_nearby_source_window(
-        child_context=child_context, parent_context=parent_context
-    ):
-        _add_parent_evidence(
-            evidence_by_endpoint_id=evidence_by_endpoint_id,
-            evidence_reason="nearby_source_context_key",
-            evidence_summary="Parent appears in a nearby preceding source window.",
-            parent_context=parent_context,
-        )
+    for matched, reason, summary in simple_rules:
+        if matched:
+            _add_parent_evidence(
+                evidence_by_endpoint_id=evidence_by_endpoint_id,
+                evidence_reason=reason,
+                evidence_summary=summary,
+                parent_context=parent_context,
+            )
+
+    _add_preceding_grouping_evidence(
+        child_context=child_context,
+        evidence_by_endpoint_id=evidence_by_endpoint_id,
+        parent_context=parent_context,
+    )
 
 
 def _extract_code_parent_pairs(
