@@ -71,6 +71,78 @@ def _add_parent_evidence(
 ) -> None:
     """Add or update one non-root SFI parent candidate evidence record.
 
+    Examples
+    --------
+
+    1. A parent candidate is created the first time evidence is added for its endpoint.
+
+    Suppose `topic_context` represents the finalized SFI:
+
+    final_sfi_uuid=<topic-uuid>
+    description="1.1 CONVERSATION"
+    normalized_statement_type="Standard Grouping"
+    statement_type="Topic"
+    normalized_statement_code="1.1"
+    statement_code="1.1"
+
+    And the evidence accumulator is initially empty:
+
+    evidence_by_endpoint_id = {}
+
+    Calling:
+
+    _add_parent_evidence(
+        evidence_by_endpoint_id=evidence_by_endpoint_id,
+        evidence_reason="same_table_context",
+        evidence_summary="Child and parent share cited table row/header context.",
+        parent_context=topic_context,
+    )
+
+    creates one `_ParentEvidence` entry keyed by the parent endpoint UUID. The stored
+    candidate has:
+
+    endpoint_id=str(topic_context.final_sfi_uuid)
+    endpoint_kind="StandardsFrameworkItem"
+    description="1.1 CONVERSATION"
+    evidence_reasons=["same_table_context"]
+    evidence_summary=[
+        "Child and parent share cited table row/header context."
+    ]
+
+    Adding more evidence for the same parent updates the existing entry instead of
+    creating a duplicate parent candidate.
+
+    For example, a later evidence channel may call:
+
+    _add_parent_evidence(
+        evidence_by_endpoint_id=evidence_by_endpoint_id,
+        evidence_reason="code_parent_hint",
+        evidence_summary=(
+            "Configured code-parent hint maps child code '1.1.1' "
+            "to parent code '1.1'."
+        ),
+        parent_context=topic_context,
+    )
+
+    The accumulator still contains only one entry for `topic_context`, but that entry
+    now has both evidence reasons:
+
+    evidence_reasons={
+        "same_table_context",
+        "code_parent_hint",
+    }
+
+    and both evidence summaries:
+
+    evidence_summary=[
+        "Child and parent share cited table row/header context.",
+        "Configured code-parent hint maps child code '1.1.1' to parent code '1.1'.",
+    ]
+
+    This lets multiple retrieval signals support the same parent candidate without
+    duplicating the candidate in the bounded parent-candidate set. Final schema
+    conversion later sorts the evidence reasons and preserves unique evidence summaries.
+
     Parameters
     ----------
     evidence_by_endpoint_id
@@ -183,7 +255,83 @@ def _bound_parent_candidates(
     kg_config: CreateKGConfig,
     non_root_candidates: Sequence[SFIHasChildParentCandidate],
 ) -> tuple[list[SFIHasChildParentCandidate], list[str], bool]:
-    """Rerank and truncate parent candidates while preserving root fallback.
+    """Rerank and truncate (non-root) parent candidates while preserving one slot for
+    the StandardsFramework root fallback.
+
+    Examples
+    --------
+
+    1. Suppose the runtime config allows at most four parent candidates:
+
+    kg_config.academic_standards.max_has_child_parent_candidates = 4
+
+    And a child has five non-root parent candidates before bounding:
+
+    topic:
+        endpoint_id="<topic-uuid>"
+        evidence_reasons=["code_parent_hint", "same_table_context"]
+
+    strand:
+        endpoint_id="<strand-uuid>"
+        evidence_reasons=["matched_section_path_label"]
+
+    grade:
+        endpoint_id="<grade-uuid>"
+        evidence_reasons=["nearest_preceding_grouping"]
+
+    nearby_group:
+        endpoint_id="<nearby-group-uuid>"
+        evidence_reasons=["nearby_source_context_key"]
+
+    weak_group:
+        endpoint_id="<weak-group-uuid>"
+        evidence_reasons=["statement_type_compatible"]
+
+    Calling:
+
+    parent_candidates, truncation_notes, was_truncated = _bound_parent_candidates(
+        framework_uuid=<framework-uuid>,
+        kg_config=kg_config,
+        non_root_candidates=[
+            topic,
+            strand,
+            grade,
+            nearby_group,
+            weak_group,
+        ],
+    )
+
+    first ranks the non-root candidates by evidence strength. Candidates with
+    `code_parent_hint` or `matched_section_path_label` are treated as high-signal and
+    are preserved first. Because one slot is reserved for the StandardsFramework root,
+    only three non-root candidates can be returned.
+
+    A possible returned list is:
+
+    [
+        topic,          # high-signal: code_parent_hint
+        strand,         # high-signal: matched_section_path_label
+        grade,          # next strongest remaining candidate
+        root_candidate, # always included
+    ]
+
+    The function also reports that truncation occurred:
+
+    was_truncated == True
+    truncation_notes == [
+        "Truncated parent candidates from 6 to 4, preserving StandardsFramework root fallback."
+    ]
+
+    2. The root candidate is always appended to the returned list, even when no
+        non-root candidate exists. For example, if `non_root_candidates=[]`, the result
+        is:
+
+    parent_candidates == [root_candidate]
+    was_truncated == False
+    truncation_notes == []
+
+    This guarantees that every child has at least one selectable parent endpoint, while
+    still letting the LLM prefer a source-supported SFI parent when one is present.
 
     Parameters
     ----------
@@ -200,10 +348,22 @@ def _bound_parent_candidates(
         Bounded parent candidates, truncation notes, and whether truncation occurred.
     """
 
-    max_parent_candidates = kg_config.academic_standards.max_has_child_parent_candidates
-    root_candidate = _root_parent_candidate(
-        framework_uuid=framework_uuid,
-        framework_title=kg_config.metadata.framework_title,
+    root_candidate = SFIHasChildParentCandidate(
+        description=kg_config.metadata.framework_title or "StandardsFramework root",
+        endpoint_id=str(framework_uuid),
+        endpoint_kind="StandardsFramework",
+        evidence_reasons=[_ROOT_EVIDENCE_REASON],
+        evidence_summary=["StandardsFramework root fallback is always available."],
+        final_sfi_uuid=None,
+        is_root=True,
+        normalized_statement_code=None,
+        normalized_statement_type=None,
+        source_context_keys=[],
+        source_page_indexes=[],
+        source_segment_ids=[],
+        source_window_indexes=[],
+        statement_code=None,
+        statement_type=None,
     )
     sorted_candidates = sorted(non_root_candidates, key=_parent_candidate_rank)
     high_signal_reasons = {"code_parent_hint", "matched_section_path_label"}
@@ -217,6 +377,7 @@ def _bound_parent_candidates(
         for candidate in sorted_candidates
         if candidate not in high_signal_candidates
     ]
+    max_parent_candidates = kg_config.academic_standards.max_has_child_parent_candidates
     slots_for_non_root = max_parent_candidates - 1
     selected_non_root = high_signal_candidates[:slots_for_non_root]
     selected_ids = {candidate.endpoint_id for candidate in selected_non_root}
@@ -495,9 +656,24 @@ def _build_edges_from_responses(
             parent_candidates = parent_candidates_by_child_id[child_id]
 
             if child_resolution.unresolved:
-                root_candidate = _root_parent_candidate(
-                    framework_uuid=framework_uuid,
-                    framework_title="StandardsFramework root fallback",
+                root_candidate = SFIHasChildParentCandidate(
+                    description="StandardsFramework root fallback",
+                    endpoint_id=str(framework_uuid),
+                    endpoint_kind="StandardsFramework",
+                    evidence_reasons=[_ROOT_EVIDENCE_REASON],
+                    evidence_summary=[
+                        "StandardsFramework root fallback is always available."
+                    ],
+                    final_sfi_uuid=None,
+                    is_root=True,
+                    normalized_statement_code=None,
+                    normalized_statement_type=None,
+                    source_context_keys=[],
+                    source_page_indexes=[],
+                    source_segment_ids=[],
+                    source_window_indexes=[],
+                    statement_code=None,
+                    statement_type=None,
                 )
                 edges.append(
                     _build_edge(
@@ -980,6 +1156,74 @@ def _finalize_candidate_parent_set(
 ) -> SFIHasChildCandidateParentSet:
     """Process collected evidence and build the bounded candidate parent set.
 
+    Examples
+    --------
+
+    1. Suppose `child_context` represents the finalized SFI:
+
+    final_sfi_uuid=<child-uuid>
+    description="1.1.1 Use appropriate expressions in conversation"
+    normalized_statement_type="Standard"
+    statement_type="Specific Competence"
+    normalized_statement_code="1.1.1"
+    statement_code="1.1.1"
+
+    And parent evidence has already been accumulated by `_add_parent_evidence(...)`:
+
+    evidence_by_endpoint_id = {
+        "<topic-uuid>": _ParentEvidence(
+            candidate=SFIHasChildParentCandidate(
+                endpoint_id="<topic-uuid>",
+                endpoint_kind="StandardsFrameworkItem",
+                description="1.1 CONVERSATION",
+                evidence_reasons=["code_parent_hint"],
+                evidence_summary=[
+                    "Configured code-parent hint maps child code '1.1.1' "
+                    "to parent code '1.1'."
+                ],
+                final_sfi_uuid=<topic-uuid>,
+                is_root=False,
+                normalized_statement_code="1.1",
+                normalized_statement_type="Standard Grouping",
+                statement_code="1.1",
+                statement_type="Topic",
+                source_context_keys=["ctx_topic"],
+                source_segment_ids=["segment_010"],
+                source_window_indexes=[5],
+                source_page_indexes=[12],
+            )
+        )
+    }
+
+    Calling:
+
+    parent_set = _finalize_candidate_parent_set(
+        child_context=child_context,
+        evidence_by_endpoint_id=evidence_by_endpoint_id,
+        framework_uuid=<framework-uuid>,
+        kg_config=kg_config,
+    )
+
+    returns an `SFIHasChildCandidateParentSet` whose `child_context` is the supplied
+    child and whose `parent_candidates` contain the accumulated topic parent plus the
+    StandardsFramework root fallback:
+
+    parent_set.child_context == child_context
+    parent_set.candidate_count_before_truncation == 2
+    parent_set.parent_candidates == [
+        <topic parent candidate>,
+        <StandardsFramework root fallback candidate>,
+    ]
+
+    Before returning, the function converts each `_ParentEvidence` object back into an
+    immutable schema model, sorts the evidence reasons, removes duplicate evidence
+    summaries, and delegates final ranking/truncation/root-fallback behavior to
+    `_bound_parent_candidates(...)`.
+
+    The returned parent set is only a bounded menu of selectable parents. It does not
+    mean any parent has been chosen yet; the LLM later chooses direct hasChild parents
+    from this set.
+
     Parameters
     ----------
     child_context
@@ -1012,7 +1256,6 @@ def _finalize_candidate_parent_set(
         kg_config=kg_config,
         non_root_candidates=non_root_candidates,
     )
-
     return SFIHasChildCandidateParentSet(
         candidate_count_after_truncation=len(parent_candidates),
         candidate_count_before_truncation=len(non_root_candidates) + 1,
@@ -1571,43 +1814,6 @@ def _rewrite_resolution_progress_files(
 
     for response in completed_responses:
         _write_jsonl_model(fp=responses_fp, model=response)
-
-
-def _root_parent_candidate(
-    *, framework_title: str, framework_uuid: uuid.UUID
-) -> SFIHasChildParentCandidate:
-    """Build the StandardsFramework root fallback parent candidate.
-
-    Parameters
-    ----------
-    framework_title
-        Human-readable StandardsFramework title.
-    framework_uuid
-        Deterministic StandardsFramework root UUID.
-
-    Returns
-    -------
-    SFIHasChildParentCandidate
-        Root parent candidate.
-    """
-
-    return SFIHasChildParentCandidate(
-        description=framework_title or "StandardsFramework root",
-        endpoint_id=str(framework_uuid),
-        endpoint_kind="StandardsFramework",
-        evidence_reasons=[_ROOT_EVIDENCE_REASON],
-        evidence_summary=["StandardsFramework root fallback is always available."],
-        final_sfi_uuid=None,
-        is_root=True,
-        normalized_statement_code=None,
-        normalized_statement_type=None,
-        source_context_keys=[],
-        source_page_indexes=[],
-        source_segment_ids=[],
-        source_window_indexes=[],
-        statement_code=None,
-        statement_type=None,
-    )
 
 
 def _run_resolution_requests(
