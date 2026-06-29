@@ -1061,59 +1061,55 @@ def _evaluate_parent_child_relationship(
     """
 
     parent_code = normalize_code(parent_context.normalized_statement_code)
+    matched_section_path_label = _context_matches_section_path(
+        child_context=child_context, parent_context=parent_context
+    )
+    nearby_source_window = _is_nearby_source_window(
+        child_context=child_context, parent_context=parent_context
+    )
+    same_source_context_key = bool(
+        set(child_context.source_context_keys) & set(parent_context.source_context_keys)
+    )
+    same_source_segment = bool(
+        set(child_context.source_segment_ids) & set(parent_context.source_segment_ids)
+    )
+    same_source_window = bool(
+        set(child_context.source_window_ids) & set(parent_context.source_window_ids)
+    )
+    same_table_context = bool(child_table_keys & parent_table_keys)
 
-    # Simple, independent evidence channels expressed as (predicate, reason, summary).
-    # Each predicate is evaluated against this child/parent pair, and every channel
-    # whose predicate holds contributes its evidence.
+    # Simple, independent non-code evidence channels expressed as
+    # (predicate, reason, summary). Code-parent hints are gated separately below so
+    # globally repeated or audit-disambiguated codes cannot become high-signal parent
+    # evidence without compatible local source support.
     simple_rules: tuple[tuple[bool, str, str], ...] = (
         (
-            bool(child_code)
-            and bool(parent_code)
-            and (child_code, parent_code) in code_parent_pairs,
-            "code_parent_hint",
-            f"Configured code-parent hint maps child code {child_code!r} "
-            f"to parent code {parent_code!r}.",
-        ),
-        (
-            bool(
-                set(child_context.source_context_keys)
-                & set(parent_context.source_context_keys)
-            ),
+            same_source_context_key,
             "same_source_context_key",
             "Child and parent share a registry source-context key.",
         ),
         (
-            bool(
-                set(child_context.source_segment_ids)
-                & set(parent_context.source_segment_ids)
-            ),
+            same_source_segment,
             "same_source_segment",
             "Child and parent share a DocumentIR source segment.",
         ),
         (
-            bool(
-                set(child_context.source_window_ids)
-                & set(parent_context.source_window_ids)
-            ),
+            same_source_window,
             "same_source_window",
             "Child and parent share an extraction window.",
         ),
         (
-            bool(child_table_keys & parent_table_keys),
+            same_table_context,
             "same_table_context",
             "Child and parent share cited table row/header context.",
         ),
         (
-            _context_matches_section_path(
-                child_context=child_context, parent_context=parent_context
-            ),
+            matched_section_path_label,
             "matched_section_path_label",
             "Parent description matches recovered child section-path evidence.",
         ),
         (
-            _is_nearby_source_window(
-                child_context=child_context, parent_context=parent_context
-            ),
+            nearby_source_window,
             "nearby_source_context_key",
             "Parent appears in a nearby preceding source window.",
         ),
@@ -1127,6 +1123,26 @@ def _evaluate_parent_child_relationship(
                 evidence_summary=summary,
                 parent_context=parent_context,
             )
+
+    if _should_add_code_parent_hint_evidence(
+        child_code=child_code,
+        child_context=child_context,
+        child_table_keys=child_table_keys,
+        code_parent_pairs=code_parent_pairs,
+        parent_code=parent_code,
+        parent_context=parent_context,
+        parent_table_keys=parent_table_keys,
+    ):
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason="code_parent_hint",
+            evidence_summary=(
+                f"Configured code-parent hint maps child code {child_code!r} "
+                f"to parent code {parent_code!r}, with compatible local source "
+                f"evidence."
+            ),
+            parent_context=parent_context,
+        )
 
     # Evaluate distance-banded preceding-grouping evidence.
     if (
@@ -1930,6 +1946,97 @@ def _run_resolution_requests(
         responses.append(response)
 
     return responses
+
+
+def _should_add_code_parent_hint_evidence(
+    *,
+    child_code: str | None,
+    child_context: SFIHasChildFinalContext,
+    child_table_keys: set[str],
+    code_parent_pairs: set[tuple[str, str]],
+    parent_code: str | None,
+    parent_context: SFIHasChildFinalContext,
+    parent_table_keys: set[str],
+) -> bool:
+    """Decide whether a code-parent hint should become high-signal evidence.
+
+    Code-parent pairs are useful retrieval evidence, but they must be admitted only for
+    a specific child/parent pair that is also source-compatible. This prevents reused,
+    duplicated, or disambiguated codes from crowding out the true source-grounded
+    parent during bounded candidate truncation.
+
+    Parameters
+    ----------
+    child_code
+        Normalized code for the potential child, when present.
+    child_context
+        Final SFI source context for the potential child.
+    child_table_keys
+        Table-local row/header context keys for the child.
+    code_parent_pairs
+        Globally extracted normalized child-code to parent-code hint pairs.
+    parent_code
+        Normalized code for the potential parent, when present.
+    parent_context
+        Final SFI source context for the potential parent.
+    parent_table_keys
+        Table-local row/header context keys for the parent.
+
+    Returns
+    -------
+    bool
+        True when the normalized code pair exists, the parent is structurally
+        plausible, local source compatibility exists, and audit evidence does not
+        require blocking the hint.
+    """
+
+    if not (child_code and parent_code):
+        return False
+
+    if (child_code, parent_code) not in code_parent_pairs:
+        return False
+
+    # A source-visible Standard Grouping is always structurally plausible. Other types
+    # are only allowed if they do not appear after the child in source order.
+    if (
+        parent_context.normalized_statement_type != "Standard Grouping"
+        and parent_context.source_order > child_context.source_order
+    ):
+        return False
+
+    # Check for strong local source compatibility.
+    has_strong_compatibility = (
+        bool(
+            set(child_context.source_context_keys)
+            & set(parent_context.source_context_keys)
+        )
+        or bool(
+            set(child_context.source_segment_ids)
+            & set(parent_context.source_segment_ids)
+        )
+        or bool(
+            set(child_context.source_window_ids) & set(parent_context.source_window_ids)
+        )
+        or bool(child_table_keys & parent_table_keys)
+        or _context_matches_section_path(
+            child_context=child_context, parent_context=parent_context
+        )
+    )
+
+    if has_strong_compatibility:
+        return True
+
+    # Fallback: Without strong compatibility, we require weak compatibility (nearby
+    # source window) AND the absence of the same-code/different-content audit flag.
+    if not _is_nearby_source_window(
+        child_context=child_context, parent_context=parent_context
+    ):
+        return False
+
+    return not (
+        "same_code_different_content" in child_context.audit_flags
+        or "same_code_different_content" in parent_context.audit_flags
+    )
 
 
 def _source_ref_int_values(*, key: str, record: SFIFinalRecord) -> list[int]:
