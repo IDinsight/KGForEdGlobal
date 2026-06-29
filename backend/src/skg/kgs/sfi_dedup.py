@@ -35,7 +35,12 @@ from skg.kgs.schemas import (
     SFIRegistryArtifact,
     SFIRegistryCandidate,
 )
-from skg.kgs.utils import KGDirs, unique_nonempty
+from skg.kgs.utils import (
+    KGDirs,
+    assert_model_sequences_equal,
+    model_dump_key,
+    unique_nonempty,
+)
 from skg.kgs.validators import verify_sfi_dedup_review_quality
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
@@ -192,46 +197,10 @@ def _assert_model_payload_equal(
         If the model payloads differ.
     """
 
-    if _model_dump_key(actual) != _model_dump_key(expected):
+    if model_dump_key(actual) != model_dump_key(expected):
         raise ValueError(
             f"{artifact_label} does not match the current planned artifact payload."
         )
-
-
-def _assert_model_sequences_equal(
-    *, actual: Sequence[Any], artifact_label: str, expected: Sequence[Any]
-) -> None:
-    """Validate that two persisted model sequences are exactly equivalent.
-
-    Parameters
-    ----------
-    actual
-        Models loaded from an artifact.
-    artifact_label
-        Human-readable artifact label for error messages.
-    expected
-        Expected models computed during the current run.
-
-    Raises
-    ------
-    ValueError
-        If the sequences differ in length or model payload.
-    """
-
-    if len(actual) != len(expected):
-        raise ValueError(
-            f"{artifact_label} has {len(actual)} records, but expected "
-            f"{len(expected)} records."
-        )
-
-    for index, (actual_model, expected_model) in enumerate(
-        zip(actual, expected, strict=True), start=1
-    ):
-        if _model_dump_key(actual_model) != _model_dump_key(expected_model):
-            raise ValueError(
-                f"{artifact_label} record {index} does not match the current "
-                f"planned artifact payload."
-            )
 
 
 def _build_current_merge_groups(
@@ -1770,23 +1739,6 @@ def _merge_edges_to_components(
     ]
 
 
-def _model_dump_key(value: Any) -> str:
-    """Build a stable comparison key for a Pydantic-style model.
-
-    Parameters
-    ----------
-    value
-        Model-like value with a `model_dump` method.
-
-    Returns
-    -------
-    str
-        Stable JSON representation for exact artifact comparison.
-    """
-
-    return json.dumps(value.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
-
-
 def _prepare_output_files(output_fps: Sequence[Path]) -> None:
     """Remove stale output artifacts and create empty JSONL artifacts.
 
@@ -2228,7 +2180,7 @@ def _validate_complete_merge_artifacts(
         merge_groups=merge_report.merge_groups,
         sfi_candidate_registry=sfi_candidate_registry,
     )
-    _assert_model_sequences_equal(
+    assert_model_sequences_equal(
         actual=merge_report.review_requests,
         artifact_label="sfi_merge_report.review_requests",
         expected=planned_review_requests,
@@ -2264,27 +2216,27 @@ def _validate_complete_merge_artifacts(
         artifact_label="sfi_merge_report.json",
         expected=expected_merge_report,
     )
-    _assert_model_sequences_equal(
+    assert_model_sequences_equal(
         actual=_load_merge_groups_file(merge_groups_fp),
         artifact_label="sfi_merge_groups.json",
         expected=expected_merge_report.merge_groups,
     )
-    _assert_model_sequences_equal(
+    assert_model_sequences_equal(
         actual=_load_merge_groups_file(conflicts_fp),
         artifact_label="sfi_merge_conflicts.json",
         expected=expected_merge_report.conflict_groups,
     )
-    _assert_model_sequences_equal(
+    assert_model_sequences_equal(
         actual=_load_merge_groups_file(needs_review_fp),
         artifact_label="sfi_merge_needs_review.json",
         expected=expected_merge_report.needs_review_groups,
     )
-    _assert_model_sequences_equal(
+    assert_model_sequences_equal(
         actual=_load_jsonl_review_requests(review_requests_fp),
         artifact_label="sfi_dedup_review_requests.jsonl",
         expected=planned_review_requests,
     )
-    _assert_model_sequences_equal(
+    assert_model_sequences_equal(
         actual=_load_jsonl_review_responses(
             allow_partial_prefix=False, review_responses_fp=review_responses_fp
         ),
@@ -2402,7 +2354,7 @@ def _validate_review_request_prefix(
             f"same number of matching saved request payloads."
         )
 
-    _assert_model_sequences_equal(
+    assert_model_sequences_equal(
         actual=saved_review_requests[:trusted_prefix_length],
         artifact_label=("saved SFI dedup review request completed-response prefix"),
         expected=planned_review_requests[:trusted_prefix_length],

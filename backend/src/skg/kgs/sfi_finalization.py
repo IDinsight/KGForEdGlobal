@@ -10,7 +10,6 @@ does not infer hierarchy, compile final KG objects, or create relationships.
 # Standard Library
 import hashlib
 import re
-import unicodedata
 import uuid
 
 from collections import Counter
@@ -30,7 +29,7 @@ from skg.kgs.schemas import (
     SFIRegistryArtifact,
     SFIRegistryCandidate,
 )
-from skg.kgs.utils import KGDirs, unique_nonempty
+from skg.kgs.utils import KGDirs, normalize_text, unique_nonempty
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, write_to_json
 
@@ -404,7 +403,7 @@ def _choose_final_description(merge_group: SFIMergeGroup) -> str:
     normalized_to_values: dict[str, list[str]] = {}
 
     for value in candidates:
-        normalized_to_values.setdefault(_normalize_text(value), []).append(value)
+        normalized_to_values.setdefault(normalize_text(value), []).append(value)
 
     if len(normalized_to_values) == 1:
         return _preferred_surface_form(candidates)
@@ -457,27 +456,8 @@ def _hash_text(*, n_hex: int, value: str) -> str:
         Truncated hexadecimal digest.
     """
 
-    normalized = _normalize_text(value)
+    normalized = normalize_text(value)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:n_hex]
-
-
-def _normalize_text(value: str) -> str:
-    """Normalize text for deterministic identity material.
-
-    Parameters
-    ----------
-    value
-        Raw text.
-
-    Returns
-    -------
-    str
-        Unicode-normalized, casefolded text with collapsed whitespace.
-    """
-
-    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
-    normalized = re.sub(r"\s+", " ", normalized).strip()
-    return normalized
 
 
 def _preferred_surface_form(values: Sequence[str]) -> str:
@@ -586,7 +566,7 @@ def _slug(value: str) -> str:
         Lowercase slug.
     """
 
-    slug = re.sub(r"[^0-9a-z]+", "-", _normalize_text(value)).strip("-")
+    slug = re.sub(r"[^0-9a-z]+", "-", normalize_text(value)).strip("-")
     return slug or "unknown"
 
 

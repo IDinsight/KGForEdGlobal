@@ -1,6 +1,7 @@
 """This module contains utility functions for knowledge graph creation."""
 
 # Standard Library
+import json
 import re
 import unicodedata
 import uuid
@@ -9,10 +10,11 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Sequence
 
 # Third Party Library
 from loguru import logger
+from pydantic import BaseModel
 
 # Package Library
 from skg.document_ir.schemas import DocumentIR
@@ -442,6 +444,42 @@ def _validate_kg_config_compatibility(
     return warnings
 
 
+def assert_model_sequences_equal(
+    *, actual: Sequence[Any], artifact_label: str, expected: Sequence[Any]
+) -> None:
+    """Validate that two persisted model sequences are exactly equivalent.
+
+    Parameters
+    ----------
+    actual
+        Models loaded from an artifact.
+    artifact_label
+        Human-readable artifact label for error messages.
+    expected
+        Expected models computed during the current run.
+
+    Raises
+    ------
+    ValueError
+        If the sequences differ in length or model payload.
+    """
+
+    if len(actual) != len(expected):
+        raise ValueError(
+            f"{artifact_label} has {len(actual)} records, but expected "
+            f"{len(expected)} records."
+        )
+
+    for index, (actual_model, expected_model) in enumerate(
+        zip(actual, expected, strict=True), start=1
+    ):
+        if model_dump_key(actual_model) != model_dump_key(expected_model):
+            raise ValueError(
+                f"{artifact_label} record {index} does not match the current "
+                f"planned artifact payload."
+            )
+
+
 def build_run_manifest(kg_run_inputs: KGInputs) -> dict[str, Any]:
     """Build a run manifest for the KG creation prep stage.
 
@@ -650,6 +688,23 @@ def load_and_validate_inputs(
     )
 
 
+def model_dump_key(value: BaseModel) -> str:
+    """Build a stable JSON comparison key for a Pydantic model.
+
+    Parameters
+    ----------
+    value
+        Pydantic model to serialize.
+
+    Returns
+    -------
+    str
+        Stable JSON representation suitable for exact artifact comparison.
+    """
+
+    return json.dumps(value.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+
+
 def normalize_code(value: Any) -> str | None:
     """Normalize a source code for hint matching.
 
@@ -670,6 +725,25 @@ def normalize_code(value: Any) -> str | None:
     normalized = unicodedata.normalize("NFKC", str(value)).casefold().strip()
     normalized = re.sub(r"\s+", "", normalized).strip(" .:;-)–—")
     return normalized or None
+
+
+def normalize_text(value: Any) -> str:
+    """Normalize text.
+
+    Parameters
+    ----------
+    value
+        Raw text value.
+
+    Returns
+    -------
+    str
+        Normalized text.
+    """
+
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
 
 
 def persist_kg_run(

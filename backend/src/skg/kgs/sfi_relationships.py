@@ -10,14 +10,12 @@ relationship-resolution artifacts.
 # Standard Library
 import hashlib
 import json
-import re
-import unicodedata
 import uuid
 
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Sequence
 
 # Third Party Library
 from loguru import logger
@@ -39,7 +37,14 @@ from skg.kgs.schemas import (
     SFIHasChildResolutionResponse,
     SFIHasChildResolutionSummary,
 )
-from skg.kgs.utils import KGDirs, normalize_code, unique_nonempty
+from skg.kgs.utils import (
+    KGDirs,
+    assert_model_sequences_equal,
+    model_dump_key,
+    normalize_code,
+    normalize_text,
+    unique_nonempty,
+)
 from skg.kgs.validators import verify_sfi_has_child_resolution_quality
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
@@ -185,69 +190,6 @@ def _add_parent_evidence(
 
     if evidence_summary and evidence_summary not in evidence.evidence_summary:
         evidence.evidence_summary.append(evidence_summary)
-
-
-def _assert_model_payload_equal(
-    *, actual: BaseModel, artifact_label: str, expected: BaseModel
-) -> None:
-    """Validate that two Pydantic model payloads are exactly equivalent.
-
-    Parameters
-    ----------
-    actual
-        Model loaded from an existing artifact.
-    artifact_label
-        Human-readable artifact label for error messages.
-    expected
-        Model payload computed from the current inputs.
-
-    Raises
-    ------
-    ValueError
-        If the actual artifact payload differs from the expected current payload.
-    """
-
-    if _model_dump_key(actual) != _model_dump_key(expected):
-        raise ValueError(
-            f"{artifact_label} does not match the current planned SFI hasChild "
-            f"resolution payload."
-        )
-
-
-def _assert_model_sequences_equal(
-    *, actual: Sequence[BaseModel], artifact_label: str, expected: Sequence[BaseModel]
-) -> None:
-    """Validate that two ordered Pydantic model sequences are exactly equivalent.
-
-    Parameters
-    ----------
-    actual
-        Models loaded from an existing SFI hasChild resolution artifact.
-    artifact_label
-        Human-readable artifact label for error messages.
-    expected
-        Model sequence computed from the current SFI hasChild resolution inputs.
-
-    Raises
-    ------
-    ValueError
-        If the sequence lengths differ or any payload differs at the same position.
-    """
-
-    if len(actual) != len(expected):
-        raise ValueError(
-            f"{artifact_label} has {len(actual)} records, but expected "
-            f"{len(expected)} records."
-        )
-
-    for index, (actual_model, expected_model) in enumerate(
-        zip(actual, expected, strict=True), start=1
-    ):
-        if _model_dump_key(actual_model) != _model_dump_key(expected_model):
-            raise ValueError(
-                f"{artifact_label} record {index} does not match the current "
-                f"planned SFI hasChild resolution payload."
-            )
 
 
 def _bound_parent_candidates(
@@ -965,14 +907,14 @@ def _context_matches_section_path(
     """
 
     parent_texts = unique_nonempty(
-        _normalize_text(value)
+        normalize_text(value)
         for value in [
             parent_context.description,
             *parent_context.candidate_source_texts,
         ]
     )
     section_texts = unique_nonempty(
-        _normalize_text(value) for value in child_context.section_path_labels
+        normalize_text(value) for value in child_context.section_path_labels
     )
 
     if not parent_texts or not section_texts:
@@ -1428,7 +1370,7 @@ def _load_and_validate_existing_relationship_artifacts(
         loaded_contexts = _load_json_model_sequence(
             fp=contexts_fp, model_type=SFIHasChildFinalContext
         )
-        _assert_model_sequences_equal(
+        assert_model_sequences_equal(
             actual=loaded_contexts,
             artifact_label="sfi_final_contexts.json",
             expected=contexts,
@@ -1439,7 +1381,7 @@ def _load_and_validate_existing_relationship_artifacts(
             fp=parent_sets_fp,
             model_type=SFIHasChildCandidateParentSet,
         )
-        _assert_model_sequences_equal(
+        assert_model_sequences_equal(
             actual=loaded_parent_sets,
             artifact_label="has_child_candidate_parent_sets.jsonl",
             expected=parent_sets,
@@ -1450,7 +1392,7 @@ def _load_and_validate_existing_relationship_artifacts(
             fp=requests_fp,
             model_type=SFIHasChildResolutionRequest,
         )
-        _assert_model_sequences_equal(
+        assert_model_sequences_equal(
             actual=loaded_requests,
             artifact_label="has_child_resolution_requests.jsonl",
             expected=requests,
@@ -1507,7 +1449,7 @@ def _load_and_validate_existing_relationship_artifacts(
         loaded_edges = _load_json_model_sequence(
             fp=edges_fp, model_type=SFIHasChildEdge
         )
-        _assert_model_sequences_equal(
+        assert_model_sequences_equal(
             actual=loaded_edges,
             artifact_label="has_child_edges_final.json",
             expected=expected_edges,
@@ -1516,7 +1458,7 @@ def _load_and_validate_existing_relationship_artifacts(
         loaded_unresolved_edges = _load_json_model_sequence(
             fp=unresolved_edges_fp, model_type=SFIHasChildEdge
         )
-        _assert_model_sequences_equal(
+        assert_model_sequences_equal(
             actual=loaded_unresolved_edges,
             artifact_label="has_child_unresolved_edges.json",
             expected=expected_unresolved_edges,
@@ -1525,11 +1467,13 @@ def _load_and_validate_existing_relationship_artifacts(
         loaded_summary = SFIHasChildResolutionSummary.model_validate(
             open_json_type(summary_fp)
         )
-        _assert_model_payload_equal(
-            actual=loaded_summary,
-            artifact_label="has_child_resolution_summary.json",
-            expected=expected_summary,
-        )
+
+        if model_dump_key(loaded_summary) != model_dump_key(expected_summary):
+            raise ValueError(
+                "has_child_resolution_summary.json does not match the current planned "
+                "SFI hasChild resolution payload."
+            )
+
     except Exception as e:  # pylint: disable=W0718
         logger.warning(
             f"Existing hasChild artifacts are incomplete or stale; resuming SFI "
@@ -1668,6 +1612,7 @@ def _load_jsonl_models(
                         f"record in {fp} at line {line_number}; valid prefix length is "
                         f"{len(models)}: {e}"
                     )
+
                     return models
 
                 raise ValueError(
@@ -1764,42 +1709,6 @@ def _load_sfi_final_summary(kg_dirs: KGDirs) -> SFIFinalSummary | None:
     return SFIFinalSummary.model_validate(open_json_type(summary_fp))
 
 
-def _model_dump_key(value: BaseModel) -> str:
-    """Build a stable JSON comparison key for a Pydantic model.
-
-    Parameters
-    ----------
-    value
-        Pydantic model to serialize.
-
-    Returns
-    -------
-    str
-        Stable JSON representation suitable for exact artifact comparison.
-    """
-
-    return json.dumps(value.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
-
-
-def _normalize_text(value: Any) -> str:
-    """Normalize text for matching and hashing.
-
-    Parameters
-    ----------
-    value
-        Raw text value.
-
-    Returns
-    -------
-    str
-        Normalized text.
-    """
-
-    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
-    normalized = re.sub(r"\s+", " ", normalized).strip()
-    return normalized
-
-
 def _parent_candidate_rank(candidate: SFIHasChildParentCandidate) -> tuple[int, str]:
     """Build deterministic sorting key for parent candidates.
 
@@ -1827,7 +1736,7 @@ def _parent_candidate_rank(candidate: SFIHasChildParentCandidate) -> tuple[int, 
         _ROOT_EVIDENCE_REASON: 0,
     }
     score = sum(weights.get(reason, 0) for reason in candidate.evidence_reasons)
-    return (-score, candidate.endpoint_id)
+    return -score, candidate.endpoint_id
 
 
 def _prepare_output_files(output_fps: Sequence[Path]) -> None:
@@ -2402,7 +2311,7 @@ def _validate_resolution_request_prefix(
             f"request payloads."
         )
 
-    _assert_model_sequences_equal(
+    assert_model_sequences_equal(
         actual=saved_requests[:trusted_prefix_length],
         artifact_label="saved hasChild request completed-response prefix",
         expected=requests[:trusted_prefix_length],
@@ -2649,7 +2558,7 @@ def resolve_has_child_edges(
             child_parent_sets=[parent_set],
             request_id=(
                 f"has_child_request_"
-                f"{hashlib.sha256(_normalize_text(str(parent_set.child_context.final_sfi_uuid)).encode('utf-8')).hexdigest()[:16]}"
+                f"{hashlib.sha256(normalize_text(str(parent_set.child_context.final_sfi_uuid)).encode('utf-8')).hexdigest()[:16]}"
             ),
             sfi_has_child_instructions=kg_config.academic_standards.sfi_has_child_instructions,
         )
