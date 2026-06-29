@@ -177,11 +177,11 @@ def _assert_model_payload_equal(
     Parameters
     ----------
     actual
-        Model loaded from an existing Step 9 artifact.
+        Model loaded from an existing artifact.
     artifact_label
         Human-readable artifact label for error messages.
     expected
-        Model payload computed from the current Step 9 inputs.
+        Model payload computed from the current inputs.
 
     Raises
     ------
@@ -656,7 +656,7 @@ def _build_resolution_summary(
     Returns
     -------
     SFIHasChildResolutionSummary
-        Aggregate Step 9 summary payload.
+        Aggregate summary payload.
     """
 
     return SFIHasChildResolutionSummary(
@@ -2121,7 +2121,7 @@ def _write_context_and_parent_set_artifacts(
     parent_sets: Sequence[SFIHasChildCandidateParentSet],
     parent_sets_fp: Path,
 ) -> None:
-    """Write deterministic Step 9 context and parent-set artifacts.
+    """Write deterministic context and parent-set artifacts.
 
     Parameters
     ----------
@@ -2170,7 +2170,7 @@ def _write_resolution_artifacts(
     summary_fp: Path,
     unresolved_edges_fp: Path,
 ) -> None:
-    """Write final Step 9 edge, unresolved-edge, and summary artifacts.
+    """Write final edge, unresolved-edge, and summary artifacts.
 
     Parameters
     ----------
