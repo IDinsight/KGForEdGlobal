@@ -41,6 +41,7 @@ from skg.kgs.schemas import (
 )
 from skg.kgs.utils import KGDirs, normalize_code, unique_nonempty
 from skg.kgs.validators import verify_sfi_has_child_resolution_quality
+from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, open_json_type, write_to_json
 
@@ -619,6 +620,115 @@ def _build_edges_from_responses(
 ) -> list[SFIHasChildEdge]:
     """Convert validated LLM responses into deterministic hasChild edges.
 
+    Examples
+    --------
+
+    1. Suppose the bounded parent set for one child contains:
+
+    child_context:
+        final_sfi_uuid=<child-uuid>
+        description="1.1.1 Use appropriate expressions in conversation"
+
+    parent_candidates=[
+        SFIHasChildParentCandidate(
+            endpoint_id="<topic-uuid>",
+            endpoint_kind="StandardsFrameworkItem",
+            description="1.1 CONVERSATION",
+            final_sfi_uuid=<topic-uuid>,
+            is_root=False,
+            evidence_reasons=["code_parent_hint", "same_table_context"],
+            evidence_summary=[
+                "Configured code-parent hint maps child code '1.1.1' to parent code '1.1'.",
+                "Child and parent share cited table row/header context.",
+            ],
+            ...
+        ),
+        SFIHasChildParentCandidate(
+            endpoint_id="<framework-uuid>",
+            endpoint_kind="StandardsFramework",
+            description="StandardsFramework root",
+            final_sfi_uuid=None,
+            is_root=True,
+            evidence_reasons=["root_fallback"],
+            evidence_summary=[
+                "StandardsFramework root fallback is always available."
+            ],
+            ...
+        ),
+    ]
+
+    And the validated LLM response says the topic is the direct parent:
+
+    SFIHasChildResolutionResponse(
+        request_id="has_child_request_abc123",
+        child_resolutions=[
+            SFIHasChildChildResolution(
+                child_final_sfi_uuid=<child-uuid>,
+                selected_parent_endpoint_ids=["<topic-uuid>"],
+                unresolved=False,
+                confidence=0.91,
+                reason="The specific competence is directly organized under the visible topic.",
+            )
+        ],
+    )
+
+    Then this function looks up "<topic-uuid>" in the child-specific parent-candidate
+    set and builds one edge:
+
+    SFIHasChildEdge(
+        source_entity="StandardsFrameworkItem",
+        source_entity_uuid=<topic-uuid>,
+        target_entity="StandardsFrameworkItem",
+        target_sfi_uuid=<child-uuid>,
+        parent_endpoint_id="<topic-uuid>",
+        parent_final_sfi_uuid=<topic-uuid>,
+        child_final_sfi_uuid=<child-uuid>,
+        relationship_type="hasChild",
+        evidence_reasons=["code_parent_hint", "same_table_context"],
+        llm_reason="The specific competence is directly organized under the visible topic.",
+        unresolved_root_fallback=False,
+        ...
+    )
+
+    The relationship ID is minted deterministically from the document key, relationship
+    type, parent UUID, and child UUID inside `_build_edge(...)`.
+
+    2. When the LLM marks a child as unresolved, the function creates a
+        StandardsFramework root fallback edge.
+
+    Suppose the LLM response for a child is:
+
+    SFIHasChildChildResolution(
+        child_final_sfi_uuid=<child-uuid>,
+        selected_parent_endpoint_ids=[],
+        unresolved=True,
+        confidence=0.42,
+        reason="No supplied SFI parent candidate is clearly source-supported.",
+    )
+
+    Then this function does not use any non-root parent candidate. Instead, it creates
+    a root candidate with `_root_parent_candidate(...)` and builds one fallback edge:
+
+    SFIHasChildEdge(
+        source_entity="StandardsFramework",
+        source_entity_uuid=<framework-uuid>,
+        target_entity="StandardsFrameworkItem",
+        target_sfi_uuid=<child-uuid>,
+        parent_endpoint_id="<framework-uuid>",
+        parent_final_sfi_uuid=None,
+        child_final_sfi_uuid=<child-uuid>,
+        relationship_type="hasChild",
+        evidence_reasons=["root_fallback"],
+        llm_reason="No supplied SFI parent candidate is clearly source-supported.",
+        is_root_edge=True,
+        unresolved_root_fallback=True,
+        ...
+    )
+
+    This guarantees that every finalized SFI can remain reachable from the framework
+    root even when the direct SFI parent cannot be resolved from the bounded candidate
+    set.
+
     Parameters
     ----------
     document_ir
@@ -655,6 +765,7 @@ def _build_edges_from_responses(
             child_context = child_context_by_id[child_id]
             parent_candidates = parent_candidates_by_child_id[child_id]
 
+            # Build unresolved edge to root.
             if child_resolution.unresolved:
                 root_candidate = SFIHasChildParentCandidate(
                     description="StandardsFramework root fallback",
@@ -688,6 +799,7 @@ def _build_edges_from_responses(
                 )
                 continue
 
+            # Build resolved edges.
             for parent_endpoint_id in child_resolution.selected_parent_endpoint_ids:
                 edges.append(
                     _build_edge(
@@ -832,49 +944,6 @@ def _build_final_contexts(
     )
 
     return contexts
-
-
-def _build_resolution_summary(
-    *,
-    edges: Sequence[SFIHasChildEdge],
-    parent_sets: Sequence[SFIHasChildCandidateParentSet],
-    requests: Sequence[SFIHasChildResolutionRequest],
-    responses: Sequence[SFIHasChildResolutionResponse],
-) -> SFIHasChildResolutionSummary:
-    """Build the aggregate hasChild resolution summary.
-
-    Parameters
-    ----------
-    edges
-        Final hasChild edge records.
-    parent_sets
-        Planned bounded parent-candidate sets.
-    requests
-        Planned LLM resolution requests.
-    responses
-        Completed LLM resolution responses.
-
-    Returns
-    -------
-    SFIHasChildResolutionSummary
-        Aggregate summary payload.
-    """
-
-    return SFIHasChildResolutionSummary(
-        candidate_parent_set_count=len(parent_sets),
-        edge_count=len(edges),
-        final_sfi_count=len(parent_sets),
-        llm_request_count=len(requests),
-        llm_response_count=len(responses),
-        root_edge_count=sum(1 for edge in edges if edge.is_root_edge),
-        sfi_to_sfi_edge_count=sum(1 for edge in edges if not edge.is_root_edge),
-        truncated_candidate_parent_set_count=sum(
-            1 for parent_set in parent_sets if parent_set.was_truncated
-        ),
-        unresolved_child_count=sum(
-            1 for edge in edges if edge.unresolved_root_fallback
-        ),
-    )
 
 
 def _context_matches_section_path(
@@ -1298,7 +1367,7 @@ def _is_nearby_source_window(
     )
 
 
-def _load_complete_existing_relationship_artifacts(
+def _load_and_validate_existing_relationship_artifacts(
     *,
     contexts: Sequence[SFIHasChildFinalContext],
     contexts_fp: Path,
@@ -1314,7 +1383,7 @@ def _load_complete_existing_relationship_artifacts(
     summary_fp: Path,
     unresolved_edges_fp: Path,
 ) -> list[SFIHasChildEdge] | None:
-    """Load complete current artifacts, or return None to resume.
+    """Load existing artifacts, or return None to resume.
 
     Existing artifacts are reusable only when every persisted artifact is present,
     parseable, exactly aligned with the current deterministic context, parent-set, and
@@ -1355,37 +1424,126 @@ def _load_complete_existing_relationship_artifacts(
         Reusable final hasChild edges, or None when artifacts are incomplete or stale.
     """
 
-    if not edges_fp.exists():
-        return None
-
     try:
-        edges = _validate_complete_relationship_artifacts(
-            contexts=contexts,
-            contexts_fp=contexts_fp,
+        loaded_contexts = _load_json_model_sequence(
+            fp=contexts_fp, model_type=SFIHasChildFinalContext
+        )
+        _assert_model_sequences_equal(
+            actual=loaded_contexts,
+            artifact_label="sfi_final_contexts.json",
+            expected=contexts,
+        )
+
+        loaded_parent_sets = _load_jsonl_models(
+            allow_partial_prefix=False,
+            fp=parent_sets_fp,
+            model_type=SFIHasChildCandidateParentSet,
+        )
+        _assert_model_sequences_equal(
+            actual=loaded_parent_sets,
+            artifact_label="has_child_candidate_parent_sets.jsonl",
+            expected=parent_sets,
+        )
+
+        loaded_requests = _load_jsonl_models(
+            allow_partial_prefix=False,
+            fp=requests_fp,
+            model_type=SFIHasChildResolutionRequest,
+        )
+        _assert_model_sequences_equal(
+            actual=loaded_requests,
+            artifact_label="has_child_resolution_requests.jsonl",
+            expected=requests,
+        )
+
+        loaded_responses = _load_jsonl_models(
+            allow_partial_prefix=False,
+            fp=responses_fp,
+            model_type=SFIHasChildResolutionResponse,
+        )
+        _validate_resolution_response_prefix(
+            requests=requests, responses=loaded_responses
+        )
+
+        if len(loaded_responses) != len(requests):
+            raise ValueError(
+                f"has_child_resolution_responses.jsonl has {len(loaded_responses)} "
+                f"records, but expected {len(requests)} records."
+            )
+
+        expected_edges = _build_edges_from_responses(
             document_ir=document_ir,
-            edges_fp=edges_fp,
             framework_uuid=framework_uuid,
             parent_sets=parent_sets,
-            parent_sets_fp=parent_sets_fp,
-            requests=requests,
-            requests_fp=requests_fp,
-            responses_fp=responses_fp,
+            responses=loaded_responses,
+        )
+        _validate_graph(
+            edges=expected_edges,
+            framework_uuid=framework_uuid,
             sfi_final_records=sfi_final_records,
-            summary_fp=summary_fp,
-            unresolved_edges_fp=unresolved_edges_fp,
+        )
+
+        expected_summary = SFIHasChildResolutionSummary(
+            candidate_parent_set_count=len(parent_sets),
+            edge_count=len(expected_edges),
+            final_sfi_count=len(parent_sets),
+            llm_request_count=len(requests),
+            llm_response_count=len(loaded_responses),
+            root_edge_count=sum(1 for edge in expected_edges if edge.is_root_edge),
+            sfi_to_sfi_edge_count=sum(
+                1 for edge in expected_edges if not edge.is_root_edge
+            ),
+            truncated_candidate_parent_set_count=sum(
+                1 for parent_set in parent_sets if parent_set.was_truncated
+            ),
+            unresolved_child_count=sum(
+                1 for edge in expected_edges if edge.unresolved_root_fallback
+            ),
+        )
+        expected_unresolved_edges = [
+            edge for edge in expected_edges if edge.unresolved_root_fallback
+        ]
+
+        loaded_edges = _load_json_model_sequence(
+            fp=edges_fp, model_type=SFIHasChildEdge
+        )
+        _assert_model_sequences_equal(
+            actual=loaded_edges,
+            artifact_label="has_child_edges_final.json",
+            expected=expected_edges,
+        )
+
+        loaded_unresolved_edges = _load_json_model_sequence(
+            fp=unresolved_edges_fp, model_type=SFIHasChildEdge
+        )
+        _assert_model_sequences_equal(
+            actual=loaded_unresolved_edges,
+            artifact_label="has_child_unresolved_edges.json",
+            expected=expected_unresolved_edges,
+        )
+
+        loaded_summary = SFIHasChildResolutionSummary.model_validate(
+            open_json_type(summary_fp)
+        )
+        _assert_model_payload_equal(
+            actual=loaded_summary,
+            artifact_label="has_child_resolution_summary.json",
+            expected=expected_summary,
         )
     except Exception as e:  # pylint: disable=W0718
         logger.warning(
             f"Existing hasChild artifacts are incomplete or stale; resuming SFI "
             f"hasChild resolution: {e}"
         )
+
         return None
 
     logger.info(
         f"Loading complete existing hasChild artifacts because overwrite=False: "
         f"{edges_fp}"
     )
-    return edges
+
+    return loaded_edges
 
 
 def _load_extraction_windows(kg_dirs: KGDirs) -> list[ExtractionWindow]:
@@ -1568,10 +1726,12 @@ def _load_resumable_resolution_progress(
                 saved_requests=saved_requests,
                 trusted_prefix_length=len(responses),
             )
+
             logger.info(
                 f"Resuming hasChild resolution from {len(responses)} completed "
                 f"responses in {responses_fp}."
             )
+
             return responses
     except Exception as e:  # pylint: disable=W0718
         logger.warning(
@@ -1998,155 +2158,6 @@ def _table_context_keys(context: SFIHasChildFinalContext) -> set[str]:
     return keys
 
 
-def _validate_complete_relationship_artifacts(
-    *,
-    contexts: Sequence[SFIHasChildFinalContext],
-    contexts_fp: Path,
-    document_ir: DocumentIR,
-    edges_fp: Path,
-    framework_uuid: uuid.UUID,
-    parent_sets: Sequence[SFIHasChildCandidateParentSet],
-    parent_sets_fp: Path,
-    requests: Sequence[SFIHasChildResolutionRequest],
-    requests_fp: Path,
-    responses_fp: Path,
-    sfi_final_records: Sequence[SFIFinalRecord],
-    summary_fp: Path,
-    unresolved_edges_fp: Path,
-) -> list[SFIHasChildEdge]:
-    """Validate that persisted artifacts are complete and current.
-
-    Parameters
-    ----------
-    contexts
-        Current recovered final SFI contexts.
-    contexts_fp
-        JSON path for persisted final SFI contexts.
-    document_ir
-        Source DocumentIR used to scope relationship IDs.
-    edges_fp
-        JSON path for final hasChild edges.
-    framework_uuid
-        Deterministic StandardsFramework UUID.
-    parent_sets
-        Current bounded parent-candidate sets.
-    parent_sets_fp
-        JSONL path for persisted parent-candidate sets.
-    requests
-        Current hasChild resolution requests.
-    requests_fp
-        JSONL path for persisted hasChild resolution requests.
-    responses_fp
-        JSONL path for persisted hasChild resolution responses.
-    sfi_final_records
-        Final SFI records that must be covered by the graph.
-    summary_fp
-        JSON path for persisted hasChild resolution summary.
-    unresolved_edges_fp
-        JSON path for unresolved root-fallback edges.
-
-    Returns
-    -------
-    list[SFIHasChildEdge]
-        Existing final hasChild edges when all artifacts validate.
-
-    Raises
-    ------
-    ValueError
-        If any artifact is missing, stale, incomplete, or internally inconsistent.
-    """
-
-    loaded_contexts = _load_json_model_sequence(
-        fp=contexts_fp, model_type=SFIHasChildFinalContext
-    )
-    _assert_model_sequences_equal(
-        actual=loaded_contexts,
-        artifact_label="sfi_final_contexts.json",
-        expected=contexts,
-    )
-
-    loaded_parent_sets = _load_jsonl_models(
-        allow_partial_prefix=False,
-        fp=parent_sets_fp,
-        model_type=SFIHasChildCandidateParentSet,
-    )
-    _assert_model_sequences_equal(
-        actual=loaded_parent_sets,
-        artifact_label="has_child_candidate_parent_sets.jsonl",
-        expected=parent_sets,
-    )
-
-    loaded_requests = _load_jsonl_models(
-        allow_partial_prefix=False,
-        fp=requests_fp,
-        model_type=SFIHasChildResolutionRequest,
-    )
-    _assert_model_sequences_equal(
-        actual=loaded_requests,
-        artifact_label="has_child_resolution_requests.jsonl",
-        expected=requests,
-    )
-
-    loaded_responses = _load_jsonl_models(
-        allow_partial_prefix=False,
-        fp=responses_fp,
-        model_type=SFIHasChildResolutionResponse,
-    )
-    _validate_resolution_response_prefix(requests=requests, responses=loaded_responses)
-
-    if len(loaded_responses) != len(requests):
-        raise ValueError(
-            f"has_child_resolution_responses.jsonl has {len(loaded_responses)} "
-            f"records, but expected {len(requests)} records."
-        )
-
-    expected_edges = _build_edges_from_responses(
-        document_ir=document_ir,
-        framework_uuid=framework_uuid,
-        parent_sets=parent_sets,
-        responses=loaded_responses,
-    )
-    _validate_graph(
-        edges=expected_edges,
-        framework_uuid=framework_uuid,
-        sfi_final_records=sfi_final_records,
-    )
-    expected_summary = _build_resolution_summary(
-        edges=expected_edges,
-        parent_sets=parent_sets,
-        requests=requests,
-        responses=loaded_responses,
-    )
-    expected_unresolved_edges = [
-        edge for edge in expected_edges if edge.unresolved_root_fallback
-    ]
-
-    loaded_edges = _load_json_model_sequence(fp=edges_fp, model_type=SFIHasChildEdge)
-    _assert_model_sequences_equal(
-        actual=loaded_edges,
-        artifact_label="has_child_edges_final.json",
-        expected=expected_edges,
-    )
-    loaded_unresolved_edges = _load_json_model_sequence(
-        fp=unresolved_edges_fp, model_type=SFIHasChildEdge
-    )
-    _assert_model_sequences_equal(
-        actual=loaded_unresolved_edges,
-        artifact_label="has_child_unresolved_edges.json",
-        expected=expected_unresolved_edges,
-    )
-    loaded_summary = SFIHasChildResolutionSummary.model_validate(
-        open_json_type(summary_fp)
-    )
-    _assert_model_payload_equal(
-        actual=loaded_summary,
-        artifact_label="has_child_resolution_summary.json",
-        expected=expected_summary,
-    )
-
-    return loaded_edges
-
-
 def _validate_graph(
     *,
     edges: Sequence[SFIHasChildEdge],
@@ -2154,6 +2165,128 @@ def _validate_graph(
     sfi_final_records: Sequence[SFIFinalRecord],
 ) -> None:
     """Validate final hasChild graph constraints.
+
+    Examples
+    --------
+
+    1. A valid graph has one or more incoming hasChild edges for every final SFI, all
+    endpoints exist, and every SFI is reachable from the StandardsFramework root.
+
+    Suppose the finalized SFI universe contains three records:
+
+    grade_4_uuid
+    topic_uuid
+    competence_uuid
+
+    And the StandardsFramework root UUID is:
+
+    framework_uuid
+
+    A valid edge set might be:
+
+    framework_uuid -> grade_4_uuid
+    grade_4_uuid  -> topic_uuid
+    topic_uuid    -> competence_uuid
+
+    Calling:
+
+    _validate_graph(
+        edges=[
+            edge(framework_uuid, grade_4_uuid),
+            edge(grade_4_uuid, topic_uuid),
+            edge(topic_uuid, competence_uuid),
+        ],
+        framework_uuid=framework_uuid,
+        sfi_final_records=[
+            grade_4_record,
+            topic_record,
+            competence_record,
+        ],
+    )
+
+    passes because:
+
+    - Every source endpoint is either the framework root or a finalized SFI;
+    - Every target endpoint is a finalized SFI;
+    - No edge pair is duplicated;
+    - No edge is a self-loop;
+    - Every finalized SFI has an incoming hasChild edge;
+    - There are no SFI-to-SFI cycles;
+    - All finalized SFIs are reachable from the framework root;
+    - Every relationship_id is unique.
+    ```
+
+    The function performs structural graph validation only. It does not decide whether
+    `grade_4_uuid`, `topic_uuid`, or `competence_uuid` is the semantically best parent;
+    that decision is made earlier by the bounded hasChild parent-selection step.
+
+    2. The function rejects missing, duplicated, unknown, and self-loop edges.
+
+    If a final SFI has no incoming edge, validation fails:
+
+    finalized SFIs:
+        grade_4_uuid
+        topic_uuid
+
+    edges:
+        framework_uuid -> grade_4_uuid
+
+    topic_uuid has no incoming edge, so validation raises:
+        "Final SFIs missing incoming hasChild edges: [...]"
+
+    If the same edge pair appears twice, validation fails:
+
+    edges:
+        framework_uuid -> grade_4_uuid
+        framework_uuid -> grade_4_uuid
+
+    Duplicate source/target pair, so validation raises:
+        "Duplicate hasChild edge pairs detected: [...]"
+
+    If an edge points to a target that is not in `sfi_final_records`, validation fails:
+
+    edges:
+        framework_uuid -> unknown_sfi_uuid
+
+    unknown_sfi_uuid is not a finalized SFI, so validation raises:
+        "hasChild target SFI does not exist: ..."
+
+    If an SFI is its own parent, validation fails:
+
+    edges:
+        topic_uuid -> topic_uuid
+
+    Source and target are the same SFI, so validation raises:
+        "hasChild self-loop detected for SFI ..."
+
+    3. The function also rejects cycles and unreachable graph components.
+
+    A cycle among SFI nodes fails validation even when all endpoints exist:
+
+    framework_uuid -> grade_4_uuid
+    grade_4_uuid  -> topic_uuid
+    topic_uuid    -> competence_uuid
+    competence_uuid -> topic_uuid
+
+    Here, `topic_uuid` and `competence_uuid` form an SFI-to-SFI cycle:
+
+    topic_uuid -> competence_uuid -> topic_uuid
+
+    So `_validate_graph(...)` raises:
+        "SFI-to-SFI hasChild cycles detected: [...]"
+
+    An unreachable component also fails validation:
+
+    framework_uuid -> grade_4_uuid
+    topic_uuid    -> competence_uuid
+
+    All endpoints may exist, and every SFI may have an incoming edge, but `topic_uuid`
+    and `competence_uuid` are not reachable from `framework_uuid`. So validation raises:
+        "Final SFIs are not reachable from StandardsFramework root: [...]"
+
+    This reachability check prevents the pipeline from accepting disconnected hasChild
+    subgraphs. Every finalized SFI must be connected, directly or indirectly, under the
+    StandardsFramework root.
 
     Parameters
     ----------
@@ -2292,8 +2425,8 @@ def _validate_resolution_response_prefix(
 
     Raises
     ------
-    ValueError
-        If any response is stale, malformed relative to its request, or too long.
+    QualityError
+        If any response fails verification.
     """
 
     if len(responses) > len(requests):
@@ -2309,8 +2442,8 @@ def _validate_resolution_response_prefix(
             verify_sfi_has_child_resolution_quality(
                 resolution_request=request, resolution_response=response
             )
-        except Exception as e:
-            raise ValueError(
+        except QualityError as e:
+            raise QualityError(
                 f"Saved hasChild response {response_index + 1} does not match the "
                 f"current planned request: {e}"
             ) from e
@@ -2389,7 +2522,7 @@ def _write_context_and_parent_set_artifacts(
         _write_jsonl_model(fp=parent_sets_fp, model=parent_set)
 
 
-def _write_jsonl_model(*, fp: Path, model: Any) -> None:
+def _write_jsonl_model(*, fp: Path, model: BaseModel) -> None:
     """Append one Pydantic model to a JSONL file.
 
     Parameters
@@ -2397,7 +2530,7 @@ def _write_jsonl_model(*, fp: Path, model: Any) -> None:
     fp
         JSONL path.
     model
-        Pydantic-style model with ``model_dump``.
+        Pydantic model.
     """
 
     make_dir(fp.parent)
@@ -2541,7 +2674,7 @@ def resolve_has_child_edges(
         )
         completed_responses: list[SFIHasChildResolutionResponse] = []
     else:
-        existing_edges = _load_complete_existing_relationship_artifacts(
+        existing_edges = _load_and_validate_existing_relationship_artifacts(
             contexts=contexts,
             contexts_fp=contexts_fp,
             document_ir=document_ir,
@@ -2596,8 +2729,20 @@ def resolve_has_child_edges(
         edges=edges, framework_uuid=framework_uuid, sfi_final_records=sfi_final_records
     )
 
-    summary = _build_resolution_summary(
-        edges=edges, parent_sets=parent_sets, requests=requests, responses=responses
+    summary = SFIHasChildResolutionSummary(
+        candidate_parent_set_count=len(parent_sets),
+        edge_count=len(edges),
+        final_sfi_count=len(parent_sets),
+        llm_request_count=len(requests),
+        llm_response_count=len(responses),
+        root_edge_count=sum(1 for edge in edges if edge.is_root_edge),
+        sfi_to_sfi_edge_count=sum(1 for edge in edges if not edge.is_root_edge),
+        truncated_candidate_parent_set_count=sum(
+            1 for parent_set in parent_sets if parent_set.was_truncated
+        ),
+        unresolved_child_count=sum(
+            1 for edge in edges if edge.unresolved_root_fallback
+        ),
     )
     _write_resolution_artifacts(
         edges=edges,

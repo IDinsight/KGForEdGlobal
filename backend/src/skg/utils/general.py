@@ -284,12 +284,16 @@ def open_json_type(filepath: str | Path) -> Any:
     assert Path.is_file(filepath)
     file_ext = filepath.suffix
     assert Valid.is_valid_json_file_ext(file_ext=file_ext)
+
     if file_ext == ".json":
         with filepath.open("r", encoding="utf-8") as f:
             dict_ = json.load(f)
+
         return dict_
+
     with filepath.open("r", encoding="utf-8") as f:
         json_list = list(f)
+
     return [json.loads(json_str) for json_str in json_list]
 
 
@@ -317,6 +321,7 @@ def recurse_replace(new_str: str, orig_str: str, x: Any) -> Any:
 
     if isinstance(x, str) and orig_str in x:
         return x.replace(orig_str, new_str)
+
     if isinstance(x, list):
         for i, item in enumerate(x):
             x[i] = recurse_replace(new_str, orig_str, x=item)
@@ -325,6 +330,7 @@ def recurse_replace(new_str: str, orig_str: str, x: Any) -> Any:
             k_ = recurse_replace(new_str, orig_str, x=k)
             x.pop(k)
             x[k_] = recurse_replace(new_str, orig_str, x=v)
+
     return x
 
 
@@ -403,6 +409,7 @@ def write_to_json(
             json.dump(json_info, f, indent=indent)
     elif suffix == ".jsonl":
         items = [json_info] if isinstance(json_info, (dict, BaseModel)) else json_info
+
         with fp.open("w", encoding=encoding) as f:
             for item in items:
                 # Use Pydantic's serializer for models.
