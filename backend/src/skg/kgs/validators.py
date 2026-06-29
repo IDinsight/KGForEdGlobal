@@ -407,6 +407,41 @@ def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
 
 
+def _normalized_source_supports_text(
+    *, source_text_normalized: str, target_text_normalized: str
+) -> bool:
+    """Check whether normalized source text supports normalized target text.
+
+    Direct containment handles ordinary verbatim excerpts. Ordered-token subsequence
+    support handles table text assembled from multiple visible cells, rows, or header
+    and body sources without allowing absent or reordered words.
+
+    Parameters
+    ----------
+    source_text_normalized
+        Normalized source-visible text used as support.
+    target_text_normalized
+        Normalized candidate text that must be supported.
+
+    Returns
+    -------
+    bool
+        True when the target is directly contained in the source or appears as an
+        ordered token subsequence of the source.
+    """
+
+    if not target_text_normalized:
+        return False
+
+    if target_text_normalized in source_text_normalized:
+        return True
+
+    return _is_ordered_token_subsequence(
+        source_text_normalized=source_text_normalized,
+        target_text_normalized=target_text_normalized,
+    )
+
+
 def _validate_candidate_code_is_visible(
     *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
 ) -> None:
@@ -494,10 +529,7 @@ def _validate_candidate_description_is_source_supported(
             candidate=candidate, ctx=ctx
         )
 
-    if description_normalized in support_text_normalized:
-        return
-
-    if _is_ordered_token_subsequence(
+    if _normalized_source_supports_text(
         source_text_normalized=support_text_normalized,
         target_text_normalized=description_normalized,
     ):
@@ -517,6 +549,10 @@ def _validate_candidate_source_text_is_visible(
 ) -> None:
     """Validate that candidate source text is source-visible for SFI extraction.
 
+    Block candidates must quote visible block text. Table candidates must be supported
+    by their cited raw table header rows and/or body rows, which allows source quotes
+    assembled from both header and row text when both locations are cited.
+
     Parameters
     ----------
     candidate
@@ -527,13 +563,46 @@ def _validate_candidate_source_text_is_visible(
     Raises
     ------
     QualityError
-        If source text is not recoverable from source-visible window text.
+        If source text is empty or not recoverable from cited source-visible text.
     """
 
-    _validate_source_text_is_visible(
-        ctx=ctx,
-        entity_label=f"Candidate {candidate.candidate_id!r}",
-        source_text=candidate.source_text,
+    if ctx.window.table is None:
+        _validate_source_text_is_visible(
+            ctx=ctx,
+            entity_label=f"Candidate {candidate.candidate_id!r}",
+            source_text=candidate.source_text,
+        )
+        return
+
+    source_text_normalized = _normalize_text(candidate.source_text)
+
+    if not source_text_normalized:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} has empty source_text."
+        )
+
+    if not candidate.table_header_indexes and not candidate.table_row_indexes:
+        raise QualityError(
+            f"Table-window candidate {candidate.candidate_id!r} must include at "
+            f"least one table_header_index or table_row_index before its source_text "
+            f"can be source-validated."
+        )
+
+    support_text_normalized = _build_candidate_cited_table_support_text(
+        candidate=candidate, ctx=ctx
+    )
+
+    if _normalized_source_supports_text(
+        source_text_normalized=support_text_normalized,
+        target_text_normalized=source_text_normalized,
+    ):
+        return
+
+    raise QualityError(
+        f"Candidate {candidate.candidate_id!r} source_text is not supported by its "
+        f"cited raw table header/body rows. Quote source-visible text from the "
+        f"cited table rows/header rows instead of paraphrasing, using constructed "
+        f"table source_text, or using helper-only context."
     )
 
 
@@ -833,7 +902,13 @@ def _validate_source_text_is_visible(
 def _validate_table_candidate_source_location(
     *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
 ) -> None:
-    """Validate that table candidate indexes match the source-text location.
+    """Validate that table candidate indexes match source-text location.
+
+    The candidate source_text must be supported by the cited source-visible table
+    location. Header-only source_text must cite header indexes only. Row-only
+    source_text must cite row indexes only. Source_text assembled from visible header
+    and body-row text may cite both channels when neither channel alone supports the
+    complete quote but their combined cited text does.
 
     Parameters
     ----------
@@ -845,9 +920,9 @@ def _validate_table_candidate_source_location(
     Raises
     ------
     QualityError
-        If a candidate cites header indexes for row-only text, cites row indexes for
-        header-only text, cites indexes that do not contain the candidate source_text,
-        or omits the source location implied by its source_text.
+        If a candidate cites indexes that do not support its source_text, cites row
+        indexes for header-only text, cites header indexes for row-only text, or omits
+        the source location implied by its source_text.
     """
 
     if ctx.window.table is None:
@@ -857,8 +932,21 @@ def _validate_table_candidate_source_location(
         )
 
     source_text_normalized = _normalize_text(candidate.source_text)
-    visible_in_headers = source_text_normalized in ctx.table_header_text_normalized
-    visible_in_rows = source_text_normalized in ctx.table_row_text_normalized
+
+    if not source_text_normalized:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} has empty source_text."
+        )
+
+    if not candidate.table_header_indexes and not candidate.table_row_indexes:
+        raise QualityError(
+            f"Table-window candidate {candidate.candidate_id!r} must include at "
+            f"least one table_header_index or table_row_index before its source_text "
+            f"location can be source-validated."
+        )
+
+    cited_header_text_normalized = ""
+    cited_row_text_normalized = ""
 
     if candidate.table_header_indexes:
         cited_header_text_normalized = _build_normalized_text_blob_for_indexes(
@@ -867,13 +955,6 @@ def _validate_table_candidate_source_location(
             text_by_index=ctx.table_header_text_normalized_by_index,
         )
 
-        if source_text_normalized not in cited_header_text_normalized:
-            raise QualityError(
-                f"Candidate {candidate.candidate_id!r} includes "
-                f"table_header_indexes={candidate.table_header_indexes!r}, but its "
-                f"source_text is not visible in those specific raw table header rows."
-            )
-
     if candidate.table_row_indexes:
         cited_row_text_normalized = _build_normalized_text_blob_for_indexes(
             indexes=candidate.table_row_indexes,
@@ -881,27 +962,67 @@ def _validate_table_candidate_source_location(
             text_by_index=ctx.table_row_text_normalized_by_index,
         )
 
-        if source_text_normalized not in cited_row_text_normalized:
-            raise QualityError(
-                f"Candidate {candidate.candidate_id!r} includes "
-                f"table_row_indexes={candidate.table_row_indexes!r}, but its "
-                f"source_text is not visible in those specific raw table body rows."
-            )
+    source_supported_by_cited_headers = bool(
+        candidate.table_header_indexes
+    ) and _normalized_source_supports_text(
+        source_text_normalized=cited_header_text_normalized,
+        target_text_normalized=source_text_normalized,
+    )
+    source_supported_by_cited_rows = bool(
+        candidate.table_row_indexes
+    ) and _normalized_source_supports_text(
+        source_text_normalized=cited_row_text_normalized,
+        target_text_normalized=source_text_normalized,
+    )
 
-    if (
-        visible_in_headers
-        and not visible_in_rows
-        and not candidate.table_header_indexes
-    ):
+    if candidate.table_header_indexes and not candidate.table_row_indexes:
+        if source_supported_by_cited_headers:
+            return
+
         raise QualityError(
-            f"Candidate {candidate.candidate_id!r} source_text is table-header text, "
-            f"so table_header_indexes must be populated."
+            f"Candidate {candidate.candidate_id!r} includes "
+            f"table_header_indexes={candidate.table_header_indexes!r}, but its "
+            f"source_text is not supported by those specific raw table header rows."
         )
 
-    if visible_in_rows and not visible_in_headers and not candidate.table_row_indexes:
+    if candidate.table_row_indexes and not candidate.table_header_indexes:
+        if source_supported_by_cited_rows:
+            return
+
         raise QualityError(
-            f"Candidate {candidate.candidate_id!r} source_text is table-row text, so "
-            f"table_row_indexes must be populated."
+            f"Candidate {candidate.candidate_id!r} includes "
+            f"table_row_indexes={candidate.table_row_indexes!r}, but its "
+            f"source_text is not supported by those specific raw table body rows."
+        )
+
+    cited_table_text_normalized = _normalize_text(
+        "\n".join([cited_header_text_normalized, cited_row_text_normalized])
+    )
+    source_supported_by_cited_table_text = _normalized_source_supports_text(
+        source_text_normalized=cited_table_text_normalized,
+        target_text_normalized=source_text_normalized,
+    )
+
+    if not source_supported_by_cited_table_text:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} includes "
+            f"table_header_indexes={candidate.table_header_indexes!r} and "
+            f"table_row_indexes={candidate.table_row_indexes!r}, but its "
+            f"source_text is not supported by those cited raw table header/body rows."
+        )
+
+    if source_supported_by_cited_headers and not source_supported_by_cited_rows:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} source_text is supported by its "
+            f"cited table header rows alone, so table_row_indexes should not be "
+            f"populated."
+        )
+
+    if source_supported_by_cited_rows and not source_supported_by_cited_headers:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} source_text is supported by its "
+            f"cited table body rows alone, so table_header_indexes should not be "
+            f"populated."
         )
 
 
@@ -1025,6 +1146,7 @@ def verify_sfi_extraction_quality(
     )
 
     _validate_window_identity(ctx)
+    _validate_candidate_table_indexes(ctx)
 
     for candidate in ctx.extraction_result.sfi_candidates:
         _validate_candidate_statement_type_policy(candidate=candidate, ctx=ctx)
@@ -1033,8 +1155,6 @@ def verify_sfi_extraction_quality(
             candidate=candidate, ctx=ctx
         )
         _validate_candidate_source_text_is_visible(candidate=candidate, ctx=ctx)
-
-    _validate_candidate_table_indexes(ctx)
 
     for auxiliary_candidate in ctx.extraction_result.auxiliary_candidates:
         _validate_source_text_is_visible(
