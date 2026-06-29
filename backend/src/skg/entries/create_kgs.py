@@ -162,7 +162,7 @@ def build_kgs(
         usage_tracker=usage_tracker,
     )
 
-    logger.debug(f"has_child_edge_count={len(has_child_edges)}")
+    logger.debug(f"hasChild edge count: {len(has_child_edges)}")
 
     return kg_run_manifest_fp
 
