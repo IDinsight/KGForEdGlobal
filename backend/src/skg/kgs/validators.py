@@ -726,6 +726,73 @@ def _validate_candidate_table_indexes(ctx: SFIExtractionQualityCtx) -> None:
         _validate_table_candidate_source_location(candidate=candidate, ctx=ctx)
 
 
+def _validate_combined_source_location(
+    *,
+    candidate: SFICandidate,
+    cited_header_text_normalized: str,
+    cited_row_text_normalized: str,
+    source_supported_by_cited_headers: bool,
+    source_supported_by_cited_rows: bool,
+    source_text_normalized: str,
+) -> None:
+    """Validate a candidate that cites both header and row indexes.
+
+    Combined citation is only legitimate when neither channel alone supports the
+    complete quote but their combined cited text does.
+
+    Parameters
+    ----------
+    candidate
+        Candidate to validate.
+    cited_header_text_normalized
+        Normalized text blob built from the cited header indexes.
+    cited_row_text_normalized
+        Normalized text blob built from the cited row indexes.
+    source_supported_by_cited_headers
+        Whether the cited header rows alone support the source_text.
+    source_supported_by_cited_rows
+        Whether the cited body rows alone support the source_text.
+    source_text_normalized
+        Normalized candidate source_text.
+
+    Raises
+    ------
+    QualityError
+        If the combined cited text does not support the source_text, or if either
+        channel alone supports it (so the other channel should not be populated).
+    """
+
+    cited_table_text_normalized = _normalize_text(
+        "\n".join([cited_header_text_normalized, cited_row_text_normalized])
+    )
+    source_supported_by_cited_table_text = _normalized_source_supports_text(
+        source_text_normalized=cited_table_text_normalized,
+        target_text_normalized=source_text_normalized,
+    )
+
+    if not source_supported_by_cited_table_text:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} includes "
+            f"table_header_indexes={candidate.table_header_indexes!r} and "
+            f"table_row_indexes={candidate.table_row_indexes!r}, but its "
+            f"source_text is not supported by those cited raw table header/body rows."
+        )
+
+    if source_supported_by_cited_headers and not source_supported_by_cited_rows:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} source_text is supported by its "
+            f"cited table header rows alone, so table_row_indexes should not be "
+            f"populated."
+        )
+
+    if source_supported_by_cited_rows and not source_supported_by_cited_headers:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} source_text is supported by its "
+            f"cited table body rows alone, so table_header_indexes should not be "
+            f"populated."
+        )
+
+
 def _validate_dedup_merge_group_code_guardrails(
     *, review_request: SFIDedupReviewRequest, review_response: SFIDedupReviewResponse
 ) -> None:
@@ -865,6 +932,62 @@ def _validate_dedup_response_reasons(review_response: SFIDedupReviewResponse) ->
             )
 
 
+def _validate_header_only_source_location(
+    *, candidate: SFICandidate, source_supported_by_cited_headers: bool
+) -> None:
+    """Validate a candidate that cites only table header indexes.
+
+    Parameters
+    ----------
+    candidate
+        Candidate to validate.
+    source_supported_by_cited_headers
+        Whether the cited header rows alone support the candidate source_text.
+
+    Raises
+    ------
+    QualityError
+        If the cited header rows do not support the source_text.
+    """
+
+    if source_supported_by_cited_headers:
+        return
+
+    raise QualityError(
+        f"Candidate {candidate.candidate_id!r} includes "
+        f"table_header_indexes={candidate.table_header_indexes!r}, but its "
+        f"source_text is not supported by those specific raw table header rows."
+    )
+
+
+def _validate_row_only_source_location(
+    *, candidate: SFICandidate, source_supported_by_cited_rows: bool
+) -> None:
+    """Validate a candidate that cites only table row indexes.
+
+    Parameters
+    ----------
+    candidate
+        Candidate to validate.
+    source_supported_by_cited_rows
+        Whether the cited body rows alone support the candidate source_text.
+
+    Raises
+    ------
+    QualityError
+        If the cited body rows do not support the source_text.
+    """
+
+    if source_supported_by_cited_rows:
+        return
+
+    raise QualityError(
+        f"Candidate {candidate.candidate_id!r} includes "
+        f"table_row_indexes={candidate.table_row_indexes!r}, but its "
+        f"source_text is not supported by those specific raw table body rows."
+    )
+
+
 def _validate_source_text_is_visible(
     *, ctx: SFIExtractionQualityCtx, entity_label: str, source_text: str
 ) -> None:
@@ -978,54 +1101,27 @@ def _validate_table_candidate_source_location(
     )
 
     if candidate.table_header_indexes and not candidate.table_row_indexes:
-        if source_supported_by_cited_headers:
-            return
-
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} includes "
-            f"table_header_indexes={candidate.table_header_indexes!r}, but its "
-            f"source_text is not supported by those specific raw table header rows."
+        _validate_header_only_source_location(
+            candidate=candidate,
+            source_supported_by_cited_headers=source_supported_by_cited_headers,
         )
+        return
 
     if candidate.table_row_indexes and not candidate.table_header_indexes:
-        if source_supported_by_cited_rows:
-            return
-
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} includes "
-            f"table_row_indexes={candidate.table_row_indexes!r}, but its "
-            f"source_text is not supported by those specific raw table body rows."
+        _validate_row_only_source_location(
+            candidate=candidate,
+            source_supported_by_cited_rows=source_supported_by_cited_rows,
         )
+        return
 
-    cited_table_text_normalized = _normalize_text(
-        "\n".join([cited_header_text_normalized, cited_row_text_normalized])
+    _validate_combined_source_location(
+        candidate=candidate,
+        cited_header_text_normalized=cited_header_text_normalized,
+        cited_row_text_normalized=cited_row_text_normalized,
+        source_supported_by_cited_headers=source_supported_by_cited_headers,
+        source_supported_by_cited_rows=source_supported_by_cited_rows,
+        source_text_normalized=source_text_normalized,
     )
-    source_supported_by_cited_table_text = _normalized_source_supports_text(
-        source_text_normalized=cited_table_text_normalized,
-        target_text_normalized=source_text_normalized,
-    )
-
-    if not source_supported_by_cited_table_text:
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} includes "
-            f"table_header_indexes={candidate.table_header_indexes!r} and "
-            f"table_row_indexes={candidate.table_row_indexes!r}, but its "
-            f"source_text is not supported by those cited raw table header/body rows."
-        )
-
-    if source_supported_by_cited_headers and not source_supported_by_cited_rows:
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} source_text is supported by its "
-            f"cited table header rows alone, so table_row_indexes should not be "
-            f"populated."
-        )
-
-    if source_supported_by_cited_rows and not source_supported_by_cited_headers:
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} source_text is supported by its "
-            f"cited table body rows alone, so table_header_indexes should not be "
-            f"populated."
-        )
 
 
 def _validate_window_identity(ctx: SFIExtractionQualityCtx) -> None:

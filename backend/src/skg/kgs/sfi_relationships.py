@@ -113,6 +113,72 @@ def _add_parent_evidence(
         evidence.evidence_summary.append(evidence_summary)
 
 
+def _bound_parent_candidates(
+    *,
+    framework_uuid: uuid.UUID,
+    kg_config: CreateKGConfig,
+    non_root_candidates: Sequence[SFIHasChildParentCandidate],
+) -> tuple[list[SFIHasChildParentCandidate], list[str], bool]:
+    """Rerank and truncate parent candidates while preserving root fallback.
+
+    Parameters
+    ----------
+    framework_uuid
+        Deterministic StandardsFramework root UUID.
+    kg_config
+        Runtime KG configuration containing parent-candidate set maximum.
+    non_root_candidates
+        Non-root parent candidates before bounding.
+
+    Returns
+    -------
+    tuple[list[SFIHasChildParentCandidate], list[str], bool]
+        Bounded parent candidates, truncation notes, and whether truncation occurred.
+    """
+
+    max_parent_candidates = kg_config.academic_standards.max_has_child_parent_candidates
+    root_candidate = _root_parent_candidate(
+        framework_uuid=framework_uuid,
+        framework_title=kg_config.metadata.framework_title,
+    )
+    sorted_candidates = sorted(non_root_candidates, key=_parent_candidate_rank)
+    high_signal_reasons = {"code_parent_hint", "matched_section_path_label"}
+    high_signal_candidates = [
+        candidate
+        for candidate in sorted_candidates
+        if set(candidate.evidence_reasons) & high_signal_reasons
+    ]
+    other_candidates = [
+        candidate
+        for candidate in sorted_candidates
+        if candidate not in high_signal_candidates
+    ]
+    slots_for_non_root = max_parent_candidates - 1
+    selected_non_root = high_signal_candidates[:slots_for_non_root]
+    selected_ids = {candidate.endpoint_id for candidate in selected_non_root}
+
+    for candidate in other_candidates:
+        if len(selected_non_root) >= slots_for_non_root:
+            break
+
+        if candidate.endpoint_id in selected_ids:
+            continue
+
+        selected_non_root.append(candidate)
+        selected_ids.add(candidate.endpoint_id)
+
+    was_truncated = len(non_root_candidates) + 1 > max_parent_candidates
+    truncation_notes = []
+
+    if was_truncated:
+        truncation_notes.append(
+            f"Truncated parent candidates from {len(non_root_candidates) + 1} to "
+            f"{max_parent_candidates}, preserving StandardsFramework root fallback."
+        )
+
+    return [*selected_non_root, root_candidate], truncation_notes, was_truncated
+
+
 def _build_candidate_parent_sets(
     *,
     contexts: Sequence[SFIHasChildFinalContext],
@@ -320,6 +386,11 @@ def _build_edge(
     -------
     SFIHasChildEdge
         Final hasChild edge artifact.
+
+    Raises
+    ------
+    ValueError
+        If a non-root candidate has no UUID.
     """
 
     source_entity_uuid = (
@@ -455,7 +526,7 @@ def _build_final_contexts(
     document_ir
         Source DocumentIR used to recover section-path and source-order evidence.
     sfi_final_records
-        Finalized SFI records from Step 8.
+        Finalized SFI records.
 
     Returns
     -------
@@ -551,118 +622,6 @@ def _build_resolution_requests(
         )
 
     return requests
-
-
-def _build_resolution_summary(
-    *,
-    edges: Sequence[SFIHasChildEdge],
-    parent_sets: Sequence[SFIHasChildCandidateParentSet],
-    requests: Sequence[SFIHasChildResolutionRequest],
-    responses: Sequence[SFIHasChildResolutionResponse],
-) -> SFIHasChildResolutionSummary:
-    """Build aggregate Step 9 relationship-resolution summary.
-
-    Parameters
-    ----------
-    edges
-        Final hasChild edges.
-    parent_sets
-        Bounded candidate parent sets.
-    requests
-        LLM hasChild resolution requests.
-    responses
-        LLM hasChild resolution responses.
-
-    Returns
-    -------
-    SFIHasChildResolutionSummary
-        Aggregate Step 9 summary.
-    """
-
-    return SFIHasChildResolutionSummary(
-        candidate_parent_set_count=len(parent_sets),
-        edge_count=len(edges),
-        final_sfi_count=len(parent_sets),
-        llm_request_count=len(requests),
-        llm_response_count=len(responses),
-        root_edge_count=sum(1 for edge in edges if edge.is_root_edge),
-        sfi_to_sfi_edge_count=sum(1 for edge in edges if not edge.is_root_edge),
-        truncated_candidate_parent_set_count=sum(
-            1 for parent_set in parent_sets if parent_set.was_truncated
-        ),
-        unresolved_child_count=sum(
-            1 for edge in edges if edge.unresolved_root_fallback
-        ),
-    )
-
-
-def _bound_parent_candidates(
-    *,
-    framework_uuid: uuid.UUID,
-    kg_config: CreateKGConfig,
-    non_root_candidates: Sequence[SFIHasChildParentCandidate],
-) -> tuple[list[SFIHasChildParentCandidate], list[str], bool]:
-    """Rerank and truncate parent candidates while preserving root fallback.
-
-    Parameters
-    ----------
-    framework_uuid
-        Deterministic StandardsFramework root UUID.
-    kg_config
-        Runtime KG configuration containing parent-candidate set maximum.
-    non_root_candidates
-        Non-root parent candidates before bounding.
-
-    Returns
-    -------
-    tuple[list[SFIHasChildParentCandidate], list[str], bool]
-        Bounded parent candidates, truncation notes, and whether truncation occurred.
-    """
-
-    max_parent_candidates = kg_config.academic_standards.max_has_child_parent_candidates
-    root_candidate = _root_parent_candidate(
-        framework_uuid=framework_uuid,
-        framework_title=kg_config.metadata.framework_title,
-    )
-    sorted_candidates = sorted(
-        non_root_candidates,
-        key=lambda candidate: _parent_candidate_rank(candidate),
-    )
-    high_signal_reasons = {"code_parent_hint", "matched_section_path_label"}
-    high_signal_candidates = [
-        candidate
-        for candidate in sorted_candidates
-        if set(candidate.evidence_reasons) & high_signal_reasons
-    ]
-    other_candidates = [
-        candidate
-        for candidate in sorted_candidates
-        if candidate not in high_signal_candidates
-    ]
-    slots_for_non_root = max_parent_candidates - 1
-    selected_non_root = high_signal_candidates[:slots_for_non_root]
-    selected_ids = {candidate.endpoint_id for candidate in selected_non_root}
-
-    for candidate in other_candidates:
-        if len(selected_non_root) >= slots_for_non_root:
-            break
-
-        if candidate.endpoint_id in selected_ids:
-            continue
-
-        selected_non_root.append(candidate)
-        selected_ids.add(candidate.endpoint_id)
-
-    was_truncated = len(non_root_candidates) + 1 > max_parent_candidates
-    truncation_notes = []
-
-    if was_truncated:
-        truncation_notes.append(
-            f"Truncated parent candidates from {len(non_root_candidates) + 1} to "
-            f"{max_parent_candidates}, preserving StandardsFramework root fallback."
-        )
-
-    return [*selected_non_root, root_candidate], truncation_notes, was_truncated
 
 
 def _context_matches_section_path(
@@ -787,24 +746,6 @@ def _extract_code_parent_pairs(
     return pairs
 
 
-def _framework_uuid(document_ir: DocumentIR) -> uuid.UUID:
-    """Mint the deterministic StandardsFramework root UUID for a DocumentIR.
-
-    Parameters
-    ----------
-    document_ir
-        Source DocumentIR.
-
-    Returns
-    -------
-    uuid.UUID
-        Deterministic StandardsFramework UUID.
-    """
-
-    identity_key = f"lc:curriculum:{document_ir.doc_key}:standards_framework"
-    return uuid.uuid5(Settings.LC_CANONICAL_NAMESPACE_UUID, identity_key)
-
-
 def _hash_text(*, n_hex: int, value: str) -> str:
     """Hash normalized text with SHA-256.
 
@@ -921,8 +862,8 @@ def _load_extraction_windows(kg_dirs: KGDirs) -> list[ExtractionWindow]:
     return extraction_windows
 
 
-def _load_final_summary(kg_dirs: KGDirs) -> SFIFinalSummary | None:
-    """Load Step 8 final summary if present.
+def _load_sfi_final_summary(kg_dirs: KGDirs) -> SFIFinalSummary | None:
+    """Load SFI final summary if present.
 
     Parameters
     ----------
@@ -1029,6 +970,45 @@ def _parent_candidate_rank(candidate: SFIHasChildParentCandidate) -> tuple[int, 
     }
     score = sum(weights.get(reason, 0) for reason in candidate.evidence_reasons)
     return (-score, candidate.endpoint_id)
+
+
+def _reachable_sfi_ids(
+    *, edges: Sequence[SFIHasChildEdge], framework_uuid: uuid.UUID
+) -> set[str]:
+    """Compute final SFIs reachable from StandardsFramework root.
+
+    Parameters
+    ----------
+    edges
+        Final hasChild edges.
+    framework_uuid
+        StandardsFramework root UUID.
+
+    Returns
+    -------
+    set[str]
+        Reachable final SFI UUID strings.
+    """
+
+    graph: dict[str, list[str]] = defaultdict(list)
+
+    for edge in edges:
+        graph[str(edge.source_entity_uuid)].append(str(edge.target_sfi_uuid))
+
+    reachable: set[str] = set()
+    stack = [str(framework_uuid)]
+
+    while stack:
+        node_id = stack.pop()
+
+        for child_id in graph.get(node_id, []):
+            if child_id in reachable:
+                continue
+
+            reachable.add(child_id)
+            stack.append(child_id)
+
+    return reachable
 
 
 def _recover_section_path_labels(
@@ -1142,6 +1122,7 @@ def _run_resolution_requests(
             f"Running hasChild resolution {request_index}/{len(requests)}: "
             f"request_id={request.request_id}."
         )
+
         _write_jsonl_model(fp=requests_fp, model=request)
         response = resolve_sfi_has_child_parent_request(
             resolution_request=request, usage_tracker=usage_tracker
@@ -1177,7 +1158,7 @@ def _source_ref_int_values(*, key: str, record: SFIFinalRecord) -> list[int]:
         for value in source_ref.get(key) or []:
             try:
                 values.add(int(value))
-            except Exception:
+            except Exception:  # pylint: disable=W0718
                 continue
 
     return sorted(values)
@@ -1239,36 +1220,6 @@ def _unique_nonempty(values: Iterable[Any]) -> list[str]:
         seen.add(value_clean)
 
     return output
-
-
-def _validate_final_summary(final_summary: SFIFinalSummary | None) -> None:
-    """Validate that final SFI universe is complete enough for Step 9.
-
-    Parameters
-    ----------
-    final_summary
-        Step 8 final summary, if available.
-
-    Raises
-    ------
-    ValueError
-        If Step 8 excluded conflict or needs-review merge groups.
-    """
-
-    if final_summary is None:
-        return
-
-    if final_summary.excluded_conflict_group_count:
-        raise ValueError(
-            "Step 9 requires a complete finalized SFI universe, but Step 8 excluded "
-            f"{final_summary.excluded_conflict_group_count} conflict groups."
-        )
-
-    if final_summary.excluded_needs_review_group_count:
-        raise ValueError(
-            "Step 9 requires a complete finalized SFI universe, but Step 8 excluded "
-            f"{final_summary.excluded_needs_review_group_count} needs-review groups."
-        )
 
 
 def _validate_graph(
@@ -1351,43 +1302,36 @@ def _validate_graph(
         )
 
 
-def _reachable_sfi_ids(
-    *, edges: Sequence[SFIHasChildEdge], framework_uuid: uuid.UUID
-) -> set[str]:
-    """Compute final SFIs reachable from StandardsFramework root.
+def _validate_sfi_final_summary(sfi_final_summary: SFIFinalSummary | None) -> None:
+    """Validate that final SFI universe is complete enough for hasChild resolution.
 
     Parameters
     ----------
-    edges
-        Final hasChild edges.
-    framework_uuid
-        StandardsFramework root UUID.
+    sfi_final_summary
+        SFI final summary, if available.
 
-    Returns
-    -------
-    set[str]
-        Reachable final SFI UUID strings.
+    Raises
+    ------
+    ValueError
+        If SFI final summary contains excluded conflict or needs-review merge groups.
     """
 
-    graph: dict[str, list[str]] = defaultdict(list)
+    if sfi_final_summary is None:
+        return
 
-    for edge in edges:
-        graph[str(edge.source_entity_uuid)].append(str(edge.target_sfi_uuid))
+    if sfi_final_summary.excluded_conflict_group_count:
+        raise ValueError(
+            f"SFI hasChild resolution requires a complete finalized SFI universe, but "
+            f"SFI final summary excluded "
+            f"{sfi_final_summary.excluded_conflict_group_count} conflict groups."
+        )
 
-    reachable: set[str] = set()
-    stack = [str(framework_uuid)]
-
-    while stack:
-        node_id = stack.pop()
-
-        for child_id in graph.get(node_id, []):
-            if child_id in reachable:
-                continue
-
-            reachable.add(child_id)
-            stack.append(child_id)
-
-    return reachable
+    if sfi_final_summary.excluded_needs_review_group_count:
+        raise ValueError(
+            f"SFI hasChild resolution requires a complete finalized SFI universe, but "
+            f"SFI final summary excluded "
+            f"{sfi_final_summary.excluded_needs_review_group_count} needs-review groups."
+        )
 
 
 def _write_jsonl_model(*, fp: Path, model: Any) -> None:
@@ -1422,11 +1366,12 @@ def resolve_has_child_edges(
     document_ir
         Source DocumentIR.
     kg_config
-        Runtime KG configuration containing hasChild instructions and candidate-set\n        bounds.
+        Runtime KG configuration containing hasChild instructions and candidate-set
+        bounds.
     kg_dirs
         KG artifact directory wrapper.
     sfi_final_records
-        Finalized SFI records from Step 8.
+        Finalized SFI records.
     usage_tracker
         LLM usage tracker.
 
@@ -1434,6 +1379,11 @@ def resolve_has_child_edges(
     -------
     list[SFIHasChildEdge]
         Final hasChild edge records.
+
+    Raises
+    ------
+    ValueError
+        If any of SFI records cannot be resolved.
     """
 
     if not sfi_final_records:
@@ -1442,12 +1392,15 @@ def resolve_has_child_edges(
         )
 
     if not kg_config.academic_standards.sfi_has_child_instructions.strip():
-        raise ValueError("Step 9 requires non-empty sfi_has_child_instructions.")
+        raise ValueError(
+            "SFI hasChild resolution requires non-empty sfi_has_child_instructions."
+        )
 
-    final_summary = _load_final_summary(kg_dirs)
-    _validate_final_summary(final_summary)
+    sfi_final_summary = _load_sfi_final_summary(kg_dirs)
+    _validate_sfi_final_summary(sfi_final_summary)
 
-    framework_uuid = _framework_uuid(document_ir)
+    identity_key = f"lc:curriculum:{document_ir.doc_key}:standards_framework"
+    framework_uuid = uuid.uuid5(Settings.LC_CANONICAL_NAMESPACE_UUID, identity_key)
     extraction_windows = _load_extraction_windows(kg_dirs)
     contexts = _build_final_contexts(
         document_ir=document_ir, sfi_final_records=sfi_final_records
@@ -1461,12 +1414,12 @@ def resolve_has_child_edges(
     requests = _build_resolution_requests(kg_config=kg_config, parent_sets=parent_sets)
 
     contexts_fp = kg_dirs.root / "sfi_final_contexts.json"
+    edges_fp = kg_dirs.root / "has_child_edges_final.json"
     parent_sets_fp = kg_dirs.root / "has_child_candidate_parent_sets.jsonl"
     requests_fp = kg_dirs.root / "has_child_resolution_requests.jsonl"
     responses_fp = kg_dirs.root / "has_child_resolution_responses.jsonl"
-    edges_fp = kg_dirs.root / "has_child_edges_final.json"
-    unresolved_edges_fp = kg_dirs.root / "has_child_unresolved_edges.json"
     summary_fp = kg_dirs.root / "has_child_resolution_summary.json"
+    unresolved_edges_fp = kg_dirs.root / "has_child_unresolved_edges.json"
 
     make_dir(kg_dirs.root)
     write_to_json(
@@ -1493,10 +1446,22 @@ def resolve_has_child_edges(
     _validate_graph(
         edges=edges, framework_uuid=framework_uuid, sfi_final_records=sfi_final_records
     )
-    summary = _build_resolution_summary(
-        edges=edges, parent_sets=parent_sets, requests=requests, responses=responses
-    )
 
+    summary = SFIHasChildResolutionSummary(
+        candidate_parent_set_count=len(parent_sets),
+        edge_count=len(edges),
+        final_sfi_count=len(parent_sets),
+        llm_request_count=len(requests),
+        llm_response_count=len(responses),
+        root_edge_count=sum(1 for edge in edges if edge.is_root_edge),
+        sfi_to_sfi_edge_count=sum(1 for edge in edges if not edge.is_root_edge),
+        truncated_candidate_parent_set_count=sum(
+            1 for parent_set in parent_sets if parent_set.was_truncated
+        ),
+        unresolved_child_count=sum(
+            1 for edge in edges if edge.unresolved_root_fallback
+        ),
+    )
     write_to_json(
         fp=edges_fp, json_info=[edge.model_dump(mode="json") for edge in edges]
     )
