@@ -9,7 +9,6 @@ later LLM-assisted merge review.
 # Standard Library
 import hashlib
 import re
-import unicodedata
 
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -30,7 +29,7 @@ from skg.kgs.schemas import (
     SFIRegistrySummary,
     SFIRegistryWarning,
 )
-from skg.kgs.utils import normalize_code
+from skg.kgs.utils import normalize_code, normalize_text
 from skg.kgs.validators import verify_sfi_extraction_quality
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
@@ -68,7 +67,7 @@ def _build_block_source_context(block: dict[str, Any]) -> tuple[list[str], list[
     key_parts = [
         f"block_type:{block_type}",
         f"block_local_code:{local_code}",
-        "section_path:" + _normalize_text(" > ".join(section_texts)),
+        "section_path:" + normalize_text(" > ".join(section_texts)),
     ]
     return labels, key_parts
 
@@ -121,7 +120,7 @@ def _build_candidate_source_context(
     if not labels:
         labels.append(f"window:{extraction_window.window_index}")
 
-    context_basis = "|".join(_normalize_text(part) for part in key_parts if part)
+    context_basis = "|".join(normalize_text(part) for part in key_parts if part)
     source_context_key = hashlib.sha256(context_basis.encode("utf-8")).hexdigest()[:32]
     return source_context_key, _unique_limited(labels, limit=12)
 
@@ -252,9 +251,9 @@ def _build_registry_candidate(
     registry_candidate_id = f"w{extraction_window.window_index:04d}:{candidate_slug or 'candidate'}:{digest[:8]}"
 
     # Create bucket keys for source text and code.
-    normalized_description = _normalize_text(candidate.description)
-    normalized_source_text = _normalize_text(candidate.source_text)
-    statement_type_key = _normalize_text(candidate.statement_type)
+    normalized_description = normalize_text(candidate.description)
+    normalized_source_text = normalize_text(candidate.source_text)
+    statement_type_key = normalize_text(candidate.statement_type)
     text_bucket_key = _build_text_bucket_key(
         normalized_statement_code=normalized_statement_code,
         normalized_text=normalized_description,
@@ -839,25 +838,6 @@ def _maybe_append_warning(
             warning_type=warning_type,
         )
     )
-
-
-def _normalize_text(value: str) -> str:
-    """Normalize text for duplicate bucketing.
-
-    Parameters
-    ----------
-    value
-        Text to normalize.
-
-    Returns
-    -------
-    str
-        Unicode-normalized, casefolded text with collapsed whitespace.
-    """
-
-    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
-    normalized = re.sub(r"\s+", " ", normalized).strip()
-    return normalized
 
 
 def _truncate_context_label(value: str) -> str:
