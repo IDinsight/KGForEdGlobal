@@ -1489,6 +1489,178 @@ class SFIFinalSummary(BaseSchema):
     source_registry_candidate_count: int = Field(default=0, ge=0)
 
 
+# Schemas for SFI hasChild relationships.
+class SFIHasChildCandidateParentSet(BaseSchema):
+    """Debug artifact containing one child's bounded parent candidate set."""
+
+    candidate_count_after_truncation: int = Field(ge=1)
+    candidate_count_before_truncation: int = Field(ge=1)
+    child_context: SFIHasChildFinalContext
+    max_parent_candidates: int = Field(ge=2)
+    parent_candidates: list[SFIHasChildParentCandidate] = Field(min_length=1)
+    truncation_notes: list[str] = Field(default_factory=list)
+    was_truncated: bool = Field(default=False)
+
+
+class SFIHasChildChildResolution(BaseSchema):
+    """LLM decision for one child SFI's direct parent(s)."""
+
+    child_final_sfi_uuid: UUID
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    reason: str = Field(
+        description="Source-grounded parent-selection reason.", min_length=1
+    )
+    selected_parent_endpoint_ids: list[str] = Field(default_factory=list)
+    unresolved: bool = Field(default=False)
+
+    @field_validator("selected_parent_endpoint_ids")
+    @classmethod
+    def clean_selected_parent_endpoint_ids(cls, v: list[str]) -> list[str]:
+        """Clean selected parent endpoint IDs.
+
+        Parameters
+        ----------
+        v
+            Raw selected parent endpoint IDs.
+
+        Returns
+        -------
+        list[str]
+            Cleaned unique selected parent endpoint IDs.
+        """
+
+        return unique_clean_strings(v)
+
+    @model_validator(mode="after")
+    def validate_resolution_shape(self) -> Self:
+        """Validate unresolved and selected-parent consistency.
+
+        Returns
+        -------
+        Self
+            Validated child resolution.
+
+        Raises
+        ------
+        ValueError
+            If an unresolved child also selects parents, or a resolved child selects
+            no parents.
+        """
+
+        if self.unresolved and self.selected_parent_endpoint_ids:
+            raise ValueError("Unresolved hasChild decisions must not select parents.")
+
+        if not self.unresolved and not self.selected_parent_endpoint_ids:
+            raise ValueError(
+                "Resolved hasChild decisions must select at least one parent."
+            )
+
+        return self
+
+
+class SFIHasChildEdge(BaseSchema):
+    """Final resolved hasChild edge between framework/finalized SFI endpoints."""
+
+    child_final_sfi_uuid: UUID
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    evidence_reasons: list[str] = Field(default_factory=list)
+    is_root_edge: bool = Field(default=False)
+    llm_reason: str = Field(description="LLM parent-selection reason.", min_length=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    parent_endpoint_id: str = Field(
+        description="Selected parent endpoint ID.", min_length=1
+    )
+    parent_final_sfi_uuid: Optional[UUID] = Field(default=None)
+    relationship_id: UUID
+    relationship_type: Literal["hasChild"] = "hasChild"
+    source_entity: Literal["StandardsFramework", "StandardsFrameworkItem"]
+    source_entity_uuid: UUID
+    target_entity: Literal["StandardsFrameworkItem"] = "StandardsFrameworkItem"
+    target_sfi_uuid: UUID
+    unresolved_root_fallback: bool = Field(default=False)
+
+
+class SFIHasChildFinalContext(BaseSchema):
+    """Recovered source context for one finalized SFI used for hasChild resolution."""
+
+    audit_flags: list[str] = Field(default_factory=list)
+    candidate_source_texts: list[str] = Field(default_factory=list)
+    description: str = Field(description="Final SFI description.", min_length=1)
+    final_sfi_uuid: UUID = Field(description="Final SFI UUID.")
+    normalized_statement_code: Optional[str] = Field(default=None)
+    normalized_statement_type: NormalizedStatementType
+    section_path_labels: list[str] = Field(default_factory=list)
+    source_context_keys: list[str] = Field(default_factory=list)
+    source_page_indexes: list[int] = Field(default_factory=list)
+    source_registry_candidate_ids: list[str] = Field(default_factory=list)
+    source_segment_ids: list[str] = Field(default_factory=list)
+    source_order: int = Field(description="Deterministic source-order index.", ge=0)
+    source_window_ids: list[str] = Field(default_factory=list)
+    source_window_indexes: list[int] = Field(default_factory=list)
+    statement_code: Optional[str] = Field(default=None)
+    statement_type: str = Field(
+        description="Source-facing statement type.", min_length=1
+    )
+    table_header_indexes: list[int] = Field(default_factory=list)
+    table_row_indexes: list[int] = Field(default_factory=list)
+
+
+class SFIHasChildParentCandidate(BaseSchema):
+    """One bounded parent endpoint candidate for a finalized child SFI."""
+
+    description: str = Field(description="Parent candidate display text.", min_length=1)
+    endpoint_id: str = Field(description="Selectable parent endpoint ID.", min_length=1)
+    endpoint_kind: Literal["StandardsFramework", "StandardsFrameworkItem"]
+    evidence_reasons: list[str] = Field(
+        description="Deterministic evidence channels that selected this candidate.",
+        min_length=1,
+    )
+    evidence_summary: list[str] = Field(default_factory=list)
+    final_sfi_uuid: Optional[UUID] = Field(default=None)
+    is_root: bool = Field(default=False)
+    normalized_statement_code: Optional[str] = Field(default=None)
+    normalized_statement_type: Optional[NormalizedStatementType] = Field(default=None)
+    source_context_keys: list[str] = Field(default_factory=list)
+    source_page_indexes: list[int] = Field(default_factory=list)
+    source_segment_ids: list[str] = Field(default_factory=list)
+    source_window_indexes: list[int] = Field(default_factory=list)
+    statement_code: Optional[str] = Field(default=None)
+    statement_type: Optional[str] = Field(default=None)
+
+
+class SFIHasChildResolutionRequest(BaseSchema):
+    """Prompt payload for LLM selection of direct hasChild parents."""
+
+    child_parent_sets: list[SFIHasChildCandidateParentSet] = Field(min_length=1)
+    request_id: str = Field(description="Deterministic request ID.", min_length=1)
+    sfi_has_child_instructions: str = Field(
+        description="Curriculum-specific hasChild instructions.", min_length=1
+    )
+
+
+class SFIHasChildResolutionResponse(BaseSchema):
+    """Structured LLM output for one hasChild parent-selection request."""
+
+    child_resolutions: list[SFIHasChildChildResolution] = Field(min_length=1)
+    request_id: str = Field(
+        description="Request ID copied from the prompt.", min_length=1
+    )
+
+
+class SFIHasChildResolutionSummary(BaseSchema):
+    """Aggregate summary for hasChild relationship resolution."""
+
+    candidate_parent_set_count: int = Field(default=0, ge=0)
+    edge_count: int = Field(default=0, ge=0)
+    final_sfi_count: int = Field(default=0, ge=0)
+    llm_request_count: int = Field(default=0, ge=0)
+    llm_response_count: int = Field(default=0, ge=0)
+    root_edge_count: int = Field(default=0, ge=0)
+    sfi_to_sfi_edge_count: int = Field(default=0, ge=0)
+    truncated_candidate_parent_set_count: int = Field(default=0, ge=0)
+    unresolved_child_count: int = Field(default=0, ge=0)
+
+
 # CURRENTLY UNUSED #
 def _validate_iso8601_str(v: Optional[str]) -> Optional[str]:
     """Validate ISO-8601 parseability for timestamps if provided.

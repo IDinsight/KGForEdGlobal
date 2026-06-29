@@ -18,6 +18,8 @@ from skg.kgs.schemas import (
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
     SFIExtractionResult,
+    SFIHasChildResolutionRequest,
+    SFIHasChildResolutionResponse,
 )
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
@@ -442,74 +444,6 @@ def _normalized_source_supports_text(
     )
 
 
-def _validate_both_channel_source_location(
-    *,
-    candidate: SFICandidate,
-    cited_header_text_normalized: str,
-    cited_row_text_normalized: str,
-    source_supported_by_cited_headers: bool,
-    source_supported_by_cited_rows: bool,
-    source_text_normalized: str,
-) -> None:
-    """Validate a candidate that cites both header and row indexes.
-
-    `source_text` assembled from visible header and body-row text may cite both
-    channels only when neither channel alone supports the complete quote but their
-    combined cited text does.
-
-    Parameters
-    ----------
-    candidate
-        Candidate to validate.
-    source_text_normalized
-        Normalized candidate source_text.
-    cited_header_text_normalized
-        Normalized text blob built from the cited header indexes.
-    cited_row_text_normalized
-        Normalized text blob built from the cited row indexes.
-    source_supported_by_cited_headers
-        Whether the cited header rows alone support the source_text.
-    source_supported_by_cited_rows
-        Whether the cited body rows alone support the source_text.
-
-    Raises
-    ------
-    QualityError
-        If the combined cited text does not support the source_text, or if a
-        single channel alone supports it (making the other channel redundant).
-    """
-
-    cited_table_text_normalized = _normalize_text(
-        "\n".join([cited_header_text_normalized, cited_row_text_normalized])
-    )
-    source_supported_by_cited_table_text = _normalized_source_supports_text(
-        source_text_normalized=cited_table_text_normalized,
-        target_text_normalized=source_text_normalized,
-    )
-
-    if not source_supported_by_cited_table_text:
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} includes "
-            f"table_header_indexes={candidate.table_header_indexes!r} and "
-            f"table_row_indexes={candidate.table_row_indexes!r}, but its "
-            f"source_text is not supported by those cited raw table header/body rows."
-        )
-
-    if source_supported_by_cited_headers and not source_supported_by_cited_rows:
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} source_text is supported by its "
-            f"cited table header rows alone, so table_row_indexes should not be "
-            f"populated."
-        )
-
-    if source_supported_by_cited_rows and not source_supported_by_cited_headers:
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} source_text is supported by its "
-            f"cited table body rows alone, so table_header_indexes should not be "
-            f"populated."
-        )
-
-
 def _validate_candidate_code_is_visible(
     *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
 ) -> None:
@@ -931,62 +865,6 @@ def _validate_dedup_response_reasons(review_response: SFIDedupReviewResponse) ->
             )
 
 
-def _validate_header_only_source_location(
-    *, candidate: SFICandidate, source_supported_by_cited_headers: bool
-) -> None:
-    """Validate a candidate that cites only table header indexes.
-
-    Parameters
-    ----------
-    candidate
-        Candidate to validate.
-    source_supported_by_cited_headers
-        Whether the candidate source_text is supported by its cited header rows.
-
-    Raises
-    ------
-    QualityError
-        If the cited header rows do not support the candidate source_text.
-    """
-
-    if source_supported_by_cited_headers:
-        return
-
-    raise QualityError(
-        f"Candidate {candidate.candidate_id!r} includes "
-        f"table_header_indexes={candidate.table_header_indexes!r}, but its "
-        f"source_text is not supported by those specific raw table header rows."
-    )
-
-
-def _validate_row_only_source_location(
-    *, candidate: SFICandidate, source_supported_by_cited_rows: bool
-) -> None:
-    """Validate a candidate that cites only table row indexes.
-
-    Parameters
-    ----------
-    candidate
-        Candidate to validate.
-    source_supported_by_cited_rows
-        Whether the candidate source_text is supported by its cited body rows.
-
-    Raises
-    ------
-    QualityError
-        If the cited body rows do not support the candidate source_text.
-    """
-
-    if source_supported_by_cited_rows:
-        return
-
-    raise QualityError(
-        f"Candidate {candidate.candidate_id!r} includes "
-        f"table_row_indexes={candidate.table_row_indexes!r}, but its "
-        f"source_text is not supported by those specific raw table body rows."
-    )
-
-
 def _validate_source_text_is_visible(
     *, ctx: SFIExtractionQualityCtx, entity_label: str, source_text: str
 ) -> None:
@@ -1100,27 +978,54 @@ def _validate_table_candidate_source_location(
     )
 
     if candidate.table_header_indexes and not candidate.table_row_indexes:
-        _validate_header_only_source_location(
-            candidate=candidate,
-            source_supported_by_cited_headers=source_supported_by_cited_headers,
+        if source_supported_by_cited_headers:
+            return
+
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} includes "
+            f"table_header_indexes={candidate.table_header_indexes!r}, but its "
+            f"source_text is not supported by those specific raw table header rows."
         )
-        return
 
     if candidate.table_row_indexes and not candidate.table_header_indexes:
-        _validate_row_only_source_location(
-            candidate=candidate,
-            source_supported_by_cited_rows=source_supported_by_cited_rows,
-        )
-        return
+        if source_supported_by_cited_rows:
+            return
 
-    _validate_both_channel_source_location(
-        candidate=candidate,
-        cited_header_text_normalized=cited_header_text_normalized,
-        cited_row_text_normalized=cited_row_text_normalized,
-        source_supported_by_cited_headers=source_supported_by_cited_headers,
-        source_supported_by_cited_rows=source_supported_by_cited_rows,
-        source_text_normalized=source_text_normalized,
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} includes "
+            f"table_row_indexes={candidate.table_row_indexes!r}, but its "
+            f"source_text is not supported by those specific raw table body rows."
+        )
+
+    cited_table_text_normalized = _normalize_text(
+        "\n".join([cited_header_text_normalized, cited_row_text_normalized])
     )
+    source_supported_by_cited_table_text = _normalized_source_supports_text(
+        source_text_normalized=cited_table_text_normalized,
+        target_text_normalized=source_text_normalized,
+    )
+
+    if not source_supported_by_cited_table_text:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} includes "
+            f"table_header_indexes={candidate.table_header_indexes!r} and "
+            f"table_row_indexes={candidate.table_row_indexes!r}, but its "
+            f"source_text is not supported by those cited raw table header/body rows."
+        )
+
+    if source_supported_by_cited_headers and not source_supported_by_cited_rows:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} source_text is supported by its "
+            f"cited table header rows alone, so table_row_indexes should not be "
+            f"populated."
+        )
+
+    if source_supported_by_cited_rows and not source_supported_by_cited_headers:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} source_text is supported by its "
+            f"cited table body rows alone, so table_header_indexes should not be "
+            f"populated."
+        )
 
 
 def _validate_window_identity(ctx: SFIExtractionQualityCtx) -> None:
@@ -1259,3 +1164,94 @@ def verify_sfi_extraction_quality(
             entity_label=f"Auxiliary candidate {auxiliary_candidate.auxiliary_id!r}",
             source_text=auxiliary_candidate.source_text,
         )
+
+
+def verify_sfi_has_child_resolution_quality(
+    *,
+    resolution_request: SFIHasChildResolutionRequest,
+    resolution_response: SFIHasChildResolutionResponse,
+) -> None:
+    """Run quality checks on one structured hasChild resolution response.
+
+    Parameters
+    ----------
+    resolution_request
+        Bounded hasChild parent-selection request supplied to the LLM.
+    resolution_response
+        Parsed LLM hasChild parent-selection response.
+
+    Raises
+    ------
+    QualityError
+        If the response fails coverage, endpoint, or self-loop checks.
+    """
+
+    if resolution_response.request_id != resolution_request.request_id:
+        raise QualityError(
+            f"hasChild response request_id {resolution_response.request_id!r} does "
+            f"not match request_id {resolution_request.request_id!r}."
+        )
+
+    expected_child_ids = {
+        str(parent_set.child_context.final_sfi_uuid)
+        for parent_set in resolution_request.child_parent_sets
+    }
+    allowed_parent_ids_by_child_id = {
+        str(parent_set.child_context.final_sfi_uuid): {
+            candidate.endpoint_id for candidate in parent_set.parent_candidates
+        }
+        for parent_set in resolution_request.child_parent_sets
+    }
+    assigned_child_ids = [
+        str(child_resolution.child_final_sfi_uuid)
+        for child_resolution in resolution_response.child_resolutions
+    ]
+    assigned_child_id_set = set(assigned_child_ids)
+    duplicate_child_ids = sorted(
+        {
+            child_id
+            for child_id in assigned_child_ids
+            if assigned_child_ids.count(child_id) > 1
+        }
+    )
+    invented_child_ids = sorted(assigned_child_id_set - expected_child_ids)
+    omitted_child_ids = sorted(expected_child_ids - assigned_child_id_set)
+
+    if invented_child_ids:
+        raise QualityError(
+            f"hasChild response includes child IDs outside the request: "
+            f"{invented_child_ids}."
+        )
+
+    if omitted_child_ids:
+        raise QualityError(
+            f"hasChild response omitted requested child IDs: {omitted_child_ids}."
+        )
+
+    if duplicate_child_ids:
+        raise QualityError(
+            f"hasChild response assigned child IDs more than once: "
+            f"{duplicate_child_ids}."
+        )
+
+    for child_resolution in resolution_response.child_resolutions:
+        child_id = str(child_resolution.child_final_sfi_uuid)
+        allowed_parent_ids = allowed_parent_ids_by_child_id[child_id]
+        selected_parent_ids = child_resolution.selected_parent_endpoint_ids
+        invented_parent_ids = sorted(set(selected_parent_ids) - allowed_parent_ids)
+
+        if invented_parent_ids:
+            raise QualityError(
+                f"hasChild response for child {child_id!r} selected parent endpoint "
+                f"IDs outside the bounded candidate set: {invented_parent_ids}."
+            )
+
+        if child_id in selected_parent_ids:
+            raise QualityError(
+                f"hasChild response for child {child_id!r} contains a self-loop."
+            )
+
+        if not child_resolution.reason.strip():
+            raise QualityError(
+                f"hasChild response for child {child_id!r} has an empty reason."
+            )

@@ -302,6 +302,7 @@ class ModelConfig(BaseSchema):
             "learning_components",
             "learning_progressions",
             "sfi_dedup",
+            "sfi_has_child",
             "sfi_extraction",
         }:
             raise ValueError(
@@ -310,6 +311,7 @@ class ModelConfig(BaseSchema):
                 f"'learning_components', "
                 f"'learning_progressions', "
                 f"`sfi_dedup`, "
+                f"`sfi_has_child`, "
                 f"or `sfi_extraction`."
             )
 

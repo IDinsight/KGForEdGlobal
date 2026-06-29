@@ -5,7 +5,11 @@ from textwrap import dedent
 from typing import Any, Optional
 
 # Package Library
-from skg.kgs.schemas import ExtractionWindow, SFIDedupReviewRequest
+from skg.kgs.schemas import (
+    ExtractionWindow,
+    SFIDedupReviewRequest,
+    SFIHasChildResolutionRequest,
+)
 from skg.schemas import CreateKGConfig
 from skg.utils.general import PromptPair, json_dumps
 
@@ -617,6 +621,66 @@ Do not emit auxiliary candidates for routine front matter, ordinary examples, or
         f"""Extract candidate SFIs from this compact source window.
 
 ## Compact source window JSON
+{json_dumps(user_payload)}
+        """
+    )
+
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
+    )
+
+
+def resolve_sfi_has_child_parents(
+    resolution_request: SFIHasChildResolutionRequest,
+) -> PromptPair:
+    """Generate prompts for direct hasChild parent selection.
+
+    Parameters
+    ----------
+    resolution_request
+        Bounded parent-selection request containing finalized child SFIs and their
+        source-grounded parent candidate sets.
+
+    Returns
+    -------
+    PromptPair
+        System and user messages for the hasChild parent-selection agent.
+    """
+
+    user_payload = resolution_request.model_dump(mode="json")
+    system_message = dedent(
+        """You are an Academic Standards hierarchy-resolution agent for a Learning Commons-shaped Knowledge Graph. Inspect finalized StandardsFrameworkItem children and their bounded parent candidate sets, then choose direct hasChild parent endpoints.
+
+## Task boundary
+- Choose only direct hasChild parents for the supplied finalized child SFIs.
+- Select parent_endpoint_id values only from each child's provided parent_candidates list.
+- Do not invent parent nodes, source codes, headings, registry candidates, merge groups, or relationships.
+- Do not choose endpoints outside the bounded candidate set.
+- Do not infer LearningComponents, supports, buildsTowards, relatesTo, or any relationship other than hasChild.
+- A child may have one or more direct parents when the source evidence supports multiple direct hierarchy memberships.
+- If none of the supplied candidates is source-supported as a direct parent, set unresolved=true and select no parents.
+
+## Parent-selection policy
+- Prefer the most direct source-grounded parent, not merely the broadest or most nearby candidate.
+- Treat code-parent hints, matched section labels, same table context, same source context, and nearest preceding grouping evidence as retrieval evidence, not as automatic truth.
+- The StandardsFramework root is a valid direct parent only when the child is a top-level framework item or no source-supported SFI parent is available.
+- Do not select the StandardsFramework root merely to guarantee reachability when one or more semantic SFI parents are selected.
+- Do not choose a parent by source code alone. Same-code/different-content audit flags mean endpoints must remain distinct.
+- Page overlap alone is weak evidence and must not override stronger source hierarchy evidence.
+- DocumentIR section-path labels are evidence, not a guaranteed clean ancestor chain.
+
+## Output contract
+- Copy request_id exactly.
+- Return exactly one child_resolutions entry for every child in the request.
+- For resolved children, selected_parent_endpoint_ids must contain one or more endpoint IDs from that child's parent_candidates.
+- For unresolved children, selected_parent_endpoint_ids must be empty.
+- Give a concise source-grounded reason for every child decision.
+        """
+    )
+    user_message = dedent(
+        f"""Resolve direct hasChild parents for this bounded request.
+
+## Bounded hasChild parent-selection request JSON
 {json_dumps(user_payload)}
         """
     )

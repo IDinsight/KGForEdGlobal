@@ -7,9 +7,14 @@ from dataclasses import dataclass
 
 # Package Library
 from skg.config import Settings
-from skg.kgs.agents import create_sfi_dedup_agent, create_sfi_extraction_agent
+from skg.kgs.agents import (
+    create_sfi_dedup_agent,
+    create_sfi_extraction_agent,
+    create_sfi_has_child_agent,
+)
 from skg.kgs.prompts import (
     extract_sfi_candidates_from_window,
+    resolve_sfi_has_child_parents,
     review_sfi_dedup_candidates,
 )
 from skg.kgs.schemas import (
@@ -17,10 +22,13 @@ from skg.kgs.schemas import (
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
     SFIExtractionResult,
+    SFIHasChildResolutionRequest,
+    SFIHasChildResolutionResponse,
 )
 from skg.kgs.validators import (
     verify_sfi_dedup_review_quality,
     verify_sfi_extraction_quality,
+    verify_sfi_has_child_resolution_quality,
 )
 from skg.schemas import CreateKGConfig
 from skg.utils.general import AgentUsageBucket
@@ -32,12 +40,14 @@ class KGUsageTracker:
 
     sfi_dedup: AgentUsageBucket
     sfi_extraction: AgentUsageBucket
+    sfi_has_child: AgentUsageBucket
 
     def __init__(self) -> None:
         """Initialize empty usage buckets for KG LLM agents."""
 
         self.sfi_dedup = AgentUsageBucket(agent_name="sfi_dedup")
         self.sfi_extraction = AgentUsageBucket(agent_name="sfi_extraction")
+        self.sfi_has_child = AgentUsageBucket(agent_name="sfi_has_child")
 
     def to_dict(self) -> dict[str, object]:
         """Serialize usage totals to a JSON-friendly dictionary.
@@ -51,6 +61,7 @@ class KGUsageTracker:
         agent_buckets = {
             "sfi_dedup": self.sfi_dedup,
             "sfi_extraction": self.sfi_extraction,
+            "sfi_has_child": self.sfi_has_child,
         }
         totals = {
             "cache_read_tokens": sum(
@@ -116,6 +127,36 @@ def extract_sfi_candidates(
     )
     result = agent.run_sync(prompts.user_message)
     usage_tracker.sfi_extraction.add_run_usage(result.usage())
+    return result.output
+
+
+def resolve_sfi_has_child_parent_request(
+    *, resolution_request: SFIHasChildResolutionRequest, usage_tracker: KGUsageTracker
+) -> SFIHasChildResolutionResponse:
+    """Resolve direct hasChild parents for one bounded request using an LLM.
+
+    Parameters
+    ----------
+    resolution_request
+        Bounded hasChild parent-selection request.
+    usage_tracker
+        Usage tracker to accumulate token usage.
+
+    Returns
+    -------
+    SFIHasChildResolutionResponse
+        Parsed and quality-validated hasChild resolution response.
+    """
+
+    prompts = resolve_sfi_has_child_parents(resolution_request)
+    agent = create_sfi_has_child_agent(
+        instructions=prompts.system_message,
+        model_config=Settings.llm_config("kgs"),
+        resolution_request=resolution_request,
+        verify_quality_fn=verify_sfi_has_child_resolution_quality,
+    )
+    result = agent.run_sync(prompts.user_message)
+    usage_tracker.sfi_has_child.add_run_usage(result.usage())
     return result.output
 
 

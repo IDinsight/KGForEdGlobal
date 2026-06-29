@@ -13,6 +13,8 @@ from skg.kgs.schemas import (
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
     SFIExtractionResult,
+    SFIHasChildResolutionRequest,
+    SFIHasChildResolutionResponse,
 )
 from skg.model_registry import ModelConfig
 from skg.page_ir_extraction.validators import QualityError
@@ -201,6 +203,103 @@ def create_sfi_extraction_agent(
                 f"ERROR: {str(e)}\n\n"
                 f"Return a complete SFIExtractionResult that fixes the issue while "
                 f"preserving source fidelity."
+            ) from e
+
+        attempt_counter["value"] += 1
+        return output
+
+    return agent
+
+
+def create_sfi_has_child_agent(
+    *,
+    instructions: str,
+    max_retries: int = 3,
+    model_config: ModelConfig,
+    resolution_request: SFIHasChildResolutionRequest,
+    verify_quality_fn: Callable[..., None],
+) -> Agent:
+    """Create an Agent configured for `hasChild` parent selection.
+
+    The returned agent validates parsed LLM output against the supplied bounded
+    parent-selection request. Quality failures raise `ModelRetry` so pydantic-ai can
+    ask the model to repair its structured response before final hasChild edges are
+    minted.
+
+    Parameters
+    ----------
+    instructions
+        System-level hasChild parent-selection instructions.
+    max_retries
+        Maximum number of quality-error retries.
+    model_config
+        Model configuration containing the model name and model settings helpers.
+    resolution_request
+        Bounded hasChild parent-selection request being processed.
+    verify_quality_fn
+        Callable with signature `(*, resolution_request, resolution_response)` that
+        raises `QualityError` on failure.
+
+    Returns
+    -------
+    Agent
+        Configured hasChild parent-selection agent.
+    """
+
+    attempt_counter: dict[str, int] = {"value": 0}
+    agent = Agent(
+        model_config.model,
+        instructions=instructions,
+        model_settings=model_config.kgs_settings("sfi_has_child"),
+        output_retries=max_retries,
+        output_type=model_config.wrap_output_type(SFIHasChildResolutionResponse),
+    )
+
+    @agent.output_validator
+    def validate_sfi_has_child_quality(
+        output: SFIHasChildResolutionResponse,
+    ) -> SFIHasChildResolutionResponse:
+        """Validate parsed hasChild parent-selection output.
+
+        Parameters
+        ----------
+        output
+            Parsed hasChild resolution response from the model.
+
+        Returns
+        -------
+        SFIHasChildResolutionResponse
+            Validated hasChild resolution response.
+
+        Raises
+        ------
+        ModelRetry
+            If output fails quality checks and should be corrected by the model.
+        """
+
+        attempt = attempt_counter["value"]
+
+        try:
+            verify_quality_fn(
+                resolution_request=resolution_request, resolution_response=output
+            )
+        except QualityError as e:
+            truncated_msg = str(e)[:500]
+
+            logger.error(
+                f"SFI hasChild quality check failed for request "
+                f"{resolution_request.request_id} attempt {attempt + 1}: "
+                f"{truncated_msg}"
+            )
+
+            attempt_counter["value"] += 1
+            raise ModelRetry(
+                f"Your structured SFI hasChild output has quality issues and must "
+                f"be corrected.\n"
+                f"ERROR: {str(e)}\n\n"
+                f"Return a complete SFIHasChildResolutionResponse that covers every "
+                f"child exactly once and only selects parents from the provided "
+                f"candidate sets."
             ) from e
 
         attempt_counter["value"] += 1

@@ -37,6 +37,7 @@ from skg.kgs.sfi_dedup import merge_sfi_candidates
 from skg.kgs.sfi_extraction import extract_sfi_candidates_from_windows
 from skg.kgs.sfi_finalization import mint_final_sfi_ids
 from skg.kgs.sfi_registry import build_candidate_registry
+from skg.kgs.sfi_relationships import resolve_has_child_edges
 from skg.kgs.utils import (
     KGDirs,
     build_run_manifest,
@@ -71,6 +72,7 @@ def build_kgs(
     6. Build and persist the global SFI candidate registry for merge review.
     7. Merge duplicate SFI registry candidates into merge groups.
     8. Mint deterministic final SFI records from merge groups.
+    9. Resolve source-grounded final hasChild edges.
 
     Parameters
     ----------
@@ -142,7 +144,7 @@ def build_kgs(
     )
 
     # 8.
-    final_sfi_records = mint_final_sfi_ids(
+    sfi_final_records = mint_final_sfi_ids(
         document_ir=kg_run_inputs.document_ir,
         kg_config=kg_run_inputs.kg_config,
         kg_dirs=kg_dirs,
@@ -150,7 +152,16 @@ def build_kgs(
         sfi_merge_report=sfi_merge_report,
     )
 
-    logger.debug(f"final_sfi_count={len(final_sfi_records)}")
+    # 9.
+    has_child_edges = resolve_has_child_edges(
+        document_ir=kg_run_inputs.document_ir,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+        sfi_final_records=sfi_final_records,
+        usage_tracker=usage_tracker,
+    )
+
+    logger.debug(f"has_child_edge_count={len(has_child_edges)}")
 
     return kg_run_manifest_fp
 

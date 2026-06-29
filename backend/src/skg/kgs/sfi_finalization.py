@@ -98,7 +98,107 @@ def _build_code_group_key(merge_group: SFIMergeGroup) -> tuple[str, str, str]:
     )
 
 
-def _build_final_sfi_record(
+def _build_identity_key(
+    *,
+    code_group_counts: dict[tuple[str, str, str], int],
+    document_ir: DocumentIR,
+    merge_group: SFIMergeGroup,
+) -> tuple[str, bool]:
+    """Build a canonical identity string for deterministic final SFI UUID minting.
+
+    Parameters
+    ----------
+    code_group_counts
+        Counts for eligible coded groups by same-code key.
+    document_ir
+        Source DocumentIR whose doc_key scopes all final SFI identities.
+    merge_group
+        Merge group to identify.
+
+    Returns
+    -------
+    tuple[str, bool]
+        Identity key and whether a code disambiguator was included.
+    """
+
+    normalized_statement_type_key = _slug(
+        _shared_normalized_statement_type(merge_group)
+    )
+    statement_type_key = _slug(_shared_statement_type(merge_group))
+    base_key = (
+        f"lc:curriculum:{document_ir.doc_key}:sfi:"
+        f"{normalized_statement_type_key}:{statement_type_key}"
+    )
+
+    if merge_group.normalized_statement_code:
+        identity_key = f"{base_key}:{merge_group.normalized_statement_code}"
+
+        # Determine if the code alone is not unique or an audit flag requires
+        # preservation.
+        needs_disambiguator = (
+            _SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG in merge_group.audit_flags
+            or code_group_counts.get(_build_code_group_key(merge_group), 0) > 1
+        )
+
+        if needs_disambiguator:
+            # Build a deterministic source/text/provenance disambiguator for same-code
+            # groups.
+            disambiguator_parts = [
+                *merge_group.candidate_descriptions,
+                *merge_group.candidate_source_texts,
+                *merge_group.source_segment_ids,
+                *(str(index) for index in merge_group.source_window_indexes),
+                *_source_context_keys(merge_group),
+            ]
+            disambiguator = _hash_text(n_hex=20, value="\n".join(disambiguator_parts))
+            identity_key = f"{identity_key}:{disambiguator}"
+
+        return identity_key, needs_disambiguator
+
+    source_context_key = _hash_text(
+        n_hex=20,
+        value="\n".join(_source_context_keys(merge_group))
+        or "\n".join(merge_group.source_segment_ids)
+        or merge_group.merge_group_id,
+    )
+    source_text_key = _hash_text(
+        n_hex=20,
+        value="\n".join(merge_group.candidate_source_texts)
+        or "\n".join(merge_group.candidate_descriptions)
+        or merge_group.merge_group_id,
+    )
+    return f"{base_key}:{source_context_key}:{source_text_key}", False
+
+
+def _build_segment_page_index_lookup(document_ir: DocumentIR) -> dict[str, list[int]]:
+    """Build page-index provenance for each DocumentIR segment.
+
+    Parameters
+    ----------
+    document_ir
+        Source DocumentIR.
+
+    Returns
+    -------
+    dict[str, list[int]]
+        Sorted page indexes keyed by segment ID.
+    """
+
+    page_indexes_by_id: dict[str, list[int]] = {}
+
+    for segment in document_ir.segments:
+        page_indexes = sorted(
+            {
+                provenance.page_index
+                for provenance in getattr(segment, "segment_provenance", []) or []
+            }
+        )
+        page_indexes_by_id[segment.segment_id] = page_indexes
+
+    return page_indexes_by_id
+
+
+def _build_sfi_final_record(
     *,
     code_group_counts: dict[tuple[str, str, str], int],
     document_ir: DocumentIR,
@@ -206,12 +306,12 @@ def _build_final_sfi_record(
     )
 
 
-def _build_final_sfi_summary(
+def _build_sfi_final_summary(
     *,
     eligible_merge_group_count: int,
     excluded_conflict_group_count: int,
     excluded_needs_review_group_count: int,
-    final_sfi_records: Sequence[SFIFinalRecord],
+    sfi_final_records: Sequence[SFIFinalRecord],
 ) -> SFIFinalSummary:
     """Build aggregate counts for final SFI records.
 
@@ -223,7 +323,7 @@ def _build_final_sfi_summary(
         Number of conflict groups excluded from automatic final SFI minting.
     excluded_needs_review_group_count
         Number of needs-review groups excluded from automatic final SFI minting.
-    final_sfi_records
+    sfi_final_records
         Final SFI records.
 
     Returns
@@ -234,141 +334,41 @@ def _build_final_sfi_summary(
 
     audit_flag_counts: Counter[str] = Counter(
         audit_flag
-        for final_sfi_record in final_sfi_records
+        for final_sfi_record in sfi_final_records
         for audit_flag in final_sfi_record.audit_flags
     )
     normalized_statement_type_counts: Counter[str] = Counter(
         final_sfi_record.normalized_statement_type
-        for final_sfi_record in final_sfi_records
+        for final_sfi_record in sfi_final_records
     )
     statement_type_counts: Counter[str] = Counter(
-        final_sfi_record.statement_type for final_sfi_record in final_sfi_records
+        final_sfi_record.statement_type for final_sfi_record in sfi_final_records
     )
     return SFIFinalSummary(
         audit_flag_count_by_type=dict(sorted(audit_flag_counts.items())),
         eligible_merge_group_count=eligible_merge_group_count,
         excluded_conflict_group_count=excluded_conflict_group_count,
         excluded_needs_review_group_count=excluded_needs_review_group_count,
-        final_sfi_count=len(final_sfi_records),
+        final_sfi_count=len(sfi_final_records),
         final_sfi_count_by_normalized_statement_type=dict(
             sorted(normalized_statement_type_counts.items())
         ),
         final_sfi_count_by_statement_type=dict(sorted(statement_type_counts.items())),
         final_sfis_with_statement_code=sum(
-            1 for record in final_sfi_records if record.statement_code is not None
+            1 for record in sfi_final_records if record.statement_code is not None
         ),
         final_sfis_without_statement_code=sum(
-            1 for record in final_sfi_records if record.statement_code is None
+            1 for record in sfi_final_records if record.statement_code is None
         ),
         same_code_disambiguated_final_sfi_count=sum(
             1
-            for record in final_sfi_records
+            for record in sfi_final_records
             if record.metadata.get("identity", {}).get("uses_code_disambiguator")
         ),
         source_registry_candidate_count=sum(
-            len(record.source_registry_candidate_ids) for record in final_sfi_records
+            len(record.source_registry_candidate_ids) for record in sfi_final_records
         ),
     )
-
-
-def _build_identity_key(
-    *,
-    code_group_counts: dict[tuple[str, str, str], int],
-    document_ir: DocumentIR,
-    merge_group: SFIMergeGroup,
-) -> tuple[str, bool]:
-    """Build a canonical identity string for deterministic final SFI UUID minting.
-
-    Parameters
-    ----------
-    code_group_counts
-        Counts for eligible coded groups by same-code key.
-    document_ir
-        Source DocumentIR whose doc_key scopes all final SFI identities.
-    merge_group
-        Merge group to identify.
-
-    Returns
-    -------
-    tuple[str, bool]
-        Identity key and whether a code disambiguator was included.
-    """
-
-    normalized_statement_type_key = _slug(
-        _shared_normalized_statement_type(merge_group)
-    )
-    statement_type_key = _slug(_shared_statement_type(merge_group))
-    base_key = (
-        f"lc:curriculum:{document_ir.doc_key}:sfi:"
-        f"{normalized_statement_type_key}:{statement_type_key}"
-    )
-
-    if merge_group.normalized_statement_code:
-        identity_key = f"{base_key}:{merge_group.normalized_statement_code}"
-
-        # Determine if the code alone is not unique or an audit flag requires
-        # preservation.
-        needs_disambiguator = (
-            _SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG in merge_group.audit_flags
-            or code_group_counts.get(_build_code_group_key(merge_group), 0) > 1
-        )
-
-        if needs_disambiguator:
-            # Build a deterministic source/text/provenance disambiguator for same-code
-            # groups.
-            disambiguator_parts = [
-                *merge_group.candidate_descriptions,
-                *merge_group.candidate_source_texts,
-                *merge_group.source_segment_ids,
-                *(str(index) for index in merge_group.source_window_indexes),
-                *_source_context_keys(merge_group),
-            ]
-            disambiguator = _hash_text(n_hex=20, value="\n".join(disambiguator_parts))
-            identity_key = f"{identity_key}:{disambiguator}"
-
-        return identity_key, needs_disambiguator
-
-    source_context_key = _hash_text(
-        n_hex=20,
-        value="\n".join(_source_context_keys(merge_group))
-        or "\n".join(merge_group.source_segment_ids)
-        or merge_group.merge_group_id,
-    )
-    source_text_key = _hash_text(
-        n_hex=20,
-        value="\n".join(merge_group.candidate_source_texts)
-        or "\n".join(merge_group.candidate_descriptions)
-        or merge_group.merge_group_id,
-    )
-    return f"{base_key}:{source_context_key}:{source_text_key}", False
-
-
-def _build_segment_page_index_lookup(document_ir: DocumentIR) -> dict[str, list[int]]:
-    """Build page-index provenance for each DocumentIR segment.
-
-    Parameters
-    ----------
-    document_ir
-        Source DocumentIR.
-
-    Returns
-    -------
-    dict[str, list[int]]
-        Sorted page indexes keyed by segment ID.
-    """
-
-    page_indexes_by_id: dict[str, list[int]] = {}
-
-    for segment in document_ir.segments:
-        page_indexes = sorted(
-            {
-                provenance.page_index
-                for provenance in getattr(segment, "segment_provenance", []) or []
-            }
-        )
-        page_indexes_by_id[segment.segment_id] = page_indexes
-
-    return page_indexes_by_id
 
 
 def _choose_final_description(merge_group: SFIMergeGroup) -> str:
@@ -789,8 +789,8 @@ def mint_final_sfi_ids(
         for candidate in sfi_candidate_registry.candidates
     }
 
-    final_sfi_records = [
-        _build_final_sfi_record(
+    sfi_final_records = [
+        _build_sfi_final_record(
             code_group_counts=code_group_counts,
             document_ir=document_ir,
             kg_config=kg_config,
@@ -801,30 +801,30 @@ def mint_final_sfi_ids(
         for merge_group in eligible_merge_groups
     ]
 
-    if not final_sfi_records:
-        raise ValueError("Step 8 produced zero final SFI records.")
+    if not sfi_final_records:
+        raise ValueError("Produced zero final SFI records.")
 
-    _validate_final_sfi_records(final_sfi_records)
+    _validate_final_sfi_records(sfi_final_records)
 
-    final_sfi_summary = _build_final_sfi_summary(
+    sfi_final_summary = _build_sfi_final_summary(
         eligible_merge_group_count=len(eligible_merge_groups),
         excluded_conflict_group_count=len(sfi_merge_report.conflict_groups),
         excluded_needs_review_group_count=len(sfi_merge_report.needs_review_groups),
-        final_sfi_records=final_sfi_records,
+        sfi_final_records=sfi_final_records,
     )
 
     make_dir(kg_dirs.root)
     write_to_json(
         fp=kg_dirs.root / "sfi_final_records.json",
-        json_info=[record.model_dump(mode="json") for record in final_sfi_records],
+        json_info=[record.model_dump(mode="json") for record in sfi_final_records],
     )
     write_to_json(
         fp=kg_dirs.root / "sfi_final_summary.json",
-        json_info=final_sfi_summary.model_dump(mode="json"),
+        json_info=sfi_final_summary.model_dump(mode="json"),
     )
 
     logger.success(
-        f"Minted final SFI records: final_sfi_records={len(final_sfi_records)}."
+        f"Minted final SFI records: final_sfi_records={len(sfi_final_records)}."
     )
 
-    return final_sfi_records
+    return sfi_final_records

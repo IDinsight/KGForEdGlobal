@@ -640,6 +640,14 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         ),
         ge=2,
     )
+    max_has_child_parent_candidates: int = Field(
+        default=24,
+        description=(
+            "Maximum number of parent candidates to include in one hasChild "
+            "parent-selection set, including the StandardsFramework root fallback."
+        ),
+        ge=2,
+    )
     max_rows_per_table_window: Optional[int] = Field(
         default=20,
         description=(
@@ -674,9 +682,13 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
     bilingual_pair_policy: str | None = None
     sfi_deduplication_instructions: str
     sfi_extraction_instructions: str
+    sfi_has_child_instructions: str
 
     @field_validator(
-        "sfi_deduplication_instructions", "sfi_extraction_instructions", mode="before"
+        "sfi_deduplication_instructions",
+        "sfi_extraction_instructions",
+        "sfi_has_child_instructions",
+        mode="before",
     )
     @classmethod
     def _strip_and_require_non_empty(cls, v: str) -> str:
