@@ -1493,8 +1493,8 @@ def _load_and_validate_existing_relationship_artifacts(
 
     except Exception as e:  # pylint: disable=W0718
         logger.warning(
-            f"Existing hasChild artifacts are incomplete or stale; resuming SFI "
-            f"hasChild resolution: {e}"
+            f"Existing hasChild artifacts are incomplete, missing, or stale; "
+            f"resuming SFI hasChild resolution: {e}"
         )
 
         return None
