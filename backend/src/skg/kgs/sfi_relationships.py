@@ -638,8 +638,9 @@ def _evaluate_parent_child_relationship(
     """
 
     parent_code = _normalize_code(parent_context.normalized_statement_code)
+    code_pair = (child_code, parent_code)
 
-    if child_code and parent_code and (child_code, parent_code) in code_parent_pairs:
+    if code_pair[0] and code_pair[1] and code_pair in code_parent_pairs:
         _add_parent_evidence(
             evidence_by_endpoint_id=evidence_by_endpoint_id,
             evidence_reason="code_parent_hint",
@@ -697,27 +698,34 @@ def _evaluate_parent_child_relationship(
     ):
         distance = child_context.source_order - parent_context.source_order
 
-        if distance <= 8:
-            _add_parent_evidence(
-                evidence_by_endpoint_id=evidence_by_endpoint_id,
-                evidence_reason="nearest_preceding_grouping",
-                evidence_summary=(
+        # Distance thresholds, ordered widest-last. Each threshold that the distance
+        # satisfies contributes its evidence.
+        distance_evidence = (
+            (
+                8,
+                "nearest_preceding_grouping",
+                (
                     f"Parent is a preceding Standard Grouping within {distance} "
                     f"source-order units."
                 ),
-                parent_context=parent_context,
-            )
-
-        if distance <= 12:
-            _add_parent_evidence(
-                evidence_by_endpoint_id=evidence_by_endpoint_id,
-                evidence_reason="statement_type_compatible",
-                evidence_summary=(
+            ),
+            (
+                12,
+                "statement_type_compatible",
+                (
                     "Parent is a preceding Standard Grouping compatible with "
                     "hasChild hierarchy instructions."
                 ),
-                parent_context=parent_context,
-            )
+            ),
+        )
+        for threshold, reason, summary in distance_evidence:
+            if distance <= threshold:
+                _add_parent_evidence(
+                    evidence_by_endpoint_id=evidence_by_endpoint_id,
+                    evidence_reason=reason,
+                    evidence_summary=summary,
+                    parent_context=parent_context,
+                )
 
     if _is_nearby_source_window(
         child_context=child_context, parent_context=parent_context
