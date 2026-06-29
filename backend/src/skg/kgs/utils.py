@@ -444,6 +444,37 @@ def _validate_kg_config_compatibility(
     return warnings
 
 
+def append_jsonl_model(*, fp: Path, model: BaseModel) -> None:
+    """Append one Pydantic model payload to a JSONL artifact.
+
+    The parent directory is created before writing. If the target file already exists
+    and its final byte is not a newline, a separating newline is written before the new
+    model payload so the file remains valid JSONL.
+
+    Parameters
+    ----------
+    fp
+        JSONL artifact path to append to.
+    model
+        Pydantic model instance to serialize as one JSONL record.
+    """
+
+    make_dir(fp.parent)
+
+    if fp.exists() and fp.stat().st_size > 0:
+        with fp.open("rb") as f:
+            f.seek(-1, 2)
+            missing_trailing_newline = f.read(1) != b"\n"
+
+        if missing_trailing_newline:
+            with fp.open("a", encoding="utf-8") as f:
+                f.write("\n")
+
+    with fp.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(model.model_dump(mode="json"), ensure_ascii=False))
+        f.write("\n")
+
+
 def assert_model_sequences_equal(
     *, actual: Sequence[Any], artifact_label: str, expected: Sequence[Any]
 ) -> None:
@@ -780,6 +811,29 @@ def persist_kg_run(
     logger.info(f"Saving KG results to: {kg_dirs.root}")
 
     return kg_dirs, kg_run
+
+
+def reset_output_files(output_fps: Sequence[Path]) -> None:
+    """Remove stale output artifacts and initialize empty JSONL artifacts.
+
+    Each parent directory is created before the corresponding artifact is reset. Any
+    existing artifact is deleted. Paths with a `.jsonl` suffix are recreated as empty
+    files so downstream append-only progress writers can assume the file exists.
+
+    Parameters
+    ----------
+    output_fps
+        Output artifact paths to reset.
+    """
+
+    for output_fp in output_fps:
+        make_dir(output_fp.parent)
+
+        if output_fp.exists():
+            output_fp.unlink()
+
+        if output_fp.suffix == ".jsonl":
+            output_fp.write_text("", encoding="utf-8")
 
 
 def unique_nonempty(values: Iterable[Any]) -> list[str]:

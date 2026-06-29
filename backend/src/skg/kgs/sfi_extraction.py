@@ -3,8 +3,6 @@ extraction windows using an LLM.
 """
 
 # Standard Library
-import json
-
 from collections import Counter
 from pathlib import Path
 from typing import Sequence
@@ -19,39 +17,11 @@ from skg.kgs.schemas import (
     SFIExtractionResult,
     SFIExtractionSummary,
 )
+from skg.kgs.utils import append_jsonl_model
 from skg.kgs.validators import verify_sfi_extraction_quality
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, write_to_json
-
-
-def _append_sfi_extraction_result(
-    *, result: SFIExtractionResult, save_fp: Path
-) -> None:
-    """Append one validated SFI extraction result to a JSONL artifact.
-
-    Parameters
-    ----------
-    result
-        Parsed and quality-validated extraction result to append.
-    save_fp
-        File path for the JSONL extraction-result artifact.
-    """
-
-    make_dir(save_fp.parent)
-    missing_trailing_newline = False
-
-    if save_fp.exists() and save_fp.stat().st_size > 0:
-        with save_fp.open("rb") as f:
-            f.seek(-1, 2)
-            missing_trailing_newline = f.read(1) != b"\n"
-
-    with save_fp.open("a", encoding="utf-8") as f:
-        if missing_trailing_newline:
-            f.write("\n")
-
-        f.write(json.dumps(result.model_dump(mode="json"), ensure_ascii=False))
-        f.write("\n")
 
 
 def _build_sfi_extraction_summary(
@@ -353,7 +323,7 @@ def extract_sfi_candidates_from_windows(
             usage_tracker=usage_tracker,
         )
         sfi_extraction_results.append(sfi_extraction_result)
-        _append_sfi_extraction_result(result=sfi_extraction_result, save_fp=save_fp)
+        append_jsonl_model(fp=save_fp, model=sfi_extraction_result)
         _persist_sfi_extraction_summary(
             results=sfi_extraction_results, summary_fp=summary_fp
         )

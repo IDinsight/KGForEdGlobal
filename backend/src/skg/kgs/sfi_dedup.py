@@ -10,7 +10,6 @@ registry candidate.
 # Standard Library
 import hashlib
 import itertools
-import json
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -37,8 +36,10 @@ from skg.kgs.schemas import (
 )
 from skg.kgs.utils import (
     KGDirs,
+    append_jsonl_model,
     assert_model_sequences_equal,
     model_dump_key,
+    reset_output_files,
     unique_nonempty,
 )
 from skg.kgs.validators import verify_sfi_dedup_review_quality
@@ -158,23 +159,6 @@ def _annotate_same_code_different_content_audit_flags(
             )
 
     return [annotated_by_id[group.merge_group_id] for group in merge_groups]
-
-
-def _append_jsonl_model(*, fp: Path, model: BaseModel) -> None:
-    """Append one Pydantic model payload to a JSONL artifact.
-
-    Parameters
-    ----------
-    fp
-        JSONL file path.
-    model
-        Pydantic model instance to append.
-    """
-
-    make_dir(fp.parent)
-
-    with fp.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(model.model_dump(mode="json"), ensure_ascii=False) + "\n")
 
 
 def _assert_model_payload_equal(
@@ -1739,25 +1723,6 @@ def _merge_edges_to_components(
     ]
 
 
-def _prepare_output_files(output_fps: Sequence[Path]) -> None:
-    """Remove stale output artifacts and create empty JSONL artifacts.
-
-    Parameters
-    ----------
-    output_fps
-        Output file paths to reset.
-    """
-
-    for output_fp in output_fps:
-        make_dir(output_fp.parent)
-
-        if output_fp.exists():
-            output_fp.unlink()
-
-        if output_fp.suffix == ".jsonl":
-            output_fp.write_text("", encoding="utf-8")
-
-
 def _resolve_max_dedup_review_set_candidates(
     *, candidate_count: int, kg_config: CreateKGConfig
 ) -> int:
@@ -1834,10 +1799,10 @@ def _rewrite_review_progress_files(
     review_responses_fp.write_text("", encoding="utf-8")
 
     for review_request in completed_review_requests:
-        _append_jsonl_model(fp=review_requests_fp, model=review_request)
+        append_jsonl_model(fp=review_requests_fp, model=review_request)
 
     for review_response in completed_review_responses:
-        _append_jsonl_model(fp=review_responses_fp, model=review_response)
+        append_jsonl_model(fp=review_responses_fp, model=review_response)
 
 
 def _run_dedup_reviews(
@@ -1896,13 +1861,13 @@ def _run_dedup_reviews(
             f"candidate_set_length={len(review_request.candidates)}."
         )
 
-        _append_jsonl_model(fp=review_requests_fp, model=review_request)
+        append_jsonl_model(fp=review_requests_fp, model=review_request)
 
         review_response = review_sfi_dedup_set(
             review_request=review_request, usage_tracker=usage_tracker
         )
 
-        _append_jsonl_model(fp=review_responses_fp, model=review_response)
+        append_jsonl_model(fp=review_responses_fp, model=review_response)
 
         review_responses.append(review_response)
 
@@ -2487,8 +2452,8 @@ def merge_sfi_candidates(
     )
 
     if overwrite:
-        _prepare_output_files(
-            [
+        reset_output_files(
+            output_fps=[
                 conflicts_fp,
                 merge_groups_fp,
                 merge_report_fp,
@@ -2521,8 +2486,13 @@ def merge_sfi_candidates(
             review_requests_fp=review_requests_fp,
             review_responses_fp=review_responses_fp,
         )
-        _prepare_output_files(
-            [conflicts_fp, merge_groups_fp, merge_report_fp, needs_review_fp]
+        reset_output_files(
+            output_fps=[
+                conflicts_fp,
+                merge_groups_fp,
+                merge_report_fp,
+                needs_review_fp,
+            ]
         )
         _rewrite_review_progress_files(
             completed_review_requests=review_requests[

@@ -9,7 +9,6 @@ relationship-resolution artifacts.
 
 # Standard Library
 import hashlib
-import json
 import uuid
 
 from collections import defaultdict
@@ -39,10 +38,12 @@ from skg.kgs.schemas import (
 )
 from skg.kgs.utils import (
     KGDirs,
+    append_jsonl_model,
     assert_model_sequences_equal,
     model_dump_key,
     normalize_code,
     normalize_text,
+    reset_output_files,
     unique_nonempty,
 )
 from skg.kgs.validators import verify_sfi_has_child_resolution_quality
@@ -1739,25 +1740,6 @@ def _parent_candidate_rank(candidate: SFIHasChildParentCandidate) -> tuple[int, 
     return -score, candidate.endpoint_id
 
 
-def _prepare_output_files(output_fps: Sequence[Path]) -> None:
-    """Remove stale artifacts and initialize JSONL outputs.
-
-    Parameters
-    ----------
-    output_fps
-        Artifact paths to reset.
-    """
-
-    for output_fp in output_fps:
-        make_dir(output_fp.parent)
-
-        if output_fp.exists():
-            output_fp.unlink()
-
-        if output_fp.suffix == ".jsonl":
-            output_fp.write_text("", encoding="utf-8")
-
-
 def _reachable_sfi_ids(
     *, edges: Sequence[SFIHasChildEdge], framework_uuid: uuid.UUID
 ) -> set[str]:
@@ -1879,10 +1861,10 @@ def _rewrite_resolution_progress_files(
     responses_fp.write_text("", encoding="utf-8")
 
     for request in completed_requests:
-        _write_jsonl_model(fp=requests_fp, model=request)
+        append_jsonl_model(fp=requests_fp, model=request)
 
     for response in completed_responses:
-        _write_jsonl_model(fp=responses_fp, model=response)
+        append_jsonl_model(fp=responses_fp, model=response)
 
 
 def _run_resolution_requests(
@@ -1940,11 +1922,11 @@ def _run_resolution_requests(
             f"request_id={request.request_id}."
         )
 
-        _write_jsonl_model(fp=requests_fp, model=request)
+        append_jsonl_model(fp=requests_fp, model=request)
         response = resolve_sfi_has_child_parent_request(
             resolution_request=request, usage_tracker=usage_tracker
         )
-        _write_jsonl_model(fp=responses_fp, model=response)
+        append_jsonl_model(fp=responses_fp, model=response)
         responses.append(response)
 
     return responses
@@ -2428,24 +2410,7 @@ def _write_context_and_parent_set_artifacts(
     parent_sets_fp.write_text("", encoding="utf-8")
 
     for parent_set in parent_sets:
-        _write_jsonl_model(fp=parent_sets_fp, model=parent_set)
-
-
-def _write_jsonl_model(*, fp: Path, model: BaseModel) -> None:
-    """Append one Pydantic model to a JSONL file.
-
-    Parameters
-    ----------
-    fp
-        JSONL path.
-    model
-        Pydantic model.
-    """
-
-    make_dir(fp.parent)
-
-    with fp.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(model.model_dump(mode="json"), ensure_ascii=False) + "\n")
+        append_jsonl_model(fp=parent_sets_fp, model=parent_set)
 
 
 def _write_resolution_artifacts(
@@ -2570,8 +2535,8 @@ def resolve_has_child_edges(
             "Starting SFI hasChild resolution from scratch because overwrite=True."
         )
 
-        _prepare_output_files(
-            [
+        reset_output_files(
+            output_fps=[
                 contexts_fp,
                 edges_fp,
                 parent_sets_fp,
@@ -2605,8 +2570,14 @@ def resolve_has_child_edges(
         completed_responses = _load_resumable_resolution_progress(
             requests=requests, requests_fp=requests_fp, responses_fp=responses_fp
         )
-        _prepare_output_files(
-            [contexts_fp, edges_fp, parent_sets_fp, summary_fp, unresolved_edges_fp]
+        reset_output_files(
+            output_fps=[
+                contexts_fp,
+                edges_fp,
+                parent_sets_fp,
+                summary_fp,
+                unresolved_edges_fp,
+            ]
         )
         _rewrite_resolution_progress_files(
             completed_requests=requests[: len(completed_responses)],
