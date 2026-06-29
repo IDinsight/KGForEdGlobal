@@ -15,7 +15,7 @@ import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 # Third Party Library
 from loguru import logger
@@ -35,7 +35,7 @@ from skg.kgs.schemas import (
     SFIRegistryArtifact,
     SFIRegistryCandidate,
 )
-from skg.kgs.utils import KGDirs
+from skg.kgs.utils import KGDirs, unique_nonempty
 from skg.kgs.validators import verify_sfi_dedup_review_quality
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
@@ -142,11 +142,11 @@ def _annotate_same_code_different_content_audit_flags(
 
             annotated_by_id[group.merge_group_id] = current.model_copy(
                 update={
-                    "audit_flags": _unique_nonempty(
+                    "audit_flags": unique_nonempty(
                         [*current.audit_flags, _SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG]
                     ),
-                    "audit_notes": _unique_nonempty([*current.audit_notes, audit_note]),
-                    "audit_peer_merge_group_ids": _unique_nonempty(
+                    "audit_notes": unique_nonempty([*current.audit_notes, audit_note]),
+                    "audit_peer_merge_group_ids": unique_nonempty(
                         [*current.audit_peer_merge_group_ids, *peer_group_ids]
                     ),
                 }
@@ -542,16 +542,16 @@ def _build_merge_group(
         candidate.registry_candidate_id for candidate in sorted_candidates
     ]
     confidence_values = [candidate.confidence for candidate in sorted_candidates]
-    normalized_statement_codes = _unique_nonempty(
+    normalized_statement_codes = unique_nonempty(
         candidate.normalized_statement_code for candidate in sorted_candidates
     )
-    normalized_statement_types = _unique_nonempty(
+    normalized_statement_types = unique_nonempty(
         candidate.normalized_statement_type for candidate in sorted_candidates
     )
-    statement_codes = _unique_nonempty(
+    statement_codes = unique_nonempty(
         candidate.statement_code for candidate in sorted_candidates
     )
-    statement_types = _unique_nonempty(
+    statement_types = unique_nonempty(
         candidate.statement_type for candidate in sorted_candidates
     )
     digest = hashlib.sha256(
@@ -565,7 +565,7 @@ def _build_merge_group(
         ).encode("utf-8")
     ).hexdigest()
     return SFIMergeGroup(
-        candidate_descriptions=_unique_nonempty(
+        candidate_descriptions=unique_nonempty(
             candidate.description for candidate in sorted_candidates
         ),
         candidate_source_refs=[
@@ -581,7 +581,7 @@ def _build_merge_group(
             }
             for candidate in sorted_candidates
         ],
-        candidate_source_texts=_unique_nonempty(
+        candidate_source_texts=unique_nonempty(
             candidate.source_text for candidate in sorted_candidates
         ),
         confidence_max=max(confidence_values),
@@ -604,12 +604,12 @@ def _build_merge_group(
         ),
         normalized_statement_types=normalized_statement_types,
         registry_candidate_ids=registry_candidate_ids,
-        source_segment_ids=_unique_nonempty(
+        source_segment_ids=unique_nonempty(
             source_segment_id
             for candidate in sorted_candidates
             for source_segment_id in candidate.source_segment_ids
         ),
-        source_window_ids=_unique_nonempty(
+        source_window_ids=unique_nonempty(
             candidate.window_id for candidate in sorted_candidates
         ),
         source_window_indexes=sorted(
@@ -2166,38 +2166,6 @@ def _split_and_bound_components(
             )
 
     return bounded_components
-
-
-def _unique_nonempty(values: Iterable[Any]) -> list[str]:
-    """Return unique non-empty string values preserving order.
-
-    Parameters
-    ----------
-    values
-        Raw values to normalize as strings.
-
-    Returns
-    -------
-    list[str]
-        Unique non-empty values.
-    """
-
-    output: list[str] = []
-    seen: set[str] = set()
-
-    for value in values:
-        if value is None:
-            continue
-
-        value_clean = str(value).strip()
-
-        if not value_clean or value_clean in seen:
-            continue
-
-        output.append(value_clean)
-        seen.add(value_clean)
-
-    return output
 
 
 def _validate_complete_merge_artifacts(

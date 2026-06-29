@@ -14,7 +14,7 @@ import unicodedata
 import uuid
 
 from collections import Counter
-from typing import Any, Iterable, Sequence
+from typing import Sequence
 
 # Third Party Library
 from loguru import logger
@@ -30,7 +30,7 @@ from skg.kgs.schemas import (
     SFIRegistryArtifact,
     SFIRegistryCandidate,
 )
-from skg.kgs.utils import KGDirs
+from skg.kgs.utils import KGDirs, unique_nonempty
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, write_to_json
 
@@ -390,10 +390,10 @@ def _choose_final_description(merge_group: SFIMergeGroup) -> str:
         If no description or source text is available.
     """
 
-    candidates = _unique_nonempty(merge_group.candidate_descriptions)
+    candidates = unique_nonempty(merge_group.candidate_descriptions)
 
     if not candidates:
-        candidates = _unique_nonempty(merge_group.candidate_source_texts)
+        candidates = unique_nonempty(merge_group.candidate_source_texts)
 
     if not candidates:
         raise ValueError(
@@ -430,7 +430,7 @@ def _choose_language(
         Final language tag.
     """
 
-    languages = _unique_nonempty(candidate.language for candidate in group_candidates)
+    languages = unique_nonempty(candidate.language for candidate in group_candidates)
 
     if len(languages) == 1:
         return languages[0]
@@ -494,7 +494,7 @@ def _preferred_surface_form(values: Sequence[str]) -> str:
         Preferred surface form.
     """
 
-    cleaned = _unique_nonempty(values)
+    cleaned = unique_nonempty(values)
 
     if not cleaned:
         raise ValueError("Cannot choose a surface form from an empty sequence.")
@@ -529,7 +529,7 @@ def _shared_normalized_statement_type(merge_group: SFIMergeGroup) -> str:
         If the merge group does not have exactly one normalized statement type.
     """
 
-    values = _unique_nonempty(
+    values = unique_nonempty(
         [merge_group.normalized_statement_type, *merge_group.normalized_statement_types]
     )
 
@@ -561,9 +561,7 @@ def _shared_statement_type(merge_group: SFIMergeGroup) -> str:
         If the merge group does not have exactly one statement type.
     """
 
-    values = _unique_nonempty(
-        [merge_group.statement_type, *merge_group.statement_types]
-    )
+    values = unique_nonempty([merge_group.statement_type, *merge_group.statement_types])
 
     if len(values) != 1:
         raise ValueError(
@@ -606,43 +604,11 @@ def _source_context_keys(merge_group: SFIMergeGroup) -> list[str]:
         Unique source-context keys in stable order.
     """
 
-    return _unique_nonempty(
+    return unique_nonempty(
         source_ref.get("source_context_key")
         for source_ref in merge_group.candidate_source_refs
         if isinstance(source_ref, dict)
     )
-
-
-def _unique_nonempty(values: Iterable[Any]) -> list[str]:
-    """Return unique non-empty string values while preserving order.
-
-    Parameters
-    ----------
-    values
-        Raw values.
-
-    Returns
-    -------
-    list[str]
-        Unique cleaned string values.
-    """
-
-    output: list[str] = []
-    seen: set[str] = set()
-
-    for value in values:
-        if value is None:
-            continue
-
-        value_clean = str(value).strip()
-
-        if not value_clean or value_clean in seen:
-            continue
-
-        output.append(value_clean)
-        seen.add(value_clean)
-
-    return output
 
 
 def _validate_final_sfi_records(final_sfi_records: Sequence[SFIFinalRecord]) -> None:

@@ -2,13 +2,14 @@
 
 # Standard Library
 import re
+import unicodedata
 import uuid
 
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 # Third Party Library
 from loguru import logger
@@ -649,6 +650,28 @@ def load_and_validate_inputs(
     )
 
 
+def normalize_code(value: Any) -> str | None:
+    """Normalize a source code for hint matching.
+
+    Parameters
+    ----------
+    value
+        Raw code-like value.
+
+    Returns
+    -------
+    str | None
+        Normalized code or None.
+    """
+
+    if value is None:
+        return None
+
+    normalized = unicodedata.normalize("NFKC", str(value)).casefold().strip()
+    normalized = re.sub(r"\s+", "", normalized).strip(" .:;-)–—")
+    return normalized or None
+
+
 def persist_kg_run(
     *, config: CreateKGConfig, output_dir: Path
 ) -> tuple[KGDirs, RunCtx]:
@@ -683,3 +706,35 @@ def persist_kg_run(
     logger.info(f"Saving KG results to: {kg_dirs.root}")
 
     return kg_dirs, kg_run
+
+
+def unique_nonempty(values: Iterable[Any]) -> list[str]:
+    """Return unique non-empty string values while preserving order.
+
+    Parameters
+    ----------
+    values
+        Raw values.
+
+    Returns
+    -------
+    list[str]
+        Unique cleaned string values.
+    """
+
+    output: list[str] = []
+    seen: set[str] = set()
+
+    for value in values:
+        if value is None:
+            continue
+
+        value_clean = str(value).strip()
+
+        if not value_clean or value_clean in seen:
+            continue
+
+        output.append(value_clean)
+        seen.add(value_clean)
+
+    return output

@@ -39,7 +39,7 @@ from skg.kgs.schemas import (
     SFIHasChildResolutionResponse,
     SFIHasChildResolutionSummary,
 )
-from skg.kgs.utils import KGDirs
+from skg.kgs.utils import KGDirs, normalize_code, unique_nonempty
 from skg.kgs.validators import verify_sfi_has_child_resolution_quality
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, open_json_type, write_to_json
@@ -334,13 +334,13 @@ def _build_candidate_parent_sets(
         (child, parent)
         for window in extraction_windows
         for hint in window.code_parent_hints
-        if (child := _normalize_code(hint.child_code))
-        and (parent := _normalize_code(hint.parent_code))
+        if (child := normalize_code(hint.child_code))
+        and (parent := normalize_code(hint.parent_code))
     }
 
     for child_context in contexts:
         evidence_by_endpoint_id: dict[str, _ParentEvidence] = {}
-        child_code = _normalize_code(child_context.normalized_statement_code)
+        child_code = normalize_code(child_context.normalized_statement_code)
         child_table_keys = table_keys_by_uuid[child_context.final_sfi_uuid]
 
         for parent_context in contexts:
@@ -538,6 +538,52 @@ def _build_final_contexts(
 ) -> list[SFIHasChildFinalContext]:
     """Recover source context for finalized SFIs.
 
+    Examples
+    --------
+
+    1. Suppose the DocumentIR segment order is:
+
+    segment_001 -> source-order 0, section_path=["Grade 4"]
+    segment_010 -> source-order 1, section_path=["Grade 4", "Listening and Speaking"]
+    segment_011 -> source-order 2, section_path=["Grade 4", "Reading"]
+
+    And suppose one final SFI record has:
+
+    final_sfi_uuid=<uuid-a>
+    description="1.1 CONVERSATION"
+    normalized_statement_type="Standard Grouping"
+    statement_type="Topic"
+    source_segment_ids=["segment_010"]
+    source_window_indexes=[5]
+    source_context_keys=["ctx_topic_1"]
+    candidate_source_refs=[
+        {
+            "table_header_indexes": [],
+            "table_row_indexes": [2],
+            "source_segment_ids": ["segment_010"],
+            "window_index": 5,
+        }
+    ]
+
+    Then `_build_final_contexts(...)` creates a `SFIHasChildFinalContext` whose key
+    relationship-resolution fields are:
+
+    final_sfi_uuid=<uuid-a>
+    description="1.1 CONVERSATION"
+    source_order=1
+    section_path_labels=["Grade 4", "Listening and Speaking"]
+    source_segment_ids=["segment_010"]
+    source_window_indexes=[5]
+    source_context_keys=["ctx_topic_1"]
+    table_header_indexes=[]
+    table_row_indexes=[2]
+    normalized_statement_type="Standard Grouping"
+    statement_type="Topic"
+
+    The returned context does not decide any parent-child relationship. It only
+    packages source order, section-path, table, code, and provenance evidence so later
+    code can build bounded parent-candidate sets.
+
     Parameters
     ----------
     document_ir
@@ -558,6 +604,8 @@ def _build_final_contexts(
     segments_by_id = {segment.segment_id: segment for segment in document_ir.segments}
 
     for record in sfi_final_records:
+        # Use earliest source segment index among the final record's
+        # `source_segment_ids`.
         source_order = min(
             [
                 segment_order_by_id[source_segment_id]
@@ -566,15 +614,21 @@ def _build_final_contexts(
             ]
             or [0]
         )
+
+        # Look up the `section_path` for each source segment in the DocumentIR.
         section_path_labels = _recover_section_path_labels(
             record=record, segments_by_id=segments_by_id
         )
+
+        # Collect table provenance indexes.
         table_header_indexes = _source_ref_int_values(
             key="table_header_indexes", record=record
         )
         table_row_indexes = _source_ref_int_values(
             key="table_row_indexes", record=record
         )
+
+        # Build the context for the finalized SFI.
         contexts.append(
             SFIHasChildFinalContext(
                 audit_flags=record.audit_flags,
@@ -598,9 +652,11 @@ def _build_final_contexts(
             )
         )
 
+    # Sort by source order, then UUID.
     contexts.sort(
         key=lambda context: (context.source_order, str(context.final_sfi_uuid))
     )
+
     return contexts
 
 
@@ -770,7 +826,7 @@ def _evaluate_parent_child_relationship(
         Table context keys for the potential parent.
     """
 
-    parent_code = _normalize_code(parent_context.normalized_statement_code)
+    parent_code = normalize_code(parent_context.normalized_statement_code)
 
     # Simple, independent evidence channels expressed as (predicate, reason, summary).
     # Each predicate is evaluated against this child/parent pair, and every channel
@@ -875,7 +931,7 @@ def _finalize_candidate_parent_set(
         evidence.candidate.model_copy(
             update={
                 "evidence_reasons": sorted(evidence.evidence_reasons),
-                "evidence_summary": _unique_nonempty(evidence.evidence_summary),
+                "evidence_summary": unique_nonempty(evidence.evidence_summary),
             }
         )
         for evidence in evidence_by_endpoint_id.values()
@@ -1276,28 +1332,6 @@ def _model_dump_key(value: BaseModel) -> str:
     return json.dumps(value.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
 
 
-def _normalize_code(value: Any) -> str | None:
-    """Normalize a source code for hint matching.
-
-    Parameters
-    ----------
-    value
-        Raw code-like value.
-
-    Returns
-    -------
-    str | None
-        Normalized code or None.
-    """
-
-    if value is None:
-        return None
-
-    normalized = unicodedata.normalize("NFKC", str(value)).casefold().strip()
-    normalized = re.sub(r"\s+", "", normalized).strip(" .:;-)–—")
-    return normalized or None
-
-
 def _normalize_text(value: Any) -> str:
     """Normalize text for matching and hashing.
 
@@ -1331,7 +1365,7 @@ def _normalized_text_candidates(values: Iterable[Any]) -> list[str]:
         Unique normalized non-empty text values.
     """
 
-    return _unique_nonempty(_normalize_text(value) for value in values)
+    return unique_nonempty(_normalize_text(value) for value in values)
 
 
 def _parent_candidate_rank(candidate: SFIHasChildParentCandidate) -> tuple[int, str]:
@@ -1427,6 +1461,27 @@ def _recover_section_path_labels(
 ) -> list[str]:
     """Recover section-path labels from DocumentIR source segments.
 
+    Examples
+    --------
+
+    1. Suppose `record.source_segment_ids` is:
+
+    ["segment_010", "segment_011"]
+
+    And the corresponding DocumentIR segments have section paths:
+
+    segment_010.section_path = ["Grade 4", "Listening and Speaking"]
+    segment_011.section_path = ["Grade 4", "Reading"]
+
+    Then `_recover_section_path_labels(record=record, segments_by_id=segments_by_id)`
+    returns:
+
+    ["Grade 4", "Listening and Speaking", "Reading"]
+
+    The duplicate "Grade 4" label is kept only once, and labels remain in first-seen
+    source order. These labels later provide evidence for candidate parents whose
+    descriptions match the child SFI's recovered section-path context.
+
     Parameters
     ----------
     record
@@ -1453,7 +1508,7 @@ def _recover_section_path_labels(
             assert section_ref_label, f"{source_segment_id = }"
             section_ref_labels.append(section_ref_label)
 
-    return _unique_nonempty(section_ref_labels)
+    return unique_nonempty(section_ref_labels)
 
 
 def _rewrite_resolution_progress_files(
@@ -1594,6 +1649,34 @@ def _run_resolution_requests(
 def _source_ref_int_values(*, key: str, record: SFIFinalRecord) -> list[int]:
     """Collect integer values from final-record candidate source refs.
 
+    Examples
+    --------
+
+    1. Suppose `record.candidate_source_refs` contains:
+
+    [
+        {"table_row_indexes": [2, "3"], "table_header_indexes": []},
+        {"table_row_indexes": [3, 4], "table_header_indexes": ["0"]},
+        {"table_row_indexes": ["not-an-int"], "table_header_indexes": []},
+    ]
+
+    Then:
+
+    _source_ref_int_values(key="table_row_indexes", record=record)
+
+    returns [2, 3, 4]
+
+    And:
+
+    _source_ref_int_values(key="table_header_indexes", record=record)
+
+    returns [0]
+
+    Values are converted to integers when possible, invalid values are ignored,
+    duplicates are removed, and the result is sorted. The returned indexes are later
+    used to build table-context evidence such as "same_table_context" for possible
+    hasChild parents.
+
     Parameters
     ----------
     key
@@ -1646,38 +1729,6 @@ def _table_context_keys(context: SFIHasChildFinalContext) -> set[str]:
             keys.add(f"segment:{source_segment_id}:header:{header_index}")
 
     return keys
-
-
-def _unique_nonempty(values: Iterable[Any]) -> list[str]:
-    """Return unique non-empty string values while preserving order.
-
-    Parameters
-    ----------
-    values
-        Raw values.
-
-    Returns
-    -------
-    list[str]
-        Unique cleaned values.
-    """
-
-    output: list[str] = []
-    seen: set[str] = set()
-
-    for value in values:
-        if value is None:
-            continue
-
-        value_clean = str(value).strip()
-
-        if not value_clean or value_clean in seen:
-            continue
-
-        output.append(value_clean)
-        seen.add(value_clean)
-
-    return output
 
 
 def _validate_complete_relationship_artifacts(

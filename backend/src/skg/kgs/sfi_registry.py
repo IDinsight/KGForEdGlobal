@@ -30,6 +30,7 @@ from skg.kgs.schemas import (
     SFIRegistrySummary,
     SFIRegistryWarning,
 )
+from skg.kgs.utils import normalize_code
 from skg.kgs.validators import verify_sfi_extraction_quality
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
@@ -224,7 +225,7 @@ def _build_registry_candidate(
         Registry candidate with normalized code and literal text bucket keys.
     """
 
-    raw_normalized_statement_code = _normalize_code(candidate.statement_code)
+    raw_normalized_statement_code = normalize_code(candidate.statement_code)
     matching_code_types = _get_configured_code_types(
         code_patterns=code_patterns,
         normalized_statement_code=raw_normalized_statement_code,
@@ -733,7 +734,7 @@ def _find_configured_code_matches_in_text(
     for pattern in code_patterns.values():
         for match in pattern.finditer(value or ""):
             match_text = match.group(0).strip()
-            match_key = _normalize_code(match_text)
+            match_key = normalize_code(match_text)
 
             if match_key is None or match_key in seen:
                 continue
@@ -838,28 +839,6 @@ def _maybe_append_warning(
             warning_type=warning_type,
         )
     )
-
-
-def _normalize_code(value: Optional[str]) -> Optional[str]:
-    """Normalize an optional statement code for duplicate bucketing.
-
-    Parameters
-    ----------
-    value
-        Optional source-visible statement code.
-
-    Returns
-    -------
-    Optional[str]
-        Normalized code, or `None` when no code is present.
-    """
-
-    if value is None:
-        return None
-
-    normalized = unicodedata.normalize("NFKC", str(value)).casefold().strip()
-    normalized = re.sub(r"\s+", "", normalized).strip(" .:;-)–—")
-    return normalized or None
 
 
 def _normalize_text(value: str) -> str:
@@ -1239,7 +1218,7 @@ def _warn_on_per_candidate_issues(
     """
 
     for candidate in candidates:
-        raw_normalized_statement_code = _normalize_code(candidate.statement_code)
+        raw_normalized_statement_code = normalize_code(candidate.statement_code)
         matching_code_types = _get_configured_code_types(
             code_patterns=code_patterns,
             normalized_statement_code=raw_normalized_statement_code,
