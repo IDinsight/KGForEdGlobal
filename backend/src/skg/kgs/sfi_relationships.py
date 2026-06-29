@@ -17,7 +17,7 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 # Third Party Library
 from loguru import logger
@@ -112,61 +112,6 @@ def _add_parent_evidence(
 
     if evidence_summary and evidence_summary not in evidence.evidence_summary:
         evidence.evidence_summary.append(evidence_summary)
-
-
-def _add_preceding_grouping_evidence(
-    *,
-    child_context: SFIHasChildFinalContext,
-    evidence_by_endpoint_id: dict[str, _ParentEvidence],
-    parent_context: SFIHasChildFinalContext,
-) -> None:
-    """Record distance-banded preceding-grouping evidence for one parent candidate.
-
-    Parameters
-    ----------
-    child_context
-        Final SFI source context for the child.
-    evidence_by_endpoint_id
-        Dictionary of accumulated parent evidence to update.
-    parent_context
-        Final SFI source context for the potential parent.
-    """
-
-    if not _is_preceding_grouping(
-        child_context=child_context, parent_context=parent_context
-    ):
-        return
-
-    # Distance thresholds, ordered widest-last. Each threshold that the distance
-    # satisfies contributes its evidence.
-    distance = child_context.source_order - parent_context.source_order
-    distance_evidence = (
-        (
-            8,
-            "nearest_preceding_grouping",
-            (
-                f"Parent is a preceding Standard Grouping within {distance} "
-                f"source-order units."
-            ),
-        ),
-        (
-            12,
-            "statement_type_compatible",
-            (
-                "Parent is a preceding Standard Grouping compatible with "
-                "hasChild hierarchy instructions."
-            ),
-        ),
-    )
-
-    for threshold, reason, summary in distance_evidence:
-        if distance <= threshold:
-            _add_parent_evidence(
-                evidence_by_endpoint_id=evidence_by_endpoint_id,
-                evidence_reason=reason,
-                evidence_summary=summary,
-                parent_context=parent_context,
-            )
 
 
 def _assert_model_payload_equal(
@@ -307,6 +252,61 @@ def _build_candidate_parent_sets(
 ) -> list[SFIHasChildCandidateParentSet]:
     """Build bounded candidate parent sets for finalized SFIs.
 
+    Examples
+    --------
+
+    1. Suppose there are three finalized SFI contexts in source order:
+
+    grade_4:
+        description="Grade 4"
+        normalized_statement_type="Standard Grouping"
+        source_order=1
+        source_window_indexes=[3]
+
+    listening:
+        description="Listening and Speaking"
+        normalized_statement_type="Standard Grouping"
+        source_order=2
+        source_window_indexes=[4]
+
+    conversation:
+        description="1.1 CONVERSATION"
+        normalized_statement_type="Standard Grouping"
+        source_order=3
+        source_window_indexes=[5]
+        section_path_labels=["Grade 4", "Listening and Speaking"]
+
+    When `conversation` is evaluated as the child, this function compares it with both
+    `grade_4` and `listening` as possible parents. Because both are preceding Standard
+    Grouping records, both may receive preceding-grouping evidence. Because
+    "Listening and Speaking" also appears in `conversation.section_path_labels`, it may
+    additionally receive `matched_section_path_label` evidence.
+
+    The returned parent set for `conversation` contains a bounded list of selectable
+    parent candidates, for example:
+
+    [
+        parent candidate: listening
+            evidence_reasons=[
+                "matched_section_path_label",
+                "nearby_source_context_key",
+                "nearest_preceding_grouping",
+                "statement_type_compatible",
+            ]
+
+        parent candidate: grade_4
+            evidence_reasons=[
+                "matched_section_path_label",
+                "statement_type_compatible",
+            ]
+
+        parent candidate: StandardsFramework root
+            evidence_reasons=["root_fallback"]
+    ]
+
+    The LLM later chooses the direct parent from this menu. This function only
+    retrieves and bounds plausible parent candidates.
+
     Parameters
     ----------
     contexts
@@ -339,15 +339,13 @@ def _build_candidate_parent_sets(
     }
 
     for child_context in contexts:
-        evidence_by_endpoint_id: dict[str, _ParentEvidence] = {}
         child_code = normalize_code(child_context.normalized_statement_code)
         child_table_keys = table_keys_by_uuid[child_context.final_sfi_uuid]
+        evidence_by_endpoint_id: dict[str, _ParentEvidence] = {}
 
         for parent_context in contexts:
             if parent_context.final_sfi_uuid == child_context.final_sfi_uuid:
                 continue
-
-            parent_table_keys = table_keys_by_uuid[parent_context.final_sfi_uuid]
 
             _evaluate_parent_child_relationship(
                 child_code=child_code,
@@ -356,7 +354,7 @@ def _build_candidate_parent_sets(
                 code_parent_pairs=code_parent_pairs,
                 evidence_by_endpoint_id=evidence_by_endpoint_id,
                 parent_context=parent_context,
-                parent_table_keys=parent_table_keys,
+                parent_table_keys=table_keys_by_uuid[parent_context.final_sfi_uuid],
             )
 
         parent_set = _finalize_candidate_parent_set(
@@ -721,10 +719,16 @@ def _context_matches_section_path(
         True when parent text matches a recovered section-path label.
     """
 
-    parent_texts = _normalized_text_candidates(
-        [parent_context.description, *parent_context.candidate_source_texts]
+    parent_texts = unique_nonempty(
+        _normalize_text(value)
+        for value in [
+            parent_context.description,
+            *parent_context.candidate_source_texts,
+        ]
     )
-    section_texts = _normalized_text_candidates(child_context.section_path_labels)
+    section_texts = unique_nonempty(
+        _normalize_text(value) for value in child_context.section_path_labels
+    )
 
     if not parent_texts or not section_texts:
         return False
@@ -807,6 +811,48 @@ def _evaluate_parent_child_relationship(
     parent_table_keys: set[str],
 ) -> None:
     """Evaluate relationship between a child and parent context to record evidence.
+
+    Examples
+    -=------
+
+    1. Code-parent hints from extraction windows become high-signal parent evidence.
+
+    Suppose an extraction window contains this code-parent hint:
+
+    child_code="1.1.1"
+    parent_code="1.1"
+
+    And the finalized SFI contexts include:
+
+    parent:
+        description="1.1 CONVERSATION"
+        normalized_statement_code="1.1"
+        normalized_statement_type="Standard Grouping"
+
+    child:
+        description="1.1.1 Use appropriate expressions in conversation"
+        normalized_statement_code="1.1.1"
+        normalized_statement_type="Standard"
+
+    During `_build_candidate_parent_sets(...)`, code values are normalized and the
+    pair:
+
+    ("1.1.1", "1.1")
+
+    is added to `code_parent_pairs`.
+
+    When this function is compares the child to the parent, it finds that the child's
+    normalized code maps to the parent's normalized code. The parent candidate receives
+    evidence like:
+
+    evidence_reasons=["code_parent_hint"]
+    evidence_summary=[
+        "Configured code-parent hint maps child code '1.1.1' to parent code '1.1'."
+    ]
+
+    Because `code_parent_hint` is a high-signal reason, `_bound_parent_candidates()`
+    tries to preserve this parent candidate even when the candidate list must be
+    truncated.
 
     Parameters
     ----------
@@ -894,11 +940,35 @@ def _evaluate_parent_child_relationship(
                 parent_context=parent_context,
             )
 
-    _add_preceding_grouping_evidence(
-        child_context=child_context,
-        evidence_by_endpoint_id=evidence_by_endpoint_id,
-        parent_context=parent_context,
-    )
+    # Evaluate distance-banded preceding-grouping evidence.
+    if (
+        parent_context.normalized_statement_type == "Standard Grouping"
+        and parent_context.source_order < child_context.source_order
+    ):
+        distance = child_context.source_order - parent_context.source_order
+
+        # Distance thresholds, evaluated ordered widest-last.
+        if distance <= 8:
+            _add_parent_evidence(
+                evidence_by_endpoint_id=evidence_by_endpoint_id,
+                evidence_reason="nearest_preceding_grouping",
+                evidence_summary=(
+                    f"Parent is a preceding Standard Grouping within {distance} "
+                    f"source-order units."
+                ),
+                parent_context=parent_context,
+            )
+
+        if distance <= 12:
+            _add_parent_evidence(
+                evidence_by_endpoint_id=evidence_by_endpoint_id,
+                evidence_reason="statement_type_compatible",
+                evidence_summary=(
+                    "Parent is a preceding Standard Grouping compatible with "
+                    "hasChild hierarchy instructions."
+                ),
+                parent_context=parent_context,
+            )
 
 
 def _finalize_candidate_parent_set(
@@ -982,30 +1052,6 @@ def _is_nearby_source_window(
         0 <= child_window_index - parent_window_index <= 2
         for child_window_index in child_context.source_window_indexes
         for parent_window_index in parent_context.source_window_indexes
-    )
-
-
-def _is_preceding_grouping(
-    *, child_context: SFIHasChildFinalContext, parent_context: SFIHasChildFinalContext
-) -> bool:
-    """Check whether a parent is a preceding grouping SFI.
-
-    Parameters
-    ----------
-    child_context
-        Child final SFI context.
-    parent_context
-        Candidate parent final SFI context.
-
-    Returns
-    -------
-    bool
-        True when parent is a preceding Standard Grouping.
-    """
-
-    return (
-        parent_context.normalized_statement_type == "Standard Grouping"
-        and parent_context.source_order < child_context.source_order
     )
 
 
@@ -1351,23 +1397,6 @@ def _normalize_text(value: Any) -> str:
     return normalized
 
 
-def _normalized_text_candidates(values: Iterable[Any]) -> list[str]:
-    """Normalize and deduplicate text candidates.
-
-    Parameters
-    ----------
-    values
-        Raw text values.
-
-    Returns
-    -------
-    list[str]
-        Unique normalized non-empty text values.
-    """
-
-    return unique_nonempty(_normalize_text(value) for value in values)
-
-
 def _parent_candidate_rank(candidate: SFIHasChildParentCandidate) -> tuple[int, str]:
     """Build deterministic sorting key for parent candidates.
 
@@ -1707,6 +1736,38 @@ def _source_ref_int_values(*, key: str, record: SFIFinalRecord) -> list[int]:
 
 def _table_context_keys(context: SFIHasChildFinalContext) -> set[str]:
     """Build table-local context keys for one final SFI context.
+
+    Examples
+    --------
+
+    1. Table row and header provenance can create same-table-context evidence.
+
+    Suppose two final SFI contexts cite the same source table segment:
+
+    topic:
+        description="1.1 CONVERSATION"
+        source_segment_ids=["segment_010"]
+        table_row_indexes=[2]
+
+    specific_competence:
+        description="1.1.1 Use appropriate expressions in conversation"
+        source_segment_ids=["segment_010"]
+        table_row_indexes=[2]
+
+    For each context, this function creates a key like:
+
+    "segment:segment_010:row:2"
+
+    When `_evaluate_parent_child_relationship(...)` compares `specific_competence` as
+    the child and `topic` as a possible parent, the table-context key sets intersect.
+    The parent candidate receives:
+
+    evidence_reasons=["same_table_context"]
+    evidence_summary=["Child and parent share cited table row/header context."]
+
+    This evidence does not automatically make `topic` the direct parent. It only places
+    `topic` in the bounded parent-candidate set so the LLM can decide whether the
+    source supports a direct hasChild relationship.
 
     Parameters
     ----------
