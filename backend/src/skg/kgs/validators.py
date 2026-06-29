@@ -444,10 +444,50 @@ def _normalized_source_supports_text(
     )
 
 
+def _source_text_contains_statement_code(
+    *, source_text_normalized: str, statement_code_normalized: str
+) -> bool:
+    """Check whether source text contains an exact statement-code occurrence.
+
+    The check uses normalized text while rejecting obvious embedded-code matches. For
+    example, a parent code such as `1.2` must not pass only because a child code such
+    as `1.2.3` is visible in the same source text.
+
+    Parameters
+    ----------
+    source_text_normalized
+        Normalized source-visible text to search.
+    statement_code_normalized
+        Normalized statement code to locate.
+
+    Returns
+    -------
+    bool
+        True when the statement code appears as its own code-like token in the source
+        text, otherwise False.
+    """
+
+    if not source_text_normalized or not statement_code_normalized:
+        return False
+
+    code_boundary_chars = r"0-9a-z._/-"
+    pattern = (
+        rf"(?<![{code_boundary_chars}])"
+        rf"{re.escape(statement_code_normalized)}"
+        rf"(?![{code_boundary_chars}])"
+    )
+    return re.search(pattern, source_text_normalized) is not None
+
+
 def _validate_candidate_code_is_visible(
     *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
 ) -> None:
-    """Validate that a candidate statement code is visible in source text.
+    """Validate that a candidate statement code is visible in its source evidence.
+
+    Block-window candidates may use any visible text in the block window as statement
+    code evidence. Table-window candidates must use only the raw table header/body rows
+    cited by that candidate. This keeps statement_code aligned with the same candidate-
+    scoped evidence used to validate table source_text and description.
 
     Parameters
     ----------
@@ -459,28 +499,50 @@ def _validate_candidate_code_is_visible(
     Raises
     ------
     QualityError
-        If the candidate has a statement code not visible in the source window.
+        If the candidate has a statement code not visible in its allowed source
+        evidence.
     """
 
     if candidate.statement_code is None:
         return
 
     code_normalized = _normalize_text(candidate.statement_code)
-    visible_codes_normalized = {
-        _normalize_text(code_match.value)
-        for code_match in ctx.window.code_matches
-        if code_match.value.strip()
-    }
 
-    if (
-        code_normalized not in visible_codes_normalized
-        and code_normalized not in ctx.source_visible_text_normalized
-    ):
+    if not code_normalized:
         raise QualityError(
-            f"Candidate {candidate.candidate_id!r} has statement_code "
-            f"{candidate.statement_code!r}, but that code is not visible in the "
-            f"source window. Use null if no official code is visible."
+            f"Candidate {candidate.candidate_id!r} has an empty statement_code. "
+            f"Use null if no official code is visible."
         )
+
+    if ctx.window.table is None:
+        support_label = "the visible source window"
+        support_text_normalized = ctx.source_visible_text_normalized
+    else:
+        if not candidate.table_header_indexes and not candidate.table_row_indexes:
+            raise QualityError(
+                f"Table-window candidate {candidate.candidate_id!r} must include at "
+                f"least one table_header_index or table_row_index before its "
+                f"statement_code can be source-validated."
+            )
+
+        support_label = "the cited table header/body rows"
+        support_text_normalized = _build_candidate_cited_table_support_text(
+            candidate=candidate, ctx=ctx
+        )
+
+    if _source_text_contains_statement_code(
+        source_text_normalized=support_text_normalized,
+        statement_code_normalized=code_normalized,
+    ):
+        return
+
+    raise QualityError(
+        f"Candidate {candidate.candidate_id!r} has statement_code "
+        f"{candidate.statement_code!r}, but that code is not visible in "
+        f"{support_label}. Use null if no official code is visible in the "
+        f"candidate's source evidence, and do not copy a code from another row, "
+        f"header, or source location."
+    )
 
 
 def _validate_candidate_description_is_source_supported(
