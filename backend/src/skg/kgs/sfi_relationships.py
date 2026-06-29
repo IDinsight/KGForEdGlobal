@@ -25,7 +25,7 @@ from pydantic import BaseModel
 
 # Package Library
 from skg.config import Settings
-from skg.document_ir.schemas import DocumentIR
+from skg.document_ir.schemas import BlockSegment, DocumentIR, TableSegment
 from skg.kgs.llm import KGUsageTracker, resolve_sfi_has_child_parent_request
 from skg.kgs.schemas import (
     ExtractionWindow,
@@ -324,10 +324,18 @@ def _build_candidate_parent_sets(
         Bounded parent candidate sets, one per finalized SFI.
     """
 
-    code_parent_pairs = _extract_code_parent_pairs(extraction_windows)
     parent_sets: list[SFIHasChildCandidateParentSet] = []
     table_keys_by_uuid = {
         context.final_sfi_uuid: _table_context_keys(context) for context in contexts
+    }
+
+    # Extract normalized child-code to parent-code hints.
+    code_parent_pairs = {
+        (child, parent)
+        for window in extraction_windows
+        for hint in window.code_parent_hints
+        if (child := _normalize_code(hint.child_code))
+        and (parent := _normalize_code(hint.parent_code))
     }
 
     for child_context in contexts:
@@ -543,11 +551,11 @@ def _build_final_contexts(
         Final SFI source contexts sorted by source order and UUID.
     """
 
+    contexts: list[SFIHasChildFinalContext] = []
     segment_order_by_id = {
         segment.segment_id: index for index, segment in enumerate(document_ir.segments)
     }
     segments_by_id = {segment.segment_id: segment for segment in document_ir.segments}
-    contexts: list[SFIHasChildFinalContext] = []
 
     for record in sfi_final_records:
         source_order = min(
@@ -577,10 +585,10 @@ def _build_final_contexts(
                 normalized_statement_type=record.normalized_statement_type,
                 section_path_labels=section_path_labels,
                 source_context_keys=record.source_context_keys,
+                source_order=source_order,
                 source_page_indexes=record.source_page_indexes,
                 source_registry_candidate_ids=record.source_registry_candidate_ids,
                 source_segment_ids=record.source_segment_ids,
-                source_order=source_order,
                 source_window_ids=record.source_window_ids,
                 source_window_indexes=record.source_window_indexes,
                 statement_code=record.statement_code,
@@ -594,43 +602,6 @@ def _build_final_contexts(
         key=lambda context: (context.source_order, str(context.final_sfi_uuid))
     )
     return contexts
-
-
-def _build_resolution_requests(
-    *, kg_config: CreateKGConfig, parent_sets: Sequence[SFIHasChildCandidateParentSet]
-) -> list[SFIHasChildResolutionRequest]:
-    """Build one-child LLM resolution requests from parent candidate sets.
-
-    Parameters
-    ----------
-    kg_config
-        Runtime KG configuration containing hasChild instructions.
-    parent_sets
-        Bounded parent candidate sets.
-
-    Returns
-    -------
-    list[SFIHasChildResolutionRequest]
-        LLM request payloads in deterministic child order.
-    """
-
-    requests: list[SFIHasChildResolutionRequest] = []
-
-    for parent_set in parent_sets:
-        request_id = "has_child_request_" + _hash_text(
-            n_hex=16, value=str(parent_set.child_context.final_sfi_uuid)
-        )
-        requests.append(
-            SFIHasChildResolutionRequest(
-                child_parent_sets=[parent_set],
-                request_id=request_id,
-                sfi_has_child_instructions=(
-                    kg_config.academic_standards.sfi_has_child_instructions
-                ),
-            )
-        )
-
-    return requests
 
 
 def _build_resolution_summary(
@@ -874,35 +845,6 @@ def _evaluate_parent_child_relationship(
     )
 
 
-def _extract_code_parent_pairs(
-    extraction_windows: Sequence[ExtractionWindow],
-) -> set[tuple[str, str]]:
-    """Extract normalized child-code to parent-code hints from extraction windows.
-
-    Parameters
-    ----------
-    extraction_windows
-        Persisted extraction windows containing deterministic code-parent hints.
-
-    Returns
-    -------
-    set[tuple[str, str]]
-        Normalized ``(child_code, parent_code)`` pairs.
-    """
-
-    pairs: set[tuple[str, str]] = set()
-
-    for extraction_window in extraction_windows:
-        for hint in extraction_window.code_parent_hints:
-            child_code = _normalize_code(hint.child_code)
-            parent_code = _normalize_code(hint.parent_code)
-
-            if child_code and parent_code:
-                pairs.add((child_code, parent_code))
-
-    return pairs
-
-
 def _finalize_candidate_parent_set(
     *,
     child_context: SFIHasChildFinalContext,
@@ -954,26 +896,6 @@ def _finalize_candidate_parent_set(
         truncation_notes=truncation_notes,
         was_truncated=was_truncated,
     )
-
-
-def _hash_text(*, n_hex: int, value: str) -> str:
-    """Hash normalized text with SHA-256.
-
-    Parameters
-    ----------
-    n_hex
-        Number of hexadecimal digest characters to return.
-    value
-        Raw text to hash.
-
-    Returns
-    -------
-    str
-        Truncated digest.
-    """
-
-    normalized = _normalize_text(value)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:n_hex]
 
 
 def _is_nearby_source_window(
@@ -1133,27 +1055,25 @@ def _load_extraction_windows(kg_dirs: KGDirs) -> list[ExtractionWindow]:
     -------
     list[ExtractionWindow]
         Parsed extraction windows in file order.
+
+    Raises
+    ------
+    ValueError
+        If there is an error when parsing the extraction windows JSONL file.
     """
 
-    extraction_windows_fp = kg_dirs.root / "extraction_windows.jsonl"
-
-    if not extraction_windows_fp.exists():
-        return []
-
     extraction_windows: list[ExtractionWindow] = []
+    extraction_windows_fp = kg_dirs.root / "extraction_windows.jsonl"
 
     with extraction_windows_fp.open("r", encoding="utf-8") as f:
         for line_number, line in enumerate(f, start=1):
             line_clean = line.strip()
 
-            if not line_clean:
-                continue
-
             try:
                 extraction_windows.append(
                     ExtractionWindow.model_validate_json(line_clean)
                 )
-            except Exception as e:
+            except Exception as e:  # pylint: disable=W0718
                 raise ValueError(
                     f"Could not parse extraction window JSONL line {line_number} "
                     f"from {extraction_windows_fp}."
@@ -1503,7 +1423,7 @@ def _reachable_sfi_ids(
 
 
 def _recover_section_path_labels(
-    *, record: SFIFinalRecord, segments_by_id: dict[str, Any]
+    *, record: SFIFinalRecord, segments_by_id: dict[str, BlockSegment | TableSegment]
 ) -> list[str]:
     """Recover section-path labels from DocumentIR source segments.
 
@@ -1520,24 +1440,20 @@ def _recover_section_path_labels(
         Unique section-path labels in source order.
     """
 
-    labels: list[str] = []
+    section_ref_labels: list[str] = []
 
     for source_segment_id in record.source_segment_ids:
         segment = segments_by_id.get(source_segment_id)
+        assert isinstance(
+            segment, (BlockSegment, TableSegment)
+        ), f"{source_segment_id = }"
 
-        if segment is None:
-            continue
+        for section_ref in segment.section_path:
+            section_ref_label = section_ref.text.strip()
+            assert section_ref_label, f"{source_segment_id = }"
+            section_ref_labels.append(section_ref_label)
 
-        for section_ref in getattr(segment, "section_path", []) or []:
-            if isinstance(section_ref, dict):
-                label = str(section_ref.get("text") or "").strip()
-            else:
-                label = str(getattr(section_ref, "text", "") or "").strip()
-
-            if label:
-                labels.append(label)
-
-    return _unique_nonempty(labels)
+    return _unique_nonempty(section_ref_labels)
 
 
 def _rewrite_resolution_progress_files(
@@ -2082,19 +1998,29 @@ def _validate_resolution_response_prefix(
             ) from e
 
 
-def _validate_sfi_final_summary(sfi_final_summary: SFIFinalSummary | None) -> None:
+def _validate_sfi_final_records_and_summary(
+    *, kg_dirs: KGDirs, sfi_final_records: Sequence[SFIFinalRecord]
+) -> None:
     """Validate that final SFI universe is complete enough for hasChild resolution.
 
     Parameters
     ----------
-    sfi_final_summary
-        SFI final summary, if available.
+    kg_dirs
+        KG artifact directory wrapper.
 
     Raises
     ------
     ValueError
+        If there is not at least one final SFI record.
         If SFI final summary contains excluded conflict or needs-review merge groups.
     """
+
+    if not sfi_final_records:
+        raise ValueError(
+            "SFI hasChild resolution requires at least one final SFI record."
+        )
+
+    sfi_final_summary = _load_sfi_final_summary(kg_dirs)
 
     if sfi_final_summary is None:
         return
@@ -2236,28 +2162,27 @@ def resolve_has_child_edges(
     -------
     list[SFIHasChildEdge]
         Final hasChild edge records.
-
-    Raises
-    ------
-    ValueError
-        If any SFI records cannot be resolved or the final graph is invalid.
     """
 
-    if not sfi_final_records:
-        raise ValueError(
-            "SFI hasChild resolution requires at least one final SFI record."
-        )
+    _validate_sfi_final_records_and_summary(
+        kg_dirs=kg_dirs, sfi_final_records=sfi_final_records
+    )
 
-    if not kg_config.academic_standards.sfi_has_child_instructions.strip():
-        raise ValueError(
-            "SFI hasChild resolution requires non-empty sfi_has_child_instructions."
-        )
+    make_dir(kg_dirs.root)
+    contexts_fp = kg_dirs.root / "sfi_final_contexts.json"
+    edges_fp = kg_dirs.root / "has_child_edges_final.json"
+    parent_sets_fp = kg_dirs.root / "has_child_candidate_parent_sets.jsonl"
+    requests_fp = kg_dirs.root / "has_child_resolution_requests.jsonl"
+    responses_fp = kg_dirs.root / "has_child_resolution_responses.jsonl"
+    summary_fp = kg_dirs.root / "has_child_resolution_summary.json"
+    unresolved_edges_fp = kg_dirs.root / "has_child_unresolved_edges.json"
 
-    sfi_final_summary = _load_sfi_final_summary(kg_dirs)
-    _validate_sfi_final_summary(sfi_final_summary)
-
+    # Create the framework UUID.
     identity_key = f"lc:curriculum:{document_ir.doc_key}:standards_framework"
     framework_uuid = uuid.uuid5(Settings.LC_CANONICAL_NAMESPACE_UUID, identity_key)
+
+    # Load extraction windows and build SFI final contexts and parent sets for hasChild
+    # resolution requests.
     extraction_windows = _load_extraction_windows(kg_dirs)
     contexts = _build_final_contexts(
         document_ir=document_ir, sfi_final_records=sfi_final_records
@@ -2268,19 +2193,22 @@ def resolve_has_child_edges(
         framework_uuid=framework_uuid,
         kg_config=kg_config,
     )
-    requests = _build_resolution_requests(kg_config=kg_config, parent_sets=parent_sets)
-
-    contexts_fp = kg_dirs.root / "sfi_final_contexts.json"
-    edges_fp = kg_dirs.root / "has_child_edges_final.json"
-    parent_sets_fp = kg_dirs.root / "has_child_candidate_parent_sets.jsonl"
-    requests_fp = kg_dirs.root / "has_child_resolution_requests.jsonl"
-    responses_fp = kg_dirs.root / "has_child_resolution_responses.jsonl"
-    summary_fp = kg_dirs.root / "has_child_resolution_summary.json"
-    unresolved_edges_fp = kg_dirs.root / "has_child_unresolved_edges.json"
-    make_dir(kg_dirs.root)
+    requests = [
+        SFIHasChildResolutionRequest(
+            child_parent_sets=[parent_set],
+            request_id=(
+                f"has_child_request_"
+                f"{hashlib.sha256(_normalize_text(str(parent_set.child_context.final_sfi_uuid)).encode('utf-8')).hexdigest()[:16]}"
+            ),
+            sfi_has_child_instructions=kg_config.academic_standards.sfi_has_child_instructions,
+        )
+        for parent_set in parent_sets
+    ]
 
     if overwrite:
-        logger.info("Starting hasChild resolution from scratch because overwrite=True.")
+        logger.info(
+            "Starting SFI hasChild resolution from scratch because overwrite=True."
+        )
 
         _prepare_output_files(
             [
@@ -2362,8 +2290,10 @@ def resolve_has_child_edges(
     )
 
     logger.success(
-        f"Resolved final hasChild edges: edges={len(edges)}; "
-        f"root_edges={summary.root_edge_count}; unresolved={summary.unresolved_child_count}."
+        f"Resolved final hasChild edges: "
+        f"edges={len(edges)}; "
+        f"root_edges={summary.root_edge_count}; "
+        f"unresolved={summary.unresolved_child_count}."
     )
 
     return edges

@@ -1591,10 +1591,10 @@ class SFIHasChildFinalContext(BaseSchema):
     normalized_statement_type: NormalizedStatementType
     section_path_labels: list[str] = Field(default_factory=list)
     source_context_keys: list[str] = Field(default_factory=list)
+    source_order: int = Field(description="Deterministic source-order index.", ge=0)
     source_page_indexes: list[int] = Field(default_factory=list)
     source_registry_candidate_ids: list[str] = Field(default_factory=list)
     source_segment_ids: list[str] = Field(default_factory=list)
-    source_order: int = Field(description="Deterministic source-order index.", ge=0)
     source_window_ids: list[str] = Field(default_factory=list)
     source_window_indexes: list[int] = Field(default_factory=list)
     statement_code: Optional[str] = Field(default=None)
