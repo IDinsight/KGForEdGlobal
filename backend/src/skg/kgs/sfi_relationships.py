@@ -206,7 +206,6 @@ def _build_candidate_parent_sets(
     """
 
     code_parent_pairs = _extract_code_parent_pairs(extraction_windows)
-    max_parent_candidates = kg_config.academic_standards.max_has_child_parent_candidates
     parent_sets: list[SFIHasChildCandidateParentSet] = []
     table_keys_by_uuid = {
         context.final_sfi_uuid: _table_context_keys(context) for context in contexts
@@ -221,134 +220,25 @@ def _build_candidate_parent_sets(
             if parent_context.final_sfi_uuid == child_context.final_sfi_uuid:
                 continue
 
-            parent_code = _normalize_code(parent_context.normalized_statement_code)
             parent_table_keys = table_keys_by_uuid[parent_context.final_sfi_uuid]
 
-            if (
-                child_code
-                and parent_code
-                and (child_code, parent_code) in code_parent_pairs
-            ):
-                _add_parent_evidence(
-                    evidence_by_endpoint_id=evidence_by_endpoint_id,
-                    evidence_reason="code_parent_hint",
-                    evidence_summary=(
-                        f"Configured code-parent hint maps child code {child_code!r} "
-                        f"to parent code {parent_code!r}."
-                    ),
-                    parent_context=parent_context,
-                )
-
-            if set(child_context.source_context_keys) & set(
-                parent_context.source_context_keys
-            ):
-                _add_parent_evidence(
-                    evidence_by_endpoint_id=evidence_by_endpoint_id,
-                    evidence_reason="same_source_context_key",
-                    evidence_summary="Child and parent share a registry source-context key.",
-                    parent_context=parent_context,
-                )
-
-            if set(child_context.source_segment_ids) & set(
-                parent_context.source_segment_ids
-            ):
-                _add_parent_evidence(
-                    evidence_by_endpoint_id=evidence_by_endpoint_id,
-                    evidence_reason="same_source_segment",
-                    evidence_summary="Child and parent share a DocumentIR source segment.",
-                    parent_context=parent_context,
-                )
-
-            if set(child_context.source_window_ids) & set(
-                parent_context.source_window_ids
-            ):
-                _add_parent_evidence(
-                    evidence_by_endpoint_id=evidence_by_endpoint_id,
-                    evidence_reason="same_source_window",
-                    evidence_summary="Child and parent share an extraction window.",
-                    parent_context=parent_context,
-                )
-
-            if child_table_keys & parent_table_keys:
-                _add_parent_evidence(
-                    evidence_by_endpoint_id=evidence_by_endpoint_id,
-                    evidence_reason="same_table_context",
-                    evidence_summary="Child and parent share cited table row/header context.",
-                    parent_context=parent_context,
-                )
-
-            if _context_matches_section_path(
-                child_context=child_context, parent_context=parent_context
-            ):
-                _add_parent_evidence(
-                    evidence_by_endpoint_id=evidence_by_endpoint_id,
-                    evidence_reason="matched_section_path_label",
-                    evidence_summary="Parent description matches recovered child section-path evidence.",
-                    parent_context=parent_context,
-                )
-
-            if _is_preceding_grouping(
-                child_context=child_context, parent_context=parent_context
-            ):
-                distance = child_context.source_order - parent_context.source_order
-
-                if distance <= 8:
-                    _add_parent_evidence(
-                        evidence_by_endpoint_id=evidence_by_endpoint_id,
-                        evidence_reason="nearest_preceding_grouping",
-                        evidence_summary=(
-                            f"Parent is a preceding Standard Grouping within {distance} "
-                            f"source-order units."
-                        ),
-                        parent_context=parent_context,
-                    )
-
-                if distance <= 12:
-                    _add_parent_evidence(
-                        evidence_by_endpoint_id=evidence_by_endpoint_id,
-                        evidence_reason="statement_type_compatible",
-                        evidence_summary=(
-                            "Parent is a preceding Standard Grouping compatible with "
-                            "hasChild hierarchy instructions."
-                        ),
-                        parent_context=parent_context,
-                    )
-
-            if _is_nearby_source_window(
-                child_context=child_context, parent_context=parent_context
-            ):
-                _add_parent_evidence(
-                    evidence_by_endpoint_id=evidence_by_endpoint_id,
-                    evidence_reason="nearby_source_context_key",
-                    evidence_summary="Parent appears in a nearby preceding source window.",
-                    parent_context=parent_context,
-                )
-
-        non_root_candidates = [
-            evidence.candidate.model_copy(
-                update={
-                    "evidence_reasons": sorted(evidence.evidence_reasons),
-                    "evidence_summary": _unique_nonempty(evidence.evidence_summary),
-                }
+            _evaluate_parent_child_relationship(
+                child_code=child_code,
+                child_context=child_context,
+                child_table_keys=child_table_keys,
+                code_parent_pairs=code_parent_pairs,
+                evidence_by_endpoint_id=evidence_by_endpoint_id,
+                parent_context=parent_context,
+                parent_table_keys=parent_table_keys,
             )
-            for evidence in evidence_by_endpoint_id.values()
-        ]
-        parent_candidates, truncation_notes, was_truncated = _bound_parent_candidates(
+
+        parent_set = _finalize_candidate_parent_set(
+            child_context=child_context,
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
             framework_uuid=framework_uuid,
             kg_config=kg_config,
-            non_root_candidates=non_root_candidates,
         )
-        parent_sets.append(
-            SFIHasChildCandidateParentSet(
-                candidate_count_after_truncation=len(parent_candidates),
-                candidate_count_before_truncation=len(non_root_candidates) + 1,
-                child_context=child_context,
-                max_parent_candidates=max_parent_candidates,
-                parent_candidates=parent_candidates,
-                truncation_notes=truncation_notes,
-                was_truncated=was_truncated,
-            )
-        )
+        parent_sets.append(parent_set)
 
     return parent_sets
 
@@ -717,6 +607,129 @@ def _detect_sfi_cycles(edges: Sequence[SFIHasChildEdge]) -> list[list[str]]:
     return cycles
 
 
+def _evaluate_parent_child_relationship(
+    *,
+    child_code: str | None,
+    child_context: SFIHasChildFinalContext,
+    child_table_keys: set[str],
+    code_parent_pairs: set[tuple[str, str]],
+    evidence_by_endpoint_id: dict[str, _ParentEvidence],
+    parent_context: SFIHasChildFinalContext,
+    parent_table_keys: set[str],
+) -> None:
+    """Evaluate relationship between a child and parent context to record evidence.
+
+    Parameters
+    ----------
+    child_code
+        Normalized code of the child context.
+    child_context
+        Final SFI source context for the child.
+    child_table_keys
+        Table context keys for the child.
+    code_parent_pairs
+        Set of valid code-parent relationships extracted from windows.
+    evidence_by_endpoint_id
+        Dictionary of accumulated parent evidence to update.
+    parent_context
+        Final SFI source context for the potential parent.
+    parent_table_keys
+        Table context keys for the potential parent.
+    """
+
+    parent_code = _normalize_code(parent_context.normalized_statement_code)
+
+    if child_code and parent_code and (child_code, parent_code) in code_parent_pairs:
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason="code_parent_hint",
+            evidence_summary=(
+                f"Configured code-parent hint maps child code {child_code!r} "
+                f"to parent code {parent_code!r}."
+            ),
+            parent_context=parent_context,
+        )
+
+    if set(child_context.source_context_keys) & set(parent_context.source_context_keys):
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason="same_source_context_key",
+            evidence_summary="Child and parent share a registry source-context key.",
+            parent_context=parent_context,
+        )
+
+    if set(child_context.source_segment_ids) & set(parent_context.source_segment_ids):
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason="same_source_segment",
+            evidence_summary="Child and parent share a DocumentIR source segment.",
+            parent_context=parent_context,
+        )
+
+    if set(child_context.source_window_ids) & set(parent_context.source_window_ids):
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason="same_source_window",
+            evidence_summary="Child and parent share an extraction window.",
+            parent_context=parent_context,
+        )
+
+    if child_table_keys & parent_table_keys:
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason="same_table_context",
+            evidence_summary="Child and parent share cited table row/header context.",
+            parent_context=parent_context,
+        )
+
+    if _context_matches_section_path(
+        child_context=child_context, parent_context=parent_context
+    ):
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason="matched_section_path_label",
+            evidence_summary="Parent description matches recovered child section-path evidence.",
+            parent_context=parent_context,
+        )
+
+    if _is_preceding_grouping(
+        child_context=child_context, parent_context=parent_context
+    ):
+        distance = child_context.source_order - parent_context.source_order
+
+        if distance <= 8:
+            _add_parent_evidence(
+                evidence_by_endpoint_id=evidence_by_endpoint_id,
+                evidence_reason="nearest_preceding_grouping",
+                evidence_summary=(
+                    f"Parent is a preceding Standard Grouping within {distance} "
+                    f"source-order units."
+                ),
+                parent_context=parent_context,
+            )
+
+        if distance <= 12:
+            _add_parent_evidence(
+                evidence_by_endpoint_id=evidence_by_endpoint_id,
+                evidence_reason="statement_type_compatible",
+                evidence_summary=(
+                    "Parent is a preceding Standard Grouping compatible with "
+                    "hasChild hierarchy instructions."
+                ),
+                parent_context=parent_context,
+            )
+
+    if _is_nearby_source_window(
+        child_context=child_context, parent_context=parent_context
+    ):
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason="nearby_source_context_key",
+            evidence_summary="Parent appears in a nearby preceding source window.",
+            parent_context=parent_context,
+        )
+
+
 def _extract_code_parent_pairs(
     extraction_windows: Sequence[ExtractionWindow],
 ) -> set[tuple[str, str]]:
@@ -744,6 +757,59 @@ def _extract_code_parent_pairs(
                 pairs.add((child_code, parent_code))
 
     return pairs
+
+
+def _finalize_candidate_parent_set(
+    *,
+    child_context: SFIHasChildFinalContext,
+    evidence_by_endpoint_id: dict[str, _ParentEvidence],
+    framework_uuid: uuid.UUID,
+    kg_config: CreateKGConfig,
+) -> SFIHasChildCandidateParentSet:
+    """Process collected evidence and build the bounded candidate parent set.
+
+    Parameters
+    ----------
+    child_context
+        Final SFI source context for the child.
+    evidence_by_endpoint_id
+        Dictionary of accumulated parent evidence.
+    framework_uuid
+        Deterministic StandardsFramework root UUID.
+    kg_config
+        Runtime KG configuration.
+
+    Returns
+    -------
+    SFIHasChildCandidateParentSet
+        The bounded parent candidate set for the child SFI.
+    """
+
+    non_root_candidates = [
+        evidence.candidate.model_copy(
+            update={
+                "evidence_reasons": sorted(evidence.evidence_reasons),
+                "evidence_summary": _unique_nonempty(evidence.evidence_summary),
+            }
+        )
+        for evidence in evidence_by_endpoint_id.values()
+    ]
+
+    parent_candidates, truncation_notes, was_truncated = _bound_parent_candidates(
+        framework_uuid=framework_uuid,
+        kg_config=kg_config,
+        non_root_candidates=non_root_candidates,
+    )
+
+    return SFIHasChildCandidateParentSet(
+        candidate_count_after_truncation=len(parent_candidates),
+        candidate_count_before_truncation=len(non_root_candidates) + 1,
+        child_context=child_context,
+        max_parent_candidates=kg_config.academic_standards.max_has_child_parent_candidates,
+        parent_candidates=parent_candidates,
+        truncation_notes=truncation_notes,
+        was_truncated=was_truncated,
+    )
 
 
 def _hash_text(*, n_hex: int, value: str) -> str:
