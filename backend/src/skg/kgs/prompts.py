@@ -672,6 +672,7 @@ def resolve_sfi_has_child_parents(
 - Do not choose a parent by source code alone. Same-code/different-content audit flags mean endpoints must remain distinct.
 - Page overlap alone is weak evidence and must not override stronger source hierarchy evidence.
 - DocumentIR section-path labels are evidence, not a guaranteed clean ancestor chain.
+- In each child_context, `section_path_labels` is ordered from most recent/local source context to older/broader context after bounded truncation. Earlier labels in that list are usually more useful for direct parent selection; later labels may be stale carryover and should be treated cautiously.
 
 ## Output contract
 - Copy request_id exactly.

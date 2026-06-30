@@ -648,6 +648,15 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         ),
         ge=2,
     )
+    max_has_child_section_path_labels: int = Field(
+        default=12,
+        description=(
+            "Maximum number of recent section-path labels to expose and use as "
+            "hasChild section-path evidence after reversing DocumentIR section paths "
+            "so nearest/current labels come first."
+        ),
+        ge=1,
+    )
     max_rows_per_table_window: Optional[int] = Field(
         default=20,
         description=(

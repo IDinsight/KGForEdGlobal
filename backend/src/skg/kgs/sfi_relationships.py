@@ -767,7 +767,10 @@ def _build_edges_from_responses(
 
 
 def _build_final_contexts(
-    *, document_ir: DocumentIR, sfi_final_records: Sequence[SFIFinalRecord]
+    *,
+    document_ir: DocumentIR,
+    kg_config: CreateKGConfig,
+    sfi_final_records: Sequence[SFIFinalRecord],
 ) -> list[SFIHasChildFinalContext]:
     """Recover source context for finalized SFIs.
 
@@ -821,6 +824,8 @@ def _build_final_contexts(
     ----------
     document_ir
         Source DocumentIR used to recover section-path and source-order evidence.
+    kg_config
+        Runtime KG configuration containing the recent section-path label bound.
     sfi_final_records
         Finalized SFI records.
 
@@ -848,10 +853,23 @@ def _build_final_contexts(
             or [0]
         )
 
-        # Look up the `section_path` for each source segment in the DocumentIR.
-        section_path_labels = _recover_section_path_labels(
-            record=record, segments_by_id=segments_by_id
-        )
+        # Look up the `section_path` for each source segment in the DocumentIR, then
+        # keep the most recent bounded labels first.
+        #
+        # NB: DocumentIR section paths may contain cumulative heading history from
+        # earlier curriculum sections. The nearest/current headings usually appear at
+        # the end of the recovered list, so hasChild resolution uses a recent-first
+        # view: reverse the list, remove duplicate/empty labels while preserving that
+        # recent-first order, and keep only the configured number of labels.
+        section_path_labels = unique_nonempty(
+            list(
+                reversed(
+                    _recover_section_path_labels(
+                        record=record, segments_by_id=segments_by_id
+                    )
+                )
+            )
+        )[: kg_config.academic_standards.max_has_child_section_path_labels]
 
         # Collect table provenance indexes.
         table_header_indexes = _source_ref_int_values(
@@ -1877,13 +1895,15 @@ def _recover_section_path_labels(
     segment_011.section_path = ["Grade 4", "Reading"]
 
     Then `_recover_section_path_labels(record=record, segments_by_id=segments_by_id)`
-    returns:
+    returns labels in source order before recent-first bounding:
 
-    ["Grade 4", "Listening and Speaking", "Reading"]
+    ["Grade 4", "Listening and Speaking", "Grade 4", "Reading"]
 
-    The duplicate "Grade 4" label is kept only once, and labels remain in first-seen
-    source order. These labels later provide evidence for candidate parents whose
-    descriptions match the child SFI's recovered section-path context.
+    The recent-first bounded view used for hasChild evidence is produced separately by
+    `_select_recent_section_path_labels(...)`, because the most useful current labels
+    usually appear near the end of cumulative DocumentIR section paths. Duplicate
+    labels are intentionally preserved here so the later recent-first selection can
+    prefer the latest occurrence.
 
     Parameters
     ----------
@@ -1895,7 +1915,8 @@ def _recover_section_path_labels(
     Returns
     -------
     list[str]
-        Unique section-path labels in source order.
+        Non-empty section-path labels in source order, including repeated labels when
+        they appear in multiple recovered source-segment paths.
     """
 
     section_ref_labels: list[str] = []
@@ -1911,7 +1932,7 @@ def _recover_section_path_labels(
             assert section_ref_label, f"{source_segment_id = }"
             section_ref_labels.append(section_ref_label)
 
-    return unique_nonempty(section_ref_labels)
+    return section_ref_labels
 
 
 def _rewrite_resolution_progress_files(
@@ -2010,6 +2031,40 @@ def _run_resolution_requests(
         responses.append(response)
 
     return responses
+
+
+def _select_recent_section_path_labels(
+    *, labels: Sequence[str], max_labels: int
+) -> list[str]:
+    """Reverse, de-duplicate, and bound section-path labels for hasChild evidence.
+
+    DocumentIR section paths may contain cumulative heading history from earlier
+    curriculum sections. The nearest/current headings usually appear at the end of the
+    recovered list, so hasChild resolution uses a recent-first view: reverse the list,
+    remove duplicate/empty labels while preserving that recent-first order, and keep
+    only the configured number of labels.
+
+    Parameters
+    ----------
+    labels
+        Recovered section-path labels in DocumentIR/source order, usually oldest to
+        newest.
+    max_labels
+        Maximum number of recent-first labels to return. Must be at least 1.
+
+    Returns
+    -------
+    list[str]
+        Unique non-empty section-path labels ordered from most recent/local context
+        to older/broader context.
+
+    Raises
+    ------
+    ValueError
+        If `max_labels` is less than 1.
+    """
+
+    return unique_nonempty(list(reversed(labels)))[:max_labels]
 
 
 def _should_add_code_parent_hint_evidence(
@@ -2681,7 +2736,9 @@ def resolve_has_child_edges(
     # resolution requests.
     extraction_windows = _load_extraction_windows(kg_dirs)
     contexts = _build_final_contexts(
-        document_ir=document_ir, sfi_final_records=sfi_final_records
+        document_ir=document_ir,
+        kg_config=kg_config,
+        sfi_final_records=sfi_final_records,
     )
     parent_sets = _build_candidate_parent_sets(
         contexts=contexts,
