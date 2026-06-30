@@ -311,6 +311,7 @@ def _bound_parent_candidates(
     )
     sorted_candidates = sorted(non_root_candidates, key=_parent_candidate_rank)
     high_signal_reasons = {
+        "active_outline_stack_parent",
         "code_parent_hint",
         "matched_section_path_label",
         "source_scope_grouping",
@@ -350,6 +351,76 @@ def _bound_parent_candidates(
         )
 
     return [*selected_non_root, root_candidate], truncation_notes, was_truncated
+
+
+def _build_active_outline_parent_map(
+    *, contexts: Sequence[SFIHasChildFinalContext], kg_config: CreateKGConfig
+) -> dict[uuid.UUID, SFIHasChildFinalContext]:
+    """Build active-outline parent candidates from finalized SFIs in source order.
+
+    The map is generated from a config-driven statement-type hierarchy. It walks final
+    SFI contexts by source position, maintains the most recent active SFI for each
+    configured hierarchy level, and maps each child to the active SFI at its immediate
+    parent level when such a parent has already appeared.
+
+    This function is intentionally a candidate-generation heuristic, not a resolver. It
+    protects same-page or same-window heading relationships from being lost when
+    inherited section paths are stale, while leaving final parent selection to the LLM.
+
+    Parameters
+    ----------
+    contexts
+        Final SFI contexts to scan in source order.
+    kg_config
+        Runtime KG configuration containing the optional hasChild statement-type
+        hierarchy override.
+
+    Returns
+    -------
+    dict[uuid.UUID, SFIHasChildFinalContext]
+        Mapping of child final SFI UUID to one active immediate parent context.
+    """
+
+    # Resolve hierarchy: use the explicit hierarchy if provided, otherwise fall back to
+    # the policy order.
+    standards = kg_config.academic_standards
+    hierarchy = (
+        list(standards.sfi_has_child_statement_type_hierarchy)
+        if standards.sfi_has_child_statement_type_hierarchy
+        else [item.statement_type for item in standards.statement_type_policy]
+    )
+
+    if len(hierarchy) < 2:
+        return {}
+
+    rank_by_statement_type = {
+        statement_type: rank for rank, statement_type in enumerate(hierarchy)
+    }
+
+    active_by_rank: dict[int, SFIHasChildFinalContext] = {}
+    parent_by_child_uuid: dict[uuid.UUID, SFIHasChildFinalContext] = {}
+
+    for context in sorted(
+        contexts, key=lambda item: _context_source_position_key(context=item)
+    ):
+        rank = rank_by_statement_type.get(context.statement_type)
+
+        if rank is None:
+            continue
+
+        parent_rank = rank - 1
+
+        if parent_rank in active_by_rank:
+            parent_by_child_uuid[context.final_sfi_uuid] = active_by_rank[parent_rank]
+
+        active_by_rank[rank] = context
+
+        # Clear out stale sub-headings.
+        for stale_rank in list(active_by_rank):
+            if stale_rank > rank:
+                del active_by_rank[stale_rank]
+
+    return parent_by_child_uuid
 
 
 def _build_candidate_parent_sets(
@@ -434,6 +505,9 @@ def _build_candidate_parent_sets(
     """
 
     parent_sets: list[SFIHasChildCandidateParentSet] = []
+    outline_parent_by_child_uuid = _build_active_outline_parent_map(
+        contexts=contexts, kg_config=kg_config
+    )
     table_keys_by_uuid = {
         context.final_sfi_uuid: _table_context_keys(context) for context in contexts
     }
@@ -451,6 +525,26 @@ def _build_candidate_parent_sets(
         child_code = normalize_code(child_context.normalized_statement_code)
         child_table_keys = table_keys_by_uuid[child_context.final_sfi_uuid]
         evidence_by_endpoint_id: dict[str, _ParentEvidence] = {}
+
+        # Add high-signal evidence from the active finalized-SFI outline stack.
+        #
+        # NB: The active outline stack is a source-order heuristic used only to keep a
+        # plausible immediate parent in the bounded candidate set. It does not emit
+        # final edges. The LLM must still choose or reject the candidate from the
+        # complete source-grounded evidence menu.
+        if outline_parent_context := outline_parent_by_child_uuid.get(
+            child_context.final_sfi_uuid
+        ):
+            _add_parent_evidence(
+                evidence_by_endpoint_id=evidence_by_endpoint_id,
+                evidence_reason="active_outline_stack_parent",
+                evidence_summary=(
+                    "Parent is the active preceding finalized SFI of the configured "
+                    "immediate parent statement type in source order. This is retrieval "
+                    "evidence only; the LLM must confirm the direct hasChild parent."
+                ),
+                parent_context=outline_parent_context,
+            )
 
         for parent_context in contexts:
             if parent_context.final_sfi_uuid == child_context.final_sfi_uuid:
@@ -947,6 +1041,50 @@ def _context_matches_section_path(
         parent_text == section_text or parent_text in section_text
         for parent_text in parent_texts
         for section_text in section_texts
+    )
+
+
+def _context_source_position_key(
+    context: SFIHasChildFinalContext,
+) -> tuple[int, int, int, int, str]:
+    """Build a deterministic source-order key for active outline scanning.
+
+    Parameters
+    ----------
+    context
+        Final SFI context to order.
+
+    Returns
+    -------
+    tuple[int, int, int, int, str]
+        Sort key using DocumentIR source order, earliest extraction window index,
+        earliest cited table row/header index, parsed within-window candidate order,
+        and final UUID.
+    """
+
+    source_window_index = min(context.source_window_indexes, default=1_000_000)
+    table_position = min(
+        [*context.table_header_indexes, *context.table_row_indexes], default=1_000_000
+    )
+
+    # Determine the earliest within-window registry candidate position.
+    candidate_positions: list[int] = []
+    for candidate_id in context.source_registry_candidate_ids:
+        parts = str(candidate_id).split(":")
+
+        # Registry candidate IDs are shaped like `w0143:sfi_2:...`.
+        if len(parts) >= 2 and parts[1].startswith("sfi_"):
+            try:
+                candidate_positions.append(int(parts[1].removeprefix("sfi_")))
+            except ValueError:
+                continue
+
+    return (
+        context.source_order,
+        source_window_index,
+        table_position,
+        min(candidate_positions, default=1_000_000),
+        str(context.final_sfi_uuid),
     )
 
 
@@ -1823,6 +1961,7 @@ def _parent_candidate_rank(candidate: SFIHasChildParentCandidate) -> tuple[int, 
 
     weights = {
         "code_parent_hint": 100,
+        "active_outline_stack_parent": 98,
         "source_scope_grouping": 95,
         "matched_section_path_label": 90,
         "same_table_context": 80,

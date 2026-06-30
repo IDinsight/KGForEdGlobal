@@ -665,6 +665,15 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         ),
     )
     row_overlap: int = Field(default=1, ge=0)
+    sfi_has_child_statement_type_hierarchy: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional ordered statement_type hierarchy, broadest parent to narrowest "
+            "child, used to generate active-outline hasChild parent candidates from "
+            "finalized SFI source order. If omitted, statement_type_policy order is "
+            "used."
+        ),
+    )
     statement_type_policy: list[_AcademicStandardStatementTypePolicyItem] = Field(
         description=(
             "Canonical curriculum-specific statement_type labels allowed in "
@@ -692,6 +701,49 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
     sfi_deduplication_instructions: str
     sfi_extraction_instructions: str
     sfi_has_child_instructions: str
+
+    @field_validator("sfi_has_child_statement_type_hierarchy")
+    @classmethod
+    def validate_sfi_has_child_statement_type_hierarchy(cls, v: list[str]) -> list[str]:
+        """Clean and de-duplicate the optional hasChild statement-type hierarchy.
+
+        Parameters
+        ----------
+        v
+            Configured statement_type hierarchy labels from broadest parent to
+            narrowest child.
+
+        Returns
+        -------
+        list[str]
+            Cleaned hierarchy labels in stable order. Empty means use
+            statement_type_policy order.
+
+        Raises
+        ------
+        TypeError
+            If any hierarchy item is not a string.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for statement_type in v or []:
+            if not isinstance(statement_type, str):
+                raise TypeError(
+                    "CreateKGConfig.as.sfi_has_child_statement_type_hierarchy "
+                    "must contain only strings."
+                )
+
+            statement_type_clean = statement_type.strip()
+
+            if not statement_type_clean or statement_type_clean in seen:
+                continue
+
+            cleaned.append(statement_type_clean)
+            seen.add(statement_type_clean)
+
+        return cleaned
 
     @field_validator(
         "sfi_deduplication_instructions",
@@ -1155,6 +1207,34 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
                     f"{item.statement_type!r}. Known code types: {sorted(known)}"
                 )
 
+    def _validate_has_child_statement_type_hierarchy(self) -> None:
+        """Validate hasChild hierarchy labels against statement_type_policy.
+
+        Raises
+        ------
+        ValueError
+            If the explicit hasChild hierarchy references a statement_type that is not
+            present in statement_type_policy.
+        """
+
+        if not self.sfi_has_child_statement_type_hierarchy:
+            return
+
+        known_statement_types = {
+            item.statement_type for item in self.statement_type_policy
+        }
+        unknown_statement_types = sorted(
+            set(self.sfi_has_child_statement_type_hierarchy) - known_statement_types
+        )
+
+        if unknown_statement_types:
+            raise ValueError(
+                f"CreateKGConfig.as.sfi_has_child_statement_type_hierarchy "
+                f"references unknown statement_type labels: "
+                f"{unknown_statement_types}. Known statement_type labels: "
+                f"{sorted(known_statement_types)}"
+            )
+
     def _validate_selection_overlap_policy(self) -> None:
         """Ensure table-selection policy does not include and exclude the same value.
 
@@ -1194,6 +1274,7 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         known = set(self.code_patterns.keys())
         self._validate_windowing()
         self._validate_code_parent_rules(known)
+        self._validate_has_child_statement_type_hierarchy()
         self._validate_selection_overlap_policy()
         self._validate_statement_type_policy_code_types(known)
         return self

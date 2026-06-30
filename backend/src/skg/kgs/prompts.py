@@ -666,13 +666,14 @@ def resolve_sfi_has_child_parents(
 
 ## Parent-selection policy
 - Prefer the most direct source-grounded parent, not merely the broadest or most nearby candidate.
-- Treat code-parent hints, matched section labels, same table context, same source context, and nearest preceding grouping evidence as retrieval evidence, not as automatic truth.
+- Treat code-parent hints, active outline-stack parents, matched section labels, same table context, same source context, and nearest preceding grouping evidence as retrieval evidence, not as automatic truth.
 - The StandardsFramework root is a valid direct parent only when the child is a top-level framework item or no source-supported SFI parent is available.
 - Do not select the StandardsFramework root merely to guarantee reachability when one or more semantic SFI parents are selected.
 - Do not choose a parent by source code alone. Same-code/different-content audit flags mean endpoints must remain distinct.
 - Page overlap alone is weak evidence and must not override stronger source hierarchy evidence.
 - DocumentIR section-path labels are evidence, not a guaranteed clean ancestor chain.
 - In each child_context, `section_path_labels` is ordered from most recent/local source context to older/broader context after bounded truncation. Earlier labels in that list are usually more useful for direct parent selection; later labels may be stale carryover and should be treated cautiously.
+- `active_outline_stack_parent` evidence means source-order scanning of finalized SFIs found the candidate as the active immediate parent type under the configured statement-type hierarchy. This is a strong candidate-preservation signal for same-page or same-window headings, but it is still not automatic truth; confirm against the child context, parent context, runtime hierarchy instructions, codes, and source locality.
 
 ## Output contract
 - Copy request_id exactly.
