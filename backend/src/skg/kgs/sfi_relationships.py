@@ -246,9 +246,9 @@ def _bound_parent_candidates(
     )
 
     first ranks the non-root candidates by evidence strength. Candidates with
-    `code_parent_hint` or `matched_section_path_label` are treated as high-signal and
-    are preserved first. Because one slot is reserved for the StandardsFramework root,
-    only three non-root candidates can be returned.
+    `code_parent_hint`, `source_scope_grouping`, or `matched_section_path_label` are
+    treated as high-signal and are preserved first. Because one slot is reserved for
+    the StandardsFramework root, only three non-root candidates can be returned.
 
     A possible returned list is:
 
@@ -310,7 +310,11 @@ def _bound_parent_candidates(
         statement_type=None,
     )
     sorted_candidates = sorted(non_root_candidates, key=_parent_candidate_rank)
-    high_signal_reasons = {"code_parent_hint", "matched_section_path_label"}
+    high_signal_reasons = {
+        "code_parent_hint",
+        "matched_section_path_label",
+        "source_scope_grouping",
+    }
     high_signal_candidates = [
         candidate
         for candidate in sorted_candidates
@@ -1077,6 +1081,9 @@ def _evaluate_parent_child_relationship(
         set(child_context.source_window_ids) & set(parent_context.source_window_ids)
     )
     same_table_context = bool(child_table_keys & parent_table_keys)
+    source_scope_grouping = _is_source_scope_grouping(
+        child_context=child_context, parent_context=parent_context
+    )
 
     # Simple, independent non-code evidence channels expressed as
     # (predicate, reason, summary). Code-parent hints are gated separately below so
@@ -1102,6 +1109,14 @@ def _evaluate_parent_child_relationship(
             same_table_context,
             "same_table_context",
             "Child and parent share cited table row/header context.",
+        ),
+        (
+            source_scope_grouping,
+            "source_scope_grouping",
+            (
+                "Parent is a source-scope grouping/header for row-derived child "
+                "content in the same source segment/window."
+            ),
         ),
         (
             matched_section_path_label,
@@ -1320,6 +1335,54 @@ def _is_nearby_source_window(
         return False
 
     return any(
+        0 <= child_window_index - parent_window_index <= 2
+        for child_window_index in child_context.source_window_indexes
+        for parent_window_index in parent_context.source_window_indexes
+    )
+
+
+def _is_source_scope_grouping(
+    *, child_context: SFIHasChildFinalContext, parent_context: SFIHasChildFinalContext
+) -> bool:
+    """Check whether a parent is a source-scope grouping for a row child.
+
+    This captures a common curriculum layout without hardcoding any curriculum labels:
+    a table or source-scope grouping is expressed in header-level provenance, while
+    the child SFI is expressed in body-row provenance from the same source segment or
+    nearby extraction window. The signal is used only to keep a plausible parent in
+    the bounded candidate set; the LLM still decides whether it is the direct parent.
+
+    Parameters
+    ----------
+    child_context
+        Final SFI source context for the potential child.
+    parent_context
+        Final SFI source context for the potential parent.
+
+    Returns
+    -------
+    bool
+        True when the parent is a header-level Standard Grouping that scopes a
+        row-derived child in the same source segment and same or nearby window.
+    """
+
+    # Early exit if any prerequisites for the grouping/child relationship fail.
+    if (
+        parent_context.normalized_statement_type != "Standard Grouping"
+        or not parent_context.table_header_indexes
+        or parent_context.table_row_indexes
+        or not child_context.table_row_indexes
+        or not (
+            set(child_context.source_segment_ids)
+            & set(parent_context.source_segment_ids)
+        )
+    ):
+        return False
+
+    return bool(
+        set(child_context.source_window_indexes)
+        & set(parent_context.source_window_indexes)
+    ) or any(
         0 <= child_window_index - parent_window_index <= 2
         for child_window_index in child_context.source_window_indexes
         for parent_window_index in parent_context.source_window_indexes
@@ -1742,6 +1805,7 @@ def _parent_candidate_rank(candidate: SFIHasChildParentCandidate) -> tuple[int, 
 
     weights = {
         "code_parent_hint": 100,
+        "source_scope_grouping": 95,
         "matched_section_path_label": 90,
         "same_table_context": 80,
         "same_source_context_key": 75,
