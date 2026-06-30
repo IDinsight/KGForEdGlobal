@@ -14,7 +14,7 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 # Third Party Library
 from loguru import logger
@@ -429,6 +429,7 @@ def _build_candidate_parent_sets(
     extraction_windows: Sequence[ExtractionWindow],
     framework_uuid: uuid.UUID,
     kg_config: CreateKGConfig,
+    table_context_keys_by_uuid: dict[uuid.UUID, set[str]],
 ) -> list[SFIHasChildCandidateParentSet]:
     """Build bounded candidate parent sets for finalized SFIs.
 
@@ -497,6 +498,11 @@ def _build_candidate_parent_sets(
         Deterministic StandardsFramework root UUID.
     kg_config
         Runtime KG configuration.
+    table_context_keys_by_uuid
+        Paired table row/header context keys keyed by final SFI UUID. These keys are
+        recovered from candidate-level source refs rather than flattened final-record
+        segment/index aggregates, so table evidence does not cross-combine unrelated
+        source segments and row/header indexes.
 
     Returns
     -------
@@ -508,9 +514,7 @@ def _build_candidate_parent_sets(
     outline_parent_by_child_uuid = _build_active_outline_parent_map(
         contexts=contexts, kg_config=kg_config
     )
-    table_keys_by_uuid = {
-        context.final_sfi_uuid: _table_context_keys(context) for context in contexts
-    }
+    table_keys_by_uuid = table_context_keys_by_uuid
 
     # Extract normalized child-code to parent-code hints.
     code_parent_pairs = {
@@ -2297,6 +2301,43 @@ def _should_add_code_parent_hint_evidence(
     )
 
 
+def _source_ref_int_list(*, key: str, source_ref: dict[str, object]) -> list[int]:
+    """Collect sorted integer values from one candidate source-ref field.
+
+    Parameters
+    ----------
+    key
+        Source-ref field to read, such as `table_row_indexes` or `table_header_indexes`.
+    source_ref
+        Candidate source-ref dictionary from a final SFI record.
+
+    Returns
+    -------
+    list[int]
+        Sorted unique integer values. Invalid or empty values are ignored.
+    """
+
+    raw_values = source_ref.get(key)
+
+    if raw_values is None:
+        return []
+
+    if isinstance(raw_values, (str, bytes)) or not isinstance(raw_values, Sequence):
+        values_iterable: Any = [raw_values]
+    else:
+        values_iterable = raw_values
+
+    values: set[int] = set()
+
+    for value in values_iterable:
+        try:
+            values.add(int(value))
+        except Exception:  # pylint: disable=W0718
+            continue
+
+    return sorted(values)
+
+
 def _source_ref_int_values(*, key: str, record: SFIFinalRecord) -> list[int]:
     """Collect integer values from final-record candidate source refs.
 
@@ -2356,60 +2397,95 @@ def _source_ref_int_values(*, key: str, record: SFIFinalRecord) -> list[int]:
     return sorted(values)
 
 
-def _table_context_keys(context: SFIHasChildFinalContext) -> set[str]:
-    """Build table-local context keys for one final SFI context.
+def _source_ref_segment_ids(source_ref: dict[str, object]) -> list[str]:
+    """Collect source segment IDs from one candidate source-ref record.
+
+    Parameters
+    ----------
+    source_ref
+        Candidate source-ref dictionary from a final SFI record.
+
+    Returns
+    -------
+    list[str]
+        Unique non-empty source segment IDs in source-ref order.
+    """
+
+    raw_segment_ids = source_ref.get("source_segment_ids")
+
+    if raw_segment_ids is None:
+        return []
+
+    if isinstance(raw_segment_ids, (str, bytes)) or not isinstance(
+        raw_segment_ids, Sequence
+    ):
+        segment_ids_iterable: Any = [raw_segment_ids]
+    else:
+        segment_ids_iterable = raw_segment_ids
+
+    return unique_nonempty(str(segment_id) for segment_id in segment_ids_iterable)
+
+
+def _table_context_keys_from_source_refs(record: SFIFinalRecord) -> set[str]:
+    """Build paired table-local context keys for one final SFI record.
+
+    Table evidence must preserve the pairing between a source segment and the
+    row/header indexes cited within the same candidate source-ref record. Final SFI
+    records also carry flattened aggregate segment IDs and flattened row/header index
+    lists for prompt/debug context, but those aggregate lists must not be cross-joined
+    when constructing `same_table_context` retrieval evidence.
 
     Examples
     --------
 
-    1. Table row and header provenance can create same-table-context evidence.
+    1. If a final SFI has two source refs:
 
-    Suppose two final SFI contexts cite the same source table segment:
+    - `segment_010` row `2`
+    - `segment_011` row `4`
 
-    topic:
-        description="1.1 CONVERSATION"
-        source_segment_ids=["segment_010"]
-        table_row_indexes=[2]
+    this function returns exactly:
 
-    specific_competence:
-        description="1.1.1 Use appropriate expressions in conversation"
-        source_segment_ids=["segment_010"]
-        table_row_indexes=[2]
+    - `segment:segment_010:row:2`
+    - `segment:segment_011:row:4`
 
-    For each context, this function creates a key like:
-
-    "segment:segment_010:row:2"
-
-    When `_evaluate_parent_child_relationship(...)` compares `specific_competence` as
-    the child and `topic` as a possible parent, the table-context key sets intersect.
-    The parent candidate receives:
-
-    evidence_reasons=["same_table_context"]
-    evidence_summary=["Child and parent share cited table row/header context."]
-
-    This evidence does not automatically make `topic` the direct parent. It only places
-    `topic` in the bounded parent-candidate set so the LLM can decide whether the
-    source supports a direct hasChild relationship.
+    It does not emit false cross-pairs such as `segment_010` row `4`.
 
     Parameters
     ----------
-    context
-        Final SFI context.
+    record
+        Final SFI record whose candidate-level source refs should be converted into
+        table-context keys.
 
     Returns
     -------
     set[str]
-        Table-local row/header context keys.
+        Table-local row/header context keys derived from paired candidate source refs.
     """
 
     keys: set[str] = set()
 
-    for source_segment_id in context.source_segment_ids:
-        for row_index in context.table_row_indexes:
-            keys.add(f"segment:{source_segment_id}:row:{row_index}")
+    for source_ref in record.candidate_source_refs:
+        if not isinstance(source_ref, dict):
+            continue
 
-        for header_index in context.table_header_indexes:
-            keys.add(f"segment:{source_segment_id}:header:{header_index}")
+        source_segment_ids = _source_ref_segment_ids(source_ref)
+
+        if not source_segment_ids:
+            continue
+
+        table_header_indexes = _source_ref_int_list(
+            key="table_header_indexes", source_ref=source_ref
+        )
+        table_row_indexes = _source_ref_int_list(
+            key="table_row_indexes", source_ref=source_ref
+        )
+
+        for source_segment_id in source_segment_ids:
+            for row_index in table_row_indexes:
+                keys.add(f"segment:{source_segment_id}:row:{row_index}")
+
+            for header_index in table_header_indexes:
+                keys.add(f"segment:{source_segment_id}:header:{header_index}")
 
     return keys
 
@@ -2470,7 +2546,7 @@ def _validate_graph(
     - There are no SFI-to-SFI cycles;
     - All finalized SFIs are reachable from the framework root;
     - Every relationship_id is unique.
-    ```
+    ``
 
     The function performs structural graph validation only. It does not decide whether
     `grade_4_uuid`, `topic_uuid`, or `competence_uuid` is the semantically best parent;
@@ -2828,7 +2904,7 @@ def resolve_has_child_edges(
     """Resolve final hasChild edges for finalized SFI records.
 
     When `overwrite` is true, all artifacts are regenerated from scratch. When
-    `overwrite`` is false, complete current artifacts are reused, and incomplete
+    `overwrite` is false, complete current artifacts are reused, and incomplete
     artifacts resume from the longest validated request/response JSONL prefix.
 
     Parameters
@@ -2879,11 +2955,16 @@ def resolve_has_child_edges(
         kg_config=kg_config,
         sfi_final_records=sfi_final_records,
     )
+    table_context_keys_by_uuid = {
+        record.final_sfi_uuid: _table_context_keys_from_source_refs(record)
+        for record in sfi_final_records
+    }
     parent_sets = _build_candidate_parent_sets(
         contexts=contexts,
         extraction_windows=extraction_windows,
         framework_uuid=framework_uuid,
         kg_config=kg_config,
+        table_context_keys_by_uuid=table_context_keys_by_uuid,
     )
     requests = [
         SFIHasChildResolutionRequest(
