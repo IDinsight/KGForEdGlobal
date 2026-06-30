@@ -670,6 +670,9 @@ def resolve_sfi_has_child_parents(
 - The StandardsFramework root is a valid direct parent only when the child is a top-level framework item or no source-supported SFI parent is available.
 - Do not select the StandardsFramework root merely to guarantee reachability when one or more semantic SFI parents are selected.
 - Do not choose a parent by source code alone. Same-code/different-content audit flags mean endpoints must remain distinct.
+- When multiple parent candidates share the same normalized code or otherwise look plausible by topic, disambiguate using source-local hierarchy evidence before semantic similarity. Prefer the candidate supported by the child's actual source row/span, active local outline, same source context key, same source segment/window, and same table context over a same-code candidate whose description merely seems more topically related.
+- For table-derived children, table row/span context is strong hierarchy evidence. If a parent statement is visible in a table row, row-spanned/continued into the child's row, or represented by the child's source_context_key/table context, prefer that source-local parent. Do not select a different same-code or same-topic parent when the child's cited table rows and local table context point to another parent.
+- Treat topical or semantic similarity as weaker than source-local table/context evidence when resolving duplicate-code or repeated-label candidates.
 - Page overlap alone is weak evidence and must not override stronger source hierarchy evidence.
 - DocumentIR section-path labels are evidence, not a guaranteed clean ancestor chain.
 - In each child_context, `section_path_labels` is ordered from most recent/local source context to older/broader context after bounded truncation. Earlier labels in that list are usually more useful for direct parent selection; later labels may be stale carryover and should be treated cautiously.
