@@ -674,6 +674,7 @@ def resolve_sfi_has_child_parents(
 - DocumentIR section-path labels are evidence, not a guaranteed clean ancestor chain.
 - In each child_context, `section_path_labels` is ordered from most recent/local source context to older/broader context after bounded truncation. Earlier labels in that list are usually more useful for direct parent selection; later labels may be stale carryover and should be treated cautiously.
 - `active_outline_stack_parent` evidence means source-order scanning of finalized SFIs found the candidate as the active immediate parent type under the configured statement-type hierarchy. This is a strong candidate-preservation signal for same-page or same-window headings, but it is still not automatic truth; confirm against the child context, parent context, runtime hierarchy instructions, codes, and source locality.
+- For coded children with hierarchical codes, avoid sibling fallback. If the exact immediate parent implied by the code is unavailable, prefer the nearest broader compatible ancestor over a sibling of the missing parent type.
 
 ## Output contract
 - Copy request_id exactly.
