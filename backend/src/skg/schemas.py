@@ -1320,13 +1320,6 @@ class _CreateKGMetadata(BaseSchema):
     author: str = Field(
         description="Author or issuing body responsible for the framework."
     )
-    context_spine: _ContextSpineConfig = Field(
-        default_factory=_ContextSpineConfig,
-        description=(
-            "KG configuration-driven rules for deriving structured extraction-window context "
-            "from headings (e.g., for Ghana: grade_level -> strand -> substrand)."
-        ),
-    )
     country: str = Field(description="Country the framework applies to.")
     framework_title: str = Field(
         description="Human-readable title of the academic standards framework."

@@ -143,15 +143,6 @@
 			"adoption_status": "Adopted",
 			"attribution_statement": "Source curriculum published by NaCCA, Ministry of Education, Republic of Ghana, September 2019.",
 			"author": "NaCCA, Ministry of Education",
-			"context_spine": {
-				"description": "Reserved for future structured-context work. Academic Standards v0 extraction-window planning does not use context_spine, section_path, or nearby heading context.",
-				"heading_rules": [],
-				"include_nearby_headings": false,
-				"max_nearby_headings": 0,
-				"reset_rules": [],
-				"role_order": [],
-				"split_multiline_headings": true
-			},
 			"country": "Ghana",
 			"framework_title": "Mathematics Curriculum for Primary Schools (Basic 4 - 6)",
 			"grades_or_stages": [
