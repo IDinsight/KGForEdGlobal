@@ -409,6 +409,36 @@ def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
 
 
+def _normalized_source_contains_visible_excerpt(
+    *, source_text_normalized: str, target_text_normalized: str
+) -> bool:
+    """Check whether normalized source text contains a visible source excerpt.
+
+    This is intentionally stricter than `_normalized_source_supports_text`. Candidate
+    `source_text` is an evidence quote, so it must be present in the source-visible
+    support text after whitespace normalization. It must not pass merely because its
+    tokens appear as a non-contiguous ordered subsequence.
+
+    Parameters
+    ----------
+    source_text_normalized
+        Normalized source-visible text used as support.
+    target_text_normalized
+        Normalized candidate source_text that must be a visible excerpt.
+
+    Returns
+    -------
+    bool
+        True when the normalized target text is directly contained in the normalized
+        source text, otherwise False.
+    """
+
+    return (
+        bool(target_text_normalized)
+        and target_text_normalized in source_text_normalized
+    )
+
+
 def _normalized_source_supports_text(
     *, source_text_normalized: str, target_text_normalized: str
 ) -> bool:
@@ -656,7 +686,7 @@ def _validate_candidate_source_text_is_visible(
         candidate=candidate, ctx=ctx
     )
 
-    if _normalized_source_supports_text(
+    if _normalized_source_contains_visible_excerpt(
         source_text_normalized=support_text_normalized,
         target_text_normalized=source_text_normalized,
     ):
@@ -827,7 +857,7 @@ def _validate_combined_source_location(
     cited_table_text_normalized = _normalize_text(
         "\n".join([cited_header_text_normalized, cited_row_text_normalized])
     )
-    source_supported_by_cited_table_text = _normalized_source_supports_text(
+    source_supported_by_cited_table_text = _normalized_source_contains_visible_excerpt(
         source_text_normalized=cited_table_text_normalized,
         target_text_normalized=source_text_normalized,
     )
@@ -1216,13 +1246,13 @@ def _validate_table_candidate_source_location(
 
     source_supported_by_cited_headers = bool(
         candidate.table_header_indexes
-    ) and _normalized_source_supports_text(
+    ) and _normalized_source_contains_visible_excerpt(
         source_text_normalized=cited_header_text_normalized,
         target_text_normalized=source_text_normalized,
     )
     source_supported_by_cited_rows = bool(
         candidate.table_row_indexes
-    ) and _normalized_source_supports_text(
+    ) and _normalized_source_contains_visible_excerpt(
         source_text_normalized=cited_row_text_normalized,
         target_text_normalized=source_text_normalized,
     )

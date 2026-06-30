@@ -227,7 +227,7 @@ def _build_registry_candidate(
     raw_normalized_statement_code = normalize_code(candidate.statement_code)
     matching_code_types = _get_configured_code_types(
         code_patterns=code_patterns,
-        normalized_statement_code=raw_normalized_statement_code,
+        statement_code=candidate.statement_code,
     )
     expected_code_type = statement_type_code_types.get(candidate.statement_type)
     normalized_statement_code = (
@@ -745,33 +745,45 @@ def _find_configured_code_matches_in_text(
 
 
 def _get_configured_code_types(
-    *,
-    code_patterns: dict[str, re.Pattern[str]],
-    normalized_statement_code: Optional[str],
+    *, code_patterns: dict[str, re.Pattern[str]], statement_code: Optional[str]
 ) -> list[str]:
-    """Return configured code types matching a normalized statement code.
+    """Return configured code types matching a candidate statement code.
+
+    Configured code patterns are authored for source-visible code text and are used
+    elsewhere as raw-text regexes. This function therefore applies each pattern to the
+    raw candidate `statement_code`, normalizes the matched substring, and compares it
+    with the normalized full candidate code. This accepts source-visible formatting
+    variants without requiring config authors to maintain separate normalized-code
+    regexes.
 
     Parameters
     ----------
     code_patterns
-        Compiled curriculum-specific code patterns keyed by code type.
-    normalized_statement_code
-        Normalized candidate statement_code, or None when absent.
+        Compiled curriculum-specific source-text code patterns keyed by code type.
+    statement_code
+        Candidate statement_code copied from visible source text, or None when absent.
 
     Returns
     -------
     list[str]
-        Configured code type keys whose patterns match the normalized code.
+        Configured code type keys whose source-text patterns match the candidate code.
     """
+
+    statement_code_clean = str(statement_code or "").strip()
+    normalized_statement_code = normalize_code(statement_code_clean)
 
     if normalized_statement_code is None:
         return []
 
-    return [
-        code_type
-        for code_type, pattern in sorted(code_patterns.items())
-        if pattern.fullmatch(normalized_statement_code)
-    ]
+    matching_code_types: list[str] = []
+
+    for code_type, pattern in sorted(code_patterns.items()):
+        for match in pattern.finditer(statement_code_clean):
+            if normalize_code(match.group(0)) == normalized_statement_code:
+                matching_code_types.append(code_type)
+                break
+
+    return matching_code_types
 
 
 def _join_bucket_key(*values: Optional[str]) -> str:
@@ -1201,7 +1213,7 @@ def _warn_on_per_candidate_issues(
         raw_normalized_statement_code = normalize_code(candidate.statement_code)
         matching_code_types = _get_configured_code_types(
             code_patterns=code_patterns,
-            normalized_statement_code=raw_normalized_statement_code,
+            statement_code=candidate.statement_code,
         )
         expected_code_type = statement_type_code_types.get(candidate.statement_type)
 

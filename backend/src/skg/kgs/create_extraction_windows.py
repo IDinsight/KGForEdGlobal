@@ -17,8 +17,10 @@ records, or no candidates for each window.
 # Standard Library
 import hashlib
 import re
+import unicodedata
 import uuid
 
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
@@ -273,26 +275,28 @@ def _build_table_source_text(
     return "\n".join(lines).strip()
 
 
-def _build_table_window_for_row_range(
+def _build_table_window_for_row_indexes(
     *,
-    body_row_end_index_exclusive: int,
-    body_row_start_index: int,
+    body_row_indexes: Sequence[int],
     document_ir: DocumentIR,
+    excluded_repeated_header_row_indexes: Sequence[int],
     kg_config: CreateKGConfig,
     plan_item: ExtractionWindowPlanItem,
     segment: TableSegment,
     window_index: int,
 ) -> ExtractionWindow:
-    """Build one table extraction window for a selected source row range.
+    """Build one table extraction window for selected source row indexes.
 
     Parameters
     ----------
-    body_row_end_index_exclusive
-        Exclusive end index in the source table rows.
-    body_row_start_index
-        Inclusive start index in the source table rows.
+    body_row_indexes
+        Source table row indexes to include in this extraction window. These indexes
+        are authoritative and may be non-contiguous when repeated header rows were
+        skipped.
     document_ir
         Validated stitched DocumentIR.
+    excluded_repeated_header_row_indexes
+        Source table row indexes skipped because they repeat the table header.
     kg_config
         Country/document-specific KG extraction configuration.
     plan_item
@@ -306,9 +310,22 @@ def _build_table_window_for_row_range(
     -------
     ExtractionWindow
         Validated table extraction window.
+
+    Raises
+    ------
+    ValueError
+        If no source row indexes are provided.
     """
 
-    row_indexes = list(range(body_row_start_index, body_row_end_index_exclusive))
+    row_indexes = list(body_row_indexes)
+
+    if not row_indexes:
+        raise ValueError(
+            "Table extraction windows require at least one body row index."
+        )
+
+    body_row_start_index = min(row_indexes)
+    body_row_end_index_exclusive = max(row_indexes) + 1
     rows = _model_dump_by_indexes(indexes=row_indexes, values=segment.rows)
     rows_grid = _optional_model_dump_by_indexes(
         indexes=row_indexes, values=segment.rows_grid
@@ -339,7 +356,20 @@ def _build_table_window_for_row_range(
         rows_grid=rows_grid,
         source_table_row_count=len(segment.rows),
     )
-    row_range_label = f"rows:{body_row_start_index}:{body_row_end_index_exclusive}"
+    row_range_label = "rows:" + ",".join(str(index) for index in row_indexes)
+    excluded_in_window_span = [
+        index
+        for index in excluded_repeated_header_row_indexes
+        if body_row_start_index <= index < body_row_end_index_exclusive
+    ]
+    window_notes = ["table_window_uses_optional_helpers_when_present"]
+
+    if excluded_in_window_span:
+        excluded_label = ",".join(str(index) for index in excluded_in_window_span)
+        window_notes.append(
+            f"table_window_skipped_repeated_header_rows:{excluded_label}"
+        )
+
     return _build_extraction_window(
         block=None,
         document_ir=document_ir,
@@ -355,7 +385,7 @@ def _build_table_window_for_row_range(
             f"lc:curriculum:{document_ir.doc_key}:extraction_window:table:{segment.segment_id}:{row_range_label}"
         ),
         window_index=window_index,
-        window_notes=["table_window_uses_optional_helpers_when_present"],
+        window_notes=window_notes,
     )
 
 
@@ -394,24 +424,31 @@ def _build_table_windows(
     """
 
     body_start_index = min(segment.header_row_count, len(segment.rows))
-    body_end_index = len(segment.rows)
+    repeated_header_row_indexes = set(_get_repeated_table_header_row_indexes(segment))
+    body_row_indexes = [
+        row_index
+        for row_index in range(body_start_index, len(segment.rows))
+        if row_index not in repeated_header_row_indexes
+    ]
 
-    if body_start_index >= body_end_index:
-        raise ValueError(f"{body_start_index} > {body_end_index} for: {segment}")
+    if not body_row_indexes:
+        return []
 
+    excluded_repeated_header_row_indexes = _get_repeated_table_header_row_indexes(
+        segment=segment
+    )
     windows: list[ExtractionWindow] = []
 
-    for start_index, end_index in _iter_row_chunks(
-        end_index=body_end_index,
+    for row_chunk_indexes in _iter_row_index_chunks(
         max_rows_per_window=kg_config.academic_standards.max_rows_per_table_window,
+        row_indexes=body_row_indexes,
         row_overlap=kg_config.academic_standards.row_overlap,
-        start_index=body_start_index,
     ):
         windows.append(
-            _build_table_window_for_row_range(
-                body_row_end_index_exclusive=end_index,
-                body_row_start_index=start_index,
+            _build_table_window_for_row_indexes(
+                body_row_indexes=row_chunk_indexes,
                 document_ir=document_ir,
+                excluded_repeated_header_row_indexes=excluded_repeated_header_row_indexes,
                 kg_config=kg_config,
                 plan_item=plan_item,
                 segment=segment,
@@ -657,6 +694,89 @@ def _extract_list_items_text(list_items: list[Any]) -> str:
     return "\n".join(item_text for item_text in item_texts if item_text)
 
 
+def _get_repeated_table_header_row_indexes(segment: TableSegment) -> list[int]:
+    """Identify post-header rows that repeat the table's header labels.
+
+    Parameters
+    ----------
+    segment
+        Selected table segment.
+
+    Returns
+    -------
+    list[int]
+        Ordered source row indexes that appear to be repeated table header rows.
+
+    Notes
+    -----
+    The detection is curriculum-agnostic: it derives header labels from the table's
+    own canonical header rows, raw header rows, initial grid rows, and column
+    signature. It does not depend on any country-specific or subject-specific labels.
+    """
+
+    header_labels = _get_table_header_labels(segment)
+
+    if not header_labels:
+        return []
+
+    body_start_index = min(segment.header_row_count, len(segment.rows))
+    repeated_header_row_indexes: list[int] = []
+
+    for row_index in range(body_start_index, len(segment.rows)):
+        row_texts = _get_table_row_texts_by_index(
+            prefer_grid=True, row_index=row_index, segment=segment
+        )
+
+        if _is_repeated_table_header_row(
+            header_labels=header_labels, row_texts=row_texts
+        ):
+            repeated_header_row_indexes.append(row_index)
+
+    return repeated_header_row_indexes
+
+
+def _get_table_header_labels(segment: TableSegment) -> list[str]:
+    """Collect normalized header labels from a table segment.
+
+    Parameters
+    ----------
+    segment
+        Selected table segment.
+
+    Returns
+    -------
+    list[str]
+        Unique normalized labels that define the table's header vocabulary.
+    """
+
+    labels: list[str] = []
+
+    for row in segment.header_rows_canonical or []:
+        labels.extend(_normalize_table_header_text(cell_text) for cell_text in row)
+
+    for row in segment.header_rows or []:
+        labels.extend(
+            _normalize_table_header_text(cell_text)
+            for cell_text in _get_table_row_texts(row)
+        )
+
+    for row_index in range(min(segment.header_row_count, len(segment.rows))):
+        labels.extend(
+            _normalize_table_header_text(cell_text)
+            for cell_text in _get_table_row_texts_by_index(
+                prefer_grid=True, row_index=row_index, segment=segment
+            )
+        )
+
+    if segment.columns_signature:
+        labels.extend(
+            _normalize_table_header_text(text=cell_text)
+            for cell_text in str(segment.columns_signature).split("|")
+        )
+
+    return unique_clean_strings(label for label in labels if label)
+
+
 def _get_table_plan_reasons(
     *, kg_config: CreateKGConfig, segment: TableSegment
 ) -> list[str]:
@@ -707,30 +827,168 @@ def _get_table_plan_reasons(
     return unique_clean_strings(reasons)
 
 
-def _iter_row_chunks(
-    *,
-    end_index: int,
-    max_rows_per_window: Optional[int],
-    row_overlap: int,
-    start_index: int,
-) -> list[tuple[int, int]]:
-    """Return body-row chunks for a table window.
+def _get_table_row_texts(row: Any) -> list[str]:
+    """Extract plain cell texts from a table row-like object.
 
     Parameters
     ----------
-    end_index
-        Exclusive end row index.
-    max_rows_per_window
-        Maximum number of body rows per window. If None, emit one whole-table range.
-    row_overlap
-        Number of overlapping body rows between adjacent chunks.
-    start_index
-        Inclusive start row index.
+    row
+        Table row represented as a Pydantic model, dictionary, or row-like object.
 
     Returns
     -------
-    list[tuple[int, int]]
-        (start, end) row ranges.
+    list[str]
+        Cell texts in source/grid order.
+    """
+
+    cells = row.get("cells") if isinstance(row, dict) else getattr(row, "cells", [])
+    row_texts = []
+
+    for cell in cells or []:
+        # 1. Extract the text_unit from the cell.
+        text_unit = (
+            cell.get("text") if isinstance(cell, dict) else getattr(cell, "text", None)
+        )
+
+        # 2. Extract the actual text value from the text_unit.
+        val = (
+            text_unit.get("text")
+            if isinstance(text_unit, dict)
+            else getattr(text_unit, "text", text_unit)
+        )
+
+        # 3. Clean and append the text.
+        row_texts.append(str(val).strip() if val is not None else "")
+
+    return row_texts
+
+
+def _get_table_row_texts_by_index(
+    *, prefer_grid: bool, row_index: int, segment: TableSegment
+) -> list[str]:
+    """Extract row texts by source row index, preferring grid rows when available.
+
+    Parameters
+    ----------
+    prefer_grid
+        Whether to use `rows_grid` before raw `rows` when the helper view is aligned.
+    row_index
+        Source table row index.
+    segment
+        Selected table segment.
+
+    Returns
+    -------
+    list[str]
+        Cell texts for the requested row.
+    """
+
+    if (
+        prefer_grid
+        and segment.rows_grid is not None
+        and row_index < len(segment.rows_grid)
+    ):
+        row_texts = _get_table_row_texts(segment.rows_grid[row_index])
+
+        if any(text.strip() for text in row_texts):
+            return row_texts
+
+    return _get_table_row_texts(segment.rows[row_index])
+
+
+def _header_label_matches(*, header_labels: Sequence[str], text: str) -> bool:
+    """Return whether normalized text matches a known table header label.
+
+    Parameters
+    ----------
+    header_labels
+        Normalized labels collected from the table's own header metadata.
+    text
+        Candidate cell text to compare.
+
+    Returns
+    -------
+    bool
+        True when the candidate text exactly or near-exactly matches a header label.
+    """
+
+    normalized_text = _normalize_table_header_text(text)
+
+    if not normalized_text:
+        return False
+
+    for header_label in header_labels:
+        if normalized_text == header_label:
+            return True
+
+        if SequenceMatcher(None, normalized_text, header_label).ratio() >= 0.80:
+            return True
+
+    return False
+
+
+def _is_repeated_table_header_row(
+    *, header_labels: Sequence[str], row_texts: Sequence[str]
+) -> bool:
+    """Return whether a row appears to repeat a table header.
+
+    Parameters
+    ----------
+    header_labels
+        Normalized labels collected from the table's own header metadata.
+    row_texts
+        Candidate row cell texts.
+
+    Returns
+    -------
+    bool
+        True when the row's non-empty cells are mostly header-label matches.
+    """
+
+    non_empty_texts = [text for text in row_texts if str(text).strip()]
+
+    if not non_empty_texts:
+        return False
+
+    match_count = sum(
+        1
+        for text in non_empty_texts
+        if _header_label_matches(header_labels=header_labels, text=text)
+    )
+
+    if len(non_empty_texts) == 1:
+        return match_count == 1 and _normalize_table_header_text(
+            non_empty_texts[0]
+        ) in set(header_labels)
+
+    if len(non_empty_texts) == 2:
+        return match_count == 2
+
+    return match_count >= 2 and match_count / len(non_empty_texts) >= 0.75
+
+
+def _iter_row_index_chunks(
+    *,
+    max_rows_per_window: Optional[int],
+    row_indexes: Sequence[int],
+    row_overlap: int,
+) -> list[list[int]]:
+    """Return body-row index chunks for table extraction windows.
+
+    Parameters
+    ----------
+    max_rows_per_window
+        Maximum number of body rows per window. If None, emit one whole-table chunk.
+    row_indexes
+        Ordered source table row indexes eligible for extraction. The indexes may be
+        non-contiguous after repeated header rows are removed.
+    row_overlap
+        Number of overlapping body rows between adjacent chunks.
+
+    Returns
+    -------
+    list[list[int]]
+        Ordered chunks of source table row indexes.
 
     Raises
     ------
@@ -738,8 +996,13 @@ def _iter_row_chunks(
         If row-windowing parameters are invalid.
     """
 
+    row_indexes_list = list(row_indexes)
+
+    if not row_indexes_list:
+        return []
+
     if max_rows_per_window is None:
-        return [(start_index, end_index)]
+        return [row_indexes_list]
 
     if max_rows_per_window <= 0:
         raise ValueError("max_rows_per_window must be positive or None.")
@@ -750,17 +1013,19 @@ def _iter_row_chunks(
     if row_overlap >= max_rows_per_window:
         raise ValueError("overlap must be smaller than max_rows_per_window.")
 
-    chunks: list[tuple[int, int]] = []
-    current_start_index = start_index
+    chunks: list[list[int]] = []
+    current_start_position = 0
 
-    while current_start_index < end_index:
-        current_end_index = min(current_start_index + max_rows_per_window, end_index)
-        chunks.append((current_start_index, current_end_index))
+    while current_start_position < len(row_indexes_list):
+        current_end_position = min(
+            current_start_position + max_rows_per_window, len(row_indexes_list)
+        )
+        chunks.append(row_indexes_list[current_start_position:current_end_position])
 
-        if current_end_index >= end_index:
+        if current_end_position >= len(row_indexes_list):
             break
 
-        current_start_index = current_end_index - row_overlap
+        current_start_position = current_end_position - row_overlap
 
     return chunks
 
@@ -820,6 +1085,25 @@ def _model_dump_list(values: Sequence[BaseModel]) -> list[dict[str, Any]]:
     """
 
     return [value.model_dump(mode="json") for value in values]
+
+
+def _normalize_table_header_text(text: Any) -> str:
+    """Normalize candidate header text for repeated-header detection.
+
+    Parameters
+    ----------
+    text
+        Raw table cell text.
+
+    Returns
+    -------
+    str
+        Unicode-normalized, case-folded, whitespace-normalized text.
+    """
+
+    normalized = unicodedata.normalize("NFKC", str(text or "")).casefold()
+    normalized = re.sub(r"[\W_]+", " ", normalized, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", normalized).strip()
 
 
 def _optional_list_by_indexes(
