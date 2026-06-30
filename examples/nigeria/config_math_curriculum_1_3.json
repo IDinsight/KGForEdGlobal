@@ -1,0 +1,186 @@
+{
+	"page_ir_extraction": {
+		"country": "Nigeria",
+		"dpi": 250,
+		"end_page": null,
+		"languages": [
+			"en"
+		],
+		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results/kg_for_ed",
+		"overwrite": false,
+		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/nigeria/nigeria_maths_1_3.pdf",
+		"start_page": 0,
+		"use_extracted_hints": true,
+		"year": 2026
+	},
+	"page_ir_verification": {
+		"end_page": null,
+		"min_confidence_to_patch": 0.5,
+		"min_confidence_to_select_positive": 0.5,
+		"min_confidence_to_stop_negative_search": 0.9,
+		"next_page_crop_padding_px": 120,
+		"overwrite": false,
+		"start_page": 0
+	},
+	"document_ir": {
+		"keep_artifacts": false,
+		"max_section_path_length": 24,
+		"min_link_score": 1.0,
+		"overwrite": true,
+		"repair_hyphenation": true,
+		"sort_items_by_bbox": true,
+		"table_filldown_enabled": true,
+		"table_filldown_group_cols_max": 1,
+		"verification_auto_stitch_confidence": 0.7
+	},
+	"kgs": {
+		"overwrite": false,
+		"as": {
+			"bilingual_pair_policy": "This Nigeria Primary 1-3 Mathematics curriculum is English-only. Do not create bilingual pairs, translations, or cross-language duplicate candidates. Preserve visible English source text exactly. If non-English text appears incidentally, keep it only as source-visible text and do not translate it or pair it with an English candidate unless the document itself explicitly presents both versions as equivalent official curriculum text.",
+			"code_parent_rules": [],
+			"code_patterns": {},
+			"excluded_table_columns_signatures": [],
+			"excluded_table_section_patterns": [],
+			"included_table_columns_signatures": [
+				"topic|performance objectives|content|activities|teacher|pupils|teaching and learning resources|evaluation guide",
+				"topic|performance objectives|content|activities|teacher|pupils|teaching and learning materials|evaluation guide",
+				"topic|performance objectives|content|activities|teaching and learning resources|evaluation guide",
+				"topic|performance objectives|content|activities|teaching and learning materials|evaluation guide",
+				"performance objectives|content|activities|teacher|pupils|teaching and learning resources|evaluation guide",
+				"performance objectives|content|activities|teacher|pupils|teaching and learning materials|evaluation guide",
+				"topic|performance objectives|content|teaching and learning resources|evaluation guide",
+				"topic|performance objectives|content|teaching and learning materials|evaluation guide"
+			],
+			"included_table_section_patterns": [
+				"(?i)\\btopic\\b.*\\bperformance\\s*objectives\\b.*\\bcontent\\b",
+				"(?i)\\bperformance\\s*objectives\\b.*\\bcontent\\b.*\\bactivities\\b.*\\bevaluation\\s*guide\\b",
+				"(?i)\\bteaching\\s+and\\s+learning\\s+(resources|materials)\\b.*\\bevaluation\\s*guide\\b"
+			],
+			"max_dedup_review_set_candidates": 24,
+			"max_has_child_parent_candidates": 24,
+			"max_has_child_section_path_labels": 14,
+			"max_rows_per_table_window": 4,
+			"row_overlap": 1,
+			"sfi_deduplication_instructions": "Deduplicate Nigeria Primary 1-3 Mathematics SFI candidates conservatively. Merge candidates only when they represent the same source-visible curriculum item in the same grade/theme/sub-theme/topic scope. This curriculum does not use stable official alphanumeric statement codes for the SFI hierarchy. Do not treat visible topic row numbers, list numbers, roman numerals, bullet numbers, page numbers, examples, or table row ordinals as globally meaningful statement codes or as merge keys. Repeated Grade headings such as PRIMARY ONE, PRIMARY TWO, and PRIMARY THREE should be merged by grade when the visible text and source references indicate the same grade organizer. Repeated Theme and Sub-Theme headings should be merged only within the same grade and curriculum scope; do not merge a repeated Theme/Sub-Theme label across different grades unless the bounded evidence clearly shows duplicate extraction of the same source-visible organizer rather than distinct grade-scoped organizers. Topic labels such as Addition, Subtraction, Open Sentences, Money, Length, Weight, Data Collection, Fractions, or Shapes recur across grades and sometimes within the same grade; keep them separate unless the source references, grade, theme, sub-theme, and row/table context identify the same topic instance. Performance Objective and Content candidates are often repeated or similar across topics and grades; merge them only when they are duplicate extractions of the same row/cell/list item, adjacent window overlap, or a clear continuation duplicate. Do not merge a Performance Objective with a Content item solely because their wording is similar; statement_type and source role matter. Activities, Teacher/Pupils activities, teaching and learning resources/materials, and evaluation guide text are not SFIs and should not drive merges except as source-context evidence. Same source row/header overlap, same source segment, same window proximity, duplicate buckets, and same normalized text buckets are review signals only, not automatic merge rules. When evidence is insufficient to distinguish repeated no-code labels or similar learning statements, choose keep_separate or needs_review rather than over-merging.",
+			"sfi_extraction_instructions": "Extract candidate StandardsFrameworkItems (SFIs) from the Nigeria Primary 1-3 Mathematics curriculum only when the visible text is an official curriculum framework item, structural organizer, expected learning outcome, or curriculum content item. The document is organized by Grade/Class labels (PRIMARY ONE, PRIMARY TWO, PRIMARY THREE), Theme, Sub-Theme, Topic, Performance Objectives, and Content. Treat visible PRIMARY ONE, PRIMARY TWO, and PRIMARY THREE labels as Grade Standard Grouping SFIs. Treat visible THEME labels such as NUMBER AND NUMERATION, BASIC OPERATIONS, ALGEBRAIC PROCESSES, MENSURATION AND GEOMETRY, and EVERY DAY STATISTICS as Theme Standard Grouping SFIs. Treat visible SUB-THEME/SUBTHEME labels such as Whole Number, Fraction, Basic Operations, Algebraic Operations, Open Sentences, Primary Measures, Secondary Measures, Shapes, and Data Collection and Presentation as Sub-Theme Standard Grouping SFIs. Treat visible Topic-column items such as 'Whole numbers 1-5', 'Whole number 0 (Zero)', 'Addition', 'Subtraction', 'Open Sentences', 'Money', 'Length', 'Capacity', 'Symmetry', and 'Pictograms' as Topic Standard Grouping SFIs. Treat each numbered item under PERFORMANCE OBJECTIVES / Performance Objectives as a Performance Objective Standard SFI. When the stem 'Pupils should be able to:' or 'The pupils should be able to:' is visible and needed for a complete statement, include that stem in the candidate description/source_text together with the numbered objective wording from the same cited table row. Treat each visible CONTENT / Content item as a Content Standard SFI when it describes official curriculum content, concepts, skills, or knowledge to be taught. Use individual content list items when the source cell clearly lists multiple items. Do not extract LearningComponents in this step and do not decompose a Performance Objective or Content item into smaller skills beyond the source-visible list item. Do not extract Activities, Teacher activities, Pupils activities, Teaching and Learning Resources/Materials, Evaluation Guide items, examples beginning with e.g., classroom procedures, resources, materials, assessment prompts, teacher guidance, or pupil tasks as SFIs. Return such text only as auxiliary when it is unusually prominent or ambiguous. Repeated table headers and repeated continuation labels are not SFIs. Preserve source-language wording exactly. This curriculum has no stable official SFI codes; set statement_code to null unless a future source window contains an explicitly official curriculum code. Do not use topic numbers, roman numerals, list numbers, page numbers, example numbers, clock/money values, or arithmetic expressions as statement_code.",
+			"sfi_has_child_instructions": "Resolve Nigeria Primary 1-3 Mathematics hasChild relationships conservatively. Use finalized SFIs only, and choose direct parents only from the supplied parent_candidates. The expected source hierarchy is StandardsFramework -> Grade -> Theme -> Sub-Theme -> Topic -> Performance Objective, with Content items also attached directly to the most source-supported Topic unless the supplied evidence clearly indicates a broader parent. Grade SFIs such as PRIMARY ONE, PRIMARY TWO, and PRIMARY THREE should normally attach directly to the StandardsFramework root. Theme SFIs should attach to the correct Grade. Sub-Theme SFIs should attach to the correct Theme within the correct Grade. Topic SFIs should attach to the correct Sub-Theme within the correct Theme and Grade. Performance Objective SFIs should attach to the Topic row that contains the objective. Content SFIs should normally attach to the same Topic row as the content, not to a Performance Objective merely because both are visible in the same row. Do not infer a Performance Objective -> Content or Content -> Performance Objective relationship unless the bounded candidate evidence and source wording clearly make one item a source-visible direct parent of the other. Because this curriculum is mostly no-code, do not choose parents by topic number, list number, roman numeral, page number, arithmetic example, or row ordinal. Repeated labels such as Addition, Subtraction, Open Sentences, Money, Length, Fractions, Data Collection, Shapes, Primary Measures, and Basic Operations are not globally unique; use grade, source order, section-path labels, same source segment/window, table row/header context, and nearest local source scope to choose the correct scoped parent. Treat active_outline_stack_parent, matched_section_path_label, same table context, same source context key, same segment/window, and nearest preceding grouping as retrieval evidence, not automatic truth. Prefer the most direct source-local parent over a broad or repeated label from another grade/theme/sub-theme. Select the StandardsFramework root only for top-level Grade items or when no supplied finalized SFI parent is source-supported. Choose exactly one direct parent per child unless the source explicitly supports multiple direct memberships; if no supplied parent is source-supported, set unresolved=true.",
+			"sfi_has_child_statement_type_hierarchy": [
+				"Grade",
+				"Theme",
+				"Sub-Theme",
+				"Topic",
+				"Performance Objective"
+			],
+			"statement_type_policy": [
+				{
+					"aliases": [
+						"Primary One",
+						"Primary Two",
+						"Primary Three",
+						"PRIMARY ONE",
+						"PRIMARY TWO",
+						"PRIMARY THREE",
+						"Class",
+						"Grade",
+						"grade"
+					],
+					"description": "Visible Primary One, Primary Two, or Primary Three curriculum organizer.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Grade"
+				},
+				{
+					"aliases": [
+						"THEME",
+						"Theme",
+						"theme"
+					],
+					"description": "Visible Nigeria Mathematics theme heading or organizer.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Theme"
+				},
+				{
+					"aliases": [
+						"SUB-THEME",
+						"SUBTHEME",
+						"Sub-Theme",
+						"Subtheme",
+						"Sub-theme",
+						"sub-theme",
+						"subtheme"
+					],
+					"description": "Visible Nigeria Mathematics sub-theme heading or organizer.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Sub-Theme"
+				},
+				{
+					"aliases": [
+						"TOPIC",
+						"Topic",
+						"topic"
+					],
+					"description": "Visible Topic-column curriculum organizer.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Topic"
+				},
+				{
+					"aliases": [
+						"PERFORMANCE OBJECTIVES",
+						"Performance Objectives",
+						"Performance Objective",
+						"performance objective",
+						"expected learning outcome",
+						"learning outcome",
+						"Pupils should be able to",
+						"The pupils should be able to"
+					],
+					"description": "Official expected learning outcome listed under the Performance Objectives column.",
+					"normalized_statement_type": "Standard",
+					"statement_type": "Performance Objective"
+				},
+				{
+					"aliases": [
+						"CONTENT",
+						"Content",
+						"content"
+					],
+					"description": "Official curriculum content item listed under the Content column.",
+					"normalized_statement_type": "Standard",
+					"statement_type": "Content"
+				}
+			],
+			"synthetic_merge_key_fields": [
+				"country",
+				"subject",
+				"grade_level",
+				"normalized_statement_type",
+				"statement_type",
+				"hierarchy_context",
+				"source_context_key",
+				"normalized_text"
+			]
+		},
+		"lc": {
+			"generation_instructions": "Decompose each final Nigeria Primary 1-3 Mathematics Standard SFI into one or more atomic mathematical skills or concepts. Do not create classroom activities, teacher actions, pupil tasks, resources, examples, or assessment prompts as LearningComponents."
+		},
+		"metadata": {
+			"adoption_status": "Adopted",
+			"attribution_statement": "Source curriculum published by the Nigerian Educational Research and Development Council (NERDC) as part of the revised 9-Year Basic Education Mathematics Curriculum.",
+			"author": "Nigerian Educational Research and Development Council (NERDC)",
+			"country": "Nigeria",
+			"framework_title": "9-Year Basic Education Mathematics Curriculum for Primary 1-3",
+			"grades_or_stages": [
+				"Primary One",
+				"Primary Two",
+				"Primary Three"
+			],
+			"jurisdiction": "Nigeria",
+			"languages": [
+				"en"
+			],
+			"license": "Unknown",
+			"primary_language": "en",
+			"provider": "IDinsight",
+			"subject": "Mathematics"
+		}
+	}
+}
