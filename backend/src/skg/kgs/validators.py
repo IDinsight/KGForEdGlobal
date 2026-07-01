@@ -18,11 +18,14 @@ from skg.kgs.schemas import (
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
     SFIExtractionResult,
+    SFIHasChildParentCandidate,
     SFIHasChildResolutionRequest,
     SFIHasChildResolutionResponse,
 )
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
+
+_SOURCE_VISIBLE_DIRECT_PARENT_REASON = "source_visible_direct_parent"
 
 
 @dataclass(frozen=True)
@@ -360,7 +363,7 @@ def _child_has_viable_source_visible_parent(
 
         return any(
             not candidate.is_root
-            and "source_visible_direct_parent" in candidate.evidence_reasons
+            and _SOURCE_VISIBLE_DIRECT_PARENT_REASON in candidate.evidence_reasons
             for candidate in parent_set.parent_candidates
         )
 
@@ -1084,13 +1087,20 @@ def _validate_has_child_parent_selection_policy(
         more SFI parents.
     """
 
-    root_parent_ids_by_child_id = {
+    parent_candidates_by_child_id = {
         str(parent_set.child_context.final_sfi_uuid): {
-            candidate.endpoint_id
+            candidate.endpoint_id: candidate
             for candidate in parent_set.parent_candidates
-            if candidate.is_root
         }
         for parent_set in resolution_request.child_parent_sets
+    }
+    root_parent_ids_by_child_id = {
+        child_id: {
+            candidate.endpoint_id
+            for candidate in parent_candidates_by_id.values()
+            if candidate.is_root
+        }
+        for child_id, parent_candidates_by_id in parent_candidates_by_child_id.items()
     }
 
     for child_resolution in resolution_response.child_resolutions:
@@ -1137,6 +1147,12 @@ def _validate_has_child_parent_selection_policy(
                 f"or set unresolved=true with no selected parents for fallback."
             )
 
+        _validate_resolved_child_prefers_source_visible_parent(
+            child_id=child_id,
+            parent_candidates_by_id=parent_candidates_by_child_id.get(child_id, {}),
+            selected_parent_ids=selected_parent_ids,
+        )
+
 
 def _validate_header_only_source_location(
     *, candidate: SFICandidate, source_supported_by_cited_headers: bool
@@ -1163,6 +1179,80 @@ def _validate_header_only_source_location(
         f"Candidate {candidate.candidate_id!r} includes "
         f"table_header_indexes={candidate.table_header_indexes!r}, but its "
         f"source_text is not supported by those specific raw table header rows."
+    )
+
+
+def _validate_resolved_child_prefers_source_visible_parent(
+    *,
+    child_id: str,
+    parent_candidates_by_id: dict[str, SFIHasChildParentCandidate],
+    selected_parent_ids: set[str],
+) -> None:
+    """Validate that resolved children do not ignore visible direct parents.
+
+    Source-visible direct-parent evidence is added only to candidates that already
+    satisfy the configured direct parent statement-type policy and have strong local
+    source hierarchy support, such as same-row table context, source-scope grouping,
+    active outline evidence, or nearby source-order grouping evidence. When such a
+    candidate is present, a resolved response must choose from those source-visible
+    candidates rather than choosing the framework root or a weaker non-root candidate
+    whose support is only topical, semantic, page/window proximity, or inferred code
+    evidence.
+
+    Parameters
+    ----------
+    child_id
+        Final SFI UUID string for the child being validated.
+    parent_candidates_by_id
+        Parent candidates for the child keyed by selectable endpoint ID.
+    selected_parent_ids
+        Endpoint IDs selected by the hasChild response for the child.
+
+    Raises
+    ------
+    QualityError
+        If the response selects a weaker parent while a source-visible direct parent
+        candidate is available.
+    """
+
+    source_visible_parent_ids = {
+        endpoint_id
+        for endpoint_id, candidate in parent_candidates_by_id.items()
+        if (
+            not candidate.is_root
+            and _SOURCE_VISIBLE_DIRECT_PARENT_REASON in candidate.evidence_reasons
+        )
+    }
+
+    if not source_visible_parent_ids:
+        return
+
+    selected_non_root_parent_ids = {
+        endpoint_id
+        for endpoint_id in selected_parent_ids
+        if endpoint_id in parent_candidates_by_id
+        and not parent_candidates_by_id[endpoint_id].is_root
+    }
+
+    if (
+        selected_non_root_parent_ids
+        and selected_non_root_parent_ids <= source_visible_parent_ids
+    ):
+        return
+
+    selected_weaker_parent_ids = sorted(
+        endpoint_id
+        for endpoint_id in selected_parent_ids
+        if endpoint_id not in source_visible_parent_ids
+    )
+    raise QualityError(
+        f"hasChild response for child {child_id!r} selected weaker parent "
+        f"endpoint IDs {selected_weaker_parent_ids}, but the bounded candidate "
+        f"set includes source-visible direct parent endpoint IDs "
+        f"{sorted(source_visible_parent_ids)}. Select the source-visible direct "
+        f"parent candidate unless it is not truly direct, and explain any "
+        f"source/code conflict. Do not choose a root, nearby, same-topic, or "
+        f"semantic parent over a source-visible direct parent."
     )
 
 
