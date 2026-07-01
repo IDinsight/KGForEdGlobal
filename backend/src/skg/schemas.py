@@ -137,6 +137,9 @@ def validate_bbox_order(bbox: list[float]) -> list[float]:
 
 # Common fields with descriptions.
 _BCP47Str = Annotated[str, AfterValidator(_validate_bcp47)]
+_ControlledStatementValueDedupScope = Literal[
+    "document", "nearest_grade", "nearest_grade_theme", "source_context"
+]
 BBox = Annotated[
     list[float],
     AfterValidator(validate_bbox_order),
@@ -162,6 +165,98 @@ class BaseSchema(BaseModel):
 
 
 # Schemas for KG configuration fields.
+class _AcademicStandardControlledValueItem(BaseSchema):
+    """Canonical source-facing organizer value for a statement type.
+
+    Controlled values let a curriculum preserve visible source strings while using a
+    stable value for deduplication and final identity. For example, source-visible
+    variants such as `PRIMARY THREE` and `PRIMARY: THREE` can both map to the canonical
+    grade value `PRIMARY THREE`.
+    """
+
+    aliases: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Alternative source-visible spellings, punctuation variants, or OCR "
+            "variants that should map to canonical_value."
+        ),
+    )
+    canonical_value: str = Field(
+        description="Canonical source-facing value used for controlled deduplication.",
+        min_length=1,
+    )
+
+    @field_validator("aliases")
+    @classmethod
+    def validate_aliases(cls, v: list[str]) -> list[str]:
+        """Clean and de-duplicate controlled-value aliases.
+
+        Parameters
+        ----------
+        v
+            Raw alias strings.
+
+        Returns
+        -------
+        list[str]
+            Cleaned aliases in stable order.
+
+        Raises
+        ------
+        TypeError
+            If any alias is not a string.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for alias in v or []:
+            if not isinstance(alias, str):
+                raise TypeError(
+                    "_AcademicStandardControlledValueItem.aliases must contain strings."
+                )
+
+            alias_clean = alias.strip()
+
+            if not alias_clean or alias_clean in seen:
+                continue
+
+            cleaned.append(alias_clean)
+            seen.add(alias_clean)
+
+        return cleaned
+
+    @field_validator("canonical_value", mode="before")
+    @classmethod
+    def validate_canonical_value(cls, v: str) -> str:
+        """Clean and require a canonical controlled value.
+
+        Parameters
+        ----------
+        v
+            Raw canonical value.
+
+        Returns
+        -------
+        str
+            Cleaned canonical value.
+
+        Raises
+        ------
+        ValueError
+            If the canonical value is blank.
+        """
+
+        value = str(v or "").strip()
+
+        if not value:
+            raise ValueError(
+                "_AcademicStandardControlledValueItem.canonical_value is required."
+            )
+
+        return value
+
+
 class _AcademicStandardStatementTypePolicyItem(BaseSchema):
     """Canonical statement-type label allowed for SFI extraction.
 
@@ -185,6 +280,24 @@ class _AcademicStandardStatementTypePolicyItem(BaseSchema):
             "type, such as 'indicator' or 'content_standard'."
         ),
     )
+    controlled_value_scope: _ControlledStatementValueDedupScope = Field(
+        default="source_context",
+        description=(
+            "Scope used when controlled_values canonicalize organizer text for "
+            "deduplication. Use 'document' for document-wide values such as grades, "
+            "'nearest_grade' for grade-scoped themes, and 'nearest_grade_theme' for "
+            "theme-scoped sub-themes."
+        ),
+    )
+    controlled_values: list[_AcademicStandardControlledValueItem] = Field(
+        default_factory=list,
+        description=(
+            "Optional canonical source-facing values and aliases for this statement "
+            "type. These values are used for registry bucketing, dedup review set "
+            "construction, and final identity; original source-visible text is still "
+            "preserved in candidate and source evidence fields."
+        ),
+    )
     description: str = Field(
         description="Brief curriculum-specific guidance for when to use this statement type."
     )
@@ -194,6 +307,76 @@ class _AcademicStandardStatementTypePolicyItem(BaseSchema):
     statement_type: str = Field(
         description="Canonical source-facing statement_type label the LLM must output."
     )
+
+    @staticmethod
+    def _controlled_value_key(value: str) -> str:
+        """Build a stable comparison key for controlled values and aliases.
+
+        Parameters
+        ----------
+        value
+            Controlled value or alias.
+
+        Returns
+        -------
+        str
+            Casefolded key with non-alphanumeric runs collapsed to one space.
+        """
+
+        return re.sub(r"[^0-9a-z]+", " ", str(value or "").casefold()).strip()
+
+    @field_validator("controlled_values")
+    @classmethod
+    def validate_controlled_values(
+        cls, v: list[_AcademicStandardControlledValueItem]
+    ) -> list[_AcademicStandardControlledValueItem]:
+        """Validate controlled-value aliases within one statement type.
+
+        Parameters
+        ----------
+        v
+            Configured controlled-value items.
+
+        Returns
+        -------
+        list[_AcademicStandardControlledValueItem]
+            Validated controlled values in configured order.
+
+        Raises
+        ------
+        ValueError
+            If a controlled value or alias maps to more than one canonical value.
+        """
+
+        alias_to_canonical: dict[str, str] = {}
+
+        for item in v or []:
+            canonical_key = cls._controlled_value_key(item.canonical_value)
+
+            if not canonical_key:
+                raise ValueError(
+                    "_AcademicStandardStatementTypePolicyItem.controlled_values "
+                    "contains a blank canonical value."
+                )
+
+            for alias in [item.canonical_value, *item.aliases]:
+                alias_key = cls._controlled_value_key(alias)
+
+                if not alias_key:
+                    continue
+
+                existing = alias_to_canonical.get(alias_key)
+
+                if existing is not None and existing != item.canonical_value:
+                    raise ValueError(
+                        f"_AcademicStandardStatementTypePolicyItem.controlled_values "
+                        f"alias conflict: {alias!r} maps to both {existing!r} and "
+                        f"{item.canonical_value!r}."
+                    )
+
+                alias_to_canonical[alias_key] = item.canonical_value
+
+        return v
 
     @field_validator("aliases")
     @classmethod

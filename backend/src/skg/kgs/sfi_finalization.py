@@ -154,28 +154,77 @@ def _build_identity_key(
 
         return identity_key, needs_disambiguator
 
-    source_context_key = _hash_text(
+    source_context_key = _build_no_code_source_context_key(merge_group)
+    source_text_key = _build_no_code_statement_text_key(merge_group)
+    return f"{base_key}:{source_context_key}:{source_text_key}", False
+
+
+def _build_no_code_source_context_key(merge_group: SFIMergeGroup) -> str:
+    """Build the source/scope identity component for a no-code SFI group.
+
+    Controlled organizer values use their configured scope key so source-visible
+    punctuation variants in the same curriculum scope mint the same final identity.
+    Uncontrolled no-code statements keep the previous source-context-derived key so
+    recurring visible text in different source locations remains distinct.
+
+    Parameters
+    ----------
+    merge_group
+        Merge group whose no-code source/scope should become an identity component.
+
+    Returns
+    -------
+    str
+        Compact deterministic hash or configured canonical scope key for final no-code
+        identity construction.
+    """
+
+    if (
+        merge_group.canonical_statement_scope_key
+        and merge_group.canonical_statement_value_key
+    ):
+        return _hash_text(n_hex=20, value=merge_group.canonical_statement_scope_key)
+
+    return _hash_text(
         n_hex=20,
         value="\n".join(_source_context_keys(merge_group))
         or "\n".join(merge_group.source_segment_ids)
         or merge_group.merge_group_id,
     )
 
-    # For no-code statement text keys, candidate descriptions precede source evidence
-    # quotes so sibling list items remain distinct when deduplicated as separate final
-    # statements. Source evidence quotes preserve provenance-sensitive separation.
-    source_text_key = _hash_text(
-        n_hex=20,
-        value="\n".join(
-            [
-                *merge_group.candidate_descriptions,
-                *merge_group.candidate_source_texts,
-            ]
-        )
-        or merge_group.merge_group_id,
-    )
 
-    return f"{base_key}:{source_context_key}:{source_text_key}", False
+def _build_no_code_statement_text_key(merge_group: SFIMergeGroup) -> str:
+    """Build the statement-text identity component for a no-code SFI group.
+
+    No-code curriculum statements can share the same table cell evidence quote while
+    representing distinct numbered statements. The final SFI identity therefore uses
+    candidate descriptions before source evidence quotes so sibling list items remain
+    distinct when they were deduplicated as separate final statements. Source evidence
+    quotes remain part of the identity component after descriptions to preserve
+    provenance-sensitive separation when descriptions alone are not enough.
+
+    Parameters
+    ----------
+    merge_group
+        Merge group whose no-code statement text should be converted into a compact
+        deterministic identity component.
+
+    Returns
+    -------
+    str
+        Compact deterministic hash for the no-code statement text identity component.
+    """
+
+    if merge_group.canonical_statement_value_key:
+        return _hash_text(n_hex=20, value=merge_group.canonical_statement_value_key)
+
+    identity_parts = [
+        *merge_group.candidate_descriptions,
+        *merge_group.candidate_source_texts,
+    ]
+    return _hash_text(
+        n_hex=20, value="\n".join(identity_parts) or merge_group.merge_group_id
+    )
 
 
 def _build_segment_page_index_lookup(document_ir: DocumentIR) -> dict[str, list[int]]:
@@ -267,6 +316,9 @@ def _build_sfi_final_record(
         candidate_descriptions=merge_group.candidate_descriptions,
         candidate_source_refs=merge_group.candidate_source_refs,
         candidate_source_texts=merge_group.candidate_source_texts,
+        canonical_statement_scope_key=merge_group.canonical_statement_scope_key,
+        canonical_statement_value=merge_group.canonical_statement_value,
+        canonical_statement_value_key=merge_group.canonical_statement_value_key,
         case_identifier_uri=f"urn:uuid:{final_sfi_uuid}",
         case_identifier_uuid=final_sfi_uuid,
         confidence_max=merge_group.confidence_max,
@@ -299,6 +351,11 @@ def _build_sfi_final_record(
             "same_code_different_content": (
                 _SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG in merge_group.audit_flags
             ),
+            "statement_value_canonicalization": {
+                "canonical_statement_scope_key": merge_group.canonical_statement_scope_key,
+                "canonical_statement_value": merge_group.canonical_statement_value,
+                "canonical_statement_value_key": merge_group.canonical_statement_value_key,
+            },
         },
         normalized_statement_code=merge_group.normalized_statement_code,
         normalized_statement_type=_shared_normalized_statement_type(merge_group),

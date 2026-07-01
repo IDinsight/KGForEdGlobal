@@ -83,6 +83,36 @@
 						"Primary: Three",
 						"PRIMARY: THREE"
 					],
+					"controlled_value_scope": "document",
+					"controlled_values": [
+						{
+							"canonical_value": "PRIMARY ONE",
+							"aliases": [
+								"Primary One",
+								"PRIMARY ONE",
+								"Primary: One",
+								"PRIMARY: ONE"
+							]
+						},
+						{
+							"canonical_value": "PRIMARY TWO",
+							"aliases": [
+								"Primary Two",
+								"PRIMARY TWO",
+								"Primary: Two",
+								"PRIMARY: TWO"
+							]
+						},
+						{
+							"canonical_value": "PRIMARY THREE",
+							"aliases": [
+								"Primary Three",
+								"PRIMARY THREE",
+								"Primary: Three",
+								"PRIMARY: THREE"
+							]
+						}
+					],
 					"description": "Visible Primary One, Primary Two, or Primary Three curriculum organizer.",
 					"normalized_statement_type": "Standard Grouping",
 					"statement_type": "Grade"
@@ -92,6 +122,58 @@
 						"THEME",
 						"Theme",
 						"theme"
+					],
+					"controlled_value_scope": "nearest_grade",
+					"controlled_values": [
+						{
+							"canonical_value": "NUMBER AND NUMERATION",
+							"aliases": [
+								"NUMBER AND NUMERATION",
+								"THEME: NUMBER AND NUMERATION",
+								"THEME : NUMBER AND NUMERATION",
+								"THEME :NUMBER AND NUMERATION"
+							]
+						},
+						{
+							"canonical_value": "BASIC OPERATIONS",
+							"aliases": [
+								"BASIC OPERATIONS",
+								"BASIC   OPERATIONS",
+								"THEME: BASIC OPERATIONS",
+								"THEME:  BASIC OPERATIONS",
+								"THEME:  BASIC   OPERATIONS",
+								"THEME : BASIC OPERATIONS",
+								"THEME :BASIC OPERATIONS"
+							]
+						},
+						{
+							"canonical_value": "ALGEBRAIC PROCESSES",
+							"aliases": [
+								"ALGEBRAIC PROCESSES",
+								"THEME: ALGEBRAIC PROCESSES",
+								"THEME : ALGEBRAIC PROCESSES",
+								"THEME :ALGEBRAIC PROCESSES"
+							]
+						},
+						{
+							"canonical_value": "MENSURATION AND GEOMETRY",
+							"aliases": [
+								"MENSURATION AND GEOMETRY",
+								"THEME: MENSURATION AND GEOMETRY",
+								"THEME:   MENSURATION AND GEOMETRY",
+								"THEME : MENSURATION AND GEOMETRY",
+								"THEME :MENSURATION AND GEOMETRY"
+							]
+						},
+						{
+							"canonical_value": "EVERY DAY STATISTICS",
+							"aliases": [
+								"EVERY DAY STATISTICS",
+								"THEME: EVERY DAY STATISTICS",
+								"THEME : EVERY DAY STATISTICS",
+								"THEME :EVERY DAY STATISTICS"
+							]
+						}
 					],
 					"description": "Visible Nigeria Mathematics theme heading or organizer.",
 					"normalized_statement_type": "Standard Grouping",
@@ -106,6 +188,87 @@
 						"Sub-theme",
 						"sub-theme",
 						"subtheme"
+					],
+					"controlled_value_scope": "nearest_grade_theme",
+					"controlled_values": [
+						{
+							"canonical_value": "Whole Number",
+							"aliases": [
+								"Whole Number",
+								"SUB-THEME: Whole Number",
+								"SUBTHEME: Whole Number",
+								"SUB-THEME Whole Number",
+								"SUBTHEME Whole Number"
+							]
+						},
+						{
+							"canonical_value": "Fraction",
+							"aliases": [
+								"Fraction",
+								"SUB-THEME: Fraction",
+								"SUBTHEME: Fraction",
+								"SUB-THEME Fraction",
+								"SUBTHEME Fraction"
+							]
+						},
+						{
+							"canonical_value": "Basic Operations",
+							"aliases": [
+								"Basic Operations",
+								"Basic   Operations",
+								"SUB-THEME: Basic Operations",
+								"SUB-THEME: Basic   Operations",
+								"SUBTHEME: Basic Operations"
+							]
+						},
+						{
+							"canonical_value": "Algebraic Operations",
+							"aliases": [
+								"Algebraic Operations",
+								"SUB-THEME: Algebraic Operations",
+								"SUBTHEME: Algebraic Operations"
+							]
+						},
+						{
+							"canonical_value": "Open Sentences",
+							"aliases": [
+								"Open Sentences",
+								"SUB-THEME: Open Sentences",
+								"SUBTHEME: Open Sentences"
+							]
+						},
+						{
+							"canonical_value": "Primary Measures",
+							"aliases": [
+								"Primary Measures",
+								"SUB-THEME: Primary Measures",
+								"SUBTHEME: Primary Measures"
+							]
+						},
+						{
+							"canonical_value": "Secondary Measures",
+							"aliases": [
+								"Secondary Measures",
+								"SUB-THEME: Secondary Measures",
+								"SUBTHEME: Secondary Measures"
+							]
+						},
+						{
+							"canonical_value": "Shapes",
+							"aliases": [
+								"Shapes",
+								"SUB-THEME: Shapes",
+								"SUBTHEME: Shapes"
+							]
+						},
+						{
+							"canonical_value": "Data Collection and Presentation",
+							"aliases": [
+								"Data Collection and Presentation",
+								"SUB-THEME: Data Collection and Presentation",
+								"SUBTHEME: Data Collection and Presentation"
+							]
+						}
 					],
 					"description": "Visible Nigeria Mathematics sub-theme heading or organizer.",
 					"normalized_statement_type": "Standard Grouping",

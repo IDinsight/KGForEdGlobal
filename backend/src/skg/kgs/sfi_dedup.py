@@ -495,6 +495,15 @@ def _build_merge_group(
         candidate.registry_candidate_id for candidate in sorted_candidates
     ]
     confidence_values = [candidate.confidence for candidate in sorted_candidates]
+    canonical_statement_scope_keys = unique_nonempty(
+        candidate.canonical_statement_scope_key for candidate in sorted_candidates
+    )
+    canonical_statement_value_keys = unique_nonempty(
+        candidate.canonical_statement_value_key for candidate in sorted_candidates
+    )
+    canonical_statement_values = unique_nonempty(
+        candidate.canonical_statement_value for candidate in sorted_candidates
+    )
     normalized_statement_codes = unique_nonempty(
         candidate.normalized_statement_code for candidate in sorted_candidates
     )
@@ -523,6 +532,9 @@ def _build_merge_group(
         ),
         candidate_source_refs=[
             {
+                "canonical_statement_scope_key": candidate.canonical_statement_scope_key,
+                "canonical_statement_value": candidate.canonical_statement_value,
+                "canonical_statement_value_key": candidate.canonical_statement_value_key,
                 "registry_candidate_id": candidate.registry_candidate_id,
                 "source_context_key": candidate.source_context_key,
                 "source_context_labels": candidate.source_context_labels,
@@ -537,6 +549,24 @@ def _build_merge_group(
         candidate_source_texts=unique_nonempty(
             candidate.source_text for candidate in sorted_candidates
         ),
+        canonical_statement_scope_key=(
+            canonical_statement_scope_keys[0]
+            if len(canonical_statement_scope_keys) == 1
+            else None
+        ),
+        canonical_statement_scope_keys=canonical_statement_scope_keys,
+        canonical_statement_value=(
+            canonical_statement_values[0]
+            if len(canonical_statement_values) == 1
+            else None
+        ),
+        canonical_statement_value_key=(
+            canonical_statement_value_keys[0]
+            if len(canonical_statement_value_keys) == 1
+            else None
+        ),
+        canonical_statement_value_keys=canonical_statement_value_keys,
+        canonical_statement_values=canonical_statement_values,
         confidence_max=max(confidence_values),
         confidence_min=min(confidence_values),
         llm_decision=llm_decision,
@@ -980,6 +1010,9 @@ def _build_review_requests(
                 bilingual_pair_policy=kg_config.academic_standards.bilingual_pair_policy,
                 candidates=[
                     SFIDedupReviewCandidate(
+                        canonical_statement_scope_key=candidate.canonical_statement_scope_key,
+                        canonical_statement_value=candidate.canonical_statement_value,
+                        canonical_statement_value_key=candidate.canonical_statement_value_key,
                         code_bucket_key=candidate.code_bucket_key,
                         description=candidate.description,
                         language=candidate.language,
@@ -2024,6 +2057,14 @@ def _split_and_bound_components(
                     candidate.statement_type,
                     candidate.normalized_statement_code
                     or candidate.code_bucket_key
+                    or (
+                        candidate.canonical_statement_scope_key
+                        and candidate.canonical_statement_value_key
+                        and (
+                            candidate.canonical_statement_scope_key,
+                            candidate.canonical_statement_value_key,
+                        )
+                    )
                     or candidate.source_context_key,
                     tuple(candidate.source_segment_ids),
                     candidate.window_index // 3,

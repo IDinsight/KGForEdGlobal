@@ -761,6 +761,21 @@ class SFIRegistryCandidate(BaseSchema):
     candidate_payload: SFICandidate = Field(
         description="Original window-local SFI candidate payload."
     )
+    canonical_statement_scope_key: Optional[str] = Field(
+        default=None,
+        description=(
+            "Controlled-value deduplication scope key, when statement_type_policy "
+            "canonicalized this candidate's source-facing value."
+        ),
+    )
+    canonical_statement_value: Optional[str] = Field(
+        default=None,
+        description="Canonical controlled statement value, when configured.",
+    )
+    canonical_statement_value_key: Optional[str] = Field(
+        default=None,
+        description="Normalized key for canonical_statement_value, when configured.",
+    )
     code_bucket_key: Optional[str] = Field(
         default=None,
         description="statement_type + normalized_statement_code bucket key, when coded.",
@@ -950,6 +965,18 @@ class SFIDedupDecisionGroup(BaseSchema):
 class SFIDedupReviewCandidate(BaseSchema):
     """Compact registry-candidate view for one bounded dedup review set."""
 
+    canonical_statement_scope_key: Optional[str] = Field(
+        default=None,
+        description="Controlled-value deduplication scope key, when configured.",
+    )
+    canonical_statement_value: Optional[str] = Field(
+        default=None,
+        description="Canonical controlled statement value, when configured.",
+    )
+    canonical_statement_value_key: Optional[str] = Field(
+        default=None,
+        description="Normalized key for canonical_statement_value, when configured.",
+    )
     code_bucket_key: Optional[str] = Field(
         default=None, description="Candidate code duplicate bucket key, when present."
     )
@@ -1113,6 +1140,30 @@ class SFIMergeGroup(BaseSchema):
     candidate_source_texts: list[str] = Field(
         default_factory=list, description="Unique source-visible evidence snippets."
     )
+    canonical_statement_scope_key: Optional[str] = Field(
+        default=None,
+        description="Shared controlled-value scope key, when unique.",
+    )
+    canonical_statement_scope_keys: list[str] = Field(
+        default_factory=list,
+        description="All controlled-value scope keys in the group.",
+    )
+    canonical_statement_value: Optional[str] = Field(
+        default=None,
+        description="Shared canonical controlled statement value, when unique.",
+    )
+    canonical_statement_value_key: Optional[str] = Field(
+        default=None,
+        description="Shared normalized canonical value key, when unique.",
+    )
+    canonical_statement_value_keys: list[str] = Field(
+        default_factory=list,
+        description="All normalized canonical value keys in the group.",
+    )
+    canonical_statement_values: list[str] = Field(
+        default_factory=list,
+        description="All canonical controlled statement values in the group.",
+    )
     confidence_max: float = Field(
         description="Maximum candidate confidence in this group.", ge=0.0, le=1.0
     )
@@ -1171,6 +1222,9 @@ class SFIMergeGroup(BaseSchema):
         "audit_peer_merge_group_ids",
         "candidate_descriptions",
         "candidate_source_texts",
+        "canonical_statement_scope_keys",
+        "canonical_statement_value_keys",
+        "canonical_statement_values",
         "normalized_statement_codes",
         "normalized_statement_types",
         "registry_candidate_ids",
@@ -1278,6 +1332,18 @@ class SFIFinalRecord(BaseSchema):
     candidate_source_texts: list[str] = Field(
         default_factory=list,
         description="Unique source-visible evidence quotes preserved for audit.",
+    )
+    canonical_statement_scope_key: Optional[str] = Field(
+        default=None,
+        description="Controlled-value scope key used for final identity, when configured.",
+    )
+    canonical_statement_value: Optional[str] = Field(
+        default=None,
+        description="Canonical controlled statement value, when configured.",
+    )
+    canonical_statement_value_key: Optional[str] = Field(
+        default=None,
+        description="Normalized canonical controlled value key, when configured.",
     )
     case_identifier_uri: str = Field(
         description="CASE-compatible URI for the deterministic final SFI UUID."
