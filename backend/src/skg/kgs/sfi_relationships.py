@@ -195,6 +195,7 @@ def _add_parent_evidence(
 
 def _bound_parent_candidates(
     *,
+    child_context: SFIHasChildFinalContext,
     framework_uuid: uuid.UUID,
     kg_config: CreateKGConfig,
     non_root_candidates: Sequence[SFIHasChildParentCandidate],
@@ -234,6 +235,7 @@ def _bound_parent_candidates(
     Calling:
 
     parent_candidates, truncation_notes, was_truncated = _bound_parent_candidates(
+        child_context=<child-context>,
         framework_uuid=<framework-uuid>,
         kg_config=kg_config,
         non_root_candidates=[
@@ -279,6 +281,8 @@ def _bound_parent_candidates(
 
     Parameters
     ----------
+    child_context
+        Final SFI source context for the child whose parents are being bounded.
     framework_uuid
         Deterministic StandardsFramework root UUID.
     kg_config
@@ -314,6 +318,8 @@ def _bound_parent_candidates(
         "active_outline_stack_parent",
         "code_parent_hint",
         "matched_section_path_label",
+        "same_table_context",
+        "same_table_immediate_parent",
         "source_scope_grouping",
     }
     high_signal_candidates = [
@@ -347,48 +353,43 @@ def _bound_parent_candidates(
     if was_truncated:
         truncation_notes.append(
             f"Truncated parent candidates from {len(non_root_candidates) + 1} to "
-            f"{max_parent_candidates}, preserving StandardsFramework root fallback."
+            f"{max_parent_candidates} for child {child_context.final_sfi_uuid} "
+            f"({child_context.statement_type}), preserving StandardsFramework root fallback."
         )
 
     return [*selected_non_root, root_candidate], truncation_notes, was_truncated
 
 
 def _build_active_outline_parent_map(
-    *, contexts: Sequence[SFIHasChildFinalContext], kg_config: CreateKGConfig
+    *,
+    contexts: Sequence[SFIHasChildFinalContext],
+    kg_config: CreateKGConfig,
+    parent_statement_types_by_child_type: dict[str, set[str]],
 ) -> dict[uuid.UUID, SFIHasChildFinalContext]:
     """Build active-outline parent candidates from finalized SFIs in source order.
 
-    The map is generated from a config-driven statement-type hierarchy. It walks final
-    SFI contexts by source position, maintains the most recent active SFI for each
-    configured hierarchy level, and maps each child to the active SFI at its immediate
-    parent level when such a parent has already appeared.
-
-    This function is intentionally a candidate-generation heuristic, not a resolver. It
-    protects same-page or same-window heading relationships from being lost when
-    inherited section paths are stale, while leaving final parent selection to the LLM.
+    The map is generated from direct parent-type policy rather than only from a linear
+    hierarchy. This supports branching cases where multiple child statement types share
+    the same direct parent type, such as Topic directly parenting both Performance
+    Objective and Content. The function is only a candidate-generation heuristic; final
+    selection remains with the LLM and graph validation enforces the same type policy.
 
     Parameters
     ----------
     contexts
         Final SFI contexts to scan in source order.
     kg_config
-        Runtime KG configuration containing the optional hasChild statement-type
-        hierarchy override.
+        Runtime KG configuration containing hierarchy order for active-stack ranking.
+    parent_statement_types_by_child_type
+        Allowed direct parent statement types keyed by child statement_type.
 
     Returns
     -------
     dict[uuid.UUID, SFIHasChildFinalContext]
-        Mapping of child final SFI UUID to one active immediate parent context.
+        Mapping of child final SFI UUID to one active direct parent context.
     """
 
-    # Resolve hierarchy: use the explicit hierarchy if provided, otherwise fall back to
-    # the policy order.
-    standards = kg_config.academic_standards
-    hierarchy = (
-        list(standards.sfi_has_child_statement_type_hierarchy)
-        if standards.sfi_has_child_statement_type_hierarchy
-        else [item.statement_type for item in standards.statement_type_policy]
-    )
+    hierarchy = _get_hierarchy_statement_types(kg_config)
 
     if len(hierarchy) < 2:
         return {}
@@ -396,29 +397,39 @@ def _build_active_outline_parent_map(
     rank_by_statement_type = {
         statement_type: rank for rank, statement_type in enumerate(hierarchy)
     }
-
-    active_by_rank: dict[int, SFIHasChildFinalContext] = {}
+    active_by_statement_type: dict[str, SFIHasChildFinalContext] = {}
     parent_by_child_uuid: dict[uuid.UUID, SFIHasChildFinalContext] = {}
 
     for context in sorted(
         contexts, key=lambda item: _context_source_position_key(context=item)
     ):
-        rank = rank_by_statement_type.get(context.statement_type)
+        allowed_parent_types = parent_statement_types_by_child_type.get(
+            context.statement_type, set()
+        )
+        active_parent_options = [
+            parent_context
+            for parent_type, parent_context in active_by_statement_type.items()
+            if parent_type in allowed_parent_types
+        ]
 
-        if rank is None:
+        if active_parent_options:
+            parent_by_child_uuid[context.final_sfi_uuid] = sorted(
+                active_parent_options,
+                key=lambda item: rank_by_statement_type.get(item.statement_type, -1),
+                reverse=True,
+            )[0]
+
+        active_by_statement_type[context.statement_type] = context
+        current_rank = rank_by_statement_type.get(context.statement_type)
+
+        if current_rank is None:
             continue
 
-        parent_rank = rank - 1
+        for stale_statement_type in list(active_by_statement_type):
+            stale_rank = rank_by_statement_type.get(stale_statement_type)
 
-        if parent_rank in active_by_rank:
-            parent_by_child_uuid[context.final_sfi_uuid] = active_by_rank[parent_rank]
-
-        active_by_rank[rank] = context
-
-        # Clear out stale sub-headings.
-        for stale_rank in list(active_by_rank):
-            if stale_rank > rank:
-                del active_by_rank[stale_rank]
+            if stale_rank is not None and stale_rank > current_rank:
+                del active_by_statement_type[stale_statement_type]
 
     return parent_by_child_uuid
 
@@ -511,8 +522,13 @@ def _build_candidate_parent_sets(
     """
 
     parent_sets: list[SFIHasChildCandidateParentSet] = []
+    parent_statement_types_by_child_type = _build_direct_parent_statement_types(
+        kg_config
+    )
     outline_parent_by_child_uuid = _build_active_outline_parent_map(
-        contexts=contexts, kg_config=kg_config
+        contexts=contexts,
+        kg_config=kg_config,
+        parent_statement_types_by_child_type=parent_statement_types_by_child_type,
     )
     table_keys_by_uuid = table_context_keys_by_uuid
 
@@ -561,6 +577,7 @@ def _build_candidate_parent_sets(
                 code_parent_pairs=code_parent_pairs,
                 evidence_by_endpoint_id=evidence_by_endpoint_id,
                 parent_context=parent_context,
+                parent_statement_types_by_child_type=parent_statement_types_by_child_type,
                 parent_table_keys=table_keys_by_uuid[parent_context.final_sfi_uuid],
             )
 
@@ -573,6 +590,49 @@ def _build_candidate_parent_sets(
         parent_sets.append(parent_set)
 
     return parent_sets
+
+
+def _build_direct_parent_statement_types(
+    kg_config: CreateKGConfig,
+) -> dict[str, set[str]]:
+    """Build allowed direct parent statement types for hasChild resolution.
+
+    The runtime config may provide an explicit mapping for branching hierarchies such
+    as Topic having both Performance Objective and Content children. When the mapping
+    is absent, the ordered hierarchy is converted into a simple one-parent-per-rank
+    policy. Child types with an empty parent set are considered root-level and may
+    attach directly to the StandardsFramework root.
+
+    Parameters
+    ----------
+    kg_config
+        Runtime KG configuration containing hasChild hierarchy policy.
+
+    Returns
+    -------
+    dict[str, set[str]]
+        Allowed direct parent statement types keyed by child statement_type.
+    """
+
+    explicit_policy = kg_config.academic_standards.sfi_has_child_parent_statement_types
+
+    if explicit_policy:
+        return {
+            child_type: set(parent_types)
+            for child_type, parent_types in explicit_policy.items()
+        }
+
+    hierarchy = _get_hierarchy_statement_types(kg_config)
+    parent_types_by_child_type: dict[str, set[str]] = {}
+
+    for hierarchy_index, statement_type in enumerate(hierarchy):
+        if hierarchy_index == 0:
+            parent_types_by_child_type[statement_type] = set()
+            continue
+
+        parent_types_by_child_type[statement_type] = {hierarchy[hierarchy_index - 1]}
+
+    return parent_types_by_child_type
 
 
 def _build_edge(
@@ -1160,6 +1220,7 @@ def _evaluate_parent_child_relationship(
     code_parent_pairs: set[tuple[str, str]],
     evidence_by_endpoint_id: dict[str, _ParentEvidence],
     parent_context: SFIHasChildFinalContext,
+    parent_statement_types_by_child_type: dict[str, set[str]],
     parent_table_keys: set[str],
 ) -> None:
     """Evaluate relationship between a child and parent context to record evidence.
@@ -1220,9 +1281,16 @@ def _evaluate_parent_child_relationship(
         Dictionary of accumulated parent evidence to update.
     parent_context
         Final SFI source context for the potential parent.
+    parent_statement_types_by_child_type
+        Allowed direct parent statement types keyed by child statement_type.
     parent_table_keys
         Table context keys for the potential parent.
     """
+
+    if parent_context.statement_type not in parent_statement_types_by_child_type.get(
+        child_context.statement_type, set()
+    ):
+        return
 
     parent_code = normalize_code(parent_context.normalized_statement_code)
     matched_section_path_label = _context_matches_section_path(
@@ -1269,6 +1337,11 @@ def _evaluate_parent_child_relationship(
             same_table_context,
             "same_table_context",
             "Child and parent share cited table row/header context.",
+        ),
+        (
+            same_table_context,
+            "same_table_immediate_parent",
+            "Parent is an allowed direct parent type in the same cited table row/header context.",
         ),
         (
             source_scope_grouping,
@@ -1455,6 +1528,7 @@ def _finalize_candidate_parent_set(
     ]
 
     parent_candidates, truncation_notes, was_truncated = _bound_parent_candidates(
+        child_context=child_context,
         framework_uuid=framework_uuid,
         kg_config=kg_config,
         non_root_candidates=non_root_candidates,
@@ -1470,10 +1544,33 @@ def _finalize_candidate_parent_set(
     )
 
 
+def _get_hierarchy_statement_types(kg_config: CreateKGConfig) -> list[str]:
+    """Return the configured statement-type hierarchy in broad-to-narrow order.
+
+    Parameters
+    ----------
+    kg_config
+        Runtime KG configuration containing the hierarchy override and statement type
+        policy.
+
+    Returns
+    -------
+    list[str]
+        Statement types ordered from broadest parent to narrowest child.
+    """
+
+    standards = kg_config.academic_standards
+
+    if standards.sfi_has_child_statement_type_hierarchy:
+        return list(standards.sfi_has_child_statement_type_hierarchy)
+
+    return [item.statement_type for item in standards.statement_type_policy]
+
+
 def _is_nearby_source_window(
     *, child_context: SFIHasChildFinalContext, parent_context: SFIHasChildFinalContext
 ) -> bool:
-    """Check whether a parent is in a nearby preceding source window.
+    """Check whether a parent is in a nearby source window.
 
     Parameters
     ----------
@@ -1485,17 +1582,16 @@ def _is_nearby_source_window(
     Returns
     -------
     bool
-        True when parent is a nearby preceding grouping candidate.
+        True when parent is a nearby grouping candidate. This allows slightly later
+        source-order headings to be considered when PDF layout/OCR emits a grade or
+        organizer after its visually co-located child heading.
     """
 
     if parent_context.normalized_statement_type != "Standard Grouping":
         return False
 
-    if parent_context.source_order >= child_context.source_order:
-        return False
-
     return any(
-        0 <= child_window_index - parent_window_index <= 2
+        abs(child_window_index - parent_window_index) <= 2
         for child_window_index in child_context.source_window_indexes
         for parent_window_index in parent_context.source_window_indexes
     )
@@ -1556,6 +1652,7 @@ def _load_and_validate_existing_relationship_artifacts(
     document_ir: DocumentIR,
     edges_fp: Path,
     framework_uuid: uuid.UUID,
+    kg_config: CreateKGConfig,
     parent_sets: Sequence[SFIHasChildCandidateParentSet],
     parent_sets_fp: Path,
     requests: Sequence[SFIHasChildResolutionRequest],
@@ -1583,6 +1680,8 @@ def _load_and_validate_existing_relationship_artifacts(
         JSON path for final hasChild edges.
     framework_uuid
         Deterministic StandardsFramework UUID.
+    kg_config
+        Runtime KG configuration containing direct parent type policy.
     parent_sets
         Current bounded parent-candidate sets.
     parent_sets_fp
@@ -1662,6 +1761,7 @@ def _load_and_validate_existing_relationship_artifacts(
         _validate_graph(
             edges=expected_edges,
             framework_uuid=framework_uuid,
+            kg_config=kg_config,
             sfi_final_records=sfi_final_records,
         )
 
@@ -2490,10 +2590,82 @@ def _table_context_keys_from_source_refs(record: SFIFinalRecord) -> set[str]:
     return keys
 
 
+def _validate_has_child_statement_type_policy(
+    *,
+    edges: Sequence[SFIHasChildEdge],
+    framework_uuid: uuid.UUID,
+    kg_config: CreateKGConfig,
+    sfi_final_records: Sequence[SFIFinalRecord],
+) -> None:
+    """Validate final hasChild edges against configured direct parent types.
+
+    Structural graph checks can pass even when a non-root child is attached to the
+    StandardsFramework root or a child is attached to a broader non-direct grouping.
+    This validation enforces the configured semantic parent policy after response
+    conversion and before relationship artifacts are accepted.
+
+    Parameters
+    ----------
+    edges
+        Final hasChild edges to validate.
+    framework_uuid
+        StandardsFramework root UUID.
+    kg_config
+        Runtime KG configuration containing direct parent type policy.
+    sfi_final_records
+        Final SFI records whose statement_type labels are checked.
+
+    Raises
+    ------
+    ValueError
+        If a root or SFI parent violates the configured direct parent policy.
+    """
+
+    parent_statement_types_by_child_type = _build_direct_parent_statement_types(
+        kg_config
+    )
+    root_child_statement_types = {
+        child_type
+        for child_type, parent_types in parent_statement_types_by_child_type.items()
+        if not parent_types
+    }
+    records_by_id = {str(record.final_sfi_uuid): record for record in sfi_final_records}
+
+    for edge in edges:
+        child_record = records_by_id[str(edge.target_sfi_uuid)]
+
+        if edge.is_root_edge or str(edge.source_entity_uuid) == str(framework_uuid):
+            if child_record.statement_type not in root_child_statement_types:
+                raise ValueError(
+                    f"hasChild root edge violates configured statement-type policy: "
+                    f"child {child_record.final_sfi_uuid} has statement_type "
+                    f"{child_record.statement_type!r}; root-level child types are "
+                    f"{sorted(root_child_statement_types)}."
+                )
+
+            continue
+
+        parent_record = records_by_id[str(edge.source_entity_uuid)]
+        allowed_parent_types = parent_statement_types_by_child_type.get(
+            child_record.statement_type, set()
+        )
+
+        if parent_record.statement_type not in allowed_parent_types:
+            raise ValueError(
+                f"hasChild SFI edge violates configured statement-type policy: "
+                f"parent {parent_record.final_sfi_uuid} has statement_type "
+                f"{parent_record.statement_type!r}; child "
+                f"{child_record.final_sfi_uuid} has statement_type "
+                f"{child_record.statement_type!r}; allowed parent types are "
+                f"{sorted(allowed_parent_types)}."
+            )
+
+
 def _validate_graph(
     *,
     edges: Sequence[SFIHasChildEdge],
     framework_uuid: uuid.UUID,
+    kg_config: CreateKGConfig,
     sfi_final_records: Sequence[SFIFinalRecord],
 ) -> None:
     """Validate final hasChild graph constraints.
@@ -2626,6 +2798,8 @@ def _validate_graph(
         Final hasChild edges.
     framework_uuid
         StandardsFramework root UUID.
+    kg_config
+        Runtime KG configuration containing direct parent type policy.
     sfi_final_records
         Final SFI records that must be represented and reachable.
 
@@ -2680,6 +2854,13 @@ def _validate_graph(
         raise ValueError(
             f"Final SFIs are not reachable from StandardsFramework root: {unreachable}."
         )
+
+    _validate_has_child_statement_type_policy(
+        edges=edges,
+        framework_uuid=framework_uuid,
+        kg_config=kg_config,
+        sfi_final_records=sfi_final_records,
+    )
 
     relationship_ids = [str(edge.relationship_id) for edge in edges]
     duplicate_relationship_ids = sorted(
@@ -3002,6 +3183,7 @@ def resolve_has_child_edges(
             document_ir=document_ir,
             edges_fp=edges_fp,
             framework_uuid=framework_uuid,
+            kg_config=kg_config,
             parent_sets=parent_sets,
             parent_sets_fp=parent_sets_fp,
             requests=requests,
@@ -3054,7 +3236,10 @@ def resolve_has_child_edges(
         responses=responses,
     )
     _validate_graph(
-        edges=edges, framework_uuid=framework_uuid, sfi_final_records=sfi_final_records
+        edges=edges,
+        framework_uuid=framework_uuid,
+        kg_config=kg_config,
+        sfi_final_records=sfi_final_records,
     )
 
     summary = SFIHasChildResolutionSummary(

@@ -34,6 +34,7 @@ from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, write_to_json
 
 _SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG = "same_code_different_content"
+_SUSPICIOUS_CONTROLLED_SCOPE_SPLIT_AUDIT_FLAG = "suspicious_controlled_scope_split"
 
 
 def _build_code_group_counts(
@@ -526,6 +527,36 @@ def _hash_text(*, n_hex: int, value: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:n_hex]
 
 
+def _parse_controlled_scope_key(scope_key: str | None) -> dict[str, str]:
+    """Parse a controlled-value scope key into named scope parts.
+
+    Parameters
+    ----------
+    scope_key
+        Scope key such as `grade:primary one|theme:number and numeration`.
+
+    Returns
+    -------
+    dict[str, str]
+        Parsed non-empty scope parts keyed by scope label.
+    """
+
+    parts: dict[str, str] = {}
+
+    for raw_part in str(scope_key or "").split("|"):
+        if ":" not in raw_part:
+            continue
+
+        key, value = raw_part.split(":", 1)
+        key_clean = key.strip()
+        value_clean = value.strip()
+
+        if key_clean and value_clean:
+            parts[key_clean] = value_clean
+
+    return parts
+
+
 def _preferred_surface_form(values: Sequence[str]) -> str:
     """Choose a stable human-readable representative from equivalent strings.
 
@@ -746,6 +777,109 @@ def _validate_merge_group_coverage(
         )
 
 
+def _with_controlled_scope_split_audits(
+    sfi_final_records: Sequence[SFIFinalRecord],
+) -> list[SFIFinalRecord]:
+    """Annotate suspicious controlled-organizer scope splits.
+
+    Controlled organizer values should not silently split into multiple final SFIs
+    solely because an upstream source-context path was noisy. This audit flags cases
+    where the same canonical controlled value and statement type appears multiple times
+    within the same grade but under different recovered parent theme scopes. It does
+    not merge or block records; it preserves deterministic finalization while making
+    suspicious scope fragmentation visible before relationship resolution.
+
+    Parameters
+    ----------
+    sfi_final_records
+        Final SFI records minted from eligible merge groups.
+
+    Returns
+    -------
+    list[SFIFinalRecord]
+        Final records with added audit flags/notes where suspicious scope splits are
+        detected.
+    """
+
+    records_by_scope_family: dict[tuple[str, str, str], list[SFIFinalRecord]] = {}
+
+    for record in sfi_final_records:
+        if not (
+            record.canonical_statement_scope_key
+            and record.canonical_statement_value_key
+        ):
+            continue
+
+        scope_parts = _parse_controlled_scope_key(record.canonical_statement_scope_key)
+        grade_scope = scope_parts.get("grade")
+
+        if not grade_scope:
+            continue
+
+        family_key = (
+            record.statement_type,
+            record.canonical_statement_value_key,
+            grade_scope,
+        )
+        records_by_scope_family.setdefault(family_key, []).append(record)
+
+    flagged_record_ids: set[uuid.UUID] = set()
+    notes_by_record_id: dict[uuid.UUID, str] = {}
+
+    for family_records in records_by_scope_family.values():
+        theme_scopes = {
+            _parse_controlled_scope_key(record.canonical_statement_scope_key).get(
+                "theme", ""
+            )
+            for record in family_records
+        }
+        theme_scopes.discard("")
+
+        if len(theme_scopes) <= 1:
+            continue
+
+        family_record_ids = sorted(
+            str(record.final_sfi_uuid) for record in family_records
+        )
+        audit_note = (
+            f"Same controlled statement value and grade appears across multiple "
+            f"theme scope keys; review upstream source-context recovery before "
+            f"accepting these as distinct organizer SFIs. Peer final_sfi_uuid values: "
+            f"{family_record_ids}."
+        )
+
+        for record in family_records:
+            flagged_record_ids.add(record.final_sfi_uuid)
+            notes_by_record_id[record.final_sfi_uuid] = audit_note
+
+    audited_records: list[SFIFinalRecord] = []
+
+    for record in sfi_final_records:
+        if record.final_sfi_uuid not in flagged_record_ids:
+            audited_records.append(record)
+            continue
+
+        audit_flags = unique_nonempty(
+            [*record.audit_flags, _SUSPICIOUS_CONTROLLED_SCOPE_SPLIT_AUDIT_FLAG]
+        )
+        audit_notes = unique_nonempty(
+            [*record.audit_notes, notes_by_record_id[record.final_sfi_uuid]]
+        )
+        metadata = dict(record.metadata)
+        metadata["suspicious_controlled_scope_split"] = True
+        audited_records.append(
+            record.model_copy(
+                update={
+                    "audit_flags": audit_flags,
+                    "audit_notes": audit_notes,
+                    "metadata": metadata,
+                }
+            )
+        )
+
+    return audited_records
+
+
 def mint_final_sfi_ids(
     *,
     document_ir: DocumentIR,
@@ -815,6 +949,8 @@ def mint_final_sfi_ids(
 
     if not sfi_final_records:
         raise ValueError("Produced zero final SFI records.")
+
+    sfi_final_records = _with_controlled_scope_split_audits(sfi_final_records)
 
     _validate_final_sfi_records(sfi_final_records)
 
