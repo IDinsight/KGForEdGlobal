@@ -563,8 +563,9 @@ def _build_candidate_parent_sets(
         if outline_parent_context := outline_parent_by_child_uuid.get(
             child_context.final_sfi_uuid
         ):
-            if not _canonical_scope_conflicts_statement_value(
+            if not _canonical_scope_conflicts_parent(
                 child_scope_key=child_context.canonical_statement_scope_key,
+                parent_scope_key=outline_parent_context.canonical_statement_scope_key,
                 parent_statement_type=outline_parent_context.statement_type,
                 parent_value_key=outline_parent_context.canonical_statement_value_key,
             ):
@@ -964,6 +965,87 @@ def _build_edges_from_responses(
     return edges
 
 
+def _canonical_scope_conflicts_parent(
+    *,
+    child_scope_key: str | None,
+    parent_scope_key: str | None,
+    parent_statement_type: str | None,
+    parent_value_key: str | None,
+) -> bool:
+    """Check whether a parent candidate conflicts with child canonical scope.
+
+    This generic check combines two scope-compatibility rules:
+
+    1. If the child scope explicitly names a value for the candidate parent's statement
+        type, the candidate parent must have that same value.
+    2. If the child and parent both carry canonical scope parts for the same ancestor
+        labels, their values for those shared labels must overlap.
+
+    For example, a child scope of `grade:grade_4|domain:number` is incompatible with a
+    Domain parent whose value is `number` but whose own scope is `grade:grade_5`,
+    because the direct parent value matches while the shared `grade` ancestor scope
+    conflicts.
+
+    Parameters
+    ----------
+    child_scope_key
+        Canonical scope key from the child, when available.
+    parent_scope_key
+        Canonical scope key from the possible parent, when available.
+    parent_statement_type
+        Statement type label of the possible parent.
+    parent_value_key
+        Normalized canonical value key of the possible parent.
+
+    Returns
+    -------
+    bool
+        True when the candidate parent conflicts with the child canonical scope.
+    """
+
+    return _canonical_scope_conflicts_scope_key(
+        child_scope_key=child_scope_key,
+        parent_scope_key=parent_scope_key,
+    ) or _canonical_scope_conflicts_statement_value(
+        child_scope_key=child_scope_key,
+        parent_statement_type=parent_statement_type,
+        parent_value_key=parent_value_key,
+    )
+
+
+def _canonical_scope_conflicts_scope_key(
+    *, child_scope_key: str | None, parent_scope_key: str | None
+) -> bool:
+    """Check whether child and parent canonical scopes disagree on shared labels.
+
+    This function compares only parsed scope labels and values. It does not assume that
+    labels such as grade, level, strand, domain, theme, or unit exist. A conflict
+    exists only when both scopes contain the same label and their value sets for that
+    label are disjoint.
+
+    Parameters
+    ----------
+    child_scope_key
+        Canonical scope key from the child, when available.
+    parent_scope_key
+        Canonical scope key from the possible parent, when available.
+
+    Returns
+    -------
+    bool
+        True when a shared scope label has incompatible values.
+    """
+
+    child_values_by_label = _scope_parts_by_label(child_scope_key)
+    parent_values_by_label = _scope_parts_by_label(parent_scope_key)
+
+    for label in sorted(set(child_values_by_label) & set(parent_values_by_label)):
+        if child_values_by_label[label].isdisjoint(parent_values_by_label[label]):
+            return True
+
+    return False
+
+
 def _canonical_scope_conflicts_statement_value(
     *,
     child_scope_key: str | None,
@@ -1002,6 +1084,52 @@ def _canonical_scope_conflicts_statement_value(
         return False
 
     return parent_value_key not in scoped_values
+
+
+def _canonical_scope_matches_parent(
+    *,
+    child_scope_key: str | None,
+    parent_scope_key: str | None,
+    parent_statement_type: str | None,
+    parent_value_key: str | None,
+) -> bool:
+    """Check whether a parent is explicitly named by compatible child scope.
+
+    A parent candidate is a canonical-scope match only when the child scope names the
+    candidate parent's statement-type/value pair and the candidate parent's own scope
+    does not conflict with any shared ancestor scope parts from the child.
+
+    Parameters
+    ----------
+    child_scope_key
+        Canonical scope key from the child, when available.
+    parent_scope_key
+        Canonical scope key from the possible parent, when available.
+    parent_statement_type
+        Statement type label of the possible parent.
+    parent_value_key
+        Normalized canonical value key of the possible parent.
+
+    Returns
+    -------
+    bool
+        True when the parent value is named in child scope and ancestor scopes are
+        compatible.
+    """
+
+    if _canonical_scope_conflicts_parent(
+        child_scope_key=child_scope_key,
+        parent_scope_key=parent_scope_key,
+        parent_statement_type=parent_statement_type,
+        parent_value_key=parent_value_key,
+    ):
+        return False
+
+    return _canonical_scope_matches_statement_value(
+        child_scope_key=child_scope_key,
+        parent_statement_type=parent_statement_type,
+        parent_value_key=parent_value_key,
+    )
 
 
 def _canonical_scope_matches_statement_value(
@@ -1260,15 +1388,17 @@ def _evaluate_parent_child_relationship(
     ):
         return
 
-    if _canonical_scope_conflicts_statement_value(
+    if _canonical_scope_conflicts_parent(
         child_scope_key=child_context.canonical_statement_scope_key,
+        parent_scope_key=parent_context.canonical_statement_scope_key,
         parent_statement_type=parent_context.statement_type,
         parent_value_key=parent_context.canonical_statement_value_key,
     ):
         return
 
-    canonical_scope_parent_match = _canonical_scope_matches_statement_value(
+    canonical_scope_parent_match = _canonical_scope_matches_parent(
         child_scope_key=child_context.canonical_statement_scope_key,
+        parent_scope_key=parent_context.canonical_statement_scope_key,
         parent_statement_type=parent_context.statement_type,
         parent_value_key=parent_context.canonical_statement_value_key,
     )
@@ -1303,7 +1433,8 @@ def _evaluate_parent_child_relationship(
             "canonical_scope_parent_match",
             (
                 "Parent canonical controlled value is explicitly named in the "
-                "child canonical scope key."
+                "child canonical scope key and shared ancestor scope parts "
+                "are compatible."
             ),
         ),
         (
@@ -2269,6 +2400,28 @@ def _run_resolution_requests(
     return responses
 
 
+def _scope_parts_by_label(scope_key: str | None) -> dict[str, set[str]]:
+    """Group parsed canonical scope values by scope label.
+
+    Parameters
+    ----------
+    scope_key
+        Pipe-delimited canonical scope key, such as `level:grade_4|strand:number`.
+
+    Returns
+    -------
+    dict[str, set[str]]
+        Mapping from each parsed scope label to its non-empty value keys.
+    """
+
+    values_by_label: dict[str, set[str]] = defaultdict(set)
+
+    for label, value in _parse_controlled_scope_parts(scope_key):
+        values_by_label[label].add(value)
+
+    return dict(values_by_label)
+
+
 def _should_add_code_parent_hint_evidence(
     *,
     child_code: str | None,
@@ -2952,8 +3105,9 @@ def _validate_has_child_canonical_scope_policy(
         child_record = records_by_id[str(edge.target_sfi_uuid)]
         parent_record = records_by_id[str(edge.source_entity_uuid)]
 
-        if _canonical_scope_conflicts_statement_value(
+        if _canonical_scope_conflicts_parent(
             child_scope_key=child_record.canonical_statement_scope_key,
+            parent_scope_key=parent_record.canonical_statement_scope_key,
             parent_statement_type=parent_record.statement_type,
             parent_value_key=parent_record.canonical_statement_value_key,
         ):
@@ -2962,7 +3116,9 @@ def _validate_has_child_canonical_scope_policy(
                 f"{child_record.final_sfi_uuid} has canonical_statement_scope_key "
                 f"{child_record.canonical_statement_scope_key!r}, but selected "
                 f"parent {parent_record.final_sfi_uuid} has statement_type "
-                f"{parent_record.statement_type!r} and "
+                f"{parent_record.statement_type!r}, "
+                f"canonical_statement_scope_key "
+                f"{parent_record.canonical_statement_scope_key!r}, and "
                 f"canonical_statement_value_key "
                 f"{parent_record.canonical_statement_value_key!r}."
             )
