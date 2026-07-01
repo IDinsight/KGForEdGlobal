@@ -13,6 +13,7 @@ import re
 import uuid
 
 from collections import Counter
+from dataclasses import dataclass
 from typing import Any, Sequence
 
 # Third Party Library
@@ -36,6 +37,37 @@ from skg.utils.general import make_dir, write_to_json
 
 _SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG = "same_code_different_content"
 _SUSPICIOUS_CONTROLLED_SCOPE_SPLIT_AUDIT_FLAG = "suspicious_controlled_scope_split"
+
+
+@dataclass(frozen=True)
+class _IdentityBuildResult:
+    """Deterministic identity construction details for one final SFI record.
+
+    Attributes
+    ----------
+    code_identity_disambiguator
+        Source/text/provenance disambiguator appended to coded identities, if used.
+    code_identity_family_key
+        Stable family key for coded identity collision detection, if applicable.
+    identity_key
+        Complete deterministic identity key used for UUIDv5 minting.
+    no_code_identity_disambiguator
+        Source/text/provenance disambiguator appended to no-code identities, if used.
+    no_code_identity_family_key
+        Stable family key for no-code identity collision detection, if applicable.
+    uses_code_disambiguator
+        Whether the coded identity required source/text/provenance disambiguation.
+    uses_no_code_disambiguator
+        Whether the no-code identity required source/text/provenance disambiguation.
+    """
+
+    code_identity_disambiguator: str | None
+    code_identity_family_key: str | None
+    identity_key: str
+    no_code_identity_disambiguator: str | None
+    no_code_identity_family_key: str | None
+    uses_code_disambiguator: bool
+    uses_no_code_disambiguator: bool
 
 
 def _build_code_group_counts(
@@ -152,8 +184,17 @@ def _build_identity_key(
     code_group_counts: dict[tuple[str, str, str], int],
     document_ir: DocumentIR,
     merge_group: SFIMergeGroup,
-) -> tuple[str, bool]:
+    no_code_group_counts: dict[tuple[str, str, str, str], int],
+) -> _IdentityBuildResult:
     """Build a canonical identity string for deterministic final SFI UUID minting.
+
+    Coded statements use their statement code as the primary identity component and add
+    a deterministic source/text/provenance disambiguator only when the same-code family
+    is not unique or has already been flagged as same-code/different-content. No-code
+    statements use their existing canonicalized source/scope and text/value components
+    as the primary identity base, then add the same kind of source/text/provenance
+    disambiguator only when multiple eligible merge groups share that no-code identity
+    family.
 
     Parameters
     ----------
@@ -163,11 +204,13 @@ def _build_identity_key(
         Source DocumentIR whose doc_key scopes all final SFI identities.
     merge_group
         Merge group to identify.
+    no_code_group_counts
+        Counts for eligible no-code groups by no-code base identity key.
 
     Returns
     -------
-    tuple[str, bool]
-        Identity key and whether a code disambiguator was included.
+    _IdentityBuildResult
+        Complete identity key and identity-disambiguation metadata.
     """
 
     normalized_statement_type_key = _slug(
@@ -180,18 +223,16 @@ def _build_identity_key(
     )
 
     if merge_group.normalized_statement_code:
+        code_group_key = _build_code_group_key(merge_group)
+        code_identity_family_key = _format_identity_family_key(code_group_key)
         identity_key = f"{base_key}:{merge_group.normalized_statement_code}"
-
-        # Determine if the code alone is not unique or an audit flag requires
-        # preservation.
         needs_disambiguator = (
             _SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG in merge_group.audit_flags
-            or code_group_counts.get(_build_code_group_key(merge_group), 0) > 1
+            or code_group_counts.get(code_group_key, 0) > 1
         )
+        code_disambiguator = None
 
         if needs_disambiguator:
-            # Build a deterministic source/text/provenance disambiguator for same-code
-            # groups.
             disambiguator_parts = [
                 *merge_group.candidate_descriptions,
                 *merge_group.candidate_source_texts,
@@ -199,14 +240,116 @@ def _build_identity_key(
                 *(str(index) for index in merge_group.source_window_indexes),
                 *_source_context_keys(merge_group),
             ]
-            disambiguator = _hash_text(n_hex=20, value="\n".join(disambiguator_parts))
-            identity_key = f"{identity_key}:{disambiguator}"
+            code_disambiguator = _hash_text(
+                n_hex=20, value="\n".join(disambiguator_parts)
+            )
+            identity_key = f"{identity_key}:{code_disambiguator}"
 
-        return identity_key, needs_disambiguator
+        return _IdentityBuildResult(
+            code_identity_disambiguator=code_disambiguator,
+            code_identity_family_key=code_identity_family_key,
+            identity_key=identity_key,
+            no_code_identity_disambiguator=None,
+            no_code_identity_family_key=None,
+            uses_code_disambiguator=needs_disambiguator,
+            uses_no_code_disambiguator=False,
+        )
 
-    source_context_key = _build_no_code_source_context_key(merge_group)
-    source_text_key = _build_no_code_statement_text_key(merge_group)
-    return f"{base_key}:{source_context_key}:{source_text_key}", False
+    no_code_group_key = _build_no_code_group_key(merge_group)
+    no_code_identity_family_key = _format_identity_family_key(no_code_group_key)
+    source_context_key = no_code_group_key[2]
+    source_text_key = no_code_group_key[3]
+    identity_key = f"{base_key}:{source_context_key}:{source_text_key}"
+    needs_no_code_disambiguator = no_code_group_counts.get(no_code_group_key, 0) > 1
+    no_code_disambiguator = None
+
+    if needs_no_code_disambiguator:
+        disambiguator_parts = [
+            *merge_group.candidate_descriptions,
+            *merge_group.candidate_source_texts,
+            *merge_group.source_segment_ids,
+            *(str(index) for index in merge_group.source_window_indexes),
+            *_source_context_keys(merge_group),
+            *_source_ref_disambiguator_parts(merge_group),
+            *merge_group.registry_candidate_ids,
+        ]
+        no_code_disambiguator = _hash_text(
+            n_hex=20, value="\n".join(disambiguator_parts)
+        )
+        identity_key = f"{identity_key}:{no_code_disambiguator}"
+
+    return _IdentityBuildResult(
+        code_identity_disambiguator=None,
+        code_identity_family_key=None,
+        identity_key=identity_key,
+        no_code_identity_disambiguator=no_code_disambiguator,
+        no_code_identity_family_key=no_code_identity_family_key,
+        uses_code_disambiguator=False,
+        uses_no_code_disambiguator=needs_no_code_disambiguator,
+    )
+
+
+def _build_no_code_group_counts(
+    eligible_merge_groups: Sequence[SFIMergeGroup],
+) -> dict[tuple[str, str, str, str], int]:
+    """Count eligible final groups sharing the same no-code identity base.
+
+    Parameters
+    ----------
+    eligible_merge_groups
+        Merge groups that may be minted as final SFIs.
+
+    Returns
+    -------
+    dict[tuple[str, str, str, str], int]
+        Counts keyed by statement type, normalized statement type, no-code source/scope
+        identity component, and no-code statement text/value identity component.
+    """
+
+    counts: Counter[tuple[str, str, str, str]] = Counter()
+
+    for merge_group in eligible_merge_groups:
+        if merge_group.normalized_statement_code:
+            continue
+
+        key = _build_no_code_group_key(merge_group)
+        counts[key] += 1
+
+    return dict(counts)
+
+
+def _build_no_code_group_key(merge_group: SFIMergeGroup) -> tuple[str, str, str, str]:
+    """Build a stable base-identity key for one no-code merge group.
+
+    Parameters
+    ----------
+    merge_group
+        Merge group whose no-code identity base should be counted.
+
+    Returns
+    -------
+    tuple[str, str, str, str]
+        Statement type, normalized statement type, no-code source/scope key, and
+        no-code statement text/value key.
+
+    Raises
+    ------
+    ValueError
+        If the merge group has a normalized code and should use coded identity instead.
+    """
+
+    if merge_group.normalized_statement_code:
+        raise ValueError(
+            f"Merge group {merge_group.merge_group_id!r} has a normalized code and "
+            f"cannot use no-code identity."
+        )
+
+    return (
+        _shared_statement_type(merge_group),
+        _shared_normalized_statement_type(merge_group),
+        _build_no_code_source_context_key(merge_group),
+        _build_no_code_statement_text_key(merge_group),
+    )
 
 
 def _build_no_code_source_context_key(merge_group: SFIMergeGroup) -> str:
@@ -402,6 +545,7 @@ def _build_sfi_final_record(
     document_ir: DocumentIR,
     kg_config: CreateKGConfig,
     merge_group: SFIMergeGroup,
+    no_code_group_counts: dict[tuple[str, str, str, str], int],
     segment_page_indexes_by_id: dict[str, list[int]],
     sfi_candidates_by_id: dict[str, SFIRegistryCandidate],
 ) -> SFIFinalRecord:
@@ -417,6 +561,9 @@ def _build_sfi_final_record(
         Runtime KG configuration with framework metadata.
     merge_group
         Eligible SFI merge group to mint as a final SFI.
+    no_code_group_counts
+        Counts for no-code merge groups keyed by statement type, normalized statement
+        type, source/scope identity component, and statement text/value component.
     segment_page_indexes_by_id
         Page-index lookup keyed by DocumentIR segment ID.
     sfi_candidates_by_id
@@ -432,12 +579,15 @@ def _build_sfi_final_record(
         sfi_candidates_by_id[candidate_id]
         for candidate_id in merge_group.registry_candidate_ids
     ]
-    identity_key, uses_code_disambiguator = _build_identity_key(
+    identity_result = _build_identity_key(
         code_group_counts=code_group_counts,
         document_ir=document_ir,
         merge_group=merge_group,
+        no_code_group_counts=no_code_group_counts,
     )
-    final_sfi_uuid = uuid.uuid5(Settings.LC_CANONICAL_NAMESPACE_UUID, identity_key)
+    final_sfi_uuid = uuid.uuid5(
+        Settings.LC_CANONICAL_NAMESPACE_UUID, identity_result.identity_key
+    )
     source_context_keys = _source_context_keys(merge_group)
     source_page_indexes = sorted(
         {
@@ -467,7 +617,7 @@ def _build_sfi_final_record(
         description=_choose_final_description(merge_group),
         final_sfi_uuid=final_sfi_uuid,
         identifier=final_sfi_uuid,
-        identity_key=identity_key,
+        identity_key=identity_result.identity_key,
         in_language=_choose_language(
             group_candidates=group_candidates, kg_config=kg_config
         ),
@@ -484,8 +634,13 @@ def _build_sfi_final_record(
             "doc_key": document_ir.doc_key,
             "framework_title": kg_config.metadata.framework_title,
             "identity": {
+                "code_identity_disambiguator": identity_result.code_identity_disambiguator,
+                "code_identity_family_key": identity_result.code_identity_family_key,
                 "namespace_uuid": str(Settings.LC_CANONICAL_NAMESPACE_UUID),
-                "uses_code_disambiguator": uses_code_disambiguator,
+                "no_code_identity_disambiguator": identity_result.no_code_identity_disambiguator,
+                "no_code_identity_family_key": identity_result.no_code_identity_family_key,
+                "uses_code_disambiguator": identity_result.uses_code_disambiguator,
+                "uses_no_code_disambiguator": identity_result.uses_no_code_disambiguator,
             },
             "pdf_name": document_ir.pdf_name,
             "primary_language": kg_config.metadata.primary_language,
@@ -662,6 +817,23 @@ def _format_controlled_scope_parts(scope_parts: Sequence[tuple[str, str]]) -> st
     """
 
     return "|".join(f"{label}:{value}" for label, value in scope_parts)
+
+
+def _format_identity_family_key(key: Sequence[str]) -> str:
+    """Format an identity-family key into a stable metadata string.
+
+    Parameters
+    ----------
+    key
+        Ordered identity-family key components.
+
+    Returns
+    -------
+    str
+        Pipe-delimited identity-family key suitable for metadata and diagnostics.
+    """
+
+    return "|".join(str(part) for part in key)
 
 
 def _hash_text(*, n_hex: int, value: str) -> str:
@@ -895,6 +1067,53 @@ def _source_context_keys(merge_group: SFIMergeGroup) -> list[str]:
         for source_ref in merge_group.candidate_source_refs
         if isinstance(source_ref, dict)
     )
+
+
+def _source_ref_disambiguator_parts(merge_group: SFIMergeGroup) -> list[str]:
+    """Build stable source-reference parts for identity disambiguation.
+
+    Parameters
+    ----------
+    merge_group
+        Merge group whose preserved candidate source refs should contribute provenance
+        detail to identity disambiguation.
+
+    Returns
+    -------
+    list[str]
+        Stable source-reference strings preserving candidate-source-ref order.
+    """
+
+    disambiguator_parts: list[str] = []
+
+    for source_ref_index, source_ref in enumerate(merge_group.candidate_source_refs):
+        if not isinstance(source_ref, dict):
+            continue
+
+        prefix = f"source_ref[{source_ref_index}]"
+        scalar_keys = [
+            "registry_candidate_id",
+            "source_context_key",
+            "window_id",
+            "window_index",
+        ]
+        list_keys = ["source_segment_ids", "table_header_indexes", "table_row_indexes"]
+
+        for key in scalar_keys:
+            value = source_ref.get(key)
+
+            if value not in (None, ""):
+                disambiguator_parts.append(f"{prefix}.{key}:{value}")
+
+        for key in list_keys:
+            values = source_ref.get(key) or []
+
+            if values:
+                disambiguator_parts.append(
+                    f"{prefix}.{key}:{'|'.join(str(value) for value in values)}"
+                )
+
+    return disambiguator_parts
 
 
 def _source_ref_int_values(*, key: str, record: SFIFinalRecord) -> list[int]:
@@ -1191,6 +1410,7 @@ def mint_final_sfi_ids(
         if merge_group.merge_decision in {"merged", "singleton"}
     ]
     code_group_counts = _build_code_group_counts(eligible_merge_groups)
+    no_code_group_counts = _build_no_code_group_counts(eligible_merge_groups)
     segment_page_indexes_by_id = _build_segment_page_index_lookup(document_ir)
     sfi_candidates_by_id = {
         candidate.registry_candidate_id: candidate
@@ -1203,6 +1423,7 @@ def mint_final_sfi_ids(
             document_ir=document_ir,
             kg_config=kg_config,
             merge_group=merge_group,
+            no_code_group_counts=no_code_group_counts,
             segment_page_indexes_by_id=segment_page_indexes_by_id,
             sfi_candidates_by_id=sfi_candidates_by_id,
         )
