@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 # Package Library
 from skg.config import Settings
-from skg.document_ir.schemas import BlockSegment, DocumentIR, TableSegment
+from skg.document_ir.schemas import DocumentIR
 from skg.kgs.llm import KGUsageTracker, resolve_sfi_has_child_parent_request
 from skg.kgs.schemas import (
     ExtractionWindow,
@@ -964,154 +964,6 @@ def _build_edges_from_responses(
     return edges
 
 
-def _build_final_contexts(
-    *,
-    document_ir: DocumentIR,
-    kg_config: CreateKGConfig,
-    sfi_final_records: Sequence[SFIFinalRecord],
-) -> list[SFIHasChildFinalContext]:
-    """Recover source context for finalized SFIs.
-
-    Examples
-    --------
-
-    1. Suppose the DocumentIR segment order is:
-
-    segment_001 -> source-order 0, section_path=["Grade 4"]
-    segment_010 -> source-order 1, section_path=["Grade 4", "Listening and Speaking"]
-    segment_011 -> source-order 2, section_path=["Grade 4", "Reading"]
-
-    And suppose one final SFI record has:
-
-    final_sfi_uuid=<uuid-a>
-    description="1.1 CONVERSATION"
-    normalized_statement_type="Standard Grouping"
-    statement_type="Topic"
-    source_segment_ids=["segment_010"]
-    source_window_indexes=[5]
-    source_context_keys=["ctx_topic_1"]
-    candidate_source_refs=[
-        {
-            "table_header_indexes": [],
-            "table_row_indexes": [2],
-            "source_segment_ids": ["segment_010"],
-            "window_index": 5,
-        }
-    ]
-
-    Then `_build_final_contexts(...)` creates a `SFIHasChildFinalContext` whose key
-    relationship-resolution fields are:
-
-    final_sfi_uuid=<uuid-a>
-    description="1.1 CONVERSATION"
-    source_order=1
-    section_path_labels=["Grade 4", "Listening and Speaking"]
-    source_segment_ids=["segment_010"]
-    source_window_indexes=[5]
-    source_context_keys=["ctx_topic_1"]
-    table_header_indexes=[]
-    table_row_indexes=[2]
-    normalized_statement_type="Standard Grouping"
-    statement_type="Topic"
-
-    The returned context does not decide any parent-child relationship. It only
-    packages source order, section-path, table, code, and provenance evidence so later
-    code can build bounded parent-candidate sets.
-
-    Parameters
-    ----------
-    document_ir
-        Source DocumentIR used to recover section-path and source-order evidence.
-    kg_config
-        Runtime KG configuration containing the recent section-path label bound.
-    sfi_final_records
-        Finalized SFI records.
-
-    Returns
-    -------
-    list[SFIHasChildFinalContext]
-        Final SFI source contexts sorted by source order and UUID.
-    """
-
-    contexts: list[SFIHasChildFinalContext] = []
-    segment_order_by_id = {
-        segment.segment_id: index for index, segment in enumerate(document_ir.segments)
-    }
-    segments_by_id = {segment.segment_id: segment for segment in document_ir.segments}
-
-    for record in sfi_final_records:
-        # Use earliest source segment index among the final record's
-        # `source_segment_ids`.
-        source_order = min(
-            [
-                segment_order_by_id[source_segment_id]
-                for source_segment_id in record.source_segment_ids
-                if source_segment_id in segment_order_by_id
-            ]
-            or [0]
-        )
-
-        # Look up the `section_path` for each source segment in the DocumentIR, then
-        # keep the most recent bounded labels first.
-        #
-        # NB: DocumentIR section paths may contain cumulative heading history from
-        # earlier curriculum sections. The nearest/current headings usually appear at
-        # the end of the recovered list, so hasChild resolution uses a recent-first
-        # view: reverse the list, remove duplicate/empty labels while preserving that
-        # recent-first order, and keep only the configured number of labels.
-        section_path_labels = unique_nonempty(
-            list(
-                reversed(
-                    _recover_section_path_labels(
-                        record=record, segments_by_id=segments_by_id
-                    )
-                )
-            )
-        )[: kg_config.academic_standards.max_has_child_section_path_labels]
-
-        # Collect table provenance indexes.
-        table_header_indexes = _source_ref_int_values(
-            key="table_header_indexes", record=record
-        )
-        table_row_indexes = _source_ref_int_values(
-            key="table_row_indexes", record=record
-        )
-
-        # Build the context for the finalized SFI.
-        contexts.append(
-            SFIHasChildFinalContext(
-                audit_flags=record.audit_flags,
-                candidate_source_texts=record.candidate_source_texts,
-                canonical_statement_scope_key=record.canonical_statement_scope_key,
-                canonical_statement_value=record.canonical_statement_value,
-                canonical_statement_value_key=record.canonical_statement_value_key,
-                description=record.description,
-                final_sfi_uuid=record.final_sfi_uuid,
-                normalized_statement_code=record.normalized_statement_code,
-                normalized_statement_type=record.normalized_statement_type,
-                section_path_labels=section_path_labels,
-                source_context_keys=record.source_context_keys,
-                source_order=source_order,
-                source_page_indexes=record.source_page_indexes,
-                source_registry_candidate_ids=record.source_registry_candidate_ids,
-                source_segment_ids=record.source_segment_ids,
-                source_window_ids=record.source_window_ids,
-                source_window_indexes=record.source_window_indexes,
-                statement_code=record.statement_code,
-                statement_type=record.statement_type,
-                table_header_indexes=table_header_indexes,
-                table_row_indexes=table_row_indexes,
-            )
-        )
-
-    # Sort by source order, then UUID.
-    contexts.sort(
-        key=lambda context: (context.source_order, str(context.final_sfi_uuid))
-    )
-
-    return contexts
-
-
 def _canonical_scope_conflicts_statement_value(
     *,
     child_scope_key: str | None,
@@ -2005,6 +1857,38 @@ def _load_extraction_windows(kg_dirs: KGDirs) -> list[ExtractionWindow]:
     return extraction_windows
 
 
+def _load_final_contexts(contexts_fp: Path) -> list[SFIHasChildFinalContext]:
+    """Load final SFI contexts for hasChild resolution.
+
+    Parameters
+    ----------
+    contexts_fp
+        JSON artifact path written by SFI finalization.
+
+    Returns
+    -------
+    list[SFIHasChildFinalContext]
+        Parsed final SFI contexts in deterministic source order.
+
+    Raises
+    ------
+    ValueError
+        If the final-context artifact is missing, malformed, or not a JSON list.
+    """
+
+    if not contexts_fp.exists():
+        raise ValueError(f"Missing final SFI contexts artifact: {contexts_fp}")
+
+    data = open_json_type(contexts_fp)
+
+    if not isinstance(data, list):
+        raise ValueError(
+            f"Expected a JSON list in final SFI contexts artifact: {contexts_fp}"
+        )
+
+    return [SFIHasChildFinalContext.model_validate(item) for item in data]
+
+
 def _load_json_model_sequence(*, fp: Path, model_type: BaseModel) -> list[BaseModel]:
     """Load a JSON list artifact into a typed Pydantic model sequence.
 
@@ -2287,64 +2171,6 @@ def _reachable_sfi_ids(
     return reachable
 
 
-def _recover_section_path_labels(
-    *, record: SFIFinalRecord, segments_by_id: dict[str, BlockSegment | TableSegment]
-) -> list[str]:
-    """Recover section-path labels from DocumentIR source segments.
-
-    Examples
-    --------
-
-    1. Suppose `record.source_segment_ids` is:
-
-    ["segment_010", "segment_011"]
-
-    And the corresponding DocumentIR segments have section paths:
-
-    segment_010.section_path = ["Grade 4", "Listening and Speaking"]
-    segment_011.section_path = ["Grade 4", "Reading"]
-
-    Then `_recover_section_path_labels(record=record, segments_by_id=segments_by_id)`
-    returns labels in source order before recent-first bounding:
-
-    ["Grade 4", "Listening and Speaking", "Grade 4", "Reading"]
-
-    The recent-first bounded view used for hasChild evidence is produced separately by
-    `_select_recent_section_path_labels(...)`, because the most useful current labels
-    usually appear near the end of cumulative DocumentIR section paths. Duplicate
-    labels are intentionally preserved here so the later recent-first selection can
-    prefer the latest occurrence.
-
-    Parameters
-    ----------
-    record
-        Final SFI record.
-    segments_by_id
-        DocumentIR segments keyed by segment ID.
-
-    Returns
-    -------
-    list[str]
-        Non-empty section-path labels in source order, including repeated labels when
-        they appear in multiple recovered source-segment paths.
-    """
-
-    section_ref_labels: list[str] = []
-
-    for source_segment_id in record.source_segment_ids:
-        segment = segments_by_id.get(source_segment_id)
-        assert isinstance(
-            segment, (BlockSegment, TableSegment)
-        ), f"{source_segment_id = }"
-
-        for section_ref in segment.section_path:
-            section_ref_label = section_ref.text.strip()
-            assert section_ref_label, f"{source_segment_id = }"
-            section_ref_labels.append(section_ref_label)
-
-    return section_ref_labels
-
-
 def _rewrite_resolution_progress_files(
     *,
     completed_requests: Sequence[SFIHasChildResolutionRequest],
@@ -2441,40 +2267,6 @@ def _run_resolution_requests(
         responses.append(response)
 
     return responses
-
-
-def _select_recent_section_path_labels(
-    *, labels: Sequence[str], max_labels: int
-) -> list[str]:
-    """Reverse, de-duplicate, and bound section-path labels for hasChild evidence.
-
-    DocumentIR section paths may contain cumulative heading history from earlier
-    curriculum sections. The nearest/current headings usually appear at the end of the
-    recovered list, so hasChild resolution uses a recent-first view: reverse the list,
-    remove duplicate/empty labels while preserving that recent-first order, and keep
-    only the configured number of labels.
-
-    Parameters
-    ----------
-    labels
-        Recovered section-path labels in DocumentIR/source order, usually oldest to
-        newest.
-    max_labels
-        Maximum number of recent-first labels to return. Must be at least 1.
-
-    Returns
-    -------
-    list[str]
-        Unique non-empty section-path labels ordered from most recent/local context
-        to older/broader context.
-
-    Raises
-    ------
-    ValueError
-        If `max_labels` is less than 1.
-    """
-
-    return unique_nonempty(list(reversed(labels)))[:max_labels]
 
 
 def _should_add_code_parent_hint_evidence(
@@ -2605,65 +2397,6 @@ def _source_ref_int_list(*, key: str, source_ref: dict[str, object]) -> list[int
     return sorted(values)
 
 
-def _source_ref_int_values(*, key: str, record: SFIFinalRecord) -> list[int]:
-    """Collect integer values from final-record candidate source refs.
-
-    Examples
-    --------
-
-    1. Suppose `record.candidate_source_refs` contains:
-
-    [
-        {"table_row_indexes": [2, "3"], "table_header_indexes": []},
-        {"table_row_indexes": [3, 4], "table_header_indexes": ["0"]},
-        {"table_row_indexes": ["not-an-int"], "table_header_indexes": []},
-    ]
-
-    Then:
-
-    _source_ref_int_values(key="table_row_indexes", record=record)
-
-    returns [2, 3, 4]
-
-    And:
-
-    _source_ref_int_values(key="table_header_indexes", record=record)
-
-    returns [0]
-
-    Values are converted to integers when possible, invalid values are ignored,
-    duplicates are removed, and the result is sorted. The returned indexes are later
-    used to build table-context evidence such as "same_table_context" for possible
-    hasChild parents.
-
-    Parameters
-    ----------
-    key
-        Candidate source-ref key to collect.
-    record
-        Final SFI record.
-
-    Returns
-    -------
-    list[int]
-        Sorted unique integer values.
-    """
-
-    values: set[int] = set()
-
-    for source_ref in record.candidate_source_refs:
-        if not isinstance(source_ref, dict):
-            continue
-
-        for value in source_ref.get(key) or []:
-            try:
-                values.add(int(value))
-            except Exception:  # pylint: disable=W0718
-                continue
-
-    return sorted(values)
-
-
 def _source_ref_segment_ids(source_ref: dict[str, object]) -> list[str]:
     """Collect source segment IDs from one candidate source-ref record.
 
@@ -2755,6 +2488,134 @@ def _table_context_keys_from_source_refs(record: SFIFinalRecord) -> set[str]:
                 keys.add(f"segment:{source_segment_id}:header:{header_index}")
 
     return keys
+
+
+def _validate_final_contexts_align_with_records(
+    *,
+    contexts: Sequence[SFIHasChildFinalContext],
+    sfi_final_records: Sequence[SFIFinalRecord],
+) -> None:
+    """Validate that loaded final contexts cover the current final SFI records.
+
+    Parameters
+    ----------
+    contexts
+        Loaded final SFI contexts from the Step 8 artifact.
+    sfi_final_records
+        Current final SFI records supplied to relationship resolution.
+
+    Raises
+    ------
+    ValueError
+        If context UUIDs are duplicated, missing, unknown, or materially inconsistent
+        with their corresponding final SFI records.
+    """
+
+    records_by_id = {str(record.final_sfi_uuid): record for record in sfi_final_records}
+    context_ids = [str(context.final_sfi_uuid) for context in contexts]
+    context_id_set = set(context_ids)
+    duplicate_context_ids = sorted(
+        {context_id for context_id in context_ids if context_ids.count(context_id) > 1}
+    )
+    missing_context_ids = sorted(set(records_by_id) - context_id_set)
+    unknown_context_ids = sorted(context_id_set - set(records_by_id))
+
+    if duplicate_context_ids:
+        raise ValueError(
+            f"sfi_final_contexts.json contains duplicate final_sfi_uuid values: "
+            f"{duplicate_context_ids}."
+        )
+
+    if missing_context_ids:
+        raise ValueError(
+            f"sfi_final_contexts.json is missing contexts for final SFIs: "
+            f"{missing_context_ids}."
+        )
+
+    if unknown_context_ids:
+        raise ValueError(
+            f"sfi_final_contexts.json contains contexts for unknown final SFIs: "
+            f"{unknown_context_ids}."
+        )
+
+    for context in contexts:
+        record = records_by_id[str(context.final_sfi_uuid)]
+        expected_table_header_indexes = sorted(
+            {
+                index
+                for source_ref in record.candidate_source_refs
+                if isinstance(source_ref, dict)
+                for index in _source_ref_int_list(
+                    key="table_header_indexes", source_ref=source_ref
+                )
+            }
+        )
+        expected_table_row_indexes = sorted(
+            {
+                index
+                for source_ref in record.candidate_source_refs
+                if isinstance(source_ref, dict)
+                for index in _source_ref_int_list(
+                    key="table_row_indexes", source_ref=source_ref
+                )
+            }
+        )
+        checks = {
+            "audit_flags": context.audit_flags == record.audit_flags,
+            "candidate_source_texts": (
+                context.candidate_source_texts == record.candidate_source_texts
+            ),
+            "canonical_statement_scope_key": (
+                context.canonical_statement_scope_key
+                == record.canonical_statement_scope_key
+            ),
+            "canonical_statement_value": (
+                context.canonical_statement_value == record.canonical_statement_value
+            ),
+            "canonical_statement_value_key": (
+                context.canonical_statement_value_key
+                == record.canonical_statement_value_key
+            ),
+            "description": context.description == record.description,
+            "normalized_statement_code": (
+                context.normalized_statement_code == record.normalized_statement_code
+            ),
+            "normalized_statement_type": (
+                context.normalized_statement_type == record.normalized_statement_type
+            ),
+            "source_context_keys": (
+                context.source_context_keys == record.source_context_keys
+            ),
+            "source_page_indexes": context.source_page_indexes
+            == record.source_page_indexes,
+            "source_registry_candidate_ids": (
+                context.source_registry_candidate_ids
+                == record.source_registry_candidate_ids
+            ),
+            "source_segment_ids": context.source_segment_ids
+            == record.source_segment_ids,
+            "source_window_ids": context.source_window_ids == record.source_window_ids,
+            "source_window_indexes": (
+                context.source_window_indexes == record.source_window_indexes
+            ),
+            "statement_code": context.statement_code == record.statement_code,
+            "statement_type": context.statement_type == record.statement_type,
+            "table_header_indexes": (
+                context.table_header_indexes == expected_table_header_indexes
+            ),
+            "table_row_indexes": context.table_row_indexes
+            == expected_table_row_indexes,
+        }
+        mismatched_fields = sorted(
+            field_name for field_name, matched in checks.items() if not matched
+        )
+
+        if mismatched_fields:
+            raise ValueError(
+                f"sfi_final_contexts.json context for final SFI "
+                f"{context.final_sfi_uuid} does not align with the current final "
+                f"record fields: {mismatched_fields}."
+            )
 
 
 def _validate_has_child_statement_type_policy(
@@ -3238,31 +3099,19 @@ def _validate_sfi_final_records_and_summary(
         )
 
 
-def _write_context_and_parent_set_artifacts(
-    *,
-    contexts: Sequence[SFIHasChildFinalContext],
-    contexts_fp: Path,
-    parent_sets: Sequence[SFIHasChildCandidateParentSet],
-    parent_sets_fp: Path,
+def _write_parent_set_artifacts(
+    *, parent_sets: Sequence[SFIHasChildCandidateParentSet], parent_sets_fp: Path
 ) -> None:
-    """Write deterministic context and parent-set artifacts.
+    """Write deterministic bounded parent-candidate set artifacts.
 
     Parameters
     ----------
-    contexts
-        Current recovered final SFI contexts.
-    contexts_fp
-        JSON path for persisted final SFI contexts.
     parent_sets
-        Current bounded parent-candidate sets.
+        Current bounded parent-candidate sets generated for hasChild resolution.
     parent_sets_fp
-        JSONL path for persisted parent-candidate sets.
+        JSONL path for persisting parent-candidate sets.
     """
 
-    write_to_json(
-        fp=contexts_fp,
-        json_info=[context.model_dump(mode="json") for context in contexts],
-    )
     parent_sets_fp.write_text("", encoding="utf-8")
 
     for parent_set in parent_sets:
@@ -3362,13 +3211,12 @@ def resolve_has_child_edges(
     identity_key = f"lc:curriculum:{document_ir.doc_key}:standards_framework"
     framework_uuid = uuid.uuid5(Settings.LC_CANONICAL_NAMESPACE_UUID, identity_key)
 
-    # Load extraction windows and build SFI final contexts and parent sets for hasChild
-    # resolution requests.
+    # Load extraction windows and the Step 8 final-context artifact, then build parent
+    # sets for hasChild resolution requests.
     extraction_windows = _load_extraction_windows(kg_dirs)
-    contexts = _build_final_contexts(
-        document_ir=document_ir,
-        kg_config=kg_config,
-        sfi_final_records=sfi_final_records,
+    contexts = _load_final_contexts(contexts_fp)
+    _validate_final_contexts_align_with_records(
+        contexts=contexts, sfi_final_records=sfi_final_records
     )
     table_context_keys_by_uuid = {
         record.final_sfi_uuid: _table_context_keys_from_source_refs(record)
@@ -3385,8 +3233,12 @@ def resolve_has_child_edges(
         SFIHasChildResolutionRequest(
             child_parent_sets=[parent_set],
             request_id=(
-                f"has_child_request_"
-                f"{hashlib.sha256(normalize_text(str(parent_set.child_context.final_sfi_uuid)).encode('utf-8')).hexdigest()[:16]}"
+                "has_child_request_"
+                + hashlib.sha256(
+                    normalize_text(str(parent_set.child_context.final_sfi_uuid)).encode(
+                        "utf-8"
+                    )
+                ).hexdigest()[:16]
             ),
             sfi_has_child_instructions=kg_config.academic_standards.sfi_has_child_instructions,
         )
@@ -3400,7 +3252,6 @@ def resolve_has_child_edges(
 
         reset_output_files(
             output_fps=[
-                contexts_fp,
                 edges_fp,
                 parent_sets_fp,
                 requests_fp,
@@ -3436,7 +3287,6 @@ def resolve_has_child_edges(
         )
         reset_output_files(
             output_fps=[
-                contexts_fp,
                 edges_fp,
                 parent_sets_fp,
                 summary_fp,
@@ -3450,12 +3300,7 @@ def resolve_has_child_edges(
             responses_fp=responses_fp,
         )
 
-    _write_context_and_parent_set_artifacts(
-        contexts=contexts,
-        contexts_fp=contexts_fp,
-        parent_sets=parent_sets,
-        parent_sets_fp=parent_sets_fp,
-    )
+    _write_parent_set_artifacts(parent_sets=parent_sets, parent_sets_fp=parent_sets_fp)
     responses = _run_resolution_requests(
         completed_responses=completed_responses,
         requests=requests,

@@ -2,9 +2,9 @@
 into deterministic final SFI records.
 
 This module consumes the SFI merge report and candidate registry. It mints stable,
-CASE-compatible final StandardsFrameworkItem identifiers and preserves enough source
-and merge provenance for later source-context recovery and relationship resolution. It
-does not infer hierarchy, compile final KG objects, or create relationships.
+CASE-compatible final StandardsFrameworkItem identifiers and writes the finalized
+source-context handoff artifact needed for later relationship resolution. It does not
+infer hierarchy, compile final KG objects, or create relationships.
 """
 
 # Standard Library
@@ -20,10 +20,11 @@ from loguru import logger
 
 # Package Library
 from skg.config import Settings
-from skg.document_ir.schemas import DocumentIR
+from skg.document_ir.schemas import BlockSegment, DocumentIR, TableSegment
 from skg.kgs.schemas import (
     SFIFinalRecord,
     SFIFinalSummary,
+    SFIHasChildFinalContext,
     SFIMergeGroup,
     SFIMergeReport,
     SFIRegistryArtifact,
@@ -302,6 +303,97 @@ def _build_segment_page_index_lookup(document_ir: DocumentIR) -> dict[str, list[
         page_indexes_by_id[segment.segment_id] = page_indexes
 
     return page_indexes_by_id
+
+
+def _build_sfi_final_contexts(
+    *,
+    document_ir: DocumentIR,
+    kg_config: CreateKGConfig,
+    sfi_final_records: Sequence[SFIFinalRecord],
+) -> list[SFIHasChildFinalContext]:
+    """Recover and package source context for finalized SFI records.
+
+    The returned context artifact is the handoff to SFI hasChild resolution. It
+    captures only source-derived evidence and finalized SFI metadata: source order,
+    recent section-path labels, source context keys, source segment/window provenance,
+    table row/header references, statement typing, code values, and audit flags. It
+    does not infer parentage or create relationships.
+
+    Parameters
+    ----------
+    document_ir
+        Source DocumentIR used to recover segment order and section-path evidence.
+    kg_config
+        Runtime KG configuration containing the recent section-path label bound.
+    sfi_final_records
+        Finalized SFI records to convert into relationship-resolution contexts.
+
+    Returns
+    -------
+    list[SFIHasChildFinalContext]
+        Final SFI source contexts sorted by source order and UUID.
+    """
+
+    contexts: list[SFIHasChildFinalContext] = []
+    segment_order_by_id = {
+        segment.segment_id: index for index, segment in enumerate(document_ir.segments)
+    }
+    segments_by_id = {segment.segment_id: segment for segment in document_ir.segments}
+
+    for record in sfi_final_records:
+        source_order = min(
+            [
+                segment_order_by_id[source_segment_id]
+                for source_segment_id in record.source_segment_ids
+                if source_segment_id in segment_order_by_id
+            ]
+            or [0]
+        )
+        section_path_labels = unique_nonempty(
+            list(
+                reversed(
+                    _recover_section_path_labels(
+                        record=record, segments_by_id=segments_by_id
+                    )
+                )
+            )
+        )[: kg_config.academic_standards.max_has_child_section_path_labels]
+        table_header_indexes = _source_ref_int_values(
+            key="table_header_indexes", record=record
+        )
+        table_row_indexes = _source_ref_int_values(
+            key="table_row_indexes", record=record
+        )
+        contexts.append(
+            SFIHasChildFinalContext(
+                audit_flags=record.audit_flags,
+                candidate_source_texts=record.candidate_source_texts,
+                canonical_statement_scope_key=record.canonical_statement_scope_key,
+                canonical_statement_value=record.canonical_statement_value,
+                canonical_statement_value_key=record.canonical_statement_value_key,
+                description=record.description,
+                final_sfi_uuid=record.final_sfi_uuid,
+                normalized_statement_code=record.normalized_statement_code,
+                normalized_statement_type=record.normalized_statement_type,
+                section_path_labels=section_path_labels,
+                source_context_keys=record.source_context_keys,
+                source_order=source_order,
+                source_page_indexes=record.source_page_indexes,
+                source_registry_candidate_ids=record.source_registry_candidate_ids,
+                source_segment_ids=record.source_segment_ids,
+                source_window_ids=record.source_window_ids,
+                source_window_indexes=record.source_window_indexes,
+                statement_code=record.statement_code,
+                statement_type=record.statement_type,
+                table_header_indexes=table_header_indexes,
+                table_row_indexes=table_row_indexes,
+            )
+        )
+
+    contexts.sort(
+        key=lambda context: (context.source_order, str(context.final_sfi_uuid))
+    )
+    return contexts
 
 
 def _build_sfi_final_record(
@@ -652,6 +744,58 @@ def _preferred_surface_form(values: Sequence[str]) -> str:
     )[0]
 
 
+def _recover_section_path_labels(
+    *, record: SFIFinalRecord, segments_by_id: dict[str, BlockSegment | TableSegment]
+) -> list[str]:
+    """Recover section-path labels from DocumentIR source segments.
+
+    Parameters
+    ----------
+    record
+        Final SFI record whose source segment IDs should be inspected.
+    segments_by_id
+        DocumentIR block/table segments keyed by segment ID.
+
+    Returns
+    -------
+    list[str]
+        Non-empty section-path labels in source-segment order, preserving repeated
+        labels so later recent-first selection can prefer the latest occurrence.
+
+    Raises
+    ------
+    ValueError
+        If a final SFI source segment is missing from the DocumentIR or is not a
+        block/table segment with non-empty section-path labels.
+    """
+
+    section_ref_labels: list[str] = []
+
+    for source_segment_id in record.source_segment_ids:
+        segment = segments_by_id.get(source_segment_id)
+
+        if not isinstance(segment, (BlockSegment, TableSegment)):
+            raise ValueError(
+                f"Final SFI {record.final_sfi_uuid} references source segment "
+                f"{source_segment_id!r}, but that segment is missing or unsupported "
+                f"for final-context recovery."
+            )
+
+        for section_ref in segment.section_path:
+            section_ref_label = section_ref.text.strip()
+
+            if not section_ref_label:
+                raise ValueError(
+                    f"Final SFI {record.final_sfi_uuid} references source segment "
+                    f"{source_segment_id!r}, which contains an empty section-path "
+                    f"label."
+                )
+
+            section_ref_labels.append(section_ref_label)
+
+    return section_ref_labels
+
+
 def _shared_normalized_statement_type(merge_group: SFIMergeGroup) -> str:
     """Return the single normalized statement type for an eligible merge group.
 
@@ -751,6 +895,38 @@ def _source_context_keys(merge_group: SFIMergeGroup) -> list[str]:
         for source_ref in merge_group.candidate_source_refs
         if isinstance(source_ref, dict)
     )
+
+
+def _source_ref_int_values(*, key: str, record: SFIFinalRecord) -> list[int]:
+    """Collect integer table-reference values from final-record source refs.
+
+    Parameters
+    ----------
+    key
+        Candidate source-ref key to collect, such as `table_row_indexes` or
+        `table_header_indexes`.
+    record
+        Final SFI record whose candidate source refs should be inspected.
+
+    Returns
+    -------
+    list[int]
+        Sorted unique integer values. Invalid or empty values are ignored.
+    """
+
+    values: set[int] = set()
+
+    for source_ref in record.candidate_source_refs:
+        if not isinstance(source_ref, dict):
+            continue
+
+        for value in source_ref.get(key) or []:
+            try:
+                values.add(int(value))
+            except Exception:  # pylint: disable=W0718
+                continue
+
+    return sorted(values)
 
 
 def _validate_final_sfi_records(final_sfi_records: Sequence[SFIFinalRecord]) -> None:
@@ -1040,6 +1216,11 @@ def mint_final_sfi_ids(
 
     _validate_final_sfi_records(sfi_final_records)
 
+    sfi_final_contexts = _build_sfi_final_contexts(
+        document_ir=document_ir,
+        kg_config=kg_config,
+        sfi_final_records=sfi_final_records,
+    )
     sfi_final_summary = _build_sfi_final_summary(
         eligible_merge_group_count=len(eligible_merge_groups),
         excluded_conflict_group_count=len(sfi_merge_report.conflict_groups),
@@ -1048,6 +1229,10 @@ def mint_final_sfi_ids(
     )
 
     make_dir(kg_dirs.root)
+    write_to_json(
+        fp=kg_dirs.root / "sfi_final_contexts.json",
+        json_info=[context.model_dump(mode="json") for context in sfi_final_contexts],
+    )
     write_to_json(
         fp=kg_dirs.root / "sfi_final_records.json",
         json_info=[record.model_dump(mode="json") for record in sfi_final_records],
