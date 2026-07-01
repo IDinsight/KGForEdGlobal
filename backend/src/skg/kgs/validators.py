@@ -25,6 +25,11 @@ from skg.kgs.schemas import (
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 
+_ACTIVE_OUTLINE_STACK_PARENT_REASON = "active_outline_stack_parent"
+_CODE_PARENT_HINT_REASON = "code_parent_hint"
+_SAME_SOURCE_CONTEXT_KEY_REASON = "same_source_context_key"
+_SAME_TABLE_CONTEXT_REASON = "same_table_context"
+_SAME_TABLE_IMMEDIATE_PARENT_REASON = "same_table_immediate_parent"
 _SOURCE_VISIBLE_DIRECT_PARENT_REASON = "source_visible_direct_parent"
 
 
@@ -332,6 +337,100 @@ def _build_table_row_visible_text_by_index(window: ExtractionWindow) -> dict[int
     return text_by_index
 
 
+def _candidate_has_direct_code_parent_match(
+    *, candidate: SFIHasChildParentCandidate, child_context: Any
+) -> bool:
+    """Check whether a parent candidate is a direct hierarchical code prefix.
+
+    Parameters
+    ----------
+    candidate
+        Parent candidate being evaluated.
+    child_context
+        Final child SFI context from the bounded hasChild request.
+
+    Returns
+    -------
+    bool
+        True when both child and parent have normalized statement codes and the parent
+        code is an exact dot-delimited prefix of the child code.
+    """
+
+    child_code = _normalize_code_for_parent_match(
+        getattr(child_context, "normalized_statement_code", None)
+        or getattr(child_context, "statement_code", None)
+    )
+
+    if not child_code:
+        child_code = _extract_leading_code_for_parent_match(
+            getattr(child_context, "description", None)
+        )
+
+    if not child_code:
+        for source_text in getattr(child_context, "candidate_source_texts", []) or []:
+            child_code = _extract_leading_code_for_parent_match(source_text)
+
+            if child_code:
+                break
+
+    parent_code = _normalize_code_for_parent_match(
+        candidate.normalized_statement_code or candidate.statement_code
+    )
+    return bool(child_code and parent_code and child_code.startswith(f"{parent_code}."))
+
+
+def _candidate_has_strong_direct_parent_evidence(
+    *, candidate: SFIHasChildParentCandidate, child_context: Any
+) -> bool:
+    """Check whether a selected non-root parent has strong direct-parent evidence.
+
+    This guard prevents `source_visible_direct_parent` false positives from forcing a
+    child onto a wrong-topic parent when the selected non-root parent has stronger
+    code-local or table-local direct-parent evidence. It does not make broad semantic
+    similarity, page overlap, or same-window proximity sufficient by themselves.
+
+    Parameters
+    ----------
+    candidate
+        Parent candidate selected by the LLM response.
+    child_context
+        Final child SFI context from the bounded hasChild request.
+
+    Returns
+    -------
+    bool
+        True when the selected candidate has code-parent evidence, an exact
+        hierarchical code-prefix match, or strong local source hierarchy evidence.
+    """
+
+    if candidate.is_root:
+        return False
+
+    evidence_reasons = set(candidate.evidence_reasons or [])
+
+    if _CODE_PARENT_HINT_REASON in evidence_reasons:
+        return True
+
+    if _candidate_has_direct_code_parent_match(
+        candidate=candidate, child_context=child_context
+    ):
+        return True
+
+    if _SAME_TABLE_IMMEDIATE_PARENT_REASON in evidence_reasons:
+        return True
+
+    if (
+        _ACTIVE_OUTLINE_STACK_PARENT_REASON in evidence_reasons
+        and _SAME_TABLE_CONTEXT_REASON in evidence_reasons
+    ):
+        return True
+
+    return (
+        _ACTIVE_OUTLINE_STACK_PARENT_REASON in evidence_reasons
+        and _SAME_SOURCE_CONTEXT_KEY_REASON in evidence_reasons
+    )
+
+
 def _child_has_viable_source_visible_parent(
     *, child_id: str, resolution_request: SFIHasChildResolutionRequest
 ) -> bool:
@@ -368,6 +467,31 @@ def _child_has_viable_source_visible_parent(
         )
 
     return False
+
+
+def _extract_leading_code_for_parent_match(value: Any) -> str:
+    """Extract a leading dot-delimited statement code from visible text.
+
+    Parameters
+    ----------
+    value
+        Text that may begin with a source-visible statement code.
+
+    Returns
+    -------
+    str
+        Normalized leading code when present, otherwise an empty string.
+    """
+
+    if value is None:
+        return ""
+
+    match = re.match(r"^\s*([A-Za-z]+\d+(?:\s*\.\s*\d+)+)\.?", str(value))
+
+    if match is None:
+        return ""
+
+    return _normalize_code_for_parent_match(match.group(1))
 
 
 def _is_ordered_token_subsequence(
@@ -414,6 +538,27 @@ def _is_ordered_token_subsequence(
         source_index += 1
 
     return True
+
+
+def _normalize_code_for_parent_match(value: Any) -> str:
+    """Normalize a source or finalization code for parent-prefix comparison.
+
+    Parameters
+    ----------
+    value
+        Raw or normalized statement code value.
+
+    Returns
+    -------
+    str
+        Lowercase code with whitespace removed and leading/trailing dot delimiters
+        stripped. Empty input returns an empty string.
+    """
+
+    if value is None:
+        return ""
+
+    return re.sub(r"\s+", "", str(value).casefold()).strip(".")
 
 
 def _normalize_statement_type_key(value: str) -> str:
@@ -1087,6 +1232,10 @@ def _validate_has_child_parent_selection_policy(
         more SFI parents.
     """
 
+    child_context_by_child_id = {
+        str(parent_set.child_context.final_sfi_uuid): parent_set.child_context
+        for parent_set in resolution_request.child_parent_sets
+    }
     parent_candidates_by_child_id = {
         str(parent_set.child_context.final_sfi_uuid): {
             candidate.endpoint_id: candidate
@@ -1148,6 +1297,7 @@ def _validate_has_child_parent_selection_policy(
             )
 
         _validate_resolved_child_prefers_source_visible_parent(
+            child_context=child_context_by_child_id.get(child_id),
             child_id=child_id,
             parent_candidates_by_id=parent_candidates_by_child_id.get(child_id, {}),
             selected_parent_ids=selected_parent_ids,
@@ -1184,23 +1334,23 @@ def _validate_header_only_source_location(
 
 def _validate_resolved_child_prefers_source_visible_parent(
     *,
+    child_context: Any,
     child_id: str,
     parent_candidates_by_id: dict[str, SFIHasChildParentCandidate],
     selected_parent_ids: set[str],
 ) -> None:
-    """Validate that resolved children do not ignore visible direct parents.
+    """Validate that resolved children do not choose weak parents over visible parents.
 
-    Source-visible direct-parent evidence is added only to candidates that already
-    satisfy the configured direct parent statement-type policy and have strong local
-    source hierarchy support, such as same-row table context, source-scope grouping,
-    active outline evidence, or nearby source-order grouping evidence. When such a
-    candidate is present, a resolved response must choose from those source-visible
-    candidates rather than choosing the framework root or a weaker non-root candidate
-    whose support is only topical, semantic, page/window proximity, or inferred code
-    evidence.
+    Source-visible direct-parent evidence is a strong signal against root fallback and
+    weak semantic/topic fallback. It is not an absolute veto over a selected non-root
+    parent that has stronger direct-parent evidence, such as a code-parent hint, an
+    exact hierarchical code-prefix match, same-row table evidence, or active local
+    outline plus matching table/source-context evidence.
 
     Parameters
     ----------
+    child_context
+        Final child SFI context from the bounded hasChild request.
     child_id
         Final SFI UUID string for the child being validated.
     parent_candidates_by_id
@@ -1211,8 +1361,8 @@ def _validate_resolved_child_prefers_source_visible_parent(
     Raises
     ------
     QualityError
-        If the response selects a weaker parent while a source-visible direct parent
-        candidate is available.
+        If the response selects only root, nearby, same-topic, or semantic parents
+        while a source-visible direct-parent candidate is available.
     """
 
     source_visible_parent_ids = {
@@ -1240,19 +1390,37 @@ def _validate_resolved_child_prefers_source_visible_parent(
     ):
         return
 
-    selected_weaker_parent_ids = sorted(
-        endpoint_id
-        for endpoint_id in selected_parent_ids
-        if endpoint_id not in source_visible_parent_ids
-    )
+    selected_weak_parent_ids = []
+
+    for endpoint_id in selected_parent_ids:
+        candidate = parent_candidates_by_id.get(endpoint_id)
+
+        if candidate is None:
+            continue
+
+        if endpoint_id in source_visible_parent_ids:
+            continue
+
+        if _candidate_has_strong_direct_parent_evidence(
+            candidate=candidate, child_context=child_context
+        ):
+            continue
+
+        selected_weak_parent_ids.append(endpoint_id)
+
+    if not selected_weak_parent_ids:
+        return
+
     raise QualityError(
-        f"hasChild response for child {child_id!r} selected weaker parent "
-        f"endpoint IDs {selected_weaker_parent_ids}, but the bounded candidate "
-        f"set includes source-visible direct parent endpoint IDs "
+        f"hasChild response for child {child_id!r} selected weak parent "
+        f"endpoint IDs {sorted(selected_weak_parent_ids)}, but the bounded "
+        f"candidate set includes source-visible direct parent endpoint IDs "
         f"{sorted(source_visible_parent_ids)}. Select the source-visible direct "
-        f"parent candidate unless it is not truly direct, and explain any "
-        f"source/code conflict. Do not choose a root, nearby, same-topic, or "
-        f"semantic parent over a source-visible direct parent."
+        f"parent, or select a non-root candidate with strong direct-parent "
+        f"evidence such as a code-parent hint, exact code-prefix match, "
+        f"same-row table evidence, or active local outline plus matching "
+        f"table/source-context evidence. Do not choose a root, nearby, "
+        f"same-topic, or semantic parent over a source-visible direct parent."
     )
 
 
