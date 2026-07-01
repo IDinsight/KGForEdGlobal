@@ -507,6 +507,23 @@ def _choose_language(
     return languages[0] if languages else kg_config.metadata.languages[0]
 
 
+def _format_controlled_scope_parts(scope_parts: Sequence[tuple[str, str]]) -> str:
+    """Format ordered controlled-scope parts into a stable string.
+
+    Parameters
+    ----------
+    scope_parts
+        Ordered `(scope_label, scope_value)` pairs parsed from a scope key.
+
+    Returns
+    -------
+    str
+        Stable pipe-delimited scope string.
+    """
+
+    return "|".join(f"{label}:{value}" for label, value in scope_parts)
+
+
 def _hash_text(*, n_hex: int, value: str) -> str:
     """Hash normalized text with a stable SHA-256 digest.
 
@@ -527,21 +544,21 @@ def _hash_text(*, n_hex: int, value: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:n_hex]
 
 
-def _parse_controlled_scope_key(scope_key: str | None) -> dict[str, str]:
-    """Parse a controlled-value scope key into named scope parts.
+def _parse_controlled_scope_parts(scope_key: str | None) -> list[tuple[str, str]]:
+    """Parse a controlled-value scope key into ordered scope parts.
 
     Parameters
     ----------
     scope_key
-        Scope key such as `grade:primary one|theme:number and numeration`.
+        Scope key such as `level:grade 4|strand:number`.
 
     Returns
     -------
-    dict[str, str]
-        Parsed non-empty scope parts keyed by scope label.
+    list[tuple[str, str]]
+        Parsed non-empty scope parts in source-key order.
     """
 
-    parts: dict[str, str] = {}
+    parts: list[tuple[str, str]] = []
 
     for raw_part in str(scope_key or "").split("|"):
         if ":" not in raw_part:
@@ -552,7 +569,7 @@ def _parse_controlled_scope_key(scope_key: str | None) -> dict[str, str]:
         value_clean = value.strip()
 
         if key_clean and value_clean:
-            parts[key_clean] = value_clean
+            parts.append((key_clean, value_clean))
 
     return parts
 
@@ -784,10 +801,10 @@ def _with_controlled_scope_split_audits(
 
     Controlled organizer values should not silently split into multiple final SFIs
     solely because an upstream source-context path was noisy. This audit flags cases
-    where the same canonical controlled value and statement type appears multiple times
-    within the same grade but under different recovered parent theme scopes. It does
-    not merge or block records; it preserves deterministic finalization while making
-    suspicious scope fragmentation visible before relationship resolution.
+    where the same canonical controlled value and statement type appears under the same
+    ancestor scope but across multiple immediate parent scope values. It does not merge
+    or block records; it preserves deterministic finalization while making suspicious
+    scope fragmentation visible before relationship resolution.
 
     Parameters
     ----------
@@ -810,16 +827,18 @@ def _with_controlled_scope_split_audits(
         ):
             continue
 
-        scope_parts = _parse_controlled_scope_key(record.canonical_statement_scope_key)
-        grade_scope = scope_parts.get("grade")
+        scope_parts = _parse_controlled_scope_parts(
+            record.canonical_statement_scope_key
+        )
 
-        if not grade_scope:
+        if len(scope_parts) < 2:
             continue
 
+        ancestor_scope_key = _format_controlled_scope_parts(scope_parts[:-1])
         family_key = (
             record.statement_type,
             record.canonical_statement_value_key,
-            grade_scope,
+            ancestor_scope_key,
         )
         records_by_scope_family.setdefault(family_key, []).append(record)
 
@@ -827,25 +846,34 @@ def _with_controlled_scope_split_audits(
     notes_by_record_id: dict[uuid.UUID, str] = {}
 
     for family_records in records_by_scope_family.values():
-        theme_scopes = {
-            _parse_controlled_scope_key(record.canonical_statement_scope_key).get(
-                "theme", ""
+        full_scope_keys = {
+            _format_controlled_scope_parts(
+                _parse_controlled_scope_parts(record.canonical_statement_scope_key)
             )
             for record in family_records
         }
-        theme_scopes.discard("")
+        immediate_parent_scope_keys = {
+            _format_controlled_scope_parts(
+                [
+                    _parse_controlled_scope_parts(record.canonical_statement_scope_key)[
+                        -1
+                    ]
+                ]
+            )
+            for record in family_records
+        }
 
-        if len(theme_scopes) <= 1:
+        if len(full_scope_keys) <= 1 or len(immediate_parent_scope_keys) <= 1:
             continue
 
         family_record_ids = sorted(
             str(record.final_sfi_uuid) for record in family_records
         )
         audit_note = (
-            f"Same controlled statement value and grade appears across multiple "
-            f"theme scope keys; review upstream source-context recovery before "
-            f"accepting these as distinct organizer SFIs. Peer final_sfi_uuid values: "
-            f"{family_record_ids}."
+            f"Same controlled statement value and ancestor scope appears across "
+            f"multiple immediate parent scope keys; review upstream source-context "
+            f"recovery before accepting these as distinct organizer SFIs. Peer "
+            f"final_sfi_uuid values: {family_record_ids}."
         )
 
         for record in family_records:

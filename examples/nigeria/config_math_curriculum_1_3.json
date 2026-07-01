@@ -79,7 +79,7 @@
 					"Topic"
 				]
 			},
-      "sfi_has_child_statement_type_hierarchy": [
+			"sfi_has_child_statement_type_hierarchy": [
 				"Grade",
 				"Theme",
 				"Sub-Theme",
@@ -148,7 +148,7 @@
 						"Theme",
 						"theme"
 					],
-					"controlled_value_scope": "nearest_grade",
+					"controlled_value_scope": "nearest_parent_values",
 					"controlled_values": [
 						{
 							"canonical_value": "NUMBER AND NUMERATION",
@@ -202,7 +202,10 @@
 					],
 					"description": "Visible Nigeria Mathematics theme heading or organizer.",
 					"normalized_statement_type": "Standard Grouping",
-					"statement_type": "Theme"
+					"statement_type": "Theme",
+					"controlled_value_scope_parent_statement_types": [
+						"Grade"
+					]
 				},
 				{
 					"aliases": [
@@ -217,7 +220,7 @@
 						"Sub Theme",
 						"sub theme"
 					],
-					"controlled_value_scope": "nearest_grade_theme",
+					"controlled_value_scope": "nearest_parent_values",
 					"controlled_values": [
 						{
 							"canonical_value": "Whole Number",
@@ -310,7 +313,11 @@
 					],
 					"description": "Visible Nigeria Mathematics sub-theme heading or organizer.",
 					"normalized_statement_type": "Standard Grouping",
-					"statement_type": "Sub-Theme"
+					"statement_type": "Sub-Theme",
+					"controlled_value_scope_parent_statement_types": [
+						"Grade",
+						"Theme"
+					]
 				},
 				{
 					"aliases": [

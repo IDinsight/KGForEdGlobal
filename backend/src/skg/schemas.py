@@ -138,7 +138,7 @@ def validate_bbox_order(bbox: list[float]) -> list[float]:
 # Common fields with descriptions.
 _BCP47Str = Annotated[str, AfterValidator(_validate_bcp47)]
 _ControlledStatementValueDedupScope = Literal[
-    "document", "nearest_grade", "nearest_grade_theme", "source_context"
+    "document", "nearest_parent_values", "source_context"
 ]
 BBox = Annotated[
     list[float],
@@ -284,9 +284,17 @@ class _AcademicStandardStatementTypePolicyItem(BaseSchema):
         default="source_context",
         description=(
             "Scope used when controlled_values canonicalize organizer text for "
-            "deduplication. Use 'document' for document-wide values such as grades, "
-            "'nearest_grade' for grade-scoped themes, and 'nearest_grade_theme' for "
-            "theme-scoped sub-themes."
+            "deduplication. Use 'document' for document-wide values, "
+            "'nearest_parent_values' for values scoped by configured parent "
+            "statement types, and 'source_context' for source-local values."
+        ),
+    )
+    controlled_value_scope_parent_statement_types: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Ordered parent statement_type labels used when controlled_value_scope is "
+            "'nearest_parent_values'. The resulting scope key is built from these "
+            "parent values in configured order."
         ),
     )
     controlled_values: list[_AcademicStandardControlledValueItem] = Field(
@@ -324,6 +332,50 @@ class _AcademicStandardStatementTypePolicyItem(BaseSchema):
         """
 
         return re.sub(r"[^0-9a-z]+", " ", str(value or "").casefold()).strip()
+
+    @field_validator("controlled_value_scope_parent_statement_types")
+    @classmethod
+    def validate_controlled_value_scope_parent_statement_types(
+        cls, v: list[str]
+    ) -> list[str]:
+        """Clean controlled-value parent scope statement types.
+
+        Parameters
+        ----------
+        v
+            Parent statement_type labels used to build a controlled-value scope key.
+
+        Returns
+        -------
+        list[str]
+            Cleaned parent statement_type labels in stable order.
+
+        Raises
+        ------
+        TypeError
+            If any parent statement_type label is not a string.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for statement_type in v or []:
+            if not isinstance(statement_type, str):
+                raise TypeError(
+                    "_AcademicStandardStatementTypePolicyItem."
+                    "controlled_value_scope_parent_statement_types must contain "
+                    "only strings."
+                )
+
+            statement_type_clean = statement_type.strip()
+
+            if not statement_type_clean or statement_type_clean in seen:
+                continue
+
+            cleaned.append(statement_type_clean)
+            seen.add(statement_type_clean)
+
+        return cleaned
 
     @field_validator("controlled_values")
     @classmethod
@@ -467,6 +519,42 @@ class _AcademicStandardStatementTypePolicyItem(BaseSchema):
         """
 
         return _strip_and_require_non_empty_str(v)
+
+    @model_validator(mode="after")
+    def validate_controlled_value_scope_config(self) -> Self:
+        """Validate controlled-value scope fields for this statement type.
+
+        Returns
+        -------
+        Self
+            Validated statement-type policy item.
+
+        Raises
+        ------
+        ValueError
+            If nearest_parent_values is selected without configured parent statement
+            types, or if parent statement types are configured for another scope.
+        """
+
+        if (
+            self.controlled_value_scope == "nearest_parent_values"
+            and not self.controlled_value_scope_parent_statement_types
+        ):
+            raise ValueError(
+                "controlled_value_scope='nearest_parent_values' requires "
+                "controlled_value_scope_parent_statement_types."
+            )
+
+        if (
+            self.controlled_value_scope != "nearest_parent_values"
+            and self.controlled_value_scope_parent_statement_types
+        ):
+            raise ValueError(
+                "controlled_value_scope_parent_statement_types may only be set when "
+                "controlled_value_scope='nearest_parent_values'."
+            )
+
+        return self
 
 
 class _ContextHeadingRule(BaseSchema):
@@ -896,63 +984,6 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
     sfi_extraction_instructions: str
     sfi_has_child_instructions: str
 
-    @staticmethod
-    def _clean_parent_statement_types(
-        parent_statement_types: list[str] | None,
-    ) -> list[str]:
-        """Validate and de-duplicate one child's parent statement_type list.
-
-        Parameters
-        ----------
-        parent_statement_types
-            Raw parent labels for a single child statement_type. None is treated as an
-            empty list (root-level child type).
-
-        Returns
-        -------
-        list[str]
-            Cleaned parent labels, de-duplicated in input order.
-
-        Raises
-        ------
-        TypeError
-            If the value is not a list, or any parent label is not a string.
-        """
-
-        if parent_statement_types is None:
-            return []
-
-        if isinstance(parent_statement_types, (str, bytes)) or not isinstance(
-            parent_statement_types, list
-        ):
-            raise TypeError(
-                "CreateKGConfig.as.sfi_has_child_parent_statement_types values "
-                "must be lists of parent statement_type strings."
-            )
-
-        parent_values: list[str] = []
-        seen_parent_values: set[str] = set()
-
-        for parent_statement_type in parent_statement_types:
-            if not isinstance(parent_statement_type, str):
-                raise TypeError(
-                    "CreateKGConfig.as.sfi_has_child_parent_statement_types "
-                    "parent labels must be strings."
-                )
-
-            parent_statement_type_clean = parent_statement_type.strip()
-
-            if (
-                not parent_statement_type_clean
-                or parent_statement_type_clean in seen_parent_values
-            ):
-                continue
-
-            parent_values.append(parent_statement_type_clean)
-            seen_parent_values.add(parent_statement_type_clean)
-
-        return parent_values
-
     @field_validator("sfi_has_child_parent_statement_types", mode="before")
     @classmethod
     def validate_sfi_has_child_parent_statement_types(
@@ -1002,9 +1033,39 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
             if not child_statement_type_clean:
                 continue
 
-            cleaned[child_statement_type_clean] = cls._clean_parent_statement_types(
-                parent_statement_types
-            )
+            if parent_statement_types is None:
+                parent_statement_types = []
+
+            if isinstance(parent_statement_types, (str, bytes)) or not isinstance(
+                parent_statement_types, list
+            ):
+                raise TypeError(
+                    "CreateKGConfig.as.sfi_has_child_parent_statement_types values "
+                    "must be lists of parent statement_type strings."
+                )
+
+            parent_values: list[str] = []
+            seen_parent_values: set[str] = set()
+
+            for parent_statement_type in parent_statement_types:
+                if not isinstance(parent_statement_type, str):
+                    raise TypeError(
+                        "CreateKGConfig.as.sfi_has_child_parent_statement_types "
+                        "parent labels must be strings."
+                    )
+
+                parent_statement_type_clean = parent_statement_type.strip()
+
+                if (
+                    not parent_statement_type_clean
+                    or parent_statement_type_clean in seen_parent_values
+                ):
+                    continue
+
+                parent_values.append(parent_statement_type_clean)
+                seen_parent_values.add(parent_statement_type_clean)
+
+            cleaned[child_statement_type_clean] = parent_values
 
         return cleaned
 

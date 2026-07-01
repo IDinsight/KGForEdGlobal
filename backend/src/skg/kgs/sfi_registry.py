@@ -43,6 +43,8 @@ class _StatementValuePolicy:
 
     alias_to_canonical: dict[str, str]
     controlled_value_scope: str
+    controlled_value_scope_parent_statement_types: tuple[str, ...]
+    root_statement_types: frozenset[str]
 
 
 def _build_block_source_context(block: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -168,39 +170,36 @@ def _build_canonical_statement_scope_key(
     if not canonical_statement_value_key or policy is None:
         return None
 
-    scope = policy.controlled_value_scope
     fallback = f"source_context:{source_context_key}"
 
-    if scope == "document":
+    if policy.controlled_value_scope == "document":
         return "document"
 
-    if scope == "source_context":
+    if policy.controlled_value_scope == "source_context":
         return fallback
 
-    grade_key = _extract_source_local_scope_value_key(
-        child_canonical_value_key=canonical_statement_value_key,
-        child_statement_type=candidate.statement_type,
-        parent_statement_type="Grade",
-        source_context_labels=source_context_labels,
-        statement_value_policies=statement_value_policies,
-    )
+    if policy.controlled_value_scope != "nearest_parent_values":
+        return fallback
 
-    if scope == "nearest_grade":
-        return f"grade:{grade_key}" if grade_key else fallback
+    scope_parts: list[str] = []
 
-    if scope == "nearest_grade_theme":
-        theme_key = _extract_source_local_scope_value_key(
+    for parent_statement_type in policy.controlled_value_scope_parent_statement_types:
+        parent_value_key = _extract_source_local_scope_value_key(
             child_canonical_value_key=canonical_statement_value_key,
             child_statement_type=candidate.statement_type,
-            parent_statement_type="Theme",
+            parent_statement_type=parent_statement_type,
             source_context_labels=source_context_labels,
             statement_value_policies=statement_value_policies,
         )
 
-        if grade_key and theme_key:
-            return f"grade:{grade_key}|theme:{theme_key}"
+        if not parent_value_key:
+            return fallback
 
-    return fallback
+        scope_parts.append(
+            f"{_build_scope_part_label(parent_statement_type)}:{parent_value_key}"
+        )
+
+    return "|".join(scope_parts) if scope_parts else fallback
 
 
 def _build_canonical_statement_value(
@@ -589,6 +588,60 @@ def _build_registry_warnings(
     ]
 
 
+def _build_root_statement_types(kg_config: CreateKGConfig) -> set[str]:
+    """Build statement types allowed to attach to the framework root.
+
+    Parameters
+    ----------
+    kg_config
+        Runtime KG configuration containing hasChild parent-type policy.
+
+    Returns
+    -------
+    set[str]
+        Statement types whose configured direct parent set is empty. When the explicit
+        parent policy is absent, the broadest statement type in the configured
+        hierarchy is treated as root-level.
+    """
+
+    parent_policy = kg_config.academic_standards.sfi_has_child_parent_statement_types
+
+    if parent_policy:
+        return {
+            child_statement_type
+            for child_statement_type, parent_statement_types in parent_policy.items()
+            if not parent_statement_types
+        }
+
+    hierarchy = kg_config.academic_standards.sfi_has_child_statement_type_hierarchy
+
+    if hierarchy:
+        return {hierarchy[0]}
+
+    if kg_config.academic_standards.statement_type_policy:
+        return {kg_config.academic_standards.statement_type_policy[0].statement_type}
+
+    return set()
+
+
+def _build_scope_part_label(statement_type: str) -> str:
+    """Build a generic controlled-scope key label from a statement type.
+
+    Parameters
+    ----------
+    statement_type
+        Source-facing statement type label.
+
+    Returns
+    -------
+    str
+        Lowercase, underscore-separated scope key label.
+    """
+
+    label = re.sub(r"[^0-9a-z]+", "_", normalize_text(statement_type)).strip("_")
+    return label or "scope"
+
+
 def _build_statement_value_policies(
     kg_config: CreateKGConfig,
 ) -> dict[str, _StatementValuePolicy]:
@@ -606,6 +659,7 @@ def _build_statement_value_policies(
     """
 
     policies: dict[str, _StatementValuePolicy] = {}
+    root_statement_types = _build_root_statement_types(kg_config)
 
     for item in kg_config.academic_standards.statement_type_policy:
         alias_to_canonical: dict[str, str] = {}
@@ -623,6 +677,10 @@ def _build_statement_value_policies(
         policies[item.statement_type] = _StatementValuePolicy(
             alias_to_canonical=alias_to_canonical,
             controlled_value_scope=item.controlled_value_scope,
+            controlled_value_scope_parent_statement_types=tuple(
+                item.controlled_value_scope_parent_statement_types
+            ),
+            root_statement_types=frozenset(root_statement_types),
         )
 
     return policies
@@ -855,7 +913,7 @@ def _extract_parent_value_key_near_label(
     child_label_index: int,
     labels: Sequence[str],
     parent_policy: _StatementValuePolicy,
-    parent_statement_type: str,
+    prefer_following_labels_first: bool,
 ) -> Optional[str]:
     """Find the nearest parent controlled value around one child label.
 
@@ -867,9 +925,11 @@ def _extract_parent_value_key_near_label(
         Source-context labels in artifact order.
     parent_policy
         Controlled-value policy for the desired parent statement type.
-    parent_statement_type
-        Parent statement type being recovered; grade-like parent labels are allowed to
-        appear after visually paired theme labels in some PDF reading orders.
+    prefer_following_labels_first
+        Whether labels after the child should be searched before labels before the
+        child. This is driven by configured root-level parent statement types rather
+        than hard-coded source labels, and handles PDFs whose visual broad heading is
+        emitted after a narrower heading by OCR/reading order.
 
     Returns
     -------
@@ -879,7 +939,7 @@ def _extract_parent_value_key_near_label(
 
     search_indexes = [child_label_index]
 
-    if parent_statement_type == "Grade":
+    if prefer_following_labels_first:
         search_indexes.extend(range(child_label_index + 1, len(labels)))
         search_indexes.extend(range(child_label_index - 1, -1, -1))
     else:
@@ -987,7 +1047,8 @@ def _extract_source_local_scope_value_key(
             child_label_index=child_label_index,
             labels=labels,
             parent_policy=parent_policy,
-            parent_statement_type=parent_statement_type,
+            prefer_following_labels_first=parent_statement_type
+            in parent_policy.root_statement_types,
         )
 
         if local_parent_value_key:
