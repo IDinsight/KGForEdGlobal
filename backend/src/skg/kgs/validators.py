@@ -329,6 +329,44 @@ def _build_table_row_visible_text_by_index(window: ExtractionWindow) -> dict[int
     return text_by_index
 
 
+def _child_has_viable_source_visible_parent(
+    *, child_id: str, resolution_request: SFIHasChildResolutionRequest
+) -> bool:
+    """Check whether an unresolved child has a visible direct parent candidate.
+
+    The relationship resolver adds `source_visible_direct_parent` only to non-root
+    candidates that already satisfy the configured direct parent statement-type policy
+    and have strong source-visible hierarchy evidence. If such a candidate exists, an
+    unresolved response is usually over-trusting inferred code hierarchy or root
+    fallback, so the response should be rejected and retried by the LLM agent.
+
+    Parameters
+    ----------
+    child_id
+        Final SFI UUID string for the child being checked.
+    resolution_request
+        Bounded hasChild parent-selection request supplied to the LLM.
+
+    Returns
+    -------
+    bool
+        True when the child has at least one non-root source-visible direct parent
+        candidate in its bounded candidate set.
+    """
+
+    for parent_set in resolution_request.child_parent_sets:
+        if str(parent_set.child_context.final_sfi_uuid) != child_id:
+            continue
+
+        return any(
+            not candidate.is_root
+            and "source_visible_direct_parent" in candidate.evidence_reasons
+            for candidate in parent_set.parent_candidates
+        )
+
+    return False
+
+
 def _is_ordered_token_subsequence(
     *, source_text_normalized: str, target_text_normalized: str
 ) -> bool:
@@ -1068,6 +1106,17 @@ def _validate_has_child_parent_selection_policy(
                     f"hasChild response for unresolved child {child_id!r} must not "
                     f"select parent endpoints; got "
                     f"{sorted(selected_parent_ids)}."
+                )
+
+            if _child_has_viable_source_visible_parent(
+                child_id=child_id, resolution_request=resolution_request
+            ):
+                raise QualityError(
+                    f"hasChild response for child {child_id!r} marked unresolved, "
+                    f"but the bounded candidate set includes a non-root candidate "
+                    f"with source_visible_direct_parent evidence. Select the "
+                    f"source-visible direct parent unless the candidate is not truly "
+                    f"a direct parent, and explain any source/code conflict."
                 )
 
             continue

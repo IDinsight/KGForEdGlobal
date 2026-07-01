@@ -53,6 +53,7 @@ from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, open_json_type, write_to_json
 
 _ROOT_EVIDENCE_REASON = "root_fallback"
+_SOURCE_VISIBLE_DIRECT_PARENT_REASON = "source_visible_direct_parent"
 
 
 @dataclass
@@ -197,6 +198,87 @@ def _add_parent_evidence(
         evidence.evidence_summary.append(evidence_summary)
 
 
+def _add_source_visible_direct_parent_evidence(
+    *,
+    evidence_by_endpoint_id: dict[str, _ParentEvidence],
+    matched_section_path_label: bool,
+    nearby_source_window: bool,
+    parent_context: SFIFinalContext,
+    same_table_context: bool,
+    source_scope_grouping: bool,
+) -> None:
+    """Add derived evidence when a candidate is visibly a direct source parent.
+
+    The LLM sees many retrieval signals. This function adds a single higher-level,
+    curriculum-agnostic signal when those retrieval signals jointly indicate that the
+    candidate is a direct parent in the source structure itself, rather than merely a
+    parent inferred from a code pattern or topic similarity.
+
+    A source-visible direct parent is intentionally conservative. It must already be
+    an allowed direct parent type, because `_evaluate_parent_child_relationship()` only
+    calls this helper after the direct statement-type policy has passed. The parent is
+    marked source-visible when any of these general source patterns applies:
+
+    - The parent and child share a table row/header context;
+    - The parent is a source-scope grouping/header for row-derived child content;
+    - The active outline parent also matches a local section-path label; or
+    - A nearby preceding grouping also matches the child's local source context.
+
+    Parameters
+    ----------
+    evidence_by_endpoint_id
+        Mutable parent evidence records keyed by selectable endpoint ID.
+    matched_section_path_label
+        Whether the candidate parent text appears in the child's recovered local
+        section path.
+    nearby_source_window
+        Whether the parent appears in a nearby preceding source window.
+    parent_context
+        Candidate parent final SFI context.
+    same_table_context
+        Whether the parent and child share cited table row/header context.
+    source_scope_grouping
+        Whether the parent is a source-scope grouping/header for row-derived child
+        content in the same source segment/window.
+    """
+
+    endpoint_id = str(parent_context.final_sfi_uuid)
+    evidence = evidence_by_endpoint_id.get(endpoint_id)
+
+    if evidence is None:
+        return
+
+    existing_reasons = evidence.evidence_reasons
+    source_visible = (
+        same_table_context
+        or source_scope_grouping
+        or (
+            "active_outline_stack_parent" in existing_reasons
+            and matched_section_path_label
+        )
+        or (
+            "nearest_preceding_grouping" in existing_reasons
+            and "statement_type_compatible" in existing_reasons
+            and nearby_source_window
+        )
+    )
+
+    if not source_visible:
+        return
+
+    _add_parent_evidence(
+        evidence_by_endpoint_id=evidence_by_endpoint_id,
+        evidence_reason=_SOURCE_VISIBLE_DIRECT_PARENT_REASON,
+        evidence_summary=(
+            "Parent is a source-visible direct parent candidate based on table, "
+            "outline-stack, section-path, or nearby source-order evidence. This "
+            "source-visible hierarchy evidence may override inconsistent inferred "
+            "code hierarchy."
+        ),
+        parent_context=parent_context,
+    )
+
+
 def _bound_parent_candidates(
     *,
     child_context: SFIFinalContext,
@@ -328,6 +410,7 @@ def _bound_parent_candidates(
         "matched_section_path_label",
         "same_table_context",
         "same_table_immediate_parent",
+        _SOURCE_VISIBLE_DIRECT_PARENT_REASON,
         "source_scope_grouping",
     }
     high_signal_candidates = [
@@ -737,6 +820,9 @@ def _build_edge(
             "doc_key": document_ir.doc_key,
             "parent_evidence_summary": parent_candidate.evidence_summary,
             "relationship_identity_key": relationship_key,
+            "source_hierarchy_audit": _relationship_code_anomaly_metadata(
+                child_context=child_context, parent_candidate=parent_candidate
+            ),
         },
         parent_endpoint_id=parent_candidate.endpoint_id,
         parent_final_sfi_uuid=parent_candidate.final_sfi_uuid,
@@ -1541,6 +1627,15 @@ def _evaluate_parent_child_relationship(
                 parent_context=parent_context,
             )
 
+    _add_source_visible_direct_parent_evidence(
+        evidence_by_endpoint_id=evidence_by_endpoint_id,
+        matched_section_path_label=matched_section_path_label,
+        nearby_source_window=nearby_source_window,
+        parent_context=parent_context,
+        same_table_context=same_table_context,
+        source_scope_grouping=source_scope_grouping,
+    )
+
 
 def _finalize_candidate_parent_set(
     *,
@@ -2218,6 +2313,7 @@ def _parent_candidate_rank(candidate: SFIHasChildParentCandidate) -> tuple[int, 
         "canonical_scope_parent_match": 110,
         "code_parent_hint": 100,
         "active_outline_stack_parent": 70,
+        _SOURCE_VISIBLE_DIRECT_PARENT_REASON: 130,
         "source_scope_grouping": 95,
         "matched_section_path_label": 90,
         "same_table_context": 80,
@@ -2300,6 +2396,65 @@ def _reachable_sfi_ids(
             stack.append(child_id)
 
     return reachable
+
+
+def _relationship_code_anomaly_metadata(
+    *, child_context: SFIFinalContext, parent_candidate: SFIHasChildParentCandidate
+) -> dict[str, Any]:
+    """Build deterministic code/source-hierarchy audit metadata for one edge.
+
+    The metadata is intentionally advisory: it does not change the edge, but it makes
+    visible when a selected source-visible parent was chosen without a matching
+    code-parent hint, or when a selected coded parent differs from the generic
+    dot-prefix implied by the child code.
+
+    Parameters
+    ----------
+    child_context
+        Child final SFI context for the edge.
+    parent_candidate
+        Selected parent candidate used to build the edge.
+
+    Returns
+    -------
+    dict[str, Any]
+        Metadata fields describing source-visible parent use and detectable code
+        conflicts.
+    """
+
+    child_code = normalize_code(child_context.normalized_statement_code)
+
+    # Extract the generic immediate-parent prefix for a dotted child code.
+    code_implied_parent_code = None
+
+    if child_code and "." in child_code:
+        code_implied_parent_code = child_code.rsplit(".", 1)[0].strip(".") or None
+
+    parent_code = normalize_code(parent_candidate.normalized_statement_code)
+
+    source_visible_parent_used = (
+        _SOURCE_VISIBLE_DIRECT_PARENT_REASON in parent_candidate.evidence_reasons
+    )
+    code_parent_hint_used = "code_parent_hint" in parent_candidate.evidence_reasons
+
+    selected_coded_parent_conflicts = bool(
+        code_implied_parent_code
+        and parent_code
+        and parent_code != code_implied_parent_code
+    )
+    return {
+        "code_implied_parent_code": code_implied_parent_code,
+        "code_parent_hint_used": code_parent_hint_used,
+        "selected_parent_code": parent_code,
+        "selected_coded_parent_conflicts_with_child_code": selected_coded_parent_conflicts,
+        "source_code_anomaly_visible_parent_used": bool(
+            source_visible_parent_used and selected_coded_parent_conflicts
+        ),
+        "source_visible_parent_used": source_visible_parent_used,
+        "source_visible_parent_without_code_hint": bool(
+            source_visible_parent_used and child_code and not code_parent_hint_used
+        ),
+    }
 
 
 def _rewrite_resolution_progress_files(

@@ -678,7 +678,9 @@ def resolve_sfi_has_child_parents(
 - DocumentIR section-path labels are evidence, not a guaranteed clean ancestor chain.
 - In each child_context, `section_path_labels` is ordered from most recent/local source context to older/broader context after bounded truncation. Earlier labels in that list are usually more useful for direct parent selection; later labels may be stale carryover and should be treated cautiously.
 - `active_outline_stack_parent` evidence means source-order scanning of finalized SFIs found the candidate as the active immediate parent type under the configured statement-type hierarchy. This is a strong candidate-preservation signal for same-page or same-window headings, but it is still not automatic truth; confirm against the child context, parent context, runtime hierarchy instructions, codes, and source locality.
-- For coded children with hierarchical codes, avoid sibling fallback. If the exact immediate parent implied by the code is unavailable, prefer the nearest broader compatible ancestor over a sibling of the missing parent type.
+- Source-visible hierarchy outranks inferred code hierarchy when they conflict. Codes are strong evidence, but source-visible table rows/spans, continuation rows, active local outline headings, and local section-path evidence are stronger when they identify a direct parent of the correct type.
+- For coded children with hierarchical codes, avoid sibling fallback based only on code or topic. However, do not mark a child unresolved solely because the exact code-implied parent is missing when a supplied candidate has `source_visible_direct_parent` evidence and the correct direct parent type.
+- If a source-visible direct parent is supplied, select it over root fallback even when the child code appears inconsistent with that visible parent. Explain the source/code conflict briefly in the reason instead of inventing a missing parent.
 
 ## Output contract
 - Copy request_id exactly.
