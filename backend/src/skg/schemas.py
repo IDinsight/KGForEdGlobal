@@ -984,6 +984,63 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
     sfi_extraction_instructions: str
     sfi_has_child_instructions: str
 
+    @staticmethod
+    def _clean_has_child_parent_values(
+        parent_statement_types: list[str] | None,
+    ) -> list[str]:
+        """Clean and de-duplicate one child type's allowed parent labels.
+
+        Parameters
+        ----------
+        parent_statement_types
+            Raw list of allowed direct parent statement_type labels for a single child
+            statement_type. `None` is treated as an empty list.
+
+        Returns
+        -------
+        list[str]
+            Stripped, non-blank parent labels de-duplicated in input order.
+
+        Raises
+        ------
+        TypeError
+            If the value is not a list or any parent label is not a string.
+        """
+
+        if parent_statement_types is None:
+            parent_statement_types = []
+
+        if isinstance(parent_statement_types, (str, bytes)) or not isinstance(
+            parent_statement_types, list
+        ):
+            raise TypeError(
+                "CreateKGConfig.as.sfi_has_child_parent_statement_types values "
+                "must be lists of parent statement_type strings."
+            )
+
+        parent_values: list[str] = []
+        seen_parent_values: set[str] = set()
+
+        for parent_statement_type in parent_statement_types:
+            if not isinstance(parent_statement_type, str):
+                raise TypeError(
+                    "CreateKGConfig.as.sfi_has_child_parent_statement_types "
+                    "parent labels must be strings."
+                )
+
+            parent_statement_type_clean = parent_statement_type.strip()
+
+            if (
+                not parent_statement_type_clean
+                or parent_statement_type_clean in seen_parent_values
+            ):
+                continue
+
+            parent_values.append(parent_statement_type_clean)
+            seen_parent_values.add(parent_statement_type_clean)
+
+        return parent_values
+
     @field_validator("sfi_has_child_parent_statement_types", mode="before")
     @classmethod
     def validate_sfi_has_child_parent_statement_types(
@@ -1033,39 +1090,9 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
             if not child_statement_type_clean:
                 continue
 
-            if parent_statement_types is None:
-                parent_statement_types = []
-
-            if isinstance(parent_statement_types, (str, bytes)) or not isinstance(
-                parent_statement_types, list
-            ):
-                raise TypeError(
-                    "CreateKGConfig.as.sfi_has_child_parent_statement_types values "
-                    "must be lists of parent statement_type strings."
-                )
-
-            parent_values: list[str] = []
-            seen_parent_values: set[str] = set()
-
-            for parent_statement_type in parent_statement_types:
-                if not isinstance(parent_statement_type, str):
-                    raise TypeError(
-                        "CreateKGConfig.as.sfi_has_child_parent_statement_types "
-                        "parent labels must be strings."
-                    )
-
-                parent_statement_type_clean = parent_statement_type.strip()
-
-                if (
-                    not parent_statement_type_clean
-                    or parent_statement_type_clean in seen_parent_values
-                ):
-                    continue
-
-                parent_values.append(parent_statement_type_clean)
-                seen_parent_values.add(parent_statement_type_clean)
-
-            cleaned[child_statement_type_clean] = parent_values
+            cleaned[child_statement_type_clean] = cls._clean_has_child_parent_values(
+                parent_statement_types
+            )
 
         return cleaned
 
