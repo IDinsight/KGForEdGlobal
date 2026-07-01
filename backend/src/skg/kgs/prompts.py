@@ -667,6 +667,7 @@ def resolve_sfi_has_child_parents(
 ## Parent-selection policy
 - Prefer the most direct source-grounded parent, not merely the broadest or most nearby candidate.
 - Treat code-parent hints, active outline-stack parents, matched section labels, same table context, same source context, and nearest preceding grouping evidence as retrieval evidence, not as automatic truth.
+- When `canonical_statement_scope_key`, `canonical_statement_value`, or `canonical_statement_value_key` fields are present, treat them as deterministic organizer-scope evidence from finalization. Prefer candidates with `canonical_scope_parent_match` evidence and do not select a parent whose statement type and canonical value conflict with the child's canonical scope.
 - The StandardsFramework root is a valid direct parent only when the child is a top-level framework item or no source-supported SFI parent is available.
 - Do not select the StandardsFramework root merely to guarantee reachability when one or more semantic SFI parents are selected.
 - Do not choose a parent by source code alone. Same-code/different-content audit flags mean endpoints must remain distinct.

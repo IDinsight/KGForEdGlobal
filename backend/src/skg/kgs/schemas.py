@@ -1651,6 +1651,27 @@ class SFIHasChildFinalContext(BaseSchema):
 
     audit_flags: list[str] = Field(default_factory=list)
     candidate_source_texts: list[str] = Field(default_factory=list)
+    canonical_statement_scope_key: Optional[str] = Field(
+        default=None,
+        description=(
+            "Controlled-value scope key inherited from final SFI finalization, when "
+            "available."
+        ),
+    )
+    canonical_statement_value: Optional[str] = Field(
+        default=None,
+        description=(
+            "Canonical controlled statement value inherited from final SFI "
+            "finalization, when available."
+        ),
+    )
+    canonical_statement_value_key: Optional[str] = Field(
+        default=None,
+        description=(
+            "Normalized canonical controlled statement value key inherited from final "
+            "SFI finalization, when available."
+        ),
+    )
     description: str = Field(description="Final SFI description.", min_length=1)
     final_sfi_uuid: UUID = Field(description="Final SFI UUID.")
     normalized_statement_code: Optional[str] = Field(default=None)
@@ -1674,6 +1695,21 @@ class SFIHasChildFinalContext(BaseSchema):
 class SFIHasChildParentCandidate(BaseSchema):
     """One bounded parent endpoint candidate for a finalized child SFI."""
 
+    canonical_statement_scope_key: Optional[str] = Field(
+        default=None,
+        description="Parent candidate controlled-value scope key, when available.",
+    )
+    canonical_statement_value: Optional[str] = Field(
+        default=None,
+        description="Parent candidate canonical controlled statement value, when available.",
+    )
+    canonical_statement_value_key: Optional[str] = Field(
+        default=None,
+        description=(
+            "Parent candidate normalized canonical controlled statement value key, "
+            "when available."
+        ),
+    )
     description: str = Field(description="Parent candidate display text.", min_length=1)
     endpoint_id: str = Field(description="Selectable parent endpoint ID.", min_length=1)
     endpoint_kind: Literal["StandardsFramework", "StandardsFrameworkItem"]

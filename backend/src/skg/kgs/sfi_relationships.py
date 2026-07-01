@@ -9,6 +9,7 @@ relationship-resolution artifacts.
 
 # Standard Library
 import hashlib
+import re
 import uuid
 
 from collections import defaultdict
@@ -167,6 +168,9 @@ def _add_parent_evidence(
     if endpoint_id not in evidence_by_endpoint_id:
         evidence_by_endpoint_id[endpoint_id] = _ParentEvidence(
             SFIHasChildParentCandidate(
+                canonical_statement_scope_key=parent_context.canonical_statement_scope_key,
+                canonical_statement_value=parent_context.canonical_statement_value,
+                canonical_statement_value_key=parent_context.canonical_statement_value_key,
                 description=parent_context.description,
                 endpoint_id=endpoint_id,
                 endpoint_kind="StandardsFrameworkItem",
@@ -297,6 +301,9 @@ def _bound_parent_candidates(
     """
 
     root_candidate = SFIHasChildParentCandidate(
+        canonical_statement_scope_key=None,
+        canonical_statement_value=None,
+        canonical_statement_value_key=None,
         description=kg_config.metadata.framework_title or "StandardsFramework root",
         endpoint_id=str(framework_uuid),
         endpoint_kind="StandardsFramework",
@@ -316,6 +323,7 @@ def _bound_parent_candidates(
     sorted_candidates = sorted(non_root_candidates, key=_parent_candidate_rank)
     high_signal_reasons = {
         "active_outline_stack_parent",
+        "canonical_scope_parent_match",
         "code_parent_hint",
         "matched_section_path_label",
         "same_table_context",
@@ -555,16 +563,22 @@ def _build_candidate_parent_sets(
         if outline_parent_context := outline_parent_by_child_uuid.get(
             child_context.final_sfi_uuid
         ):
-            _add_parent_evidence(
-                evidence_by_endpoint_id=evidence_by_endpoint_id,
-                evidence_reason="active_outline_stack_parent",
-                evidence_summary=(
-                    "Parent is the active preceding finalized SFI of the configured "
-                    "immediate parent statement type in source order. This is retrieval "
-                    "evidence only; the LLM must confirm the direct hasChild parent."
-                ),
-                parent_context=outline_parent_context,
-            )
+            if not _canonical_scope_conflicts_statement_value(
+                child_scope_key=child_context.canonical_statement_scope_key,
+                parent_statement_type=outline_parent_context.statement_type,
+                parent_value_key=outline_parent_context.canonical_statement_value_key,
+            ):
+                _add_parent_evidence(
+                    evidence_by_endpoint_id=evidence_by_endpoint_id,
+                    evidence_reason="active_outline_stack_parent",
+                    evidence_summary=(
+                        "Parent is the active preceding finalized SFI of the configured "
+                        "immediate parent statement type in source order. This is "
+                        "retrieval evidence only; the LLM must confirm the direct "
+                        "hasChild parent."
+                    ),
+                    parent_context=outline_parent_context,
+                )
 
         for parent_context in contexts:
             if parent_context.final_sfi_uuid == child_context.final_sfi_uuid:
@@ -590,6 +604,29 @@ def _build_candidate_parent_sets(
         parent_sets.append(parent_set)
 
     return parent_sets
+
+
+def _build_controlled_scope_part_label(statement_type: str | None) -> str:
+    """Build a generic controlled-scope key label from a statement type.
+
+    This mirrors the controlled-value scope labels generated during SFI registry
+    construction without depending on any one curriculum's organizer names. For
+    example, labels such as `Grade`, `Theme`, and `Sub-Theme` become `grade`, `theme`,
+    and `sub_theme` respectively.
+
+    Parameters
+    ----------
+    statement_type
+        Source-facing statement type label.
+
+    Returns
+    -------
+    str
+        Lowercase underscore-separated scope-key label.
+    """
+
+    label = re.sub(r"[^0-9a-z]+", "_", normalize_text(statement_type or "")).strip("_")
+    return label or "scope"
 
 
 def _build_direct_parent_statement_types(
@@ -873,6 +910,9 @@ def _build_edges_from_responses(
             # Build unresolved edge to root.
             if child_resolution.unresolved:
                 root_candidate = SFIHasChildParentCandidate(
+                    canonical_statement_scope_key=None,
+                    canonical_statement_value=None,
+                    canonical_statement_value_key=None,
                     description="StandardsFramework root fallback",
                     endpoint_id=str(framework_uuid),
                     endpoint_kind="StandardsFramework",
@@ -1042,6 +1082,9 @@ def _build_final_contexts(
             SFIHasChildFinalContext(
                 audit_flags=record.audit_flags,
                 candidate_source_texts=record.candidate_source_texts,
+                canonical_statement_scope_key=record.canonical_statement_scope_key,
+                canonical_statement_value=record.canonical_statement_value,
+                canonical_statement_value_key=record.canonical_statement_value_key,
                 description=record.description,
                 final_sfi_uuid=record.final_sfi_uuid,
                 normalized_statement_code=record.normalized_statement_code,
@@ -1067,6 +1110,79 @@ def _build_final_contexts(
     )
 
     return contexts
+
+
+def _canonical_scope_conflicts_statement_value(
+    *,
+    child_scope_key: str | None,
+    parent_statement_type: str | None,
+    parent_value_key: str | None,
+) -> bool:
+    """Check whether a scope key names a different value for a parent type.
+
+    Parameters
+    ----------
+    child_scope_key
+        Canonical scope key from the child, such as `level:grade_4|strand:number`.
+    parent_statement_type
+        Statement type label of the possible parent.
+    parent_value_key
+        Normalized canonical value key of the possible parent.
+
+    Returns
+    -------
+    bool
+        True when the child scope key contains the parent statement-type label but
+        does not contain the supplied parent value for that label.
+    """
+
+    if not child_scope_key or not parent_statement_type or not parent_value_key:
+        return False
+
+    scope_label = _build_controlled_scope_part_label(parent_statement_type)
+    scoped_values = [
+        value
+        for label, value in _parse_controlled_scope_parts(child_scope_key)
+        if label == scope_label
+    ]
+
+    if not scoped_values:
+        return False
+
+    return parent_value_key not in scoped_values
+
+
+def _canonical_scope_matches_statement_value(
+    *,
+    child_scope_key: str | None,
+    parent_statement_type: str | None,
+    parent_value_key: str | None,
+) -> bool:
+    """Check whether a scope key names the supplied parent type and value.
+
+    Parameters
+    ----------
+    child_scope_key
+        Canonical scope key from the child, when available.
+    parent_statement_type
+        Statement type label of the possible parent.
+    parent_value_key
+        Normalized canonical value key of the possible parent.
+
+    Returns
+    -------
+    bool
+        True when the scope key contains a matching statement-type/value part.
+    """
+
+    if not child_scope_key or not parent_statement_type or not parent_value_key:
+        return False
+
+    scope_label = _build_controlled_scope_part_label(parent_statement_type)
+    return any(
+        label == scope_label and value == parent_value_key
+        for label, value in _parse_controlled_scope_parts(child_scope_key)
+    )
 
 
 def _context_matches_section_path(
@@ -1292,6 +1408,18 @@ def _evaluate_parent_child_relationship(
     ):
         return
 
+    if _canonical_scope_conflicts_statement_value(
+        child_scope_key=child_context.canonical_statement_scope_key,
+        parent_statement_type=parent_context.statement_type,
+        parent_value_key=parent_context.canonical_statement_value_key,
+    ):
+        return
+
+    canonical_scope_parent_match = _canonical_scope_matches_statement_value(
+        child_scope_key=child_context.canonical_statement_scope_key,
+        parent_statement_type=parent_context.statement_type,
+        parent_value_key=parent_context.canonical_statement_value_key,
+    )
     parent_code = normalize_code(parent_context.normalized_statement_code)
     matched_section_path_label = _context_matches_section_path(
         child_context=child_context, parent_context=parent_context
@@ -1318,6 +1446,14 @@ def _evaluate_parent_child_relationship(
     # globally repeated or audit-disambiguated codes cannot become high-signal parent
     # evidence without compatible local source support.
     simple_rules: tuple[tuple[bool, str, str], ...] = (
+        (
+            canonical_scope_parent_match,
+            "canonical_scope_parent_match",
+            (
+                "Parent canonical controlled value is explicitly named in the "
+                "child canonical scope key."
+            ),
+        ),
         (
             same_source_context_key,
             "same_source_context_key",
@@ -2064,8 +2200,9 @@ def _parent_candidate_rank(candidate: SFIHasChildParentCandidate) -> tuple[int, 
     """
 
     weights = {
+        "canonical_scope_parent_match": 110,
         "code_parent_hint": 100,
-        "active_outline_stack_parent": 98,
+        "active_outline_stack_parent": 70,
         "source_scope_grouping": 95,
         "matched_section_path_label": 90,
         "same_table_context": 80,
@@ -2079,6 +2216,36 @@ def _parent_candidate_rank(candidate: SFIHasChildParentCandidate) -> tuple[int, 
     }
     score = sum(weights.get(reason, 0) for reason in candidate.evidence_reasons)
     return -score, candidate.endpoint_id
+
+
+def _parse_controlled_scope_parts(scope_key: str | None) -> list[tuple[str, str]]:
+    """Parse a controlled-value scope key into ordered label/value parts.
+
+    Parameters
+    ----------
+    scope_key
+        Pipe-delimited canonical scope key, such as `level:grade_4|strand:number`.
+
+    Returns
+    -------
+    list[tuple[str, str]]
+        Parsed non-empty `(label, value)` pairs.
+    """
+
+    parts: list[tuple[str, str]] = []
+
+    for raw_part in str(scope_key or "").split("|"):
+        if ":" not in raw_part:
+            continue
+
+        key, value = raw_part.split(":", 1)
+        key_clean = key.strip()
+        value_clean = value.strip()
+
+        if key_clean and value_clean:
+            parts.append((key_clean, value_clean))
+
+    return parts
 
 
 def _reachable_sfi_ids(
@@ -2734,7 +2901,6 @@ def _validate_graph(
     - There are no SFI-to-SFI cycles;
     - All finalized SFIs are reachable from the framework root;
     - Every relationship_id is unique.
-    ``
 
     The function performs structural graph validation only. It does not decide whether
     `grade_4_uuid`, `topic_uuid`, or `competence_uuid` is the semantically best parent;
@@ -2877,6 +3043,9 @@ def _validate_graph(
         kg_config=kg_config,
         sfi_final_records=sfi_final_records,
     )
+    _validate_has_child_canonical_scope_policy(
+        edges=edges, sfi_final_records=sfi_final_records
+    )
 
     relationship_ids = [str(edge.relationship_id) for edge in edges]
     duplicate_relationship_ids = sorted(
@@ -2887,6 +3056,55 @@ def _validate_graph(
         raise ValueError(
             f"Duplicate hasChild relationship IDs detected: {duplicate_relationship_ids}."
         )
+
+
+def _validate_has_child_canonical_scope_policy(
+    *, edges: Sequence[SFIHasChildEdge], sfi_final_records: Sequence[SFIFinalRecord]
+) -> None:
+    """Validate resolved SFI parent selections against canonical scope keys.
+
+    This check is intentionally generic. It does not know any curriculum-specific
+    labels, grades, strands, themes, or domains. It only enforces this invariant: when
+    a child final record carries a canonical scope part for the selected parent's
+    statement type, the selected parent must have the same canonical value key for that
+    part.
+
+    Parameters
+    ----------
+    edges
+        Final hasChild edges to validate.
+    sfi_final_records
+        Final SFI records whose canonical scope and value fields are checked.
+
+    Raises
+    ------
+    ValueError
+        If a selected SFI parent conflicts with the child canonical scope.
+    """
+
+    records_by_id = {str(record.final_sfi_uuid): record for record in sfi_final_records}
+
+    for edge in edges:
+        if edge.is_root_edge or edge.unresolved_root_fallback:
+            continue
+
+        child_record = records_by_id[str(edge.target_sfi_uuid)]
+        parent_record = records_by_id[str(edge.source_entity_uuid)]
+
+        if _canonical_scope_conflicts_statement_value(
+            child_scope_key=child_record.canonical_statement_scope_key,
+            parent_statement_type=parent_record.statement_type,
+            parent_value_key=parent_record.canonical_statement_value_key,
+        ):
+            raise ValueError(
+                f"hasChild SFI edge violates canonical scope policy: child "
+                f"{child_record.final_sfi_uuid} has canonical_statement_scope_key "
+                f"{child_record.canonical_statement_scope_key!r}, but selected "
+                f"parent {parent_record.final_sfi_uuid} has statement_type "
+                f"{parent_record.statement_type!r} and "
+                f"canonical_statement_value_key "
+                f"{parent_record.canonical_statement_value_key!r}."
+            )
 
 
 def _validate_resolution_request_prefix(
