@@ -138,7 +138,7 @@ def validate_bbox_order(bbox: list[float]) -> list[float]:
 # Common fields with descriptions.
 _BCP47Str = Annotated[str, AfterValidator(_validate_bcp47)]
 _ControlledStatementValueDedupScope = Literal[
-    "document", "nearest_parent_values", "source_context"
+    "document", "nearest_grade", "nearest_grade_theme", "source_context"
 ]
 BBox = Annotated[
     list[float],
@@ -284,19 +284,9 @@ class _AcademicStandardStatementTypePolicyItem(BaseSchema):
         default="source_context",
         description=(
             "Scope used when controlled_values canonicalize organizer text for "
-            "deduplication. Use 'document' for document-wide values, "
-            "'nearest_parent_values' with controlled_value_scope_parent_statement_types "
-            "for parent-scoped organizer values, and 'source_context' when no "
-            "controlled parent scope is available."
-        ),
-    )
-    controlled_value_scope_parent_statement_types: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Ordered parent statement_type labels used when controlled_value_scope is "
-            "'nearest_parent_values'. For example, a theme-scoped sub-theme can list "
-            "the configured grade-like parent and then the theme-like parent without "
-            "hard-coding either label in pipeline code."
+            "deduplication. Use 'document' for document-wide values such as grades, "
+            "'nearest_grade' for grade-scoped themes, and 'nearest_grade_theme' for "
+            "theme-scoped sub-themes."
         ),
     )
     controlled_values: list[_AcademicStandardControlledValueItem] = Field(

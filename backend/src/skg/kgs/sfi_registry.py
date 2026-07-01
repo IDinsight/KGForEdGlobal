@@ -43,7 +43,6 @@ class _StatementValuePolicy:
 
     alias_to_canonical: dict[str, str]
     controlled_value_scope: str
-    controlled_value_scope_parent_statement_types: tuple[str, ...]
 
 
 def _build_block_source_context(block: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -139,7 +138,6 @@ def _build_canonical_statement_scope_key(
     *,
     canonical_statement_value_key: Optional[str],
     candidate: SFICandidate,
-    root_statement_types: set[str],
     source_context_key: str,
     source_context_labels: Sequence[str],
     statement_value_policies: dict[str, _StatementValuePolicy],
@@ -154,8 +152,6 @@ def _build_canonical_statement_scope_key(
         Window-local candidate being canonicalized.
     source_context_key
         Deterministic source-derived context key already computed for the candidate.
-    root_statement_types
-        Statement types configured as direct children of the StandardsFramework root.
     source_context_labels
         Human-readable source context labels from the extraction window.
     statement_value_policies
@@ -181,28 +177,28 @@ def _build_canonical_statement_scope_key(
     if scope == "source_context":
         return fallback
 
-    if scope == "nearest_parent_values":
-        scope_parts: list[str] = []
+    grade_key = _extract_source_local_scope_value_key(
+        child_canonical_value_key=canonical_statement_value_key,
+        child_statement_type=candidate.statement_type,
+        parent_statement_type="Grade",
+        source_context_labels=source_context_labels,
+        statement_value_policies=statement_value_policies,
+    )
 
-        for (
-            parent_statement_type
-        ) in policy.controlled_value_scope_parent_statement_types:
-            parent_value_key = _extract_source_local_scope_value_key(
-                child_canonical_value_key=canonical_statement_value_key,
-                child_statement_type=candidate.statement_type,
-                parent_statement_type=parent_statement_type,
-                root_statement_types=root_statement_types,
-                source_context_labels=source_context_labels,
-                statement_value_policies=statement_value_policies,
-            )
+    if scope == "nearest_grade":
+        return f"grade:{grade_key}" if grade_key else fallback
 
-            if not parent_value_key:
-                return fallback
+    if scope == "nearest_grade_theme":
+        theme_key = _extract_source_local_scope_value_key(
+            child_canonical_value_key=canonical_statement_value_key,
+            child_statement_type=candidate.statement_type,
+            parent_statement_type="Theme",
+            source_context_labels=source_context_labels,
+            statement_value_policies=statement_value_policies,
+        )
 
-            parent_scope_label = _normalize_controlled_value_key(parent_statement_type)
-            scope_parts.append(f"{parent_scope_label}:{parent_value_key}")
-
-        return "|".join(scope_parts) if scope_parts else fallback
+        if grade_key and theme_key:
+            return f"grade:{grade_key}|theme:{theme_key}"
 
     return fallback
 
@@ -318,7 +314,6 @@ def _build_registry_candidate(
     candidate: SFICandidate,
     code_patterns: dict[str, re.Pattern[str]],
     extraction_window: ExtractionWindow,
-    root_statement_types: set[str],
     source_window_candidate_index: int,
     statement_type_code_types: dict[str, str],
     statement_value_policies: dict[str, _StatementValuePolicy],
@@ -333,8 +328,6 @@ def _build_registry_candidate(
         Compiled curriculum-specific code patterns keyed by code type.
     extraction_window
         Source extraction window that produced the candidate.
-    root_statement_types
-        Statement types configured as direct children of the StandardsFramework root.
     source_window_candidate_index
         0-based candidate position within the extraction result.
     statement_type_code_types
@@ -373,7 +366,6 @@ def _build_registry_candidate(
     canonical_statement_scope_key = _build_canonical_statement_scope_key(
         canonical_statement_value_key=canonical_statement_value_key,
         candidate=candidate,
-        root_statement_types=root_statement_types,
         source_context_key=source_context_key,
         source_context_labels=source_context_labels,
         statement_value_policies=statement_value_policies,
@@ -631,9 +623,6 @@ def _build_statement_value_policies(
         policies[item.statement_type] = _StatementValuePolicy(
             alias_to_canonical=alias_to_canonical,
             controlled_value_scope=item.controlled_value_scope,
-            controlled_value_scope_parent_statement_types=tuple(
-                item.controlled_value_scope_parent_statement_types
-            ),
         )
 
     return policies
@@ -867,7 +856,6 @@ def _extract_parent_value_key_near_label(
     labels: Sequence[str],
     parent_policy: _StatementValuePolicy,
     parent_statement_type: str,
-    root_statement_types: set[str],
 ) -> Optional[str]:
     """Find the nearest parent controlled value around one child label.
 
@@ -880,11 +868,8 @@ def _extract_parent_value_key_near_label(
     parent_policy
         Controlled-value policy for the desired parent statement type.
     parent_statement_type
-        Parent statement type being recovered.
-    root_statement_types
-        Statement types configured as direct children of the StandardsFramework root;
-        these broad organizers may appear after visually paired lower-level labels in
-        some PDF reading orders.
+        Parent statement type being recovered; grade-like parent labels are allowed to
+        appear after visually paired theme labels in some PDF reading orders.
 
     Returns
     -------
@@ -894,7 +879,7 @@ def _extract_parent_value_key_near_label(
 
     search_indexes = [child_label_index]
 
-    if parent_statement_type in root_statement_types:
+    if parent_statement_type == "Grade":
         search_indexes.extend(range(child_label_index + 1, len(labels)))
         search_indexes.extend(range(child_label_index - 1, -1, -1))
     else:
@@ -948,7 +933,6 @@ def _extract_source_local_scope_value_key(
     child_canonical_value_key: str,
     child_statement_type: str,
     parent_statement_type: str,
-    root_statement_types: set[str],
     source_context_labels: Sequence[str],
     statement_value_policies: dict[str, _StatementValuePolicy],
 ) -> Optional[str]:
@@ -970,8 +954,6 @@ def _extract_source_local_scope_value_key(
         Child statement type whose controlled value anchors local search.
     parent_statement_type
         Parent statement type whose controlled value should be recovered.
-    root_statement_types
-        Statement types configured as direct children of the StandardsFramework root.
     source_context_labels
         Human-readable source context labels associated with the child candidate.
     statement_value_policies
@@ -1006,7 +988,6 @@ def _extract_source_local_scope_value_key(
             labels=labels,
             parent_policy=parent_policy,
             parent_statement_type=parent_statement_type,
-            root_statement_types=root_statement_types,
         )
 
         if local_parent_value_key:
@@ -1981,7 +1962,6 @@ def build_candidate_registry(
                     candidate=candidate,
                     code_patterns=code_patterns,
                     extraction_window=extraction_window,
-                    root_statement_types=root_statement_types,
                     source_window_candidate_index=source_window_candidate_index,
                     statement_type_code_types=statement_type_code_types,
                     statement_value_policies=statement_value_policies,

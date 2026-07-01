@@ -140,8 +140,7 @@
 					],
 					"description": "Visible Primary One, Primary Two, or Primary Three curriculum organizer.",
 					"normalized_statement_type": "Standard Grouping",
-					"statement_type": "Grade",
-					"controlled_value_scope_parent_statement_types": []
+					"statement_type": "Grade"
 				},
 				{
 					"aliases": [
@@ -149,7 +148,7 @@
 						"Theme",
 						"theme"
 					],
-					"controlled_value_scope": "nearest_parent_values",
+					"controlled_value_scope": "nearest_grade",
 					"controlled_values": [
 						{
 							"canonical_value": "NUMBER AND NUMERATION",
@@ -203,10 +202,7 @@
 					],
 					"description": "Visible Nigeria Mathematics theme heading or organizer.",
 					"normalized_statement_type": "Standard Grouping",
-					"statement_type": "Theme",
-					"controlled_value_scope_parent_statement_types": [
-						"Grade"
-					]
+					"statement_type": "Theme"
 				},
 				{
 					"aliases": [
@@ -221,7 +217,7 @@
 						"Sub Theme",
 						"sub theme"
 					],
-					"controlled_value_scope": "nearest_parent_values",
+					"controlled_value_scope": "nearest_grade_theme",
 					"controlled_values": [
 						{
 							"canonical_value": "Whole Number",
@@ -314,11 +310,7 @@
 					],
 					"description": "Visible Nigeria Mathematics sub-theme heading or organizer.",
 					"normalized_statement_type": "Standard Grouping",
-					"statement_type": "Sub-Theme",
-					"controlled_value_scope_parent_statement_types": [
-						"Grade",
-						"Theme"
-					]
+					"statement_type": "Sub-Theme"
 				},
 				{
 					"aliases": [
@@ -328,9 +320,7 @@
 					],
 					"description": "Visible Topic-column curriculum organizer.",
 					"normalized_statement_type": "Standard Grouping",
-					"statement_type": "Topic",
-					"controlled_value_scope": "source_context",
-					"controlled_value_scope_parent_statement_types": []
+					"statement_type": "Topic"
 				},
 				{
 					"aliases": [
@@ -349,9 +339,7 @@
 					],
 					"description": "Official expected learning outcome listed under the Performance Objectives column.",
 					"normalized_statement_type": "Standard",
-					"statement_type": "Performance Objective",
-					"controlled_value_scope": "source_context",
-					"controlled_value_scope_parent_statement_types": []
+					"statement_type": "Performance Objective"
 				},
 				{
 					"aliases": [
@@ -361,9 +349,7 @@
 					],
 					"description": "Official curriculum content item listed under the Content column.",
 					"normalized_statement_type": "Standard",
-					"statement_type": "Content",
-					"controlled_value_scope": "source_context",
-					"controlled_value_scope_parent_statement_types": []
+					"statement_type": "Content"
 				}
 			],
 			"synthetic_merge_key_fields": [
