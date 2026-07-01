@@ -160,12 +160,21 @@ def _build_identity_key(
         or "\n".join(merge_group.source_segment_ids)
         or merge_group.merge_group_id,
     )
+
+    # For no-code statement text keys, candidate descriptions precede source evidence
+    # quotes so sibling list items remain distinct when deduplicated as separate final
+    # statements. Source evidence quotes preserve provenance-sensitive separation.
     source_text_key = _hash_text(
         n_hex=20,
-        value="\n".join(merge_group.candidate_source_texts)
-        or "\n".join(merge_group.candidate_descriptions)
+        value="\n".join(
+            [
+                *merge_group.candidate_descriptions,
+                *merge_group.candidate_source_texts,
+            ]
+        )
         or merge_group.merge_group_id,
     )
+
     return f"{base_key}:{source_context_key}:{source_text_key}", False
 
 
