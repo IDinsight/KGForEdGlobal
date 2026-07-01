@@ -38,6 +38,15 @@ from skg.utils.general import make_dir, write_to_json
 
 
 @dataclass(frozen=True)
+class _SourceOrderParentMatch:
+    """Source-order match for one controlled parent value."""
+
+    candidate_index: int
+    canonical_statement_value_key: str
+    window_index: int
+
+
+@dataclass(frozen=True)
 class _StatementValuePolicy:
     """Controlled value canonicalization policy for one statement type."""
 
@@ -1159,6 +1168,138 @@ def _find_configured_code_matches_in_text(
     return matches
 
 
+def _find_source_order_parent_value_key(
+    *,
+    child_index: int,
+    ordered_candidates: Sequence[SFIRegistryCandidate],
+    parent_statement_type: str,
+    root_statement_types: frozenset[str],
+) -> Optional[str]:
+    """Find a controlled parent value using candidate source order.
+
+    DocumentIR section paths can be cumulative at page or layout transitions, so the
+    last label in a section-path bag is not always the active scope. This function uses
+    extracted controlled organizer candidates in source order instead. Same-window
+    parent candidates are strongest. For configured root-level parents, an immediately
+    following root heading is allowed to scope preceding local headings, which covers
+    PDFs where visual grade headings are emitted just after theme/sub-theme headings.
+
+    Parameters
+    ----------
+    child_index
+        Index of the child candidate in source-order registry candidates.
+    ordered_candidates
+        Registry candidates in source order.
+    parent_statement_type
+        Parent statement type whose controlled value should be resolved.
+    root_statement_types
+        Statement types configured as root-level organizers.
+
+    Returns
+    -------
+    Optional[str]
+        Normalized canonical parent value key, if one can be resolved.
+    """
+
+    def _pick(
+        *, matches: Sequence[_SourceOrderParentMatch], take_first: bool
+    ) -> Optional[str]:
+        """Return the boundary match's canonical value key, or `None` if empty.
+
+        Parameters
+        ----------
+        matches
+            Candidate matches already filtered to a single resolution tier.
+        take_first
+            When `True`, select the earliest match in source order; when `False`,
+            select the latest.
+
+        Returns
+        -------
+        Optional[str]
+            The chosen match's canonical statement value key, or `None` when `matches`
+            is empty.
+        """
+
+        if not matches:
+            return None
+
+        chosen = matches[0] if take_first else matches[-1]
+        return chosen.canonical_statement_value_key
+
+    if child_index < 0 or child_index >= len(ordered_candidates):
+        return None
+
+    child_candidate = ordered_candidates[child_index]
+    parent_matches = [
+        _SourceOrderParentMatch(
+            candidate_index=parent_index,
+            canonical_statement_value_key=parent_candidate.canonical_statement_value_key,
+            window_index=parent_candidate.window_index,
+        )
+        for parent_index, parent_candidate in enumerate(ordered_candidates)
+        if parent_candidate.statement_type == parent_statement_type
+        and parent_candidate.canonical_statement_value_key
+    ]
+
+    if not parent_matches:
+        return None
+
+    # Strongest signal: a parent in the same layout window as the child. Prefer the
+    # closest preceding one, then fall back to the closest following one.
+    same_window_matches = [
+        parent_match
+        for parent_match in parent_matches
+        if parent_match.window_index == child_candidate.window_index
+    ]
+    same_window_before = [
+        parent_match
+        for parent_match in same_window_matches
+        if parent_match.candidate_index < child_index
+    ]
+    same_window_after = [
+        parent_match
+        for parent_match in same_window_matches
+        if parent_match.candidate_index > child_index
+    ]
+
+    same_window_value_key = _pick(
+        matches=same_window_before, take_first=False
+    ) or _pick(matches=same_window_after, take_first=True)
+
+    if same_window_value_key:
+        return same_window_value_key
+
+    # Root organizers may be emitted just after the local headings they scope, so a
+    # root parent within one window ahead is allowed to claim the child.
+    if parent_statement_type in root_statement_types:
+        following_root_matches = [
+            parent_match
+            for parent_match in parent_matches
+            if parent_match.candidate_index > child_index
+            and 0 <= parent_match.window_index - child_candidate.window_index <= 1
+        ]
+
+        if following_root_matches:
+            return following_root_matches[0].canonical_statement_value_key
+
+    # Cross-window fallback: nearest preceding parent, otherwise nearest following.
+    previous_matches = [
+        parent_match
+        for parent_match in parent_matches
+        if parent_match.candidate_index < child_index
+    ]
+    following_matches = [
+        parent_match
+        for parent_match in parent_matches
+        if parent_match.candidate_index > child_index
+    ]
+
+    return _pick(matches=previous_matches, take_first=False) or _pick(
+        matches=following_matches, take_first=True
+    )
+
+
 def _get_configured_code_types(
     *, code_patterns: dict[str, re.Pattern[str]], statement_code: Optional[str]
 ) -> list[str]:
@@ -1363,6 +1504,78 @@ def _normalize_controlled_value_key(value: str) -> str:
     """
 
     return re.sub(r"[^0-9a-z]+", " ", str(value or "").casefold()).strip()
+
+
+def _resolve_canonical_statement_scope_from_source_order(
+    *,
+    candidate: SFIRegistryCandidate,
+    candidate_index: int,
+    ordered_candidates: Sequence[SFIRegistryCandidate],
+    statement_value_policies: dict[str, _StatementValuePolicy],
+) -> Optional[str]:
+    """Resolve a controlled-value scope from extracted source-order organizers.
+
+    Parameters
+    ----------
+    candidate
+        Registry candidate whose scope should be resolved.
+    candidate_index
+        Source-order index for `candidate` in `ordered_candidates`.
+    ordered_candidates
+        Registry candidates in source order.
+    statement_value_policies
+        Controlled value policies keyed by statement type.
+
+    Returns
+    -------
+    Optional[str]
+        Corrected canonical statement scope key, or None when the candidate has no
+        controlled value.
+    """
+
+    policy = statement_value_policies.get(candidate.statement_type)
+
+    if not candidate.canonical_statement_value_key or policy is None:
+        return None
+
+    fallback = f"source_context:{candidate.source_context_key}"
+
+    if policy.controlled_value_scope == "document":
+        return "document"
+
+    if policy.controlled_value_scope == "source_context":
+        return fallback
+
+    if policy.controlled_value_scope != "nearest_parent_values":
+        return fallback
+
+    scope_parts: list[str] = []
+
+    for parent_statement_type in policy.controlled_value_scope_parent_statement_types:
+        parent_value_key = _find_source_order_parent_value_key(
+            child_index=candidate_index,
+            ordered_candidates=ordered_candidates,
+            parent_statement_type=parent_statement_type,
+            root_statement_types=policy.root_statement_types,
+        )
+
+        if not parent_value_key:
+            parent_value_key = _extract_source_local_scope_value_key(
+                child_canonical_value_key=candidate.canonical_statement_value_key,
+                child_statement_type=candidate.statement_type,
+                parent_statement_type=parent_statement_type,
+                source_context_labels=candidate.source_context_labels,
+                statement_value_policies=statement_value_policies,
+            )
+
+        if not parent_value_key:
+            return fallback
+
+        scope_parts.append(
+            f"{_build_scope_part_label(parent_statement_type)}:{parent_value_key}"
+        )
+
+    return "|".join(scope_parts) if scope_parts else fallback
 
 
 def _strip_controlled_label_prefixes(value: str) -> str:
@@ -1950,6 +2163,73 @@ def _warn_on_text_repeated_within_window(
         )
 
 
+def _with_source_order_controlled_scopes(
+    *,
+    candidates: Sequence[SFIRegistryCandidate],
+    statement_value_policies: dict[str, _StatementValuePolicy],
+) -> list[SFIRegistryCandidate]:
+    """Return registry candidates with source-order controlled scopes applied.
+
+    Parameters
+    ----------
+    candidates
+        Registry candidates in source order.
+    statement_value_policies
+        Controlled value policies keyed by statement type.
+
+    Returns
+    -------
+    list[SFIRegistryCandidate]
+        Registry candidates with corrected canonical scope keys and recomputed text
+        duplicate bucket keys.
+    """
+
+    ordered_candidates = list(candidates)
+    scoped_candidates: list[SFIRegistryCandidate] = []
+
+    for candidate_index, candidate in enumerate(ordered_candidates):
+        canonical_statement_scope_key = (
+            _resolve_canonical_statement_scope_from_source_order(
+                candidate=candidate,
+                candidate_index=candidate_index,
+                ordered_candidates=ordered_candidates,
+                statement_value_policies=statement_value_policies,
+            )
+        )
+
+        if canonical_statement_scope_key == candidate.canonical_statement_scope_key:
+            scoped_candidates.append(candidate)
+            continue
+
+        text_bucket_key = _build_text_bucket_key(
+            canonical_statement_scope_key=canonical_statement_scope_key,
+            canonical_statement_value_key=candidate.canonical_statement_value_key,
+            normalized_statement_code=candidate.normalized_statement_code,
+            normalized_text=candidate.normalized_description,
+            source_context_key=candidate.source_context_key,
+            statement_type_key=normalize_text(candidate.statement_type),
+        )
+        source_text_bucket_key = _build_text_bucket_key(
+            canonical_statement_scope_key=canonical_statement_scope_key,
+            canonical_statement_value_key=candidate.canonical_statement_value_key,
+            normalized_statement_code=candidate.normalized_statement_code,
+            normalized_text=candidate.normalized_source_text,
+            source_context_key=candidate.source_context_key,
+            statement_type_key=normalize_text(candidate.statement_type),
+        )
+        scoped_candidates.append(
+            candidate.model_copy(
+                update={
+                    "canonical_statement_scope_key": canonical_statement_scope_key,
+                    "source_text_bucket_key": source_text_bucket_key,
+                    "text_bucket_key": text_bucket_key,
+                }
+            )
+        )
+
+    return scoped_candidates
+
+
 def build_candidate_registry(
     *,
     extraction_windows: Sequence[ExtractionWindow],
@@ -2029,6 +2309,9 @@ def build_candidate_registry(
                 )
             )
 
+    candidates = _with_source_order_controlled_scopes(
+        candidates=candidates, statement_value_policies=statement_value_policies
+    )
     duplicate_buckets = _build_duplicate_buckets(candidates)
     warnings = _build_registry_warnings(
         candidates=candidates,

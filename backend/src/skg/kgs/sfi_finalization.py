@@ -13,7 +13,7 @@ import re
 import uuid
 
 from collections import Counter
-from typing import Sequence
+from typing import Any, Sequence
 
 # Third Party Library
 from loguru import logger
@@ -96,6 +96,54 @@ def _build_code_group_key(merge_group: SFIMergeGroup) -> tuple[str, str, str]:
         _shared_normalized_statement_type(merge_group),
         merge_group.normalized_statement_code,
     )
+
+
+def _build_final_sfi_collision_details(
+    *, key_name: str, records: Sequence[SFIFinalRecord], values: Sequence[str]
+) -> list[dict[str, Any]]:
+    """Build compact diagnostics for duplicate final SFI identity values.
+
+    Parameters
+    ----------
+    key_name
+        Name of the duplicated identity field.
+    records
+        Final SFI records being validated.
+    values
+        Identity field values aligned positionally with `records`.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Collision diagnostics keyed by duplicate identity field value.
+    """
+
+    duplicate_values = sorted({value for value in values if values.count(value) > 1})
+    collision_details: list[dict[str, Any]] = []
+
+    for duplicate_value in duplicate_values:
+        duplicate_records = [
+            record for record, value in zip(records, values) if value == duplicate_value
+        ]
+        collision_details.append(
+            {
+                key_name: duplicate_value,
+                "records": [
+                    {
+                        "canonical_statement_scope_key": record.canonical_statement_scope_key,
+                        "canonical_statement_value_key": record.canonical_statement_value_key,
+                        "description": record.description,
+                        "identity_key": record.identity_key,
+                        "merge_group_id": record.merge_group_id,
+                        "source_registry_candidate_ids": record.source_registry_candidate_ids,
+                        "statement_type": record.statement_type,
+                    }
+                    for record in duplicate_records
+                ],
+            }
+        )
+
+    return collision_details
 
 
 def _build_identity_key(
@@ -730,11 +778,21 @@ def _validate_final_sfi_records(final_sfi_records: Sequence[SFIFinalRecord]) -> 
     )
 
     if duplicate_uuids:
-        raise ValueError(f"Final SFI UUID collisions detected: {duplicate_uuids}.")
+        collision_details = _build_final_sfi_collision_details(
+            key_name="final_sfi_uuid", records=final_sfi_records, values=uuid_values
+        )
+        raise ValueError(
+            f"Final SFI UUID collisions detected: {duplicate_uuids}. "
+            f"Collision details: {collision_details}."
+        )
 
     if duplicate_identity_keys:
+        collision_details = _build_final_sfi_collision_details(
+            key_name="identity_key", records=final_sfi_records, values=identity_keys
+        )
         raise ValueError(
-            f"Final SFI identity-key collisions detected: {duplicate_identity_keys}."
+            f"Final SFI identity-key collisions detected: {duplicate_identity_keys}. "
+            f"Collision details: {collision_details}."
         )
 
 
