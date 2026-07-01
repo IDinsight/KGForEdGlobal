@@ -2599,10 +2599,14 @@ def _validate_has_child_statement_type_policy(
 ) -> None:
     """Validate final hasChild edges against configured direct parent types.
 
-    Structural graph checks can pass even when a non-root child is attached to the
-    StandardsFramework root or a child is attached to a broader non-direct grouping.
-    This validation enforces the configured semantic parent policy after response
-    conversion and before relationship artifacts are accepted.
+    Structural graph checks can pass even when a resolved non-root child is attached to
+    the StandardsFramework root or a child is attached to a broader non-direct
+    grouping. This validation enforces the configured semantic parent policy after
+    response conversion and before relationship artifacts are accepted.
+
+    Unresolved root-fallback edges are intentionally allowed for any statement type.
+    They are reachability-preserving audit edges created only when the bounded
+    qparent-selection response marks a child unresolved and selects no SFI parent.
 
     Parameters
     ----------
@@ -2618,7 +2622,7 @@ def _validate_has_child_statement_type_policy(
     Raises
     ------
     ValueError
-        If a root or SFI parent violates the configured direct parent policy.
+        If a resolved root or SFI parent violates the configured direct parent policy.
     """
 
     parent_statement_types_by_child_type = _build_direct_parent_statement_types(
@@ -2635,15 +2639,27 @@ def _validate_has_child_statement_type_policy(
         child_record = records_by_id[str(edge.target_sfi_uuid)]
 
         if edge.is_root_edge or str(edge.source_entity_uuid) == str(framework_uuid):
+            if edge.unresolved_root_fallback:
+                continue
+
             if child_record.statement_type not in root_child_statement_types:
                 raise ValueError(
                     f"hasChild root edge violates configured statement-type policy: "
                     f"child {child_record.final_sfi_uuid} has statement_type "
                     f"{child_record.statement_type!r}; root-level child types are "
-                    f"{sorted(root_child_statement_types)}."
+                    f"{sorted(root_child_statement_types)}. Use an unresolved "
+                    f"root-fallback edge only when no supplied SFI parent candidate "
+                    f"is source-supported."
                 )
 
             continue
+
+        if edge.unresolved_root_fallback:
+            raise ValueError(
+                f"hasChild edge for child {child_record.final_sfi_uuid} is marked "
+                f"as an unresolved root fallback, but its parent endpoint is not the "
+                f"StandardsFramework root."
+            )
 
         parent_record = records_by_id[str(edge.source_entity_uuid)]
         allowed_parent_types = parent_statement_types_by_child_type.get(
