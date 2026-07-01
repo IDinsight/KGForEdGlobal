@@ -869,11 +869,9 @@ class _ContextSpineConfig(BaseSchema):
 class _CreateKGAcademicStandardsConfig(BaseSchema):
     """Academic Standards extraction configuration for KG creation."""
 
-    # Code handling.
+    bilingual_pair_policy: str | None = None
     code_parent_rules: list[dict[str, str]] = Field(default_factory=list)
     code_patterns: dict[str, str] = Field(default_factory=dict)
-
-    # Table selection policy.
     excluded_table_columns_signatures: list[str] = Field(
         default_factory=list,
         description=(
@@ -936,6 +934,9 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         ),
     )
     row_overlap: int = Field(default=1, ge=0)
+    sfi_deduplication_instructions: str
+    sfi_extraction_instructions: str
+    sfi_has_child_instructions: str
     sfi_has_child_parent_statement_types: dict[str, list[str]] = Field(
         default_factory=dict,
         description=(
@@ -964,8 +965,6 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         ),
         min_length=1,
     )
-
-    # Duplication behavior.
     synthetic_merge_key_fields: list[str] = Field(
         default_factory=lambda: [
             "country",
@@ -977,12 +976,6 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
             "normalized_text",
         ]
     )
-
-    # LLM instructions.
-    bilingual_pair_policy: str | None = None
-    sfi_deduplication_instructions: str
-    sfi_extraction_instructions: str
-    sfi_has_child_instructions: str
 
     @staticmethod
     def _clean_has_child_parent_values(

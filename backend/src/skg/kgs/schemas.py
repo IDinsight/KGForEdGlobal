@@ -1298,6 +1298,52 @@ class SFIMergeSummary(BaseSchema):
 
 
 # Schemas for SFI finalization.
+class SFIFinalContext(BaseSchema):
+    """Recovered source context for one finalized SFI used for hasChild resolution."""
+
+    audit_flags: list[str] = Field(default_factory=list)
+    candidate_source_texts: list[str] = Field(default_factory=list)
+    canonical_statement_scope_key: Optional[str] = Field(
+        default=None,
+        description=(
+            "Controlled-value scope key inherited from final SFI finalization, when "
+            "available."
+        ),
+    )
+    canonical_statement_value: Optional[str] = Field(
+        default=None,
+        description=(
+            "Canonical controlled statement value inherited from final SFI "
+            "finalization, when available."
+        ),
+    )
+    canonical_statement_value_key: Optional[str] = Field(
+        default=None,
+        description=(
+            "Normalized canonical controlled statement value key inherited from final "
+            "SFI finalization, when available."
+        ),
+    )
+    description: str = Field(description="Final SFI description.", min_length=1)
+    final_sfi_uuid: UUID = Field(description="Final SFI UUID.")
+    normalized_statement_code: Optional[str] = Field(default=None)
+    normalized_statement_type: NormalizedStatementType
+    section_path_labels: list[str] = Field(default_factory=list)
+    source_context_keys: list[str] = Field(default_factory=list)
+    source_order: int = Field(description="Deterministic source-order index.", ge=0)
+    source_page_indexes: list[int] = Field(default_factory=list)
+    source_registry_candidate_ids: list[str] = Field(default_factory=list)
+    source_segment_ids: list[str] = Field(default_factory=list)
+    source_window_ids: list[str] = Field(default_factory=list)
+    source_window_indexes: list[int] = Field(default_factory=list)
+    statement_code: Optional[str] = Field(default=None)
+    statement_type: str = Field(
+        description="Source-facing statement type.", min_length=1
+    )
+    table_header_indexes: list[int] = Field(default_factory=list)
+    table_row_indexes: list[int] = Field(default_factory=list)
+
+
 class SFIFinalRecord(BaseSchema):
     """Final source-backed StandardsFrameworkItem record after SFI dedup.
 
@@ -1556,19 +1602,7 @@ class SFIFinalSummary(BaseSchema):
 
 
 # Schemas for SFI hasChild relationships.
-class SFIHasChildCandidateParentSet(BaseSchema):
-    """Debug artifact containing one child's bounded parent candidate set."""
-
-    candidate_count_after_truncation: int = Field(ge=1)
-    candidate_count_before_truncation: int = Field(ge=1)
-    child_context: SFIHasChildFinalContext
-    max_parent_candidates: int = Field(ge=2)
-    parent_candidates: list[SFIHasChildParentCandidate] = Field(min_length=1)
-    truncation_notes: list[str] = Field(default_factory=list)
-    was_truncated: bool = Field(default=False)
-
-
-class SFIHasChildChildResolution(BaseSchema):
+class _SFIHasChildChildResolution(BaseSchema):
     """LLM decision for one child SFI's direct parent(s)."""
 
     child_final_sfi_uuid: UUID
@@ -1624,6 +1658,18 @@ class SFIHasChildChildResolution(BaseSchema):
         return self
 
 
+class SFIHasChildCandidateParentSet(BaseSchema):
+    """Debug artifact containing one child's bounded parent candidate set."""
+
+    candidate_count_after_truncation: int = Field(ge=1)
+    candidate_count_before_truncation: int = Field(ge=1)
+    child_context: SFIFinalContext
+    max_parent_candidates: int = Field(ge=2)
+    parent_candidates: list[SFIHasChildParentCandidate] = Field(min_length=1)
+    truncation_notes: list[str] = Field(default_factory=list)
+    was_truncated: bool = Field(default=False)
+
+
 class SFIHasChildEdge(BaseSchema):
     """Final resolved hasChild edge between framework/finalized SFI endpoints."""
 
@@ -1644,52 +1690,6 @@ class SFIHasChildEdge(BaseSchema):
     target_entity: Literal["StandardsFrameworkItem"] = "StandardsFrameworkItem"
     target_sfi_uuid: UUID
     unresolved_root_fallback: bool = Field(default=False)
-
-
-class SFIHasChildFinalContext(BaseSchema):
-    """Recovered source context for one finalized SFI used for hasChild resolution."""
-
-    audit_flags: list[str] = Field(default_factory=list)
-    candidate_source_texts: list[str] = Field(default_factory=list)
-    canonical_statement_scope_key: Optional[str] = Field(
-        default=None,
-        description=(
-            "Controlled-value scope key inherited from final SFI finalization, when "
-            "available."
-        ),
-    )
-    canonical_statement_value: Optional[str] = Field(
-        default=None,
-        description=(
-            "Canonical controlled statement value inherited from final SFI "
-            "finalization, when available."
-        ),
-    )
-    canonical_statement_value_key: Optional[str] = Field(
-        default=None,
-        description=(
-            "Normalized canonical controlled statement value key inherited from final "
-            "SFI finalization, when available."
-        ),
-    )
-    description: str = Field(description="Final SFI description.", min_length=1)
-    final_sfi_uuid: UUID = Field(description="Final SFI UUID.")
-    normalized_statement_code: Optional[str] = Field(default=None)
-    normalized_statement_type: NormalizedStatementType
-    section_path_labels: list[str] = Field(default_factory=list)
-    source_context_keys: list[str] = Field(default_factory=list)
-    source_order: int = Field(description="Deterministic source-order index.", ge=0)
-    source_page_indexes: list[int] = Field(default_factory=list)
-    source_registry_candidate_ids: list[str] = Field(default_factory=list)
-    source_segment_ids: list[str] = Field(default_factory=list)
-    source_window_ids: list[str] = Field(default_factory=list)
-    source_window_indexes: list[int] = Field(default_factory=list)
-    statement_code: Optional[str] = Field(default=None)
-    statement_type: str = Field(
-        description="Source-facing statement type.", min_length=1
-    )
-    table_header_indexes: list[int] = Field(default_factory=list)
-    table_row_indexes: list[int] = Field(default_factory=list)
 
 
 class SFIHasChildParentCandidate(BaseSchema):
@@ -1743,7 +1743,7 @@ class SFIHasChildResolutionRequest(BaseSchema):
 class SFIHasChildResolutionResponse(BaseSchema):
     """Structured LLM output for one hasChild parent-selection request."""
 
-    child_resolutions: list[SFIHasChildChildResolution] = Field(min_length=1)
+    child_resolutions: list[_SFIHasChildChildResolution] = Field(min_length=1)
     request_id: str = Field(
         description="Request ID copied from the prompt.", min_length=1
     )

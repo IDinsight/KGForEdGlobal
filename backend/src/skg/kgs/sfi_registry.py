@@ -552,7 +552,7 @@ def _build_registry_warnings(
     Returns
     -------
     list[SFIRegistryWarning]
-        Non-fatal warnings for Step 7 review and debugging.
+        Non-fatal warnings for review and debugging.
     """
 
     candidates_by_id = {

@@ -137,7 +137,7 @@ def _annotate_same_code_different_content_audit_flags(
             f"normalized_statement_type={normalized_statement_type!r}, "
             f"and normalized_statement_code={normalized_statement_code!r} "
             f"with another mintable merge group, but the source-visible "
-            f"descriptions/source_text differ. Step 8 should mint separate "
+            f"descriptions/source_text differ. SFI finalization should mint separate "
             f"deterministic final SFIs with source/text/provenance disambiguators "
             f"and preserve this same-code/different-content evidence for manual review."
         )
@@ -732,7 +732,7 @@ def _build_merge_groups_from_responses(
     llm_decision=None
     llm_review_set_id=None
     merge_decision="needs_review"
-    merge_reason="Review component was too large or unsafe for bounded v0 LLM
+    merge_reason="Review component was too large or unsafe for bounded LLM
     dedup review: ..."
 
     Parameters
@@ -805,7 +805,7 @@ def _build_merge_groups_from_responses(
                 llm_review_set_id=None,
                 merge_decision="needs_review",
                 merge_reason=(
-                    "Review component was too large or unsafe for bounded v0 LLM "
+                    "Review component was too large or unsafe for bounded LLM "
                     "dedup review: " + "; ".join(component.review_reasons[:5])
                 ),
             )

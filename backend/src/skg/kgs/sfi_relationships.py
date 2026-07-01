@@ -27,11 +27,11 @@ from skg.document_ir.schemas import DocumentIR
 from skg.kgs.llm import KGUsageTracker, resolve_sfi_has_child_parent_request
 from skg.kgs.schemas import (
     ExtractionWindow,
+    SFIFinalContext,
     SFIFinalRecord,
     SFIFinalSummary,
     SFIHasChildCandidateParentSet,
     SFIHasChildEdge,
-    SFIHasChildFinalContext,
     SFIHasChildParentCandidate,
     SFIHasChildResolutionRequest,
     SFIHasChildResolutionResponse,
@@ -75,7 +75,7 @@ def _add_parent_evidence(
     evidence_by_endpoint_id: dict[str, _ParentEvidence],
     evidence_reason: str,
     evidence_summary: str,
-    parent_context: SFIHasChildFinalContext,
+    parent_context: SFIFinalContext,
 ) -> None:
     """Add or update one non-root SFI parent candidate evidence record.
 
@@ -199,7 +199,7 @@ def _add_parent_evidence(
 
 def _bound_parent_candidates(
     *,
-    child_context: SFIHasChildFinalContext,
+    child_context: SFIFinalContext,
     framework_uuid: uuid.UUID,
     kg_config: CreateKGConfig,
     non_root_candidates: Sequence[SFIHasChildParentCandidate],
@@ -370,10 +370,10 @@ def _bound_parent_candidates(
 
 def _build_active_outline_parent_map(
     *,
-    contexts: Sequence[SFIHasChildFinalContext],
+    contexts: Sequence[SFIFinalContext],
     kg_config: CreateKGConfig,
     parent_statement_types_by_child_type: dict[str, set[str]],
-) -> dict[uuid.UUID, SFIHasChildFinalContext]:
+) -> dict[uuid.UUID, SFIFinalContext]:
     """Build active-outline parent candidates from finalized SFIs in source order.
 
     The map is generated from direct parent-type policy rather than only from a linear
@@ -393,7 +393,7 @@ def _build_active_outline_parent_map(
 
     Returns
     -------
-    dict[uuid.UUID, SFIHasChildFinalContext]
+    dict[uuid.UUID, SFIFinalContext]
         Mapping of child final SFI UUID to one active direct parent context.
     """
 
@@ -405,8 +405,8 @@ def _build_active_outline_parent_map(
     rank_by_statement_type = {
         statement_type: rank for rank, statement_type in enumerate(hierarchy)
     }
-    active_by_statement_type: dict[str, SFIHasChildFinalContext] = {}
-    parent_by_child_uuid: dict[uuid.UUID, SFIHasChildFinalContext] = {}
+    active_by_statement_type: dict[str, SFIFinalContext] = {}
+    parent_by_child_uuid: dict[uuid.UUID, SFIFinalContext] = {}
 
     for context in sorted(
         contexts, key=lambda item: _context_source_position_key(context=item)
@@ -444,7 +444,7 @@ def _build_active_outline_parent_map(
 
 def _build_candidate_parent_sets(
     *,
-    contexts: Sequence[SFIHasChildFinalContext],
+    contexts: Sequence[SFIFinalContext],
     extraction_windows: Sequence[ExtractionWindow],
     framework_uuid: uuid.UUID,
     kg_config: CreateKGConfig,
@@ -675,7 +675,7 @@ def _build_direct_parent_statement_types(
 
 def _build_edge(
     *,
-    child_context: SFIHasChildFinalContext,
+    child_context: SFIFinalContext,
     confidence: float,
     document_ir: DocumentIR,
     framework_uuid: uuid.UUID,
@@ -1166,7 +1166,7 @@ def _canonical_scope_matches_statement_value(
 
 
 def _context_matches_section_path(
-    *, child_context: SFIHasChildFinalContext, parent_context: SFIHasChildFinalContext
+    *, child_context: SFIFinalContext, parent_context: SFIFinalContext
 ) -> bool:
     """Check whether a parent label appears in child section-path evidence.
 
@@ -1205,7 +1205,7 @@ def _context_matches_section_path(
 
 
 def _context_source_position_key(
-    context: SFIHasChildFinalContext,
+    context: SFIFinalContext,
 ) -> tuple[int, int, int, int, str]:
     """Build a deterministic source-order key for active outline scanning.
 
@@ -1311,11 +1311,11 @@ def _detect_sfi_cycles(edges: Sequence[SFIHasChildEdge]) -> list[list[str]]:
 def _evaluate_parent_child_relationship(
     *,
     child_code: str | None,
-    child_context: SFIHasChildFinalContext,
+    child_context: SFIFinalContext,
     child_table_keys: set[str],
     code_parent_pairs: set[tuple[str, str]],
     evidence_by_endpoint_id: dict[str, _ParentEvidence],
-    parent_context: SFIHasChildFinalContext,
+    parent_context: SFIFinalContext,
     parent_statement_types_by_child_type: dict[str, set[str]],
     parent_table_keys: set[str],
 ) -> None:
@@ -1544,7 +1544,7 @@ def _evaluate_parent_child_relationship(
 
 def _finalize_candidate_parent_set(
     *,
-    child_context: SFIHasChildFinalContext,
+    child_context: SFIFinalContext,
     evidence_by_endpoint_id: dict[str, _ParentEvidence],
     framework_uuid: uuid.UUID,
     kg_config: CreateKGConfig,
@@ -1687,7 +1687,7 @@ def _get_hierarchy_statement_types(kg_config: CreateKGConfig) -> list[str]:
 
 
 def _is_nearby_source_window(
-    *, child_context: SFIHasChildFinalContext, parent_context: SFIHasChildFinalContext
+    *, child_context: SFIFinalContext, parent_context: SFIFinalContext
 ) -> bool:
     """Check whether a parent is in a nearby source window.
 
@@ -1717,7 +1717,7 @@ def _is_nearby_source_window(
 
 
 def _is_source_scope_grouping(
-    *, child_context: SFIHasChildFinalContext, parent_context: SFIHasChildFinalContext
+    *, child_context: SFIFinalContext, parent_context: SFIFinalContext
 ) -> bool:
     """Check whether a parent is a source-scope grouping for a row child.
 
@@ -1766,7 +1766,7 @@ def _is_source_scope_grouping(
 
 def _load_and_validate_existing_relationship_artifacts(
     *,
-    contexts: Sequence[SFIHasChildFinalContext],
+    contexts: Sequence[SFIFinalContext],
     contexts_fp: Path,
     document_ir: DocumentIR,
     edges_fp: Path,
@@ -1826,7 +1826,7 @@ def _load_and_validate_existing_relationship_artifacts(
 
     try:
         loaded_contexts = _load_json_model_sequence(
-            fp=contexts_fp, model_type=SFIHasChildFinalContext
+            fp=contexts_fp, model_type=SFIFinalContext
         )
         assert_model_sequences_equal(
             actual=loaded_contexts,
@@ -1988,7 +1988,7 @@ def _load_extraction_windows(kg_dirs: KGDirs) -> list[ExtractionWindow]:
     return extraction_windows
 
 
-def _load_final_contexts(contexts_fp: Path) -> list[SFIHasChildFinalContext]:
+def _load_final_contexts(contexts_fp: Path) -> list[SFIFinalContext]:
     """Load final SFI contexts for hasChild resolution.
 
     Parameters
@@ -1998,7 +1998,7 @@ def _load_final_contexts(contexts_fp: Path) -> list[SFIHasChildFinalContext]:
 
     Returns
     -------
-    list[SFIHasChildFinalContext]
+    list[SFIFinalContext]
         Parsed final SFI contexts in deterministic source order.
 
     Raises
@@ -2017,7 +2017,7 @@ def _load_final_contexts(contexts_fp: Path) -> list[SFIHasChildFinalContext]:
             f"Expected a JSON list in final SFI contexts artifact: {contexts_fp}"
         )
 
-    return [SFIHasChildFinalContext.model_validate(item) for item in data]
+    return [SFIFinalContext.model_validate(item) for item in data]
 
 
 def _load_json_model_sequence(*, fp: Path, model_type: BaseModel) -> list[BaseModel]:
@@ -2425,11 +2425,11 @@ def _scope_parts_by_label(scope_key: str | None) -> dict[str, set[str]]:
 def _should_add_code_parent_hint_evidence(
     *,
     child_code: str | None,
-    child_context: SFIHasChildFinalContext,
+    child_context: SFIFinalContext,
     child_table_keys: set[str],
     code_parent_pairs: set[tuple[str, str]],
     parent_code: str | None,
-    parent_context: SFIHasChildFinalContext,
+    parent_context: SFIFinalContext,
     parent_table_keys: set[str],
 ) -> bool:
     """Decide whether a code-parent hint should become high-signal evidence.
@@ -2644,16 +2644,14 @@ def _table_context_keys_from_source_refs(record: SFIFinalRecord) -> set[str]:
 
 
 def _validate_final_contexts_align_with_records(
-    *,
-    contexts: Sequence[SFIHasChildFinalContext],
-    sfi_final_records: Sequence[SFIFinalRecord],
+    *, contexts: Sequence[SFIFinalContext], sfi_final_records: Sequence[SFIFinalRecord]
 ) -> None:
     """Validate that loaded final contexts cover the current final SFI records.
 
     Parameters
     ----------
     contexts
-        Loaded final SFI contexts from the Step 8 artifact.
+        Loaded final SFI contexts.
     sfi_final_records
         Current final SFI records supplied to relationship resolution.
 
@@ -3367,8 +3365,8 @@ def resolve_has_child_edges(
     identity_key = f"lc:curriculum:{document_ir.doc_key}:standards_framework"
     framework_uuid = uuid.uuid5(Settings.LC_CANONICAL_NAMESPACE_UUID, identity_key)
 
-    # Load extraction windows and the Step 8 final-context artifact, then build parent
-    # sets for hasChild resolution requests.
+    # Load extraction windows and the SFI finalization context artifact, then build
+    # parent sets for hasChild resolution requests.
     extraction_windows = _load_extraction_windows(kg_dirs)
     contexts = _load_final_contexts(contexts_fp)
     _validate_final_contexts_align_with_records(

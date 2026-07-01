@@ -22,9 +22,9 @@ from loguru import logger
 from skg.config import Settings
 from skg.document_ir.schemas import BlockSegment, DocumentIR, TableSegment
 from skg.kgs.schemas import (
+    SFIFinalContext,
     SFIFinalRecord,
     SFIFinalSummary,
-    SFIHasChildFinalContext,
     SFIMergeGroup,
     SFIMergeReport,
     SFIRegistryArtifact,
@@ -310,7 +310,7 @@ def _build_sfi_final_contexts(
     document_ir: DocumentIR,
     kg_config: CreateKGConfig,
     sfi_final_records: Sequence[SFIFinalRecord],
-) -> list[SFIHasChildFinalContext]:
+) -> list[SFIFinalContext]:
     """Recover and package source context for finalized SFI records.
 
     The returned context artifact is the handoff to SFI hasChild resolution. It
@@ -330,11 +330,11 @@ def _build_sfi_final_contexts(
 
     Returns
     -------
-    list[SFIHasChildFinalContext]
+    list[SFIFinalContext]
         Final SFI source contexts sorted by source order and UUID.
     """
 
-    contexts: list[SFIHasChildFinalContext] = []
+    contexts: list[SFIFinalContext] = []
     segment_order_by_id = {
         segment.segment_id: index for index, segment in enumerate(document_ir.segments)
     }
@@ -365,7 +365,7 @@ def _build_sfi_final_contexts(
             key="table_row_indexes", record=record
         )
         contexts.append(
-            SFIHasChildFinalContext(
+            SFIFinalContext(
                 audit_flags=record.audit_flags,
                 candidate_source_texts=record.candidate_source_texts,
                 canonical_statement_scope_key=record.canonical_statement_scope_key,
