@@ -263,7 +263,19 @@ def extract_sfi_candidates_from_windows(
     -------
     list[SFIExtractionResult]
         Parsed and quality-validated extraction results in window order.
+
+    Raises
+    ------
+    ValueError
+        If no extraction windows were provided.
     """
+
+    if not extraction_windows:
+        raise ValueError(
+            "SFI extraction requires at least one extraction window. Zero extraction "
+            "windows indicate a failed upstream windowing/configuration run and must "
+            "not produce empty SFI extraction artifacts."
+        )
 
     total_windows = len(extraction_windows)
 
@@ -333,11 +345,6 @@ def extract_sfi_candidates_from_windows(
             f"{current_window_number}/{total_windows}: "
             f"candidates={len(sfi_extraction_result.sfi_candidates)}, "
             f"auxiliary={len(sfi_extraction_result.auxiliary_candidates)}."
-        )
-
-    if not sfi_extraction_results:
-        _persist_sfi_extraction_summary(
-            results=sfi_extraction_results, summary_fp=summary_fp
         )
 
     logger.success(
