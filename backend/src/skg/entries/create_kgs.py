@@ -34,6 +34,7 @@ from skg.kgs.create_extraction_windows import (
 )
 from skg.kgs.llm import KGUsageTracker
 from skg.kgs.sfi_dedup import merge_sfi_candidates
+from skg.kgs.sfi_export import compile_academic_standards_kg
 from skg.kgs.sfi_extraction import extract_sfi_candidates_from_windows
 from skg.kgs.sfi_finalization import mint_final_sfi_ids
 from skg.kgs.sfi_registry import build_candidate_registry
@@ -73,6 +74,7 @@ def build_kgs(
     7. Merge duplicate SFI registry candidates into merge groups.
     8. Mint deterministic final SFI records from merge groups.
     9. Resolve source-grounded final hasChild edges.
+    10. Compile, validate, and write final Academic Standards KG export artifacts.
 
     Parameters
     ----------
@@ -162,7 +164,23 @@ def build_kgs(
         usage_tracker=usage_tracker,
     )
 
-    logger.debug(f"hasChild edge count: {len(has_child_edges)}")
+    # 10.
+    final_bundle = compile_academic_standards_kg(
+        document_ir=kg_run_inputs.document_ir,
+        has_child_edges=has_child_edges,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+        kg_run_manifest=kg_run_manifest,
+        overwrite=config.overwrite,
+        sfi_final_records=sfi_final_records,
+    )
+
+    logger.success(
+        f"Final Academic Standards KG export count: "
+        f"frameworks={final_bundle.summary.framework_count}; "
+        f"items={final_bundle.summary.final_sfi_count}; "
+        f"hasChild_relationships={final_bundle.summary.has_child_relationship_count}"
+    )
 
     return kg_run_manifest_fp
 

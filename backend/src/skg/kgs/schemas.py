@@ -22,20 +22,13 @@ from uuid import UUID
 from pydantic import Field, field_validator, model_validator
 
 # Package Library
-from skg.page_ir_extraction.schemas import TextUnit
-from skg.schemas import (
-    BaseSchema,
-    LanguageField,
-    NormalizedStatementType,
-    validate_bbox_order,
-)
+from skg.schemas import BaseSchema, LanguageField, NormalizedStatementType
 
 _AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo"}
 _AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
 _MetadataT = dict[str, Any]
 _ProgressionSubtype = Literal["developmental_prerequisite", "recurring_practice"]
 _SFIDedupReviewFocus = Literal["general", "same_normalized_source_text"]
-_ValidationLevel = Literal["error", "info"]
 SFIDedupDecision = Literal["conflict", "keep_separate", "merge", "needs_review"]
 SFIMergeDecision = Literal["conflict", "merged", "needs_review", "singleton"]
 
@@ -75,6 +68,47 @@ def _strip_and_require_non_empty_str(v: str) -> str:
     return v2
 
 
+def _validate_iso8601_str(v: Optional[str]) -> Optional[str]:
+    """Validate ISO-8601 parseability for timestamps if provided.
+
+    Parameters
+    ----------
+    v
+        The date string to validate.
+
+    Returns
+    -------
+    Optional[str]
+        The validated date string or None.
+
+    Raises
+    ------
+    TypeError
+        If the input is not a string or None.
+    ValueError
+        If the input string is not a valid ISO-8601 datetime.
+    """
+
+    if v is None:
+        return None
+
+    if not isinstance(v, str):
+        raise TypeError("dateCreated/dateModified must be ISO-8601 strings or None")
+
+    v2 = v.strip()
+
+    if not v2:
+        return None
+
+    # Accept common ISO-8601 forms; supports "Z" suffix via replace.
+    try:
+        datetime.fromisoformat(v2.replace("Z", "+00:00"))
+    except Exception as e:
+        raise ValueError(f"Invalid ISO-8601 datetime string: {v2}") from e
+
+    return v2
+
+
 def unique_clean_strings(values: Sequence[str]) -> list[str]:
     """Clean and de-duplicate strings while preserving order.
 
@@ -102,6 +136,133 @@ def unique_clean_strings(values: Sequence[str]) -> list[str]:
         seen.add(value_clean)
 
     return cleaned
+
+
+class _CaseIdentifierMixin:
+    """Mixin providing CASE-style URI/UUID validation.
+
+    Consuming models must declare `case_identifier_uri: str` and
+    `case_identifier_uuid: UUID`.
+    """
+
+    @field_validator("case_identifier_uri")
+    @classmethod
+    def _validate_case_identifier_uri_is_uri_like(cls, v: str) -> str:
+        """Validate case_identifier_uri looks like a URI/URN (supports http(s), urn,
+        etc.).
+
+        Parameters
+        ----------
+        v
+            The case_identifier_uri string to validate.
+
+        Returns
+        -------
+        str
+            The validated case_identifier_uri string.
+
+        Raises
+        ------
+        ValueError
+            If the case_identifier_uri does not include a URI scheme.
+        """
+
+        parsed = urlparse(v)
+
+        if not parsed.scheme:
+            raise ValueError(
+                "case_identifier_uri must include a URI scheme (e.g., urn:, http:, https:)"
+            )
+
+        return v
+
+    @model_validator(mode="after")
+    def _check_case_uri_contains_uuid(
+        self: _HasCaseIdentifierFields,
+    ) -> _HasCaseIdentifierFields:
+        """Validate that case_identifier_uri includes case_identifier_uuid (deterministic
+        traceability).
+
+        Returns
+        -------
+        Self
+            The validated model instance.
+
+        Raises
+        ------
+        ValueError
+            If case_identifier_uri does not include case_identifier_uuid.
+        """
+
+        if str(self.case_identifier_uuid) not in self.case_identifier_uri:
+            raise ValueError("case_identifier_uri must include case_identifier_uuid")
+
+        return self
+
+
+class _DateValidationMixin:
+    """Mixin providing ISO-8601 date validation and modified >= created check.
+
+    Consuming models must declare `date_created: Optional[str]` and
+    `date_modified: Optional[str]`.
+    """
+
+    @field_validator("date_created", "date_modified")
+    @classmethod
+    def _validate_iso8601_dates(cls, v: Optional[str]) -> Optional[str]:
+        """Validate that date_created and date_modified, if provided, are valid
+        ISO-8601 strings.
+
+        Parameters
+        ----------
+        v
+            The date string to validate.
+
+        Returns
+        -------
+        Optional[str]
+            The validated date string or None.
+        """
+
+        return _validate_iso8601_str(v)
+
+    @model_validator(mode="after")
+    def _check_modified_not_before_created(self: _HasDateFields) -> _HasDateFields:
+        """If both dates exist, ensure dateModified >= dateCreated.
+
+        Returns
+        -------
+        Self
+            The validated model instance.
+
+        Raises
+        ------
+        ValueError
+            If dateModified is before dateCreated.
+        """
+
+        if self.date_created and self.date_modified:
+            created = datetime.fromisoformat(self.date_created.replace("Z", "+00:00"))
+            modified = datetime.fromisoformat(self.date_modified.replace("Z", "+00:00"))
+
+            if modified < created:
+                raise ValueError("dateModified must be >= dateCreated")
+
+        return self
+
+
+class _HasCaseIdentifierFields:
+    """Structural type stub for models with case_identifier_uri/uuid fields."""
+
+    case_identifier_uri: str
+    case_identifier_uuid: UUID
+
+
+class _HasDateFields:
+    """Structural type stub for models with date_created/date_modified fields."""
+
+    date_created: Optional[str]
+    date_modified: Optional[str]
 
 
 # Schemas for extraction windows.
@@ -1763,305 +1924,44 @@ class SFIHasChildResolutionSummary(BaseSchema):
     unresolved_child_count: int = Field(default=0, ge=0)
 
 
-# CURRENTLY UNUSED #
-def _validate_iso8601_str(v: Optional[str]) -> Optional[str]:
-    """Validate ISO-8601 parseability for timestamps if provided.
+# Schemas for Academic Standards.
+class AcademicStandardsExportSummary(BaseSchema):
+    """Aggregate summary for the final Academic Standards KG export."""
 
-    Parameters
-    ----------
-    v
-        The date string to validate.
+    final_sfi_count: int = Field(ge=0)
+    finalization_exclusion_summary: dict[str, int] = Field(default_factory=dict)
+    framework_count: int = Field(ge=0)
+    has_child_relationship_count: int = Field(ge=0)
+    relationship_unresolved_edge_count: int = Field(ge=0)
 
-    Returns
-    -------
-    Optional[str]
-        The validated date string or None.
 
-    Raises
-    ------
-    TypeError
-        If the input is not a string or None.
-    ValueError
-        If the input string is not a valid ISO-8601 datetime.
-    """
+class AcademicStandardsKGBundle(BaseSchema):
+    """Complete final Academic Standards KG bundle for one source framework."""
 
-    if v is None:
-        return None
+    entity_provenance: dict[str, Any] = Field(default_factory=dict)
+    framework: StandardsFramework
+    items: list[StandardsFrameworkItem]
+    relationships_has_child: list[Relationship]
+    summary: AcademicStandardsExportSummary
+    unresolved_items: AcademicStandardsUnresolvedItems
+    validation_report: AcademicStandardsValidationReport
 
-    if not isinstance(v, str):
-        raise TypeError("dateCreated/dateModified must be ISO-8601 strings or None")
 
-    v2 = v.strip()
+class AcademicStandardsUnresolvedItems(BaseSchema):
+    """Final unresolved report for Academic Standards export artifacts."""
 
-    if not v2:
-        return None
+    finalization_exclusion_summary: dict[str, int] = Field(default_factory=dict)
+    relationship_unresolved_edges: list[dict[str, Any]] = Field(default_factory=list)
 
-    # Accept common ISO-8601 forms; supports "Z" suffix via replace.
-    try:
-        datetime.fromisoformat(v2.replace("Z", "+00:00"))
-    except Exception as e:
-        raise ValueError(f"Invalid ISO-8601 datetime string: {v2}") from e
 
-    return v2
+class AcademicStandardsValidationReport(BaseSchema):
+    """Validation report for the compiled Academic Standards KG export."""
 
-
-class _HasDateFields:
-    """Structural type stub for models with date_created/date_modified fields."""
-
-    date_created: Optional[str]
-    date_modified: Optional[str]
-
-
-class _HasCaseIdentifierFields:
-    """Structural type stub for models with case_identifier_uri/uuid fields."""
-
-    case_identifier_uri: str
-    case_identifier_uuid: UUID
-
-
-class _CaseIdentifierMixin:
-    """Mixin providing CASE-style URI/UUID validation.
-
-    Consuming models must declare `case_identifier_uri: str` and
-    `case_identifier_uuid: UUID`.
-    """
-
-    @field_validator("case_identifier_uri")
-    @classmethod
-    def _validate_case_identifier_uri_is_uri_like(cls, v: str) -> str:
-        """Validate case_identifier_uri looks like a URI/URN (supports http(s), urn,
-        etc.).
-
-        Parameters
-        ----------
-        v
-            The case_identifier_uri string to validate.
-
-        Returns
-        -------
-        str
-            The validated case_identifier_uri string.
-
-        Raises
-        ------
-        ValueError
-            If the case_identifier_uri does not include a URI scheme.
-        """
-
-        parsed = urlparse(v)
-
-        if not parsed.scheme:
-            raise ValueError(
-                "case_identifier_uri must include a URI scheme (e.g., urn:, http:, https:)"
-            )
-
-        return v
-
-    @model_validator(mode="after")
-    def _check_case_uri_contains_uuid(
-        self: _HasCaseIdentifierFields,
-    ) -> _HasCaseIdentifierFields:
-        """Validate that case_identifier_uri includes case_identifier_uuid (deterministic
-        traceability).
-
-        Returns
-        -------
-        Self
-            The validated model instance.
-
-        Raises
-        ------
-        ValueError
-            If case_identifier_uri does not include case_identifier_uuid.
-        """
-
-        if str(self.case_identifier_uuid) not in self.case_identifier_uri:
-            raise ValueError("case_identifier_uri must include case_identifier_uuid")
-
-        return self
-
-
-class _DateValidationMixin:
-    """Mixin providing ISO-8601 date validation and modified >= created check.
-
-    Consuming models must declare `date_created: Optional[str]` and
-    `date_modified: Optional[str]`.
-    """
-
-    @field_validator("date_created", "date_modified")
-    @classmethod
-    def _validate_iso8601_dates(cls, v: Optional[str]) -> Optional[str]:
-        """Validate that date_created and date_modified, if provided, are valid
-        ISO-8601 strings.
-
-        Parameters
-        ----------
-        v
-            The date string to validate.
-
-        Returns
-        -------
-        Optional[str]
-            The validated date string or None.
-        """
-
-        return _validate_iso8601_str(v)
-
-    @model_validator(mode="after")
-    def _check_modified_not_before_created(self: _HasDateFields) -> _HasDateFields:
-        """If both dates exist, ensure dateModified >= dateCreated.
-
-        Returns
-        -------
-        Self
-            The validated model instance.
-
-        Raises
-        ------
-        ValueError
-            If dateModified is before dateCreated.
-        """
-
-        if self.date_created and self.date_modified:
-            created = datetime.fromisoformat(self.date_created.replace("Z", "+00:00"))
-            modified = datetime.fromisoformat(self.date_modified.replace("Z", "+00:00"))
-
-            if modified < created:
-                raise ValueError("dateModified must be >= dateCreated")
-
-        return self
-
-
-# Schemas for LLM responses.
-class AtomicSkill(BaseSchema):
-    """An atomic skill extracted from a single expectation statement.
-
-    NB:
-
-    1. `description` is the atomic skill statement (display-language policy).
-    2. `rationale` is optional guidance explaining the decomposition decision.
-    """
-
-    description: str = Field(
-        description="Atomic skill statement (not an activity/resource).", min_length=1
-    )
-    rationale: Optional[str] = Field(
-        default=None,
-        description="Optional brief rationale explaining the decomposition.",
-    )
-
-
-class SFIAtomicSkills(BaseSchema):
-    """Atomic skills for a single StandardsFrameworkItem (expectation)."""
-
-    sfi_uuid: UUID = Field(
-        description="CASE UUID of the supporting StandardsFrameworkItem."
-    )
-    skills: list[AtomicSkill] = Field(default_factory=list)
-
-
-class AtomicSkillsResponse(BaseSchema):
-    """Top-level structured response for atomic skills inference."""
-
-    items: list[SFIAtomicSkills] = Field(default_factory=list)
-
-
-class ProgressionEdge(BaseSchema):
-    """A single suggested edge between two StandardsFrameworkItems."""
-
-    confidence: float = Field(
-        description="0..1 calibrated confidence (higher = more certain).",
-        ge=0.0,
-        le=1.0,
-    )
-    progression_subtype: Optional[_ProgressionSubtype] = Field(
-        default=None,
-        description=(
-            "For Phase 1 within-level buildsTowards only: "
-            "'developmental_prerequisite' means the source is a meaningful prerequisite "
-            "for a more complex or dependent target; 'recurring_practice' means the "
-            "target is a later curriculum occurrence continuing practice of the same "
-            "or substantially similar skill."
-        ),
-    )
-    rationale: str = Field(
-        description="Brief rationale for the edge (>= 50 chars).",
-        min_length=50,
-    )
-    source_sfi_uuid: str = Field(description="UUID string of the source SFI.")
-    target_sfi_uuid: str = Field(description="UUID string of the target SFI.")
-
-    @field_validator("rationale", mode="before")
-    @classmethod
-    def _strip_rationale(cls, v: Any) -> str:
-        """Strip whitespace and validate that rationale is a string of at least 50
-        characters.
-
-        Parameters
-        ----------
-        v
-            The input value to validate.
-
-        Returns
-        -------
-        str
-            The validated and stripped rationale string.
-
-        Raises
-        ------
-        ValueError
-            If the rationale is not a string or is less than 50 characters after
-            stripping.
-        """
-
-        s = str(v or "").strip()
-
-        if len(s) < 50:
-            raise ValueError("rationale must be >= 50 characters")
-
-        return s
-
-    @field_validator("source_sfi_uuid", "target_sfi_uuid", mode="before")
-    @classmethod
-    def _validate_uuid_str(cls, v: Any) -> str:
-        """Strip whitespace and validate that the value is a parseable UUID string.
-
-        Parameters
-        ----------
-        v
-            The input value to validate.
-
-        Returns
-        -------
-        str
-            The validated and stripped UUID string.
-
-        Raises
-        ------
-        ValueError
-            If the input value is null, empty, or not a valid UUID string.
-        """
-
-        if v is None:
-            raise ValueError("UUID cannot be null")
-
-        s = str(v).strip()
-
-        if not s:
-            raise ValueError("UUID cannot be empty")
-
-        try:
-            UUID(s)
-        except Exception as e:  # pylint: disable=broad-except
-            raise ValueError(f"Invalid UUID string: {s}") from e
-
-        return s
-
-
-class ProgressionEdgesResponse(BaseSchema):
-    """Top-level structured response: a list of edges (may be empty)."""
-
-    edges: list[ProgressionEdge] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    input_fingerprints: dict[str, str] = Field(default_factory=dict)
+    object_counts: dict[str, int] = Field(default_factory=dict)
+    passed: bool
+    validation_checks: list[str] = Field(default_factory=list)
 
 
 # Schemas for nodes.
@@ -2488,114 +2388,6 @@ class StandardsFrameworkItem(_CaseIdentifierMixin, _DateValidationMixin, BaseSch
         return self
 
 
-class LearningComponent(_DateValidationMixin, BaseSchema):
-    """Granular skill/concept aligned to one or more standards items via `supports`.
-
-    LearningComponents represent skill/concept units that can be aligned to
-    StandardsFrameworkItems using `supports` relationships:
-
-      (:LearningComponent)-[:supports]->(:StandardsFrameworkItem)
-    """
-
-    academic_subject: str = Field(
-        description=(
-            "High-level academic subject classification for the component "
-            "(e.g., Mathematics, English Language Arts). In strict exports this should "
-            "conform to LC enum values; in relaxed exports free-form values are allowed."
-        ),
-    )
-    attribution_statement: str = Field(
-        description=(
-            "Attribution text required to credit the original publisher/owner of the "
-            "source curriculum content that this component derives from."
-        ),
-    )
-    author: str = Field(
-        description=(
-            "Human or organization name considered the author/owner of this component, "
-            "typically inherited from the framework (e.g., Ministry of Education)."
-        ),
-    )
-    date_created: Optional[str] = Field(
-        default=None,
-        description=(
-            "Creation timestamp for the component (ISO-8601 string), if known. Optional."
-        ),
-    )
-    date_modified: Optional[str] = Field(
-        default=None,
-        description=(
-            "Last-modified timestamp for the component (ISO-8601 string), if known. Optional."
-        ),
-    )
-    description: str = Field(
-        description=(
-            "Primary human-readable text describing the skill/concept represented by the "
-            "LearningComponent. In a 1-to-1 policy, this may be identical to the supporting "
-            "standards expectation statement."
-        ),
-    )
-    identifier: UUID = Field(
-        description=(
-            "Primary internal identifier for this entity in the export. Must be deterministic "
-            "across reruns (UUIDv5 recommended)."
-        ),
-    )
-    in_language: LanguageField = Field(
-        description=(
-            "Language tag for the component text (e.g., en-US). In strict exports this should "
-            "conform to LC enum values; in relaxed exports any valid BCP-47 language tag is allowed."
-        ),
-    )
-    license: str = Field(
-        description=(
-            "License string for the component content. Must be present even if it is a "
-            "conservative placeholder when the original license is unknown."
-        ),
-    )
-    metadata: _MetadataT = Field(
-        default_factory=dict,
-        description=(
-            "Free-form metadata for pipeline/internal use (e.g., canonical node ids, "
-            "doc_key references, provenance pointers, dialect fallback notes). "
-            "Not a core LC KG field; consider omitting from strict exports."
-        ),
-    )
-    provider: str = Field(
-        description=(
-            "Provider/host name for the exported KG dataset (often your organization/product). "
-            "Used for attribution and provenance in downstream systems."
-        ),
-    )
-
-    @field_validator(
-        "academic_subject",
-        "attribution_statement",
-        "author",
-        "description",
-        "in_language",
-        "license",
-        "provider",
-        mode="before",
-    )
-    @classmethod
-    def _strip_and_require_non_empty(cls, v: str) -> str:
-        """Strip whitespace and require non-empty strings for required fields.
-
-        Parameters
-        ----------
-        v
-            The input string value to validate.
-
-        Returns
-        -------
-        str
-            The validated and stripped string value.
-        """
-
-        return _strip_and_require_non_empty_str(v)
-
-
 # Schemas for relationship.
 class Relationship(_DateValidationMixin, BaseSchema):
     """LC KG relationship record (shared schema across relationship types).
@@ -2941,640 +2733,210 @@ class Relationship(_DateValidationMixin, BaseSchema):
         return self
 
 
-# Schemas for provenance.
-class BBox(BaseSchema):
-    """Bounding box in pixel coordinates."""
+# CURRENTLY UNUSED #
+# Schemas for LLM responses.
+class ProgressionEdge(BaseSchema):
+    """A single suggested edge between two StandardsFrameworkItems."""
 
-    coord_space: Literal["px"] = "px"
-    x0: float = Field(..., description="Left coordinate in pixels.", ge=0.0)
-    x1: float = Field(..., description="Right coordinate in pixels.", ge=0.0)
-    y0: float = Field(..., description="Top coordinate in pixels.", ge=0.0)
-    y1: float = Field(..., description="Bottom coordinate in pixels.", ge=0.0)
+    confidence: float = Field(
+        description="0..1 calibrated confidence (higher = more certain).",
+        ge=0.0,
+        le=1.0,
+    )
+    progression_subtype: Optional[_ProgressionSubtype] = Field(
+        default=None,
+        description=(
+            "For Phase 1 within-level buildsTowards only: "
+            "'developmental_prerequisite' means the source is a meaningful prerequisite "
+            "for a more complex or dependent target; 'recurring_practice' means the "
+            "target is a later curriculum occurrence continuing practice of the same "
+            "or substantially similar skill."
+        ),
+    )
+    rationale: str = Field(
+        description="Brief rationale for the edge (>= 50 chars).",
+        min_length=50,
+    )
+    source_sfi_uuid: str = Field(description="UUID string of the source SFI.")
+    target_sfi_uuid: str = Field(description="UUID string of the target SFI.")
 
-    @model_validator(mode="before")
+    @field_validator("rationale", mode="before")
     @classmethod
-    def _coerce_list(cls, data: Any) -> Any:
-        """Coerce a list or tuple of 4 numbers into a BBox dict.
+    def _strip_rationale(cls, v: Any) -> str:
+        """Strip whitespace and validate that rationale is a string of at least 50
+        characters.
 
         Parameters
         ----------
-        data
-            The input data to validate, which may be a dict or a list/tuple of 4
-            numbers.
+        v
+            The input value to validate.
 
         Returns
         -------
-        Any
-            The validated BBox data, either as a dict or the original data if it was
-            not a list/tuple of 4 numbers.
+        str
+            The validated and stripped rationale string.
 
         Raises
         ------
         ValueError
-            If the input is a list/tuple but does not have exactly 4 numbers.
+            If the rationale is not a string or is less than 50 characters after
+            stripping.
         """
 
-        if isinstance(data, (list, tuple)):
-            if len(data) != 4:
-                raise ValueError(
-                    "Bounding box must have exactly 4 numbers: [x0, y0, x1, y1]."
-                )
+        s = str(v or "").strip()
 
-            return {"x0": data[0], "y0": data[1], "x1": data[2], "y1": data[3]}
-        return data
+        if len(s) < 50:
+            raise ValueError("rationale must be >= 50 characters")
 
-    @model_validator(mode="after")
-    def _normalize_axis_order(self) -> BBox:
-        """Normalize bbox ordering and expand zero-size axes.
+        return s
 
-        Returns
-        -------
-        BBox
-            The BBox object with normalized coordinates.
-        """
-
-        self.x0, self.y0, self.x1, self.y1 = validate_bbox_order(
-            [self.x0, self.y0, self.x1, self.y1]
-        )
-        return self
-
-
-class EntityProvenance(BaseSchema):
-    """Provenance information for a node."""
-
-    bbox: Optional[BBox] = None
-    canonical_node_id: str
-    columns_signatures: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Columns signature(s) from the source segment decision(s) for this entity, "
-            "if the node originated from table-based extraction. Empty for non-table nodes."
-        ),
-    )
-    dialect_fallbacks: dict[str, str] = Field(default_factory=dict)
-    entity_identifier: UUID
-    entity_type: str = Field(
-        default="",
-        description="Entity type label (e.g., StandardsFrameworkItem, LearningComponent).",
-    )
-    local_code: Optional[str] = Field(default=None)
-    page_indices: list[int] = Field(default_factory=list)
-    role: str = Field(
-        default="",
-        description=(
-            "Source role label for the entity (e.g., NodeRole value for SFIs, "
-            "'framework' for StandardsFramework, 'learning_component' for LCs)."
-        ),
-    )
-    section_path_text: list[str] = Field(default_factory=list)
-    source_decision_ids: list[str] = Field(default_factory=list)
-    source_segment_ids: list[str] = Field(default_factory=list)
-    text: Optional[TextUnit] = None
-
-
-# Schemas for export configurations.
-class EntityProvenanceExport(BaseSchema):
-    """Schema for entity provenance export.
-
-    Flat lookup table: export_id -> canonical_node_id, source provenance fields.
-    Designed for debugging and auditing without cracking open nested entity metadata.
-    """
-
-    doc_key: Optional[str] = None
-    entities: list[EntityProvenance] = Field(
-        default_factory=list, description="List of entities."
-    )
-    pdf_name: Optional[str] = None
-
-
-class HierarchyOrderExport(BaseSchema):
-    """Schema for exporting explicit ordering of child SFIs under parent SFIs."""
-
-    order: dict[str, list[str]] = Field(
-        default_factory=dict, description="Order of child SFIs."
-    )
-
-
-# Schemas for graph validation reporting.
-class GraphValidationIssue(BaseSchema):
-    """A single validation finding."""
-
-    code: str
-    context: dict[str, Any] = Field(default_factory=dict)
-    level: _ValidationLevel
-    message: str
-
-
-class GraphValidationReport(BaseSchema):
-    """Accumulates validation issues and basic knowledge graph building stats."""
-
-    doc_key: Optional[str] = None
-    issues: list[GraphValidationIssue] = Field(default_factory=list)
-    pdf_name: Optional[str] = None
-    stats: dict[str, Any] = Field(default_factory=dict)
-
-    def add(
-        self,
-        *,
-        code: str,
-        context: Optional[dict[str, Any]] = None,
-        level: _ValidationLevel,
-        message: str,
-    ) -> None:
-        """Add a validation issue.
+    @field_validator("source_sfi_uuid", "target_sfi_uuid", mode="before")
+    @classmethod
+    def _validate_uuid_str(cls, v: Any) -> str:
+        """Strip whitespace and validate that the value is a parseable UUID string.
 
         Parameters
         ----------
-        code
-            Short machine-readable code for the issue.
-        context
-            Optional additional context for debugging.
-        level
-            Severity level of the issue.
-        message
-            Human-readable description of the issue.
-        """
-
-        self.issues.append(
-            GraphValidationIssue(
-                code=code, context=context or {}, level=level, message=message
-            )
-        )
-
-    def error(
-        self, *, code: str, context: Optional[dict[str, Any]] = None, message: str
-    ) -> None:
-        """Add an error-level issue.
-
-        Parameters
-        ----------
-        code
-            Short machine-readable code for the issue.
-        context
-            Optional additional context for debugging.
-        message
-            Human-readable description of the issue.
-        """
-
-        self.add(code=code, context=context, level="error", message=message)
-
-    def errors(self) -> list[GraphValidationIssue]:
-        """Get all error-level issues.
+        v
+            The input value to validate.
 
         Returns
         -------
-        list[GraphValidationIssue]
-            List of error-level issues.
-        """
-
-        return [i for i in self.issues if i.level == "error"]
-
-    def has_errors(self) -> bool:
-        """Check if any error-level issues are present.
-
-        Returns
-        -------
-        bool
-            True if any error-level issues are present, False otherwise.
-        """
-
-        return any(i.level == "error" for i in self.issues)
-
-    def info(
-        self, *, code: str, context: Optional[dict[str, Any]] = None, message: str
-    ) -> None:
-        """Add an info-level issue.
-
-        Parameters
-        ----------
-        code
-            Short machine-readable code for the issue.
-        context
-            Optional additional context for debugging.
-        message
-            Human-readable description of the issue.
-        """
-
-        self.add(code=code, context=context, level="info", message=message)
-
-    def raise_if_errors(self) -> None:
-        """Raise a ValueError if any errors are present in the report.
+        str
+            The validated and stripped UUID string.
 
         Raises
         ------
         ValueError
-            If any errors are present in the report.
+            If the input value is null, empty, or not a valid UUID string.
         """
 
-        if not self.has_errors():
-            return
+        if v is None:
+            raise ValueError("UUID cannot be null")
 
-        # Keep the exception message readable.
-        lines = ["GraphValidationReport pre-validation failed:"]
+        s = str(v).strip()
 
-        for i in self.errors()[:15]:
-            lines.append(f"- [{i.code}] {i.message}")
+        if not s:
+            raise ValueError("UUID cannot be empty")
 
-        if len(self.errors()) > 15:
-            lines.append(f"- ... plus {len(self.errors()) - 15} more errors")
+        try:
+            UUID(s)
+        except Exception as e:  # pylint: disable=broad-except
+            raise ValueError(f"Invalid UUID string: {s}") from e
 
-        raise ValueError("\n".join(lines))
+        return s
 
 
-class PolicyCoverageReport(BaseSchema):
-    """Aggregate report explaining what was emitted, dropped, and why.
+class ProgressionEdgesResponse(BaseSchema):
+    """Top-level structured response: a list of edges (may be empty)."""
 
-    This is the primary debuggability artifact for the KG export pipeline. It answers
-    "why was this node dropped?" and provides summary statistics for every export phase.
+    edges: list[ProgressionEdge] = Field(default_factory=list)
+
+
+# Schemas for nodes.
+class LearningComponent(_DateValidationMixin, BaseSchema):
+    """Granular skill/concept aligned to one or more standards items via `supports`.
+
+    LearningComponents represent skill/concept units that can be aligned to
+    StandardsFrameworkItems using `supports` relationships:
+
+      (:LearningComponent)-[:supports]->(:StandardsFrameworkItem)
     """
 
-    doc_key: Optional[str] = None
-    generated_at: Optional[str] = None
-    pdf_name: Optional[str] = None
-
-    # Node-level drop accounting (academic standards).
-    drop_reason_counts: dict[str, int] = Field(
+    academic_subject: str = Field(
+        description=(
+            "High-level academic subject classification for the component "
+            "(e.g., Mathematics, English Language Arts). In strict exports this should "
+            "conform to LC enum values; in relaxed exports free-form values are allowed."
+        ),
+    )
+    attribution_statement: str = Field(
+        description=(
+            "Attribution text required to credit the original publisher/owner of the "
+            "source curriculum content that this component derives from."
+        ),
+    )
+    author: str = Field(
+        description=(
+            "Human or organization name considered the author/owner of this component, "
+            "typically inherited from the framework (e.g., Ministry of Education)."
+        ),
+    )
+    date_created: Optional[str] = Field(
+        default=None,
+        description=(
+            "Creation timestamp for the component (ISO-8601 string), if known. Optional."
+        ),
+    )
+    date_modified: Optional[str] = Field(
+        default=None,
+        description=(
+            "Last-modified timestamp for the component (ISO-8601 string), if known. Optional."
+        ),
+    )
+    description: str = Field(
+        description=(
+            "Primary human-readable text describing the skill/concept represented by the "
+            "LearningComponent. In a 1-to-1 policy, this may be identical to the supporting "
+            "standards expectation statement."
+        ),
+    )
+    identifier: UUID = Field(
+        description=(
+            "Primary internal identifier for this entity in the export. Must be deterministic "
+            "across reruns (UUIDv5 recommended)."
+        ),
+    )
+    in_language: LanguageField = Field(
+        description=(
+            "Language tag for the component text (e.g., en-US). In strict exports this should "
+            "conform to LC enum values; in relaxed exports any valid BCP-47 language tag is allowed."
+        ),
+    )
+    license: str = Field(
+        description=(
+            "License string for the component content. Must be present even if it is a "
+            "conservative placeholder when the original license is unknown."
+        ),
+    )
+    metadata: _MetadataT = Field(
         default_factory=dict,
         description=(
-            "Complete count of Academic Standards drop reasons, keyed by the raw "
-            "drop-reason taxonomy string. This preserves new upstream drop reasons "
-            "even before curated report fields are added."
+            "Free-form metadata for pipeline/internal use (e.g., canonical node ids, "
+            "doc_key references, provenance pointers, dialect fallback notes). "
+            "Not a core LC KG field; consider omitting from strict exports."
         ),
     )
-    dropped_aux_attached_to_expectation: int = Field(
-        default=0,
+    provider: str = Field(
         description=(
-            "Aux guidance/descriptor nodes converted to expectation metadata "
-            "attachments and therefore not emitted as standalone SFIs."
-        ),
-    )
-    dropped_aux_descendants_suppressed: int = Field(
-        default=0,
-        description=(
-            "Descendant nodes suppressed because they lived under an aux node that was "
-            "converted into expectation metadata."
-        ),
-    )
-    dropped_due_to_expectation_metadata_attachment: int = Field(
-        default=0,
-        description=(
-            "Total nodes dropped because of expectation-metadata attachment handling: "
-            "attached aux nodes plus descendants suppressed below attached aux nodes."
-        ),
-    )
-    dropped_by_columns_signature: dict[str, int] = Field(
-        default_factory=dict,
-        description="Count of nodes dropped per columns_signature value.",
-    )
-    dropped_by_decision_type: dict[str, int] = Field(
-        default_factory=dict,
-        description="Count of nodes dropped per segment decision type (e.g., ignore, unresolved).",
-    )
-    dropped_descriptor: int = Field(
-        default=0, description="Nodes dropped because as_descriptor_handling == 'drop'."
-    )
-    dropped_guidance: int = Field(
-        default=0, description="Nodes dropped because as_guidance_handling == 'drop'."
-    )
-    dropped_non_grouping_role: int = Field(
-        default=0,
-        description=(
-            "Total nodes dropped with a drop:non_grouping_role:* reason. See "
-            "dropped_non_grouping_role_counts for the suffix-level breakdown."
-        ),
-    )
-    dropped_non_grouping_role_counts: dict[str, int] = Field(
-        default_factory=dict,
-        description=(
-            "Count of nodes dropped per drop:non_grouping_role:* suffix, such as "
-            "'drop' or 'structural_parent'."
-        ),
-    )
-    pruned_empty_groupings: int = Field(
-        default=0,
-        description="Grouping nodes pruned because they had zero emitted children.",
-    )
-    total_canonical_nodes: int = 0
-    total_emitted_sfis: int = 0
-
-    # Canonical-node accounting completeness.
-    coverage_accounted_canonical_nodes: int = Field(
-        default=0,
-        description=(
-            "Number of non-root canonical node IDs covered by the union of emitted "
-            "SFI source nodes and dropped canonical nodes."
-        ),
-    )
-    coverage_accounting_ok: bool = Field(
-        default=True,
-        description=(
-            "True when every non-root canonical node is accounted for exactly once as "
-            "either emitted as an SFI or intentionally dropped by Academic Standards "
-            "policy, with no emitted/dropped overlap and no non-canonical node IDs "
-            "appearing in either set."
-        ),
-    )
-    coverage_details_limit: int = Field(
-        default=200,
-        description="Maximum number of node IDs included per coverage-details list.",
-    )
-    coverage_details_truncated: bool = Field(
-        default=False,
-        description=(
-            "Whether any coverage-details list was truncated because it exceeded "
-            "coverage_details_limit."
-        ),
-    )
-    coverage_emitted_and_dropped_overlap_count: int = Field(
-        default=0,
-        description=(
-            "Canonical node IDs that appear both as emitted SFI source nodes and as "
-            "dropped nodes."
-        ),
-    )
-    coverage_emitted_and_dropped_overlap_node_ids: list[str] = Field(
-        default_factory=list,
-        description="Example canonical node IDs both emitted and dropped.",
-    )
-    coverage_emitted_sfis_missing_canonical_node_id_count: int = Field(
-        default=0,
-        description=(
-            "Emitted SFI rows whose metadata lacks canonical_node_id and therefore "
-            "cannot be tied back to a Canonical IR node for coverage accounting."
-        ),
-    )
-    coverage_emitted_sfis_missing_canonical_node_id_examples: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Example emitted SFI UUIDs whose metadata lacks canonical_node_id."
-        ),
-    )
-    coverage_noncanonical_dropped_node_count: int = Field(
-        default=0,
-        description=(
-            "Academic Standards drop_reasons node IDs that are not non-root Canonical "
-            "IR node IDs."
-        ),
-    )
-    coverage_noncanonical_dropped_node_ids: list[str] = Field(
-        default_factory=list,
-        description="Example dropped node IDs not present in Canonical IR.",
-    )
-    coverage_noncanonical_emitted_node_count: int = Field(
-        default=0,
-        description=(
-            "Emitted SFI metadata canonical_node_id values that are not non-root "
-            "Canonical IR node IDs."
-        ),
-    )
-    coverage_noncanonical_emitted_node_ids: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Example emitted canonical_node_id values not present in Canonical IR."
-        ),
-    )
-    coverage_over_accounted_canonical_nodes: int = Field(
-        default=0,
-        description=(
-            "Canonical-node accounting anomalies caused by emitted/dropped overlap or "
-            "node IDs in emitted/drop accounting that do not exist in the Canonical IR."
-        ),
-    )
-    coverage_unaccounted_canonical_nodes: int = Field(
-        default=0,
-        description=(
-            "Canonical nodes that are neither emitted as SFIs nor present in Academic "
-            "Standards drop_reasons."
-        ),
-    )
-    coverage_unaccounted_node_ids: list[str] = Field(
-        default_factory=list,
-        description="Example canonical node IDs not emitted and not dropped.",
-    )
-
-    # Aux reparenting/attachment and hierarchy-hoisting stats.
-    attach_only_newly_attached_aux_node_count: int = Field(
-        default=0,
-        description=(
-            "Unique aux node IDs newly discovered and attached during the step-4 "
-            "attach-only discovery pass."
-        ),
-    )
-    attached_aux_subtree_root_count: int = Field(
-        default=0,
-        description=(
-            "Attached aux nodes that still had exported child subtrees when subtree "
-            "suppression ran."
-        ),
-    )
-    child_layout_aux_attached_count: int = Field(
-        default=0,
-        description=(
-            "Aux statements discovered as canonical children of an expectation and "
-            "attached during step 3 export-tree construction."
-        ),
-    )
-    dropped_parents_processed: int = Field(
-        default=0,
-        description=(
-            "Dropped parents with emitted children that were processed during hierarchy "
-            "hoisting."
-        ),
-    )
-    dropped_parents_removed_from_parent_lists_count: int = Field(
-        default=0,
-        description=(
-            "Dropped parents whose stale references were removed from at least one "
-            "export parent child-list."
-        ),
-    )
-    orphan_aux_count: int = Field(
-        default=0,
-        description=(
-            "Total unique aux nodes that could not be attached to an owning "
-            "expectation (for example, no preceding expectation in sibling order)."
-        ),
-    )
-    reattach_appended_without_anchor_order_count: int = Field(
-        default=0,
-        description=(
-            "Hoist operations that appended children because no anchor-based ordering "
-            "signal was available."
-        ),
-    )
-    reattach_original_sibling_fallback_count: int = Field(
-        default=0,
-        description=(
-            "Hoist operations that used original sibling-position fallback because "
-            "canonical edge ordering was unavailable."
-        ),
-    )
-    reattached_children_count: int = Field(
-        default=0,
-        description="Emitted children newly inserted under surviving ancestors.",
-    )
-    removed_dropped_parent_reference_list_count: int = Field(
-        default=0,
-        description=(
-            "Total number of export parent child-lists modified while removing stale "
-            "dropped-parent references."
-        ),
-    )
-    sibling_aux_reparented_count: int = Field(
-        default=0,
-        description=(
-            "Aux sibling statements reparented to the most recent preceding "
-            "expectation during step 3 export-tree construction."
-        ),
-    )
-    suppressed_attached_aux_descendant_count: int = Field(
-        default=0,
-        description=(
-            "Descendant nodes suppressed below attached aux nodes so they cannot be "
-            "hoisted back into the exported hierarchy."
-        ),
-    )
-    suppressed_attached_aux_node_count: int = Field(
-        default=0,
-        description=(
-            "Attached aux nodes newly suppressed as standalone SFIs by the "
-            "attach-to-expectation policy enforcement step."
-        ),
-    )
-    total_attached_aux_node_count: int = Field(
-        default=0,
-        description=(
-            "Total unique aux node IDs tracked as attached to an expectation after "
-            "the attach-only discovery pass (steps 3-4 combined)."
+            "Provider/host name for the exported KG dataset (often your organization/product). "
+            "Used for attribution and provenance in downstream systems."
         ),
     )
 
-    # LC stats.
-    lc_fallback_sfis_count: int = Field(
-        default=0,
-        description="LC-source SFIs that fell back to deterministic 1_to_1 generation.",
+    @field_validator(
+        "academic_subject",
+        "attribution_statement",
+        "author",
+        "description",
+        "in_language",
+        "license",
+        "provider",
+        mode="before",
     )
-    lc_max_splits_observed: int = 0
-    lc_source_exclusion_reason_counts: dict[str, int] = Field(
-        default_factory=dict,
-        description=(
-            "Counts of LC-source eligibility exclusion reasons. The eligible reason is "
-            "omitted so this field focuses on exclusions."
-        ),
-    )
-    lc_split_policy: str = ""
-    lc_splits_distribution: dict[str, int] = Field(
-        default_factory=dict,
-        description="Distribution of split counts: how many SFIs produced N LCs. Keys are stringified integers (e.g., '1': 500, '2': 50).",
-    )
-    total_lc_source_sfis_considered: int = Field(
-        default=0,
-        description="Total SFIs considered by LC-source eligibility filtering.",
-    )
-    total_lc_source_sfis_eligible: int = Field(
-        default=0,
-        description="Total SFIs eligible to generate LearningComponents.",
-    )
-    total_lc_source_sfis_empty_text: int = Field(
-        default=0,
-        description=(
-            "Eligible LC-source SFIs skipped or producing zero LCs because usable text "
-            "was empty."
-        ),
-    )
-    total_lc_source_sfis_excluded: int = Field(
-        default=0,
-        description="Total SFIs excluded by LC-source eligibility filtering.",
-    )
-    total_lcs: int = 0
+    @classmethod
+    def _strip_and_require_non_empty(cls, v: str) -> str:
+        """Strip whitespace and require non-empty strings for required fields.
 
-    # LP stats (populated only when `generate_learning_progressions` is True).
-    lp_bucket_drop_counts: dict[str, Any] = Field(
-        default_factory=dict,
-        description=(
-            "Summarized Learning Progressions bucket/source drops copied from the LP "
-            "report."
-        ),
-    )
-    lp_candidate_builds_towards: int = Field(
-        default=0,
-        description="Candidate buildsTowards edges before filtering.",
-    )
-    lp_candidate_edges_after_dedupe: int = Field(
-        default=0,
-        description="Total candidate edges remaining after deduplication.",
-    )
-    lp_candidate_edges_pre_dedupe: int = Field(
-        default=0,
-        description="Total candidate edges before deduplication.",
-    )
-    lp_candidate_relates_to: int = Field(
-        default=0,
-        description="Candidate relatesTo edges before filtering.",
-    )
-    lp_dropped_cap_relates: int = Field(
-        default=0,
-        description="relatesTo edges dropped due to per-node cap.",
-    )
-    lp_dropped_dedupe: int = Field(
-        default=0,
-        description="Edges dropped during deduplication.",
-    )
-    lp_dropped_doc_order_builds: int = Field(
-        default=0,
-        description="buildsTowards edges dropped by document-order filter.",
-    )
-    lp_dropped_low_conf_builds: int = Field(
-        default=0,
-        description="buildsTowards edges dropped due to low confidence.",
-    )
-    lp_dropped_low_conf_relates: int = Field(
-        default=0,
-        description="relatesTo edges dropped due to low confidence.",
-    )
-    lp_final_relationship_counts: dict[str, Any] = Field(
-        default_factory=dict,
-        description=(
-            "Final Learning Progressions relationship counts copied from "
-            "learning_progressions.report['final_relationship_counts']."
-        ),
-    )
-    lp_kept_builds_towards: int = Field(
-        default=0,
-        description="Final kept buildsTowards edges after all filters.",
-    )
-    lp_kept_builds_towards_before_doc_order: int = Field(
-        default=0,
-        description="Kept buildsTowards edges before document-order filter.",
-    )
-    lp_kept_relates_to: int = Field(
-        default=0,
-        description="Final kept relatesTo edges after all filters.",
-    )
-    lp_kept_relates_to_after_threshold: int = Field(
-        default=0,
-        description="Kept relatesTo edges after confidence threshold filter.",
-    )
-    lp_phase_toggles: dict[str, Any] = Field(default_factory=dict)
-    lp_thresholds: dict[str, Any] = Field(default_factory=dict)
+        Parameters
+        ----------
+        v
+            The input string value to validate.
 
-    # Detailed per-node drop log (first N for debuggability).
-    drop_details: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description=(
-            "Per-node drop log (capped at drop_details_limit entries). Each entry "
-            "includes canonical_node_id, role, and drop_reason."
-        ),
-    )
-    drop_details_limit: int = Field(
-        default=200,
-        description="Maximum number of drop_details entries included in this report.",
-    )
-    drop_details_total_count: int = Field(
-        default=0,
-        description="Total number of dropped nodes before drop_details truncation.",
-    )
-    drop_details_truncated: bool = Field(
-        default=False,
-        description="Whether drop_details was truncated because it exceeded the limit.",
-    )
+        Returns
+        -------
+        str
+            The validated and stripped string value.
+        """
+
+        return _strip_and_require_non_empty_str(v)

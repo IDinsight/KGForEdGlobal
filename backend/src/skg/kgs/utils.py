@@ -17,6 +17,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 # Package Library
+from skg.config import Settings
 from skg.document_ir.schemas import DocumentIR
 from skg.page_ir_extraction.schemas import TableCell, TextUnit
 from skg.schemas import CreateKGConfig, ExtractionConfig, RunCtx
@@ -561,6 +562,34 @@ def build_run_manifest(kg_run_inputs: KGInputs) -> dict[str, Any]:
         },
         "warnings": kg_run_inputs.warnings,
     }
+
+
+def build_standards_framework_uuid(doc_key: str) -> uuid.UUID:
+    """Build the deterministic StandardsFramework root UUID for one source document.
+
+    Parameters
+    ----------
+    doc_key
+        Stable source DocumentIR key used to scope all KG identifiers for the run.
+
+    Returns
+    -------
+    uuid.UUID
+        Deterministic UUIDv5 for the single StandardsFramework root node.
+
+    Raises
+    ------
+    ValueError
+        If the document key is missing or blank.
+    """
+
+    doc_key_clean = str(doc_key or "").strip()
+
+    if not doc_key_clean:
+        raise ValueError("Cannot mint StandardsFramework UUID without a doc_key.")
+
+    identity_key = f"lc:curriculum:{doc_key_clean}:standards_framework"
+    return uuid.uuid5(Settings.LC_CANONICAL_NAMESPACE_UUID, identity_key)
 
 
 def cross_check_stitching_run(

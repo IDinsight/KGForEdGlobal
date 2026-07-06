@@ -41,6 +41,7 @@ from skg.kgs.utils import (
     KGDirs,
     append_jsonl_model,
     assert_model_sequences_equal,
+    build_standards_framework_uuid,
     model_dump_key,
     normalize_code,
     normalize_text,
@@ -3517,8 +3518,7 @@ def resolve_has_child_edges(
     unresolved_edges_fp = kg_dirs.root / "has_child_unresolved_edges.json"
 
     # Create the framework UUID.
-    identity_key = f"lc:curriculum:{document_ir.doc_key}:standards_framework"
-    framework_uuid = uuid.uuid5(Settings.LC_CANONICAL_NAMESPACE_UUID, identity_key)
+    framework_uuid = build_standards_framework_uuid(document_ir.doc_key)
 
     # Load extraction windows and the SFI finalization context artifact, then build
     # parent sets for hasChild resolution requests.
