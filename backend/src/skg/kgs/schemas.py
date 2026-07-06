@@ -1968,8 +1968,8 @@ class AcademicStandardsValidationReport(BaseSchema):
 class StandardsFramework(_CaseIdentifierMixin, _DateValidationMixin, BaseSchema):
     """Root node for a standards framework (typically one per PDF).
 
-    This represents the top-level standards document/container in the LC KG. All
-    StandardsFrameworkItems (SFIs) should be reachable from this framework via
+    This represents the top-level standards document/container in the LearningCommons
+    KG. All StandardsFrameworkItems (SFIs) should be reachable from this framework via
     `hasChild` relationships.
     """
 

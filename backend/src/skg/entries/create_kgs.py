@@ -170,9 +170,7 @@ def build_kgs(
         has_child_edges=has_child_edges,
         kg_config=kg_run_inputs.kg_config,
         kg_dirs=kg_dirs,
-        kg_run_manifest=kg_run_manifest,
         overwrite=config.overwrite,
-        sfi_final_records=sfi_final_records,
     )
 
     logger.success(

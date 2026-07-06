@@ -45,84 +45,14 @@ from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, open_json_type, write_to_json
 
 
-def _append_jsonl_models(*, fp: Path, models: Sequence[BaseModel]) -> None:
-    """Write Pydantic models to a JSONL file.
-
-    Parameters
-    ----------
-    fp
-        JSONL artifact path.
-    models
-        Models to write, one model per line.
-    """
-
-    make_dir(fp.parent)
-    fp.write_text("", encoding="utf-8")
-
-    for model in models:
-        append_jsonl_model(fp=fp, model=model)
-
-
-def _build_bundle(
-    *,
-    entity_provenance: dict[str, Any],
-    framework: StandardsFramework,
-    items: Sequence[StandardsFrameworkItem],
-    relationships: Sequence[Relationship],
-    unresolved_items: AcademicStandardsUnresolvedItems,
-    validation_report: AcademicStandardsValidationReport,
-) -> AcademicStandardsKGBundle:
-    """Build the complete final Academic Standards KG bundle.
-
-    Parameters
-    ----------
-    entity_provenance
-        Provenance artifact keyed by exported entity type and identifier.
-    framework
-        Single exported StandardsFramework object.
-    items
-        Exported StandardsFrameworkItem records.
-    relationships
-        Exported hasChild relationship records.
-    unresolved_items
-        Unresolved report.
-    validation_report
-        Validation report for the compiled export.
-
-    Returns
-    -------
-    AcademicStandardsKGBundle
-        Complete final export bundle.
-    """
-
-    summary = AcademicStandardsExportSummary(
-        final_sfi_count=len(items),
-        finalization_exclusion_summary=unresolved_items.finalization_exclusion_summary,
-        framework_count=1,
-        has_child_relationship_count=len(relationships),
-        relationship_unresolved_edge_count=len(
-            unresolved_items.relationship_unresolved_edges
-        ),
-    )
-    return AcademicStandardsKGBundle(
-        entity_provenance=entity_provenance,
-        framework=framework,
-        items=list(items),
-        relationships_has_child=list(relationships),
-        summary=summary,
-        unresolved_items=unresolved_items,
-        validation_report=validation_report,
-    )
-
-
 def _build_entity_provenance(
     *,
     document_ir: DocumentIR,
-    framework: StandardsFramework,
-    items: Sequence[StandardsFrameworkItem],
     kg_run_manifest: dict[str, Any],
     relationships: Sequence[Relationship],
+    sf: StandardsFramework,
     sfi_final_records: Sequence[SFIFinalRecord],
+    sfis: Sequence[StandardsFrameworkItem],
 ) -> dict[str, Any]:
     """Build provenance for exported framework, item, and relationship entities.
 
@@ -130,16 +60,16 @@ def _build_entity_provenance(
     ----------
     document_ir
         Source stitched DocumentIR.
-    framework
-        Exported StandardsFramework object.
-    items
-        Exported StandardsFrameworkItem objects.
     kg_run_manifest
         Persisted KG run manifest.
     relationships
         Exported hasChild relationships.
+    sf
+        Exported StandardsFramework object.
     sfi_final_records
         Source final SFI records aligned to exported items.
+    sfis
+        Exported StandardsFrameworkItem objects.
 
     Returns
     -------
@@ -150,7 +80,7 @@ def _build_entity_provenance(
     records_by_id = {str(record.final_sfi_uuid): record for record in sfi_final_records}
     items_provenance: dict[str, Any] = {}
 
-    for item in items:
+    for item in sfis:
         record = records_by_id[str(item.case_identifier_uuid)]
         items_provenance[str(item.case_identifier_uuid)] = {
             "audit_flags": record.audit_flags,
@@ -172,8 +102,8 @@ def _build_entity_provenance(
 
     return {
         "framework": {
-            "case_identifier_uri": framework.case_identifier_uri,
-            "case_identifier_uuid": str(framework.case_identifier_uuid),
+            "case_identifier_uri": sf.case_identifier_uri,
+            "case_identifier_uuid": str(sf.case_identifier_uuid),
             "doc_key": document_ir.doc_key,
             "pdf_name": document_ir.pdf_name,
             "provenance_note": (
@@ -195,221 +125,6 @@ def _build_entity_provenance(
             for relationship in relationships
         },
     }
-
-
-def _build_framework(
-    *,
-    document_ir: DocumentIR,
-    kg_config: CreateKGConfig,
-    kg_run_manifest: dict[str, Any],
-) -> StandardsFramework:
-    """Compile one StandardsFramework export object.
-
-    Parameters
-    ----------
-    document_ir
-        Source stitched DocumentIR.
-    kg_config
-        Runtime KG creation configuration.
-    kg_run_manifest
-        Persisted KG run manifest.
-
-    Returns
-    -------
-    StandardsFramework
-        Compiled framework object with the same root UUID used during hasChild
-        relationship building.
-    """
-
-    metadata = kg_config.metadata
-    framework_uuid = build_standards_framework_uuid(doc_key=document_ir.doc_key)
-    return StandardsFramework(
-        academic_subject=metadata.subject,
-        adoption_status=metadata.adoption_status or "Unknown",
-        attribution_statement=metadata.attribution_statement,
-        author=metadata.author,
-        case_identifier_uri=f"urn:uuid:{framework_uuid}",
-        case_identifier_uuid=framework_uuid,
-        description=None,
-        identifier=framework_uuid,
-        in_language=metadata.primary_language,
-        jurisdiction=metadata.jurisdiction,
-        license=metadata.license,
-        metadata={
-            "country": metadata.country,
-            "doc_key": document_ir.doc_key,
-            "framework_title": metadata.framework_title,
-            "grades_or_stages": metadata.grades_or_stages,
-            "kg_run_manifest_status": kg_run_manifest.get("status"),
-            "languages": metadata.languages,
-            "page_count": document_ir.page_count,
-            "pdf_name": document_ir.pdf_name,
-            "primary_language": metadata.primary_language,
-        },
-        name=metadata.framework_title,
-        notes=None,
-        provider=metadata.provider,
-    )
-
-
-def _build_input_fingerprints(
-    *,
-    has_child_edges: Sequence[SFIHasChildEdge],
-    has_child_resolution_summary: SFIHasChildResolutionSummary,
-    has_child_unresolved_edges: Sequence[SFIHasChildEdge],
-    kg_run_manifest: dict[str, Any],
-    sfi_final_records: Sequence[SFIFinalRecord],
-    sfi_final_summary: SFIFinalSummary,
-) -> dict[str, str]:
-    """Build stable fingerprints for input payloads.
-
-    Parameters
-    ----------
-    has_child_edges
-        Validated hasChild edges.
-    has_child_resolution_summary
-        hasChild relationship-resolution summary.
-    has_child_unresolved_edges
-        hasCHild unresolved root-fallback edges.
-    kg_run_manifest
-        KG run manifest.
-    sfi_final_records
-        Final SFI records.
-    sfi_final_summary
-        SFI finalization summary.
-
-    Returns
-    -------
-    dict[str, str]
-        Stable SHA-256 fingerprints keyed by input artifact label.
-    """
-
-    return {
-        "has_child_edges_final": _fingerprint_jsonable(
-            [model.model_dump(mode="json") for model in has_child_edges]
-        ),
-        "has_child_resolution_summary": _fingerprint_jsonable(
-            has_child_resolution_summary.model_dump(mode="json")
-        ),
-        "has_child_unresolved_edges": _fingerprint_jsonable(
-            [model.model_dump(mode="json") for model in has_child_unresolved_edges]
-        ),
-        "kg_run_manifest": _fingerprint_jsonable(kg_run_manifest),
-        "sfi_final_records": _fingerprint_jsonable(
-            [model.model_dump(mode="json") for model in sfi_final_records]
-        ),
-        "sfi_final_summary": _fingerprint_jsonable(
-            sfi_final_summary.model_dump(mode="json")
-        ),
-    }
-
-
-def _build_unresolved_items(
-    *,
-    has_child_unresolved_edges: Sequence[SFIHasChildEdge],
-    sfi_final_summary: SFIFinalSummary,
-) -> AcademicStandardsUnresolvedItems:
-    """Build the unresolved report.
-
-    Parameters
-    ----------
-    has_child_unresolved_edges
-        hasChild nresolved root-fallback relationship edges.
-    sfi_final_summary
-        SFI finalization summary carrying exclusion counts.
-
-    Returns
-    -------
-    AcademicStandardsUnresolvedItems
-        Unresolved report that uses relationship unresolved edges plus summary counts.
-    """
-
-    return AcademicStandardsUnresolvedItems(
-        finalization_exclusion_summary={
-            "excluded_conflict_group_count": (
-                sfi_final_summary.excluded_conflict_group_count
-            ),
-            "excluded_needs_review_group_count": (
-                sfi_final_summary.excluded_needs_review_group_count
-            ),
-        },
-        relationship_unresolved_edges=[
-            edge.model_dump(mode="json") for edge in has_child_unresolved_edges
-        ],
-    )
-
-
-def _compile_relationship(
-    *, edge: SFIHasChildEdge, kg_config: CreateKGConfig
-) -> Relationship:
-    """Compile one hasChild edge into a final Relationship object.
-
-    Parameters
-    ----------
-    edge
-        Validated hasChild edge.
-    kg_config
-        Runtime KG creation configuration.
-
-    Returns
-    -------
-    Relationship
-        Exportable hasChild relationship preserving the edge identifier exactly.
-    """
-
-    metadata = kg_config.metadata
-    return Relationship(
-        attribution_statement=metadata.attribution_statement,
-        author=metadata.author,
-        description="",
-        identifier=edge.relationship_id,
-        license=metadata.license,
-        metadata={
-            "child_final_sfi_uuid": str(edge.child_final_sfi_uuid),
-            "confidence": edge.confidence,
-            "edge_metadata": edge.metadata,
-            "evidence_reasons": edge.evidence_reasons,
-            "is_root_edge": edge.is_root_edge,
-            "llm_reason": edge.llm_reason,
-            "parent_endpoint_id": edge.parent_endpoint_id,
-            "parent_final_sfi_uuid": (
-                str(edge.parent_final_sfi_uuid) if edge.parent_final_sfi_uuid else None
-            ),
-            "unresolved_root_fallback": edge.unresolved_root_fallback,
-        },
-        provider=metadata.provider,
-        relationship_type="hasChild",
-        source_entity=edge.source_entity,
-        source_entity_key="case_identifier_uuid",
-        source_entity_value=str(edge.source_entity_uuid),
-        target_entity="StandardsFrameworkItem",
-        target_entity_key="case_identifier_uuid",
-        target_entity_value=str(edge.target_sfi_uuid),
-    )
-
-
-def _compile_relationships(
-    *, has_child_edges: Sequence[SFIHasChildEdge], kg_config: CreateKGConfig
-) -> list[Relationship]:
-    """Compile all hasChild edges into final Relationship objects.
-
-    Parameters
-    ----------
-    has_child_edges
-        Validated hasChild edges.
-    kg_config
-        Runtime KG creation configuration.
-
-    Returns
-    -------
-    list[Relationship]
-        Compiled hasChild relationship objects.
-    """
-
-    return [
-        _compile_relationship(edge=edge, kg_config=kg_config)
-        for edge in has_child_edges
-    ]
 
 
 def _detect_sfi_cycles(relationships: Sequence[Relationship]) -> list[list[str]]:
@@ -486,38 +201,36 @@ def _extract_grade_levels(record: SFIFinalRecord) -> list[str]:
         Stable grade-level labels, or an empty list when no grade is explicit.
     """
 
-    values: list[str] = []
+    # NB: dict is being used as an ordered set here (values are irrelevant) since sets
+    # don't preserve insertion order.
+    unique_grades: dict[str, None] = {}
 
+    # 1. Check direct statement type.
     if record.statement_type and record.statement_type.casefold() == "grade":
-        values.append(record.description)
+        val_clean = str(record.description or "").strip()
 
-    scope_key = record.canonical_statement_scope_key or ""
+        if val_clean:
+            unique_grades[val_clean] = None
 
-    for raw_part in scope_key.split("|"):
-        if ":" not in raw_part:
-            continue
+    # 2. Gather all scope keys to parse (canonical and candidate sources).
+    scope_keys = [str(record.canonical_statement_scope_key or "")] + [
+        str(ref.get("canonical_statement_scope_key") or "")
+        for ref in record.candidate_source_refs
+    ]
 
-        label, value = raw_part.split(":", 1)
+    # 3. Parse all gathered scope keys for grade labels.
+    for scope_key in scope_keys:
+        for raw_part in scope_key.split("|"):
+            if ":" in raw_part:
+                label, value = raw_part.split(":", 1)
 
-        if label.strip().casefold() == "grade" and value.strip():
-            values.append(value.strip())
+                if label.strip().casefold() == "grade":
+                    val_clean = str(value or "").strip()
 
-    for source_ref in record.candidate_source_refs:
-        if not isinstance(source_ref, dict):
-            continue
+                    if val_clean:
+                        unique_grades[val_clean] = None
 
-        source_scope_key = str(source_ref.get("canonical_statement_scope_key") or "")
-
-        for raw_part in source_scope_key.split("|"):
-            if ":" not in raw_part:
-                continue
-
-            label, value = raw_part.split(":", 1)
-
-            if label.strip().casefold() == "grade" and value.strip():
-                values.append(value.strip())
-
-    return _unique_nonempty(values)
+    return list(unique_grades)
 
 
 def _fingerprint_jsonable(value: Any) -> str:
@@ -544,12 +257,12 @@ def _load_complete_existing_export_artifacts(
     bundle_fp: Path,
     entity_provenance: dict[str, Any],
     entity_provenance_fp: Path,
-    framework: StandardsFramework,
     framework_fp: Path,
-    items: Sequence[StandardsFrameworkItem],
     items_fp: Path,
     relationships: Sequence[Relationship],
     relationships_fp: Path,
+    sf: StandardsFramework,
+    sfis: Sequence[StandardsFrameworkItem],
     unresolved_items: AcademicStandardsUnresolvedItems,
     unresolved_items_fp: Path,
     validation_report: AcademicStandardsValidationReport,
@@ -567,18 +280,18 @@ def _load_complete_existing_export_artifacts(
         Expected provenance payload.
     entity_provenance_fp
         Persisted provenance path.
-    framework
-        Expected framework object.
     framework_fp
         Persisted framework path.
-    items
-        Expected item sequence.
     items_fp
         Persisted item JSONL path.
     relationships
         Expected relationship sequence.
     relationships_fp
         Persisted relationship JSONL path.
+    sf
+        Expected framework object.
+    sfis
+        Expected item sequence.
     unresolved_items
         Expected unresolved report.
     unresolved_items_fp
@@ -601,7 +314,7 @@ def _load_complete_existing_export_artifacts(
         _validate_model_equal(
             actual=loaded_framework,
             artifact_label="standards_framework.json",
-            expected=framework,
+            expected=sf,
         )
         loaded_items = _load_jsonl_models(
             fp=items_fp, model_type=StandardsFrameworkItem
@@ -609,7 +322,7 @@ def _load_complete_existing_export_artifacts(
         _validate_model_sequences_equal(
             actual=loaded_items,
             artifact_label="standards_framework_items.jsonl",
-            expected=items,
+            expected=sfis,
         )
         loaded_relationships = _load_jsonl_models(
             fp=relationships_fp, model_type=Relationship
@@ -665,33 +378,8 @@ def _load_complete_existing_export_artifacts(
         f"Loading complete existing final Academic Standards KG export because "
         f"overwrite=False: {bundle_fp}"
     )
+
     return loaded_bundle
-
-
-def _load_json_model_sequence(
-    *, fp: Path, model_type: type[BaseModel]
-) -> list[BaseModel]:
-    """Load a JSON list artifact into a Pydantic model sequence.
-
-    Parameters
-    ----------
-    fp
-        JSON artifact path containing a list payload.
-    model_type
-        Pydantic model class used for each item.
-
-    Returns
-    -------
-    list[BaseModel]
-        Parsed model instances.
-    """
-
-    data = open_json_type(fp)
-
-    if not isinstance(data, list):
-        raise ValueError(f"Expected a JSON list artifact: {fp}")
-
-    return [model_type.model_validate(item) for item in data]
 
 
 def _load_jsonl_models(*, fp: Path, model_type: type[BaseModel]) -> list[BaseModel]:
@@ -733,16 +421,16 @@ def _load_jsonl_models(*, fp: Path, model_type: type[BaseModel]) -> list[BaseMod
 
 
 def _reachable_sfi_ids(
-    *, framework_uuid: uuid.UUID, relationships: Sequence[Relationship]
+    *, relationships: Sequence[Relationship], sf_uuid: uuid.UUID
 ) -> set[str]:
     """Compute final SFI IDs reachable from the StandardsFramework root.
 
     Parameters
     ----------
-    framework_uuid
-        StandardsFramework root UUID.
     relationships
         Compiled hasChild relationships.
+    sf_uuid
+        StandardsFramework root UUID.
 
     Returns
     -------
@@ -756,7 +444,7 @@ def _reachable_sfi_ids(
         graph[relationship.source_entity_value].append(relationship.target_entity_value)
 
     reachable: set[str] = set()
-    stack = [str(framework_uuid)]
+    stack = [str(sf_uuid)]
 
     while stack:
         node_id = stack.pop()
@@ -788,44 +476,15 @@ def _stable_json_key(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
-def _unique_nonempty(values: Sequence[Any]) -> list[str]:
-    """Return unique non-empty strings while preserving order.
-
-    Parameters
-    ----------
-    values
-        Raw values.
-
-    Returns
-    -------
-    list[str]
-        Unique non-empty strings.
-    """
-
-    cleaned: list[str] = []
-    seen: set[str] = set()
-
-    for value in values:
-        value_clean = str(value or "").strip()
-
-        if not value_clean or value_clean in seen:
-            continue
-
-        cleaned.append(value_clean)
-        seen.add(value_clean)
-
-    return cleaned
-
-
 def _validate_count_alignment(
     *,
     has_child_edges: Sequence[SFIHasChildEdge],
     has_child_resolution_summary: SFIHasChildResolutionSummary,
     has_child_unresolved_edges: Sequence[SFIHasChildEdge],
-    items: Sequence[StandardsFrameworkItem],
     relationships: Sequence[Relationship],
     sfi_final_records: Sequence[SFIFinalRecord],
     sfi_final_summary: SFIFinalSummary,
+    sfis: Sequence[StandardsFrameworkItem],
 ) -> list[str]:
     """Validate count consistency across artifacts.
 
@@ -837,14 +496,14 @@ def _validate_count_alignment(
         hasChild relationship-resolution summary.
     has_child_unresolved_edges
         hasChild unresolved edges.
-    items
-        Compiled SFI items.
     relationships
         Compiled hasChild relationships.
     sfi_final_records
         Final SFI records.
     sfi_final_summary
         SFI finalization summary.
+    sfis
+        Compiled SFI items.
 
     Returns
     -------
@@ -860,7 +519,7 @@ def _validate_count_alignment(
             "sfi_final_records length."
         )
 
-    if len(items) != len(sfi_final_records):
+    if len(sfis) != len(sfi_final_records):
         errors.append("Compiled item count does not match final SFI record count.")
 
     if len(has_child_edges) != has_child_resolution_summary.edge_count:
@@ -911,24 +570,70 @@ def _validate_count_alignment(
     return errors
 
 
+def _validate_coverage_and_reachability(
+    *, relationships: Sequence[Relationship], sf_uuid: uuid.UUID, sfi_id_set: set[str]
+) -> list[str]:
+    """Validate incoming-edge coverage, cycle absence, and root reachability.
+
+    Parameters
+    ----------
+    relationships
+        Exported hasChild relationships.
+    sf_uuid
+        UUID of the exported StandardsFramework object.
+    sfi_id_set
+        Set of exported StandardsFrameworkItem UUIDs.
+
+    Returns
+    -------
+    list[str]
+        Validation error messages.
+    """
+
+    errors: list[str] = []
+
+    represented_child_ids = {
+        relationship.target_entity_value for relationship in relationships
+    }
+    missing_child_ids = sorted(sfi_id_set - represented_child_ids)
+
+    if missing_child_ids:
+        errors.append(
+            f"Final SFIs missing incoming hasChild edges: {missing_child_ids}."
+        )
+
+    cycles = _detect_sfi_cycles(relationships)
+
+    if cycles:
+        errors.append(f"SFI-to-SFI hasChild cycles detected: {cycles[:5]}.")
+
+    reachable = _reachable_sfi_ids(relationships=relationships, sf_uuid=sf_uuid)
+    unreachable = sorted(sfi_id_set - reachable)
+
+    if unreachable:
+        errors.append(
+            f"Final SFIs are not reachable from StandardsFramework root: {unreachable}."
+        )
+
+    return errors
+
+
 def _validate_export(
     *,
-    framework: StandardsFramework,
     has_child_edges: Sequence[SFIHasChildEdge],
     has_child_resolution_summary: SFIHasChildResolutionSummary,
     has_child_unresolved_edges: Sequence[SFIHasChildEdge],
     input_fingerprints: dict[str, str],
-    items: Sequence[StandardsFrameworkItem],
     relationships: Sequence[Relationship],
+    sf: StandardsFramework,
     sfi_final_records: Sequence[SFIFinalRecord],
     sfi_final_summary: SFIFinalSummary,
+    sfis: Sequence[StandardsFrameworkItem],
 ) -> AcademicStandardsValidationReport:
     """Validate the compiled Academic Standards KG export.
 
     Parameters
     ----------
-    framework
-        Compiled StandardsFramework object.
     has_child_edges
         Source hasChild edges.
     has_child_resolution_summary
@@ -937,14 +642,16 @@ def _validate_export(
         hasChild unresolved root-fallback edges.
     input_fingerprints
         Stable fingerprints for all required inputs.
-    items
-        Compiled StandardsFrameworkItem records.
     relationships
         Compiled hasChild Relationship records.
+    sf
+        Compiled StandardsFramework object.
     sfi_final_records
         Final SFI records.
     sfi_final_summary
         SFI finalization summary.
+    sfis
+        Compiled StandardsFrameworkItem records.
 
     Returns
     -------
@@ -955,9 +662,9 @@ def _validate_export(
     errors: list[str] = []
 
     if not sfi_final_records:
-        errors.append("Zero-final-SFI output is invalid for Academic Standards export.")
+        errors.append("Zero final SFI output is invalid for Academic Standards export.")
 
-    if not items:
+    if not sfis:
         errors.append(
             "Empty final KG output: no StandardsFrameworkItems were compiled."
         )
@@ -967,27 +674,21 @@ def _validate_export(
             has_child_edges=has_child_edges,
             has_child_resolution_summary=has_child_resolution_summary,
             has_child_unresolved_edges=has_child_unresolved_edges,
-            items=items,
             relationships=relationships,
             sfi_final_records=sfi_final_records,
             sfi_final_summary=sfi_final_summary,
+            sfis=sfis,
         )
     )
-    errors.extend(
-        _validate_graph_export(
-            framework=framework, items=items, relationships=relationships
-        )
-    )
-    errors.extend(
-        _validate_sfi_exports(items=items, sfi_final_records=sfi_final_records)
-    )
+    errors.extend(_validate_graph_export(relationships=relationships, sf=sf, sfis=sfis))
+    errors.extend(_validate_sfi_exports(sfi_final_records=sfi_final_records, sfis=sfis))
 
     object_counts = {
         "frameworks": 1,
         "has_child_edges_input": len(has_child_edges),
         "relationships_has_child": len(relationships),
         "sfi_final_records_input": len(sfi_final_records),
-        "standards_framework_items": len(items),
+        "standards_framework_items": len(sfis),
         "unresolved_relationship_edges": len(has_child_unresolved_edges),
     }
     validation_checks = [
@@ -1023,20 +724,20 @@ def _validate_export(
 
 def _validate_graph_export(
     *,
-    framework: StandardsFramework,
-    items: Sequence[StandardsFrameworkItem],
     relationships: Sequence[Relationship],
+    sf: StandardsFramework,
+    sfis: Sequence[StandardsFrameworkItem],
 ) -> list[str]:
     """Validate endpoint existence, coverage, reachability, and graph structure.
 
     Parameters
     ----------
-    framework
-        Single exported StandardsFramework object.
-    items
-        Exported StandardsFrameworkItem records.
     relationships
         Exported hasChild relationships.
+    sf
+        Single exported StandardsFramework object.
+    sfis
+        Exported StandardsFrameworkItem records.
 
     Returns
     -------
@@ -1045,103 +746,60 @@ def _validate_graph_export(
     """
 
     errors: list[str] = []
-    framework_uuid = framework.case_identifier_uuid
-    item_ids = [str(item.case_identifier_uuid) for item in items]
-    item_id_set = set(item_ids)
-    valid_source_ids = item_id_set | {str(framework_uuid)}
-    duplicate_item_ids = sorted(
-        {item_id for item_id in item_ids if item_ids.count(item_id) > 1}
-    )
+    sf_uuid = sf.case_identifier_uuid
+    sfi_ids = [str(item.case_identifier_uuid) for item in sfis]
+    sfi_id_set = set(sfi_ids)
 
-    if duplicate_item_ids:
+    # Check for item uniqueness.
+    if len(sfi_ids) != len(sfi_id_set):
+        duplicate_item_ids = sorted(
+            {item_id for item_id in sfi_ids if sfi_ids.count(item_id) > 1}
+        )
         errors.append(
             f"Duplicate StandardsFrameworkItem UUIDs detected: {duplicate_item_ids}."
         )
 
+    # Validate relationship presence and uniqueness.
     if not relationships:
         errors.append("Empty final KG output: no hasChild relationships were compiled.")
+    else:
+        edge_pairs = [
+            (rel.source_entity_value, rel.target_entity_value) for rel in relationships
+        ]
 
-    edge_pairs = [
-        (relationship.source_entity_value, relationship.target_entity_value)
-        for relationship in relationships
-    ]
-    duplicate_pairs = sorted(
-        {pair for pair in edge_pairs if edge_pairs.count(pair) > 1}
+        if len(edge_pairs) != len(set(edge_pairs)):
+            duplicate_pairs = sorted(
+                {pair for pair in edge_pairs if edge_pairs.count(pair) > 1}
+            )
+            errors.append(
+                f"Duplicate hasChild parent/child edge pairs detected: {duplicate_pairs}."
+            )
+
+        relationship_ids = [str(rel.identifier) for rel in relationships]
+
+        if len(relationship_ids) != len(set(relationship_ids)):
+            duplicate_relationship_ids = sorted(
+                {
+                    rel_id
+                    for rel_id in relationship_ids
+                    if relationship_ids.count(rel_id) > 1
+                }
+            )
+            errors.append(
+                f"Duplicate relationship IDs detected: {duplicate_relationship_ids}."
+            )
+
+    # Validate endpoints, coverage, and reachability.
+    errors.extend(
+        _validate_relationship_endpoints(
+            relationships=relationships, sf_uuid=sf_uuid, sfi_id_set=sfi_id_set
+        )
     )
-
-    if duplicate_pairs:
-        errors.append(
-            f"Duplicate hasChild parent/child edge pairs detected: {duplicate_pairs}."
+    errors.extend(
+        _validate_coverage_and_reachability(
+            relationships=relationships, sf_uuid=sf_uuid, sfi_id_set=sfi_id_set
         )
-
-    relationship_ids = [str(relationship.identifier) for relationship in relationships]
-    duplicate_relationship_ids = sorted(
-        {
-            relationship_id
-            for relationship_id in relationship_ids
-            if relationship_ids.count(relationship_id) > 1
-        }
     )
-
-    if duplicate_relationship_ids:
-        errors.append(
-            f"Duplicate relationship IDs detected: {duplicate_relationship_ids}."
-        )
-
-    for relationship in relationships:
-        if relationship.relationship_type != "hasChild":
-            errors.append(
-                f"Unsupported final relationship type {relationship.relationship_type!r}; "
-                f"Academic Standards exports only hasChild relationships."
-            )
-
-        if relationship.source_entity_value not in valid_source_ids:
-            errors.append(
-                f"hasChild source endpoint does not exist: {relationship.source_entity_value}."
-            )
-
-        if relationship.target_entity_value not in item_id_set:
-            errors.append(
-                f"hasChild target SFI does not exist: {relationship.target_entity_value}."
-            )
-
-        if relationship.source_entity_value == relationship.target_entity_value:
-            errors.append(
-                f"hasChild self-loop detected for SFI {relationship.target_entity_value}."
-            )
-
-        if (
-            relationship.source_entity == "StandardsFramework"
-            and relationship.source_entity_value != str(framework_uuid)
-        ):
-            errors.append(
-                "Root hasChild edge source UUID does not match exported StandardsFramework UUID."
-            )
-
-    represented_child_ids = {
-        relationship.target_entity_value for relationship in relationships
-    }
-    missing_child_ids = sorted(item_id_set - represented_child_ids)
-
-    if missing_child_ids:
-        errors.append(
-            f"Final SFIs missing incoming hasChild edges: {missing_child_ids}."
-        )
-
-    cycles = _detect_sfi_cycles(relationships)
-
-    if cycles:
-        errors.append(f"SFI-to-SFI hasChild cycles detected: {cycles[:5]}.")
-
-    reachable = _reachable_sfi_ids(
-        framework_uuid=framework_uuid, relationships=relationships
-    )
-    unreachable = sorted(item_id_set - reachable)
-
-    if unreachable:
-        errors.append(
-            f"Final SFIs are not reachable from StandardsFramework root: {unreachable}."
-        )
 
     return errors
 
@@ -1204,19 +862,19 @@ def _validate_model_sequences_equal(
             )
 
 
-def _validate_sfi_exports(
-    *,
-    items: Sequence[StandardsFrameworkItem],
-    sfi_final_records: Sequence[SFIFinalRecord],
+def _validate_relationship_endpoints(
+    *, relationships: Sequence[Relationship], sf_uuid: uuid.UUID, sfi_id_set: set[str]
 ) -> list[str]:
-    """Validate SFI export coverage, identifiers, descriptions, and provenance.
+    """Validate the type, endpoints, and root binding of every relationship.
 
     Parameters
     ----------
-    items
-        Compiled StandardsFrameworkItem records.
-    sfi_final_records
-        Final SFI records.
+    relationships
+        Exported hasChild relationships.
+    sf_uuid
+        UUID of the exported StandardsFramework object.
+    sfi_id_set
+        Set of exported StandardsFrameworkItem UUIDs.
 
     Returns
     -------
@@ -1225,10 +883,67 @@ def _validate_sfi_exports(
     """
 
     errors: list[str] = []
-    items_by_id = {str(item.case_identifier_uuid): item for item in items}
+    sf_uuid_str = str(sf_uuid)
+    valid_source_ids = sfi_id_set | {sf_uuid_str}
+
+    for relationship in relationships:
+        if relationship.relationship_type != "hasChild":
+            errors.append(
+                f"Unsupported final relationship type {relationship.relationship_type!r}; "
+                f"Academic Standards exports only hasChild relationships."
+            )
+
+        if relationship.source_entity_value not in valid_source_ids:
+            errors.append(
+                f"hasChild source endpoint does not exist: {relationship.source_entity_value}."
+            )
+
+        if relationship.target_entity_value not in sfi_id_set:
+            errors.append(
+                f"hasChild target SFI does not exist: {relationship.target_entity_value}."
+            )
+
+        if relationship.source_entity_value == relationship.target_entity_value:
+            errors.append(
+                f"hasChild self-loop detected for SFI {relationship.target_entity_value}."
+            )
+
+        if (
+            relationship.source_entity == "StandardsFramework"
+            and relationship.source_entity_value != sf_uuid_str
+        ):
+            errors.append(
+                "Root hasChild edge source UUID does not match exported StandardsFramework UUID."
+            )
+
+    return errors
+
+
+def _validate_sfi_exports(
+    *,
+    sfi_final_records: Sequence[SFIFinalRecord],
+    sfis: Sequence[StandardsFrameworkItem],
+) -> list[str]:
+    """Validate SFI export coverage, identifiers, descriptions, and provenance.
+
+    Parameters
+    ----------
+    sfi_final_records
+        Final SFI records.
+    sfis
+        Compiled StandardsFrameworkItem records.
+
+    Returns
+    -------
+    list[str]
+        Validation error messages.
+    """
+
+    errors: list[str] = []
+    sfis_by_id = {str(item.case_identifier_uuid): item for item in sfis}
 
     for record in sfi_final_records:
-        item = items_by_id.get(str(record.final_sfi_uuid))
+        item = sfis_by_id.get(str(record.final_sfi_uuid))
 
         if item is None:
             errors.append(
@@ -1262,7 +977,8 @@ def _validate_sfi_exports(
 
         if not has_provenance:
             errors.append(
-                f"SFI {record.final_sfi_uuid} lacks source provenance or synthetic provenance explanation."
+                f"SFI {record.final_sfi_uuid} lacks source provenance or synthetic "
+                f"provenance explanation."
             )
 
         if record.normalized_statement_code is None:
@@ -1289,12 +1005,12 @@ def _write_artifacts(
     bundle_fp: Path,
     entity_provenance: dict[str, Any],
     entity_provenance_fp: Path,
-    framework: StandardsFramework,
-    framework_fp: Path,
-    items: Sequence[StandardsFrameworkItem],
-    items_fp: Path,
     relationships: Sequence[Relationship],
     relationships_fp: Path,
+    sf: StandardsFramework,
+    sf_fp: Path,
+    sfis: Sequence[StandardsFrameworkItem],
+    sfis_fp: Path,
     unresolved_items: AcademicStandardsUnresolvedItems,
     unresolved_items_fp: Path,
     validation_report: AcademicStandardsValidationReport,
@@ -1312,18 +1028,18 @@ def _write_artifacts(
         Provenance dictionary.
     entity_provenance_fp
         Provenance JSON path.
-    framework
-        Compiled framework object.
-    framework_fp
-        Framework JSON path.
-    items
-        Compiled SFI item records.
-    items_fp
-        Items JSONL path.
     relationships
         Compiled hasChild relationships.
     relationships_fp
         Relationships JSONL path.
+    sf
+        Compiled framework object.
+    sf_fp
+        Framework JSON path.
+    sfis
+        Compiled SFI item records.
+    sfis_fp
+        Items JSONL path.
     unresolved_items
         Unresolved report.
     unresolved_items_fp
@@ -1336,9 +1052,20 @@ def _write_artifacts(
 
     write_to_json(fp=bundle_fp, json_info=bundle.model_dump(mode="json"))
     write_to_json(fp=entity_provenance_fp, json_info=entity_provenance)
-    write_to_json(fp=framework_fp, json_info=framework.model_dump(mode="json"))
-    _append_jsonl_models(fp=items_fp, models=items)
-    _append_jsonl_models(fp=relationships_fp, models=relationships)
+    write_to_json(fp=sf_fp, json_info=sf.model_dump(mode="json"))
+
+    make_dir(sfis_fp.parent)
+    sfis_fp.write_text("", encoding="utf-8")
+
+    for sfi in sfis:
+        append_jsonl_model(fp=sfis_fp, model=sfi)
+
+    make_dir(relationships_fp.parent)
+    relationships_fp.write_text("", encoding="utf-8")
+
+    for relationship in relationships:
+        append_jsonl_model(fp=relationships_fp, model=relationship)
+
     write_to_json(
         fp=unresolved_items_fp, json_info=unresolved_items.model_dump(mode="json")
     )
@@ -1353,11 +1080,20 @@ def compile_academic_standards_kg(
     has_child_edges: Sequence[SFIHasChildEdge],
     kg_config: CreateKGConfig,
     kg_dirs: KGDirs,
-    kg_run_manifest: dict[str, Any] | None = None,
     overwrite: bool,
-    sfi_final_records: Sequence[SFIFinalRecord],
 ) -> AcademicStandardsKGBundle:
     """Compile, validate, and write final Academic Standards KG artifacts.
+
+    The process is as follows:
+
+    1. Create artifact filepaths.
+    2. Load artifacts from previous steps.
+    3. Build StandardsFramework (i.e., root) node.
+    4. Build StandardsFrameworkItems (i.e., SFI) nodes.
+    5. Compile hasChild edges into Relationship objects.
+    6. Build the unresolved report.
+    7. Build stable fingerprints for input payloads.
+    8. Validate the compiled Academic Standards KG export.
 
     Parameters
     ----------
@@ -1369,12 +1105,8 @@ def compile_academic_standards_kg(
         Runtime KG creation configuration.
     kg_dirs
         KG artifact directory wrapper.
-    kg_run_manifest
-        KG run manifest. Loaded from disk when omitted.
     overwrite
         Whether to rebuild artifacts even if exact current artifacts exist.
-    sfi_final_records
-        Final SFI records.
 
     Returns
     -------
@@ -1387,6 +1119,7 @@ def compile_academic_standards_kg(
         If final KG validation fails.
     """
 
+    # 1.
     make_dir(kg_dirs.root)
     bundle_fp = kg_dirs.root / "academic_standards_kg_bundle.json"
     entity_provenance_fp = kg_dirs.root / "entity_provenance.json"
@@ -1396,34 +1129,55 @@ def compile_academic_standards_kg(
     unresolved_items_fp = kg_dirs.root / "unresolved_items.json"
     validation_report_fp = kg_dirs.root / "validation_report.json"
 
-    kg_run_manifest_loaded = kg_run_manifest or open_json_type(
-        kg_dirs.root / "kg_run_manifest.json"
-    )
-    sfi_final_summary_loaded = SFIFinalSummary.model_validate(
-        open_json_type(kg_dirs.root / "sfi_final_summary.json")
-    )
-    has_child_resolution_summary_loaded = SFIHasChildResolutionSummary.model_validate(
+    # 2.
+    has_child_resolution_summary = SFIHasChildResolutionSummary.model_validate(
         open_json_type(kg_dirs.root / "has_child_resolution_summary.json")
     )
-    has_child_unresolved_edges_loaded = _load_json_model_sequence(
-        fp=kg_dirs.root / "has_child_unresolved_edges.json", model_type=SFIHasChildEdge
-    )
-
-    sfi_final_summary_typed = SFIFinalSummary.model_validate(sfi_final_summary_loaded)
-    has_child_resolution_summary_typed = SFIHasChildResolutionSummary.model_validate(
-        has_child_resolution_summary_loaded
-    )
-    has_child_unresolved_edges_typed = [
+    has_child_unresolved_edges = [
         SFIHasChildEdge.model_validate(edge)
-        for edge in has_child_unresolved_edges_loaded
+        for edge in open_json_type(kg_dirs.root / "has_child_unresolved_edges.json")
     ]
-
-    framework = _build_framework(
-        document_ir=document_ir,
-        kg_config=kg_config,
-        kg_run_manifest=kg_run_manifest_loaded,
+    kg_run_manifest = open_json_type(kg_dirs.root / "kg_run_manifest.json")
+    metadata = kg_config.metadata
+    sf_uuid = build_standards_framework_uuid(document_ir.doc_key)
+    sfi_final_records = [
+        SFIFinalRecord.model_validate(record)
+        for record in open_json_type(kg_dirs.root / "sfi_final_records.json")
+    ]
+    sfi_final_summary = SFIFinalSummary.model_validate(
+        open_json_type(kg_dirs.root / "sfi_final_summary.json")
     )
-    items = [
+
+    # 3.
+    sf = StandardsFramework(
+        academic_subject=metadata.subject,
+        adoption_status=metadata.adoption_status or "Unknown",
+        attribution_statement=metadata.attribution_statement,
+        author=metadata.author,
+        case_identifier_uri=f"urn:uuid:{sf_uuid}",
+        case_identifier_uuid=sf_uuid,
+        description=None,
+        identifier=sf_uuid,
+        in_language=metadata.primary_language,
+        jurisdiction=metadata.jurisdiction,
+        license=metadata.license,
+        metadata={
+            "country": metadata.country,
+            "doc_key": document_ir.doc_key,
+            "framework_title": metadata.framework_title,
+            "grades_or_stages": metadata.grades_or_stages,
+            "languages": metadata.languages,
+            "page_count": document_ir.page_count,
+            "pdf_name": document_ir.pdf_name,
+            "primary_language": metadata.primary_language,
+        },
+        name=metadata.framework_title,
+        notes=None,
+        provider=metadata.provider,
+    )
+
+    # 4.
+    sfis = [
         StandardsFrameworkItem(
             academic_subject=record.academic_subject,
             attribution_statement=record.attribution_statement,
@@ -1473,61 +1227,134 @@ def compile_academic_standards_kg(
         )
         for record in sfi_final_records
     ]
-    relationships = _compile_relationships(
-        has_child_edges=has_child_edges, kg_config=kg_config
+
+    # 5.
+    relationships = [
+        Relationship(
+            attribution_statement=metadata.attribution_statement,
+            author=metadata.author,
+            description="",
+            identifier=edge.relationship_id,
+            license=metadata.license,
+            metadata={
+                "child_final_sfi_uuid": str(edge.child_final_sfi_uuid),
+                "confidence": edge.confidence,
+                "edge_metadata": edge.metadata,
+                "evidence_reasons": edge.evidence_reasons,
+                "is_root_edge": edge.is_root_edge,
+                "llm_reason": edge.llm_reason,
+                "parent_endpoint_id": edge.parent_endpoint_id,
+                "parent_final_sfi_uuid": (
+                    str(edge.parent_final_sfi_uuid)
+                    if edge.parent_final_sfi_uuid
+                    else None
+                ),
+                "unresolved_root_fallback": edge.unresolved_root_fallback,
+            },
+            provider=metadata.provider,
+            relationship_type="hasChild",
+            source_entity=edge.source_entity,
+            source_entity_key="case_identifier_uuid",
+            source_entity_value=str(edge.source_entity_uuid),
+            target_entity="StandardsFrameworkItem",
+            target_entity_key="case_identifier_uuid",
+            target_entity_value=str(edge.target_sfi_uuid),
+        )
+        for edge in has_child_edges
+    ]
+
+    # 6.
+    unresolved_items = AcademicStandardsUnresolvedItems(
+        finalization_exclusion_summary={
+            "excluded_conflict_group_count": (
+                sfi_final_summary.excluded_conflict_group_count
+            ),
+            "excluded_needs_review_group_count": (
+                sfi_final_summary.excluded_needs_review_group_count
+            ),
+        },
+        relationship_unresolved_edges=[
+            edge.model_dump(mode="json") for edge in has_child_unresolved_edges
+        ],
     )
-    unresolved_items = _build_unresolved_items(
-        has_child_unresolved_edges=has_child_unresolved_edges_typed,
-        sfi_final_summary=sfi_final_summary_typed,
-    )
-    input_fingerprints = _build_input_fingerprints(
-        has_child_edges=has_child_edges,
-        has_child_resolution_summary=has_child_resolution_summary_typed,
-        has_child_unresolved_edges=has_child_unresolved_edges_typed,
-        kg_run_manifest=kg_run_manifest_loaded,
-        sfi_final_records=sfi_final_records,
-        sfi_final_summary=sfi_final_summary_typed,
-    )
+
+    # 7.
+    input_fingerprints = {
+        "has_child_edges_final": _fingerprint_jsonable(
+            [model.model_dump(mode="json") for model in has_child_edges]
+        ),
+        "has_child_resolution_summary": _fingerprint_jsonable(
+            has_child_resolution_summary.model_dump(mode="json")
+        ),
+        "has_child_unresolved_edges": _fingerprint_jsonable(
+            [model.model_dump(mode="json") for model in has_child_unresolved_edges]
+        ),
+        "kg_run_manifest": _fingerprint_jsonable(kg_run_manifest),
+        "sfi_final_records": _fingerprint_jsonable(
+            [model.model_dump(mode="json") for model in sfi_final_records]
+        ),
+        "sfi_final_summary": _fingerprint_jsonable(
+            sfi_final_summary.model_dump(mode="json")
+        ),
+    }
+
+    # 8.
     validation_report = _validate_export(
-        framework=framework,
         has_child_edges=has_child_edges,
-        has_child_resolution_summary=has_child_resolution_summary_typed,
-        has_child_unresolved_edges=has_child_unresolved_edges_typed,
+        has_child_resolution_summary=has_child_resolution_summary,
+        has_child_unresolved_edges=has_child_unresolved_edges,
         input_fingerprints=input_fingerprints,
-        items=items,
         relationships=relationships,
+        sf=sf,
         sfi_final_records=sfi_final_records,
-        sfi_final_summary=sfi_final_summary_typed,
+        sfi_final_summary=sfi_final_summary,
+        sfis=sfis,
     )
+
+    # 9. XXX
     entity_provenance = _build_entity_provenance(
         document_ir=document_ir,
-        framework=framework,
-        items=items,
-        kg_run_manifest=kg_run_manifest_loaded,
+        kg_run_manifest=kg_run_manifest,
         relationships=relationships,
+        sf=sf,
         sfi_final_records=sfi_final_records,
+        sfis=sfis,
     )
-    bundle = _build_bundle(
+
+    # 10. XXX
+    summary = AcademicStandardsExportSummary(
+        final_sfi_count=len(sfis),
+        finalization_exclusion_summary=unresolved_items.finalization_exclusion_summary,
+        framework_count=1,
+        has_child_relationship_count=len(relationships),
+        relationship_unresolved_edge_count=len(
+            unresolved_items.relationship_unresolved_edges
+        ),
+    )
+
+    bundle = AcademicStandardsKGBundle(
         entity_provenance=entity_provenance,
-        framework=framework,
-        items=items,
-        relationships=relationships,
+        framework=sf,
+        items=sfis,
+        relationships_has_child=list(relationships),
+        summary=summary,
         unresolved_items=unresolved_items,
         validation_report=validation_report,
     )
 
+    # 11. XXX
     if not validation_report.passed:
         _write_artifacts(
             bundle=bundle,
             bundle_fp=bundle_fp,
             entity_provenance=entity_provenance,
             entity_provenance_fp=entity_provenance_fp,
-            framework=framework,
-            framework_fp=sf_fp,
-            items=items,
-            items_fp=sfi_fp,
             relationships=relationships,
             relationships_fp=relationships_fp,
+            sf=sf,
+            sf_fp=sf_fp,
+            sfis=sfis,
+            sfis_fp=sfi_fp,
             unresolved_items=unresolved_items,
             unresolved_items_fp=unresolved_items_fp,
             validation_report=validation_report,
@@ -1539,17 +1366,18 @@ def compile_academic_standards_kg(
         )
 
     if not overwrite:
+        # 12.
         existing_bundle = _load_complete_existing_export_artifacts(
             bundle=bundle,
             bundle_fp=bundle_fp,
             entity_provenance=entity_provenance,
             entity_provenance_fp=entity_provenance_fp,
-            framework=framework,
             framework_fp=sf_fp,
-            items=items,
             items_fp=sfi_fp,
             relationships=relationships,
             relationships_fp=relationships_fp,
+            sf=sf,
+            sfis=sfis,
             unresolved_items=unresolved_items,
             unresolved_items_fp=unresolved_items_fp,
             validation_report=validation_report,
@@ -1563,6 +1391,7 @@ def compile_academic_standards_kg(
             "Rebuilding final Academic Standards KG export because overwrite=True."
         )
 
+    # 13.
     reset_output_files(
         output_fps=[
             bundle_fp,
@@ -1579,12 +1408,12 @@ def compile_academic_standards_kg(
         bundle_fp=bundle_fp,
         entity_provenance=entity_provenance,
         entity_provenance_fp=entity_provenance_fp,
-        framework=framework,
-        framework_fp=sf_fp,
-        items=items,
-        items_fp=sfi_fp,
         relationships=relationships,
         relationships_fp=relationships_fp,
+        sf=sf,
+        sf_fp=sf_fp,
+        sfis=sfis,
+        sfis_fp=sfi_fp,
         unresolved_items=unresolved_items,
         unresolved_items_fp=unresolved_items_fp,
         validation_report=validation_report,
