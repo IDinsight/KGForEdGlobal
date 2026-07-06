@@ -92,15 +92,21 @@ Only the final step remains.
 
 ### Step 10: Compile, validate, and write final Academic Standards KG artifacts
 
-Combine the former compile and validation steps into a single final pipeline step.
+Combine the former compile and validation steps into a single final deterministic pipeline step.
 
 Purpose:
 
 ```text
-Compile finalized SFI records and validated hasChild edges into final Learning Commons-shaped Academic Standards KG artifacts, validate the complete graph, and write all final export files.
+Compile Step 8 finalized SFI records and Step 9 validated hasChild edges into final Learning Commons-shaped Academic Standards KG artifacts, validate the complete exported graph, and write all final export files.
 ```
 
-Inputs:
+Core principle:
+
+```text
+Step 10 is a compile/export/validation step. It must not perform new semantic extraction, deduplication, finalization, hierarchy inference, or LLM resolution.
+```
+
+Required inputs:
 
 ```text
 CreateKGConfig
@@ -111,8 +117,31 @@ sfi_final_summary.json / SFIFinalSummary
 has_child_edges_final.json / Sequence[SFIHasChildEdge]
 has_child_unresolved_edges.json / Sequence[SFIHasChildEdge]
 has_child_resolution_summary.json / SFIHasChildResolutionSummary
-kg_run_manifest.json
+kg_run_manifest.json / dict[str, Any]
 ```
+
+Optional audit inputs:
+
+```text
+sfi_merge_report.json / SFIMergeReport
+sfi_merge_conflicts.json
+sfi_merge_needs_review.json
+```
+
+Use optional audit inputs only when `unresolved_items.json` must include detailed excluded conflict/needs-review merge groups. Without these optional inputs, Step 10 can report finalization exclusion counts from `sfi_final_summary.json`, but cannot reconstruct the omitted merge-group details.
+
+Inputs not required for core compile/export:
+
+```text
+sfi_final_contexts.json
+has_child_candidate_parent_sets.jsonl
+has_child_resolution_requests.jsonl
+has_child_resolution_responses.jsonl
+extraction_windows.jsonl
+sfi_candidate_registry.json
+```
+
+These artifacts may be useful for debugging or audit, but Step 10 should not require them to compile the final framework, item, and relationship bundle.
 
 Objects:
 
@@ -122,20 +151,56 @@ StandardsFrameworkItem
 Relationship(hasChild)
 ```
 
-Rules:
+Compile rules:
 
-- Create one `StandardsFramework` per source PDF/framework.
-- Use config metadata for framework title, subject, jurisdiction, provider, language, license, author, attribution, adoption status, and description.
-- Export every finalized SFI record as one `StandardsFrameworkItem`.
-- Export only `hasChild` relationships.
-- Use final SFI UUIDs / CASE identifiers for relationship endpoints.
-- Preserve provenance, source references, merge evidence, relationship evidence, unresolved-root-fallback status, and audit flags in metadata/provenance fields.
-- Do not re-deduplicate, re-mint SFI IDs, infer new relationships, or create LearningComponents.
+- Create exactly one `StandardsFramework` per source PDF/framework.
+- The deterministic `StandardsFramework` UUID must match the root UUID used by Step 9 root edges.
+- Use config and document metadata for framework name/title, subject, jurisdiction, provider, language, license, author, attribution, adoption status, document key, PDF name, and available notes.
+- Do not require a framework description field unless the runtime config/schema actually provides one.
+- Export every `SFIFinalRecord` as exactly one `StandardsFrameworkItem`.
+- Preserve final SFI identifiers exactly: `final_sfi_uuid`, `identifier`, `case_identifier_uuid`, and `case_identifier_uri`.
+- Export only `Relationship(hasChild)` relationships.
+- Compile exactly one final `Relationship(hasChild)` for every `SFIHasChildEdge` in `has_child_edges_final.json`.
+- Preserve provenance, source references, merge evidence, relationship evidence, unresolved-root-fallback status, relationship metadata, and audit flags in metadata/provenance fields.
+- Do not re-deduplicate, re-mint SFI IDs, infer new relationships, finalize excluded merge groups, or create LearningComponents.
 - Do not silently drop final SFIs or relationship edges.
+
+Relationship endpoint mapping:
+
+```text
+For each SFIHasChildEdge, compile one Relationship(hasChild):
+
+identifier = edge.relationship_id
+relationship_type = "hasChild"
+source_entity = edge.source_entity
+source_entity_key = "case_identifier_uuid"
+source_entity_value = edge.source_entity_uuid
+target_entity = "StandardsFrameworkItem"
+target_entity_key = "case_identifier_uuid"
+target_entity_value = edge.target_sfi_uuid
+```
+
+Also preserve these relationship fields in metadata/provenance when available:
+
+```text
+edge.parent_endpoint_id
+edge.parent_final_sfi_uuid
+edge.child_final_sfi_uuid
+edge.llm_reason
+edge.evidence_reasons
+edge.unresolved_root_fallback
+edge.is_root_edge
+edge.metadata
+edge.confidence
+```
 
 Validation requirements:
 
 - All final KG objects are schema-valid.
+- Exactly one framework object is present.
+- Framework UUID matches Step 9 root-edge source UUID for root edges.
+- Every `SFIFinalRecord` produces exactly one exported `StandardsFrameworkItem`.
+- Every `SFIHasChildEdge` produces exactly one exported `Relationship(hasChild)`.
 - Every `hasChild` source and target endpoint exists.
 - Every final SFI has at least one incoming `hasChild` edge.
 - Every final SFI is reachable from the `StandardsFramework` root.
@@ -147,8 +212,11 @@ Validation requirements:
 - Every SFI has deterministic `identifier`, `case_identifier_uuid`, and `case_identifier_uri`.
 - Every SFI has provenance or a clear synthetic provenance explanation.
 - No-code SFIs preserve stable source-context/text identity material.
-- Conflict and needs-review merge exclusions are reported.
-- Unresolved/root-fallback relationship cases are reported.
+- Relationship counts match `has_child_resolution_summary.json`.
+- Final SFI counts match `sfi_final_summary.json`.
+- Conflict and needs-review merge exclusions are reported at least as counts.
+- Detailed conflict and needs-review exclusions are reported only when optional merge audit inputs are supplied.
+- Unresolved/root-fallback relationship cases are reported from `has_child_unresolved_edges.json`.
 - Zero-window, zero-final-SFI, or empty-final-KG output fails.
 
 Expected final artifacts:
@@ -163,6 +231,21 @@ validation_report.json
 unresolved_items.json
 ```
 
+`unresolved_items.json` contents:
+
+```text
+relationship_unresolved_edges:
+  - records from has_child_unresolved_edges.json
+
+finalization_exclusion_summary:
+  excluded_conflict_group_count
+  excluded_needs_review_group_count
+
+finalization_excluded_groups:
+  - detailed conflict/needs_review groups when optional merge audit inputs are supplied
+  - otherwise empty or omitted with details_unavailable=true
+```
+
 Optional later artifact, when policy coverage is implemented:
 
 ```text
@@ -171,16 +254,19 @@ policy_coverage_report.json
 
 Plan of action:
 
-1. Define final export schemas for the compiled bundle, framework, SFI items, hasChild associations, summary, and validation report.
+1. Define final export schemas for the compiled bundle, framework, SFI items, hasChild relationships, provenance, unresolved report, summary, and validation report.
 2. Centralize or reuse the deterministic `StandardsFramework` UUID helper so Step 9 root edges and Step 10 framework export use the same root ID.
-3. Compile one framework object from `DocumentIR` and KG config metadata.
-4. Compile one `StandardsFrameworkItem` for every `SFIFinalRecord`, preserving final UUIDs, CASE identifiers, source provenance, merge/audit evidence, and identity metadata.
-5. Compile one `Relationship(hasChild)` association for every validated `SFIHasChildEdge`, preserving relationship IDs, endpoints, LLM reason, evidence reasons, and unresolved-root-fallback status.
-6. Build a complete KG bundle plus separate inspectable framework, item, relationship, provenance, unresolved, summary, and validation artifacts.
-7. Run final graph validation over the compiled artifact: endpoint existence, incoming-edge coverage, root reachability, no duplicate edges/IDs, no self-loops, no SFI cycles, schema validity, and non-empty source-backed SFI descriptions.
-8. Cross-check counts and summaries across Step 8, Step 9, and Step 10 artifacts.
-9. Implement `overwrite=True` rebuild behavior and `overwrite=False` exact-payload reuse/rebuild behavior.
-10. Wire the final function into `create_kgs.py` as the last pipeline step and add focused tests for happy path, no-code curricula, same-code/different-content, root fallback, dangling edges, missing incoming edges, cycles, stale artifacts, and serialization round trip.
+3. Load or receive the required Step 10 inputs; treat merge report/conflict/needs-review artifacts as optional audit inputs only.
+4. Compile one framework object from `DocumentIR` and KG config metadata without requiring a non-existent description field.
+5. Compile one `StandardsFrameworkItem` for every `SFIFinalRecord`, preserving final UUIDs, CASE identifiers, source provenance, merge/audit evidence, and identity metadata.
+6. Compile one `Relationship(hasChild)` association for every validated `SFIHasChildEdge`, using the explicit endpoint mapping above and preserving relationship IDs, endpoints, LLM reason, evidence reasons, confidence, metadata, and unresolved-root-fallback status.
+7. Build a complete KG bundle plus separate inspectable framework, item, relationship, provenance, unresolved, summary, and validation artifacts.
+8. Run final graph validation over the compiled artifact: endpoint existence, incoming-edge coverage, root reachability, no duplicate edges/IDs, no self-loops, no SFI cycles, schema validity, and non-empty source-backed SFI descriptions.
+9. Cross-check counts and summaries across Step 8, Step 9, and Step 10 artifacts.
+10. Implement `overwrite=True` rebuild behavior.
+11. Implement `overwrite=False` exact-payload reuse/rebuild behavior: reuse existing Step 10 artifacts only if all expected output artifacts exist, parse successfully, exactly match what would be compiled from the current inputs, and have a successful validation report for the same input fingerprints/counts. Otherwise rebuild all Step 10 outputs deterministically.
+12. Do not implement resume-prefix logic for Step 10; this step has no LLM calls and no incremental JSONL review process.
+13. Wire the final function into `create_kgs.py` as the last pipeline step and add focused tests for happy path, no-code curricula, same-code/different-content, root fallback, dangling edges, missing incoming edges, cycles, stale artifacts, optional audit inputs absent/present, and serialization round trip.
 
 ## Step-specific implementation notes
 
@@ -257,9 +343,14 @@ Plan of action:
 ### Step 10: final KG compile/export/validation
 
 - Compile final KG objects only from Step 8 final SFIs and Step 9 validated edges.
+- Required core compile inputs are `CreateKGConfig`, `DocumentIR`, `KGDirs`, `sfi_final_records.json`, `sfi_final_summary.json`, `has_child_edges_final.json`, `has_child_unresolved_edges.json`, `has_child_resolution_summary.json`, and `kg_run_manifest.json`.
+- Treat `sfi_merge_report.json`, `sfi_merge_conflicts.json`, and `sfi_merge_needs_review.json` as optional audit inputs for detailed excluded-group reporting only.
 - Preserve IDs exactly; do not re-mint SFI or relationship UUIDs.
+- Ensure the exported `StandardsFramework` UUID matches the Step 9 root-edge UUID.
+- Compile one `Relationship(hasChild)` per `SFIHasChildEdge` using `case_identifier_uuid` endpoints.
 - Preserve finalization and relationship provenance in export metadata.
 - Validate the complete exported graph, not just individual artifacts.
+- Report unresolved relationship cases from `has_child_unresolved_edges.json` and finalization exclusion counts from `sfi_final_summary.json`.
 - Write final JSON/JSONL artifacts and a validation report.
 
 ## Main pitfalls
@@ -306,20 +397,37 @@ Zero extraction windows, zero final SFIs, or empty final KG artifacts should fai
 
 ## Recommended next-session start
 
-Start from these validated Step 9 artifacts:
+Start from these required Step 10 inputs:
 
 ```text
+config / CreateKGConfig
+document_ir.json
+kg_run_manifest.json
 sfi_final_records.json
 sfi_final_summary.json
-sfi_final_contexts.json
 has_child_edges_final.json
 has_child_unresolved_edges.json
 has_child_resolution_summary.json
+KGDirs / output directory
+```
+
+Optional audit inputs for detailed excluded conflict/needs-review reporting:
+
+```text
 sfi_merge_report.json
+sfi_merge_conflicts.json
+sfi_merge_needs_review.json
+```
+
+The following prior-stage artifacts are useful for debugging, but are not required for core Step 10 compile/export:
+
+```text
+sfi_final_contexts.json
+has_child_candidate_parent_sets.jsonl
+has_child_resolution_requests.jsonl
+has_child_resolution_responses.jsonl
 sfi_candidate_registry.json
 extraction_windows.jsonl
-document_ir.json
-kg_run_manifest.json
 ```
 
 Then implement the single remaining final step:
