@@ -1,0 +1,402 @@
+{
+	"page_ir_extraction": {
+		"country": "Rwanda",
+		"dpi": 250,
+		"end_page": null,
+		"languages": [
+			"en"
+		],
+		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results/kg_for_ed",
+		"overwrite": false,
+		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/rwanda/rwanda_math_p1_p3.pdf",
+		"start_page": 0,
+		"use_extracted_hints": true,
+		"year": 2025
+	},
+	"page_ir_verification": {
+		"end_page": null,
+		"min_confidence_to_patch": 0.5,
+		"min_confidence_to_select_positive": 0.5,
+		"min_confidence_to_stop_negative_search": 0.9,
+		"next_page_crop_padding_px": 120,
+		"overwrite": false,
+		"start_page": 0
+	},
+	"document_ir": {
+		"keep_artifacts": false,
+		"max_section_path_length": 24,
+		"min_link_score": 1.0,
+		"overwrite": true,
+		"repair_hyphenation": true,
+		"sort_items_by_bbox": true,
+		"table_filldown_enabled": true,
+		"table_filldown_group_cols_max": 1,
+		"verification_auto_stitch_confidence": 0.7
+	},
+	"kgs": {
+		"overwrite": false,
+		"as": {
+			"bilingual_pair_policy": null,
+			"code_parent_rules": [],
+			"code_patterns": {},
+			"excluded_table_columns_signatures": [],
+			"excluded_table_section_patterns": [],
+			"included_table_columns_signatures": [],
+			"included_table_section_patterns": [
+				"(?i)(6\\.2\\.2|6\\.3\\.2|6\\.4\\.2|Mathematics units for Primary One|Mathematics Units for Primary Two|Mathematics Units for Primary Three|SYLLABUS UNITS FOR GRADE ONE|Mathematics Syllabus for Primary \\(P2\\)|Mathematics Syllabus for P3)"
+			],
+			"max_dedup_review_set_candidates": 16,
+			"max_has_child_parent_candidates": 24,
+			"max_has_child_section_path_labels": 12,
+			"max_rows_per_table_window": 24,
+			"row_overlap": 2,
+			"sfi_deduplication_instructions": "Merge candidates only when they represent the same source-visible curriculum item in the same grade/topic/sub-topic/unit context or are duplicate fragments caused by page/table continuation. Do not merge across P1, P2, and P3 merely because wording or unit numbers repeat. Do not merge different units that share the same number, such as Unit 1 in different grades. Keep repeated topic and sub-topic labels distinct when their grade or parent topic context differs.",
+			"sfi_extraction_instructions": "Extract Academic Standards SFIs only from Section 6 syllabus-unit content. Treat source-visible Grade/P1-P3, Topic Area, Sub-Topic Area, and Unit labels as Standard Grouping SFIs. Treat grade-level key competences, Key Unit Competence statements, and Learning Objectives under Knowledge and Understanding, Skills, and Attitudes and Values as Standard SFIs. Do not extract Content, Learning Activities, Links to other subjects, Assessment criteria, Teaching/learning aids, examples, Number of Periods, front matter, pedagogy, resources, assessment approach, acknowledgements, references, or weekly time allocation as SFIs. Do not infer absent parent labels. Preserve source-visible wording and table row/header evidence.",
+			"sfi_has_child_instructions": "Resolve direct hasChild parents using the source hierarchy: StandardsFramework root -> Grade -> Topic Area -> Sub-Topic Area -> Unit. Grade Key Competence attaches to Grade. Key Unit Competence attaches to Unit. Knowledge Objective, Skills Objective, and Attitudes and Values Objective attach to the Key Unit Competence from the same unit. Prefer source-visible table/section context, source order, shared window/segment/table evidence, and canonical scope evidence. Do not choose parents by repeated text or unit number alone. Use an unresolved root fallback only when no supplied SFI parent is source-supported.",
+			"sfi_has_child_parent_statement_types": {
+				"Grade": [],
+				"Topic Area": [
+					"Grade"
+				],
+				"Sub-Topic Area": [
+					"Topic Area"
+				],
+				"Unit": [
+					"Sub-Topic Area"
+				],
+				"Grade Key Competence": [
+					"Grade"
+				],
+				"Key Unit Competence": [
+					"Unit"
+				],
+				"Knowledge Objective": [
+					"Key Unit Competence"
+				],
+				"Skills Objective": [
+					"Key Unit Competence"
+				],
+				"Attitudes and Values Objective": [
+					"Key Unit Competence"
+				]
+			},
+			"sfi_has_child_statement_type_hierarchy": [
+				"Grade",
+				"Topic Area",
+				"Sub-Topic Area",
+				"Unit",
+				"Key Unit Competence"
+			],
+			"statement_type_policy": [
+				{
+					"aliases": [
+						"P1 Mathematics",
+						"P2 Mathematics",
+						"P3 Mathematics",
+						"Primary One",
+						"Primary Two",
+						"Primary Three",
+						"Grade One",
+						"Grade Two",
+						"Grade Three"
+					],
+					"controlled_value_scope": "document",
+					"controlled_values": [
+						{
+							"canonical_value": "P1",
+							"aliases": [
+								"Primary One",
+								"Grade One",
+								"Grade 1",
+								"P1 Mathematics"
+							]
+						},
+						{
+							"canonical_value": "P2",
+							"aliases": [
+								"Primary Two",
+								"Grade Two",
+								"Grade 2",
+								"P2 Mathematics"
+							]
+						},
+						{
+							"canonical_value": "P3",
+							"aliases": [
+								"Primary Three",
+								"Grade Three",
+								"Grade 3",
+								"P3 Mathematics"
+							]
+						}
+					],
+					"description": "Use for source-visible lower-primary grade/stage groupings such as P1 Mathematics, P2 Mathematics, P3 Mathematics, Primary One, Primary Two, or Primary Three.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Grade"
+				},
+				{
+					"aliases": [
+						"TOPIC AREA"
+					],
+					"controlled_value_scope": "nearest_parent_values",
+					"controlled_value_scope_parent_statement_types": [
+						"Grade"
+					],
+					"controlled_values": [
+						{
+							"canonical_value": "Numbers and Operations",
+							"aliases": [
+								"NUMBERS AND OPERATIONS"
+							]
+						},
+						{
+							"canonical_value": "Algebra",
+							"aliases": [
+								"ALGEBRA"
+							]
+						},
+						{
+							"canonical_value": "Measurement",
+							"aliases": [
+								"MEASUREMENT",
+								"MEASUREMENTS"
+							]
+						},
+						{
+							"canonical_value": "Geometry",
+							"aliases": [
+								"GEOMETRY"
+							]
+						},
+						{
+							"canonical_value": "Statistics",
+							"aliases": [
+								"STATISTICS"
+							]
+						}
+					],
+					"description": "Use for source-visible TOPIC AREA labels that organize units within a grade.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Topic Area"
+				},
+				{
+					"aliases": [
+						"SUB-TOPIC AREA",
+						"SUB-TOPIC"
+					],
+					"controlled_value_scope": "nearest_parent_values",
+					"controlled_value_scope_parent_statement_types": [
+						"Grade",
+						"Topic Area"
+					],
+					"controlled_values": [
+						{
+							"canonical_value": "Whole Numbers",
+							"aliases": [
+								"WHOLE NUMBERS",
+								"WHOLE NUMBERS FROM 0 TO 10000"
+							]
+						},
+						{
+							"canonical_value": "Fractions",
+							"aliases": [
+								"FRACTIONS"
+							]
+						},
+						{
+							"canonical_value": "Number Pattern",
+							"aliases": [
+								"NUMBER PATTERN",
+								"NUMBER PATTERNS"
+							]
+						},
+						{
+							"canonical_value": "Length Measurements",
+							"aliases": [
+								"LENGTH MEASUREMENTS"
+							]
+						},
+						{
+							"canonical_value": "Rwandan Currency",
+							"aliases": [
+								"RWANDAN CURRENCY",
+								"CURRENCY",
+								"RWANDAN MONEY"
+							]
+						},
+						{
+							"canonical_value": "Capacity Measurements",
+							"aliases": [
+								"CAPACITY MEASUREMENTS"
+							]
+						},
+						{
+							"canonical_value": "Mass Measurements",
+							"aliases": [
+								"MASS MEASUREMENTS"
+							]
+						},
+						{
+							"canonical_value": "Time Measurements",
+							"aliases": [
+								"TIME MEASUREMENTS"
+							]
+						},
+						{
+							"canonical_value": "Directions and Lines",
+							"aliases": [
+								"DIRECTIONS AND LINES"
+							]
+						},
+						{
+							"canonical_value": "Directions and Shapes",
+							"aliases": [
+								"DIRECTIONS AND SHAPES"
+							]
+						},
+						{
+							"canonical_value": "Angles and Shapes",
+							"aliases": [
+								"ANGLES AND SHAPES"
+							]
+						},
+						{
+							"canonical_value": "Shapes",
+							"aliases": [
+								"SHAPES"
+							]
+						},
+						{
+							"canonical_value": "Types of Lines and Angles",
+							"aliases": [
+								"TYPES OF LINES AND ANGLES"
+							]
+						},
+						{
+							"canonical_value": "Geometrical Figures and a Circle",
+							"aliases": [
+								"GEOMETRICAL FIGURES AND A CIRCLE"
+							]
+						},
+						{
+							"canonical_value": "Directions",
+							"aliases": [
+								"DIRECTIONS"
+							]
+						},
+						{
+							"canonical_value": "Equation",
+							"aliases": [
+								"EQUATION",
+								"EQUATIONS"
+							]
+						},
+						{
+							"canonical_value": "Reading a Pictograph",
+							"aliases": [
+								"READING A PICTOGRAPH"
+							]
+						},
+						{
+							"canonical_value": "Drawings and Geometrical Figures",
+							"aliases": [
+								"DRAWINGS AND GEOMETRICAL FIGURES"
+							]
+						}
+					],
+					"description": "Use for source-visible SUB-TOPIC AREA labels that organize units below a topic area.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Sub-Topic Area"
+				},
+				{
+					"aliases": [
+						"Unit",
+						"UNIT"
+					],
+					"description": "Use for source-visible unit headings, including the unit number and title. Preserve the full visible title, for example 'Unit 1: Numbers from 1 to 5'. Do not treat the unit number alone as an official standard code.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Unit"
+				},
+				{
+					"aliases": [
+						"Key competences at the end of Grade",
+						"Key competences at the end of P2",
+						"Key competences"
+					],
+					"description": "Use only for numbered key competences listed at the end of each grade-level introduction, not for generic broad competences in the front matter.",
+					"normalized_statement_type": "Standard",
+					"statement_type": "Grade Key Competence"
+				},
+				{
+					"aliases": [
+						"Key Unit Competence",
+						"Key unit competence",
+						"Unit Key Competence"
+					],
+					"description": "Use for the source-visible Key Unit Competence statement inside each unit table.",
+					"normalized_statement_type": "Standard",
+					"statement_type": "Key Unit Competence"
+				},
+				{
+					"aliases": [
+						"Knowledge and Understanding",
+						"Knowledge and understanding",
+						"Knowledge"
+					],
+					"description": "Use for learning objective bullets in the Knowledge and Understanding column. Do not use for Content column bullets.",
+					"normalized_statement_type": "Standard",
+					"statement_type": "Knowledge Objective"
+				},
+				{
+					"aliases": [
+						"Skills"
+					],
+					"description": "Use for learning objective bullets in the Skills column. Do not use for Learning Activities column bullets.",
+					"normalized_statement_type": "Standard",
+					"statement_type": "Skills Objective"
+				},
+				{
+					"aliases": [
+						"Attitudes and Values",
+						"Attitudes and values"
+					],
+					"description": "Use for learning objective bullets in the Attitudes and Values column. Do not use for general pedagogy or front-matter values discussion.",
+					"normalized_statement_type": "Standard",
+					"statement_type": "Attitudes and Values Objective"
+				}
+			],
+			"synthetic_merge_key_fields": [
+				"country",
+				"subject",
+				"grade_level",
+				"normalized_statement_type",
+				"statement_type",
+				"hierarchy_context",
+				"normalized_text"
+			]
+		},
+		"lc": {
+			"generation_instructions": "LearningComponents are out of scope for Academic Standards KG v0; do not generate LearningComponents in this run."
+		},
+		"metadata": {
+			"adoption_status": "Third Edition, 2025",
+			"attribution_statement": "© 2025 Rwanda Basic Education Board, Kigali. Credit must be provided to REB when the content is quoted.",
+			"author": "Rwanda Basic Education Board (REB)",
+			"country": "Rwanda",
+			"framework_title": "Mathematics Syllabus for Lower Primary | Primary 1 - 3",
+			"grades_or_stages": [
+				"P1",
+				"P2",
+				"P3"
+			],
+			"jurisdiction": "Rwanda",
+			"languages": [
+				"en"
+			],
+			"license": "© 2025 Rwanda Basic Education Board, Kigali. All rights reserved.",
+			"primary_language": "en",
+			"provider": "Rwanda Basic Education Board (REB)",
+			"subject": "Mathematics"
+		}
+	}
+}
