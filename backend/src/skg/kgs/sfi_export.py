@@ -11,7 +11,7 @@ import hashlib
 import json
 import uuid
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -54,7 +54,8 @@ def _build_entity_provenance(
     sfi_final_records: Sequence[SFIFinalRecord],
     sfis: Sequence[StandardsFrameworkItem],
 ) -> dict[str, Any]:
-    """Build provenance for exported framework, item, and relationship entities.
+    """Build provenance for exported StandardsFramework, StandardsFrameworkItem, and
+    relationship entities.
 
     Parameters
     ----------
@@ -77,8 +78,8 @@ def _build_entity_provenance(
         Deterministic provenance artifact for final KG entities.
     """
 
-    records_by_id = {str(record.final_sfi_uuid): record for record in sfi_final_records}
     items_provenance: dict[str, Any] = {}
+    records_by_id = {str(record.final_sfi_uuid): record for record in sfi_final_records}
 
     for item in sfis:
         record = records_by_id[str(item.case_identifier_uuid)]
@@ -334,8 +335,8 @@ def _load_complete_existing_export_artifacts(
         )
         loaded_entity_provenance = open_json_type(entity_provenance_fp)
 
-        if _stable_json_key(loaded_entity_provenance) != _stable_json_key(
-            entity_provenance
+        if json.dumps(loaded_entity_provenance, sort_keys=True) != json.dumps(
+            entity_provenance, sort_keys=True
         ):
             raise ValueError("entity_provenance.json does not match current output.")
 
@@ -372,6 +373,7 @@ def _load_complete_existing_export_artifacts(
             f"Existing Academic Standards export artifacts are missing, incomplete, "
             f"or stale; rebuilding final KG export: {e}"
         )
+
         return None
 
     logger.info(
@@ -459,23 +461,6 @@ def _reachable_sfi_ids(
     return reachable
 
 
-def _stable_json_key(value: Any) -> str:
-    """Build a stable JSON comparison key for a JSON-compatible value.
-
-    Parameters
-    ----------
-    value
-        JSON-compatible value.
-
-    Returns
-    -------
-    str
-        Stable JSON string.
-    """
-
-    return json.dumps(value, ensure_ascii=False, sort_keys=True)
-
-
 def _validate_count_alignment(
     *,
     has_child_edges: Sequence[SFIHasChildEdge],
@@ -552,6 +537,13 @@ def _validate_count_alignment(
             "has_child_unresolved_edges length does not match unresolved root-fallback "
             "edge count."
         )
+
+    errors.extend(
+        _validate_unresolved_edges_match_source_edges(
+            has_child_edges=has_child_edges,
+            has_child_unresolved_edges=has_child_unresolved_edges,
+        )
+    )
 
     root_edge_count = sum(1 for edge in has_child_edges if edge.is_root_edge)
 
@@ -999,6 +991,98 @@ def _validate_sfi_exports(
     return errors
 
 
+def _validate_unresolved_edges_match_source_edges(
+    *,
+    has_child_edges: Sequence[SFIHasChildEdge],
+    has_child_unresolved_edges: Sequence[SFIHasChildEdge],
+) -> list[str]:
+    """Validate unresolved hasChild edges match the source edge subset exactly.
+
+    The unresolved-edge artifact must contain exactly the same edge records as the
+    subset of final hasChild edges whose `unresolved_root_fallback` flag is true.
+    Relationship IDs are used as stable edge identifiers, and matching IDs must also
+    have identical serialized payloads.
+
+    Parameters
+    ----------
+    has_child_edges
+        Complete final hasChild edge sequence supplied to the export compiler.
+    has_child_unresolved_edges
+        Persisted unresolved hasChild edge sequence.
+
+    Returns
+    -------
+    list[str]
+        Validation error messages.
+    """
+
+    errors: list[str] = []
+    expected_ids = [
+        str(edge.relationship_id)
+        for edge in has_child_edges
+        if edge.unresolved_root_fallback
+    ]
+    actual_ids = [str(edge.relationship_id) for edge in has_child_unresolved_edges]
+
+    duplicate_expected_ids = sorted(
+        edge_id for edge_id, count in Counter(expected_ids).items() if count > 1
+    )
+    duplicate_actual_ids = sorted(
+        edge_id for edge_id, count in Counter(actual_ids).items() if count > 1
+    )
+
+    if duplicate_expected_ids:
+        errors.append(
+            f"Duplicate unresolved root-fallback relationship IDs found in "
+            f"has_child_edges: {duplicate_expected_ids}."
+        )
+
+    if duplicate_actual_ids:
+        errors.append(
+            f"Duplicate relationship IDs found in has_child_unresolved_edges: "
+            f"{duplicate_actual_ids}."
+        )
+
+    expected_by_id = {
+        str(edge.relationship_id): model_dump_key(edge)
+        for edge in has_child_edges
+        if edge.unresolved_root_fallback
+    }
+    actual_by_id = {
+        str(edge.relationship_id): model_dump_key(edge)
+        for edge in has_child_unresolved_edges
+    }
+
+    missing_ids = sorted(set(expected_by_id) - set(actual_by_id))
+    extra_ids = sorted(set(actual_by_id) - set(expected_by_id))
+    mismatched_ids = sorted(
+        edge_id
+        for edge_id in set(expected_by_id) & set(actual_by_id)
+        if expected_by_id[edge_id] != actual_by_id[edge_id]
+    )
+
+    if missing_ids:
+        errors.append(
+            f"has_child_unresolved_edges is missing unresolved root-fallback edges: "
+            f"{missing_ids}."
+        )
+
+    if extra_ids:
+        errors.append(
+            f"has_child_unresolved_edges contains edges that are not unresolved "
+            f"root-fallback edges in has_child_edges: {extra_ids}."
+        )
+
+    if mismatched_ids:
+        errors.append(
+            f"has_child_unresolved_edges contains payloads that do not exactly match "
+            f"the corresponding unresolved root-fallback edges in has_child_edges: "
+            f"{mismatched_ids}."
+        )
+
+    return errors
+
+
 def _write_artifacts(
     *,
     bundle: AcademicStandardsKGBundle,
@@ -1094,6 +1178,16 @@ def compile_academic_standards_kg(
     6. Build the unresolved report.
     7. Build stable fingerprints for input payloads.
     8. Validate the compiled Academic Standards KG export.
+    9. Build provenance for exported StandardsFramework, StandardsFrameworkItem, and
+        relationship entities.
+    10. Build the Academic Standards export summary and KG bundle.
+    11. If the export failed, then persist the failed export and validation report for
+        inspection, and then fail the run so invalid KG artifacts are not treated as
+        successful output.
+    12. Otherwise, reuse existing final export artifacts only when the full persisted
+        payload exactly matches the freshly compiled bundle and prior validation passed.
+    13. Finally, rebuild the final export artifacts from the freshly compiled,
+        validated objects, replacing any stale partial or previous outputs.
 
     Parameters
     ----------
@@ -1311,7 +1405,7 @@ def compile_academic_standards_kg(
         sfis=sfis,
     )
 
-    # 9. XXX
+    # 9.
     entity_provenance = _build_entity_provenance(
         document_ir=document_ir,
         kg_run_manifest=kg_run_manifest,
@@ -1321,7 +1415,7 @@ def compile_academic_standards_kg(
         sfis=sfis,
     )
 
-    # 10. XXX
+    # 10.
     summary = AcademicStandardsExportSummary(
         final_sfi_count=len(sfis),
         finalization_exclusion_summary=unresolved_items.finalization_exclusion_summary,
@@ -1331,7 +1425,6 @@ def compile_academic_standards_kg(
             unresolved_items.relationship_unresolved_edges
         ),
     )
-
     bundle = AcademicStandardsKGBundle(
         entity_provenance=entity_provenance,
         framework=sf,
@@ -1342,8 +1435,8 @@ def compile_academic_standards_kg(
         validation_report=validation_report,
     )
 
-    # 11. XXX
     if not validation_report.passed:
+        # 11.
         _write_artifacts(
             bundle=bundle,
             bundle_fp=bundle_fp,
@@ -1361,7 +1454,7 @@ def compile_academic_standards_kg(
             validation_report_fp=validation_report_fp,
         )
         raise ValueError(
-            "Final Academic Standards KG export validation failed: "
+            f"Final Academic Standards KG export validation failed: "
             f"{validation_report.errors}"
         )
 
