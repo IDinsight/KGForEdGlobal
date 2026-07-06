@@ -4,7 +4,7 @@
 
 Use this file at the start of a coding session to re-establish the current Academic Standards KG v0 context.
 
-The immediate goal is a focused Academic Standards pipeline:
+The v0 pipeline is focused on Academic Standards only:
 
 ```text
 stitched DocumentIR
@@ -13,10 +13,10 @@ stitched DocumentIR
   -> global candidate registry
   -> bounded LLM-assisted dedup/merge
   -> deterministic final SFI records
-  -> post-dedup source-context recovery
-  -> LLM-assisted hasChild relationship resolution
-  -> StandardsFramework / StandardsFrameworkItem / Relationship(hasChild)
-  -> validation + KG artifacts
+  -> source-context recovery
+  -> bounded LLM-assisted hasChild relationship resolution
+  -> final StandardsFramework / StandardsFrameworkItem / Relationship(hasChild) bundle
+  -> validation + write artifacts
 ```
 
 LearningComponents and LearningProgressions are downstream phases. Do not implement them in this v0 Academic Standards slice.
@@ -27,117 +27,56 @@ The pipeline has three layers:
 
 1. **PageIR extraction and verification**: page/layout extraction only. It preserves what appears on the page and does not decide KG semantics.
 2. **Stitched DocumentIR**: the source material for KG extraction. It contains block/table segments, source order, page provenance, section-path hints, table rows, and optional helper views such as `rows_grid`, `grid_sources`, `row_provenance`, and `rows_filldown`.
-3. **KG creation**: LLM-assisted semantic extraction plus deterministic validation, dedup, final ID minting, relationship resolution, export, and validation.
+3. **KG creation**: LLM-assisted semantic extraction plus deterministic validation, dedup, final ID minting, relationship resolution, final export, and validation.
 
-Python orchestrates, packages source-faithful inputs, validates, retrieves candidates, mints deterministic IDs, and exports artifacts. The LLM performs semantic extraction and later chooses direct `hasChild` parents from source-grounded candidate parent sets.
+Python orchestrates, packages source-faithful inputs, validates, retrieves candidates, mints deterministic IDs, and exports artifacts. The LLM performs semantic SFI extraction and chooses direct `hasChild` parents from bounded source-grounded candidate parent sets.
 
 ## Main design principles
 
-- Keep v0 focused on Academic Standards only: `StandardsFramework`, `StandardsFrameworkItem`, and `Relationship(hasChild)`.
+- Keep v0 focused on `StandardsFramework`, `StandardsFrameworkItem`, and `Relationship(hasChild)`.
 - Do not extract LearningComponents during the SFI stage.
 - Do not create `supports`, `buildsTowards`, or `relatesTo` in the Academic Standards v0 pipeline.
-- Treat the `kgs` / `CreateKGConfig` section as the country/document instruction sheet. Avoid country-hardcoded logic.
-- Use the LLM for semantic SFI extraction and Step 9 parent selection. Deterministic Python rules are guardrails, retrieval aids, validators, and ID helpers.
-- Preserve original language and source provenance. Do not translate or normalize source wording into final text unless a later policy explicitly requires it.
+- Treat `RunConfig.kgs` / `CreateKGConfig` as the country/document instruction sheet. Avoid country-hardcoded logic.
+- Use the LLM for semantic SFI extraction and direct parent selection. Use Python for guardrails, retrieval aids, validation, deterministic IDs, and export.
+- Preserve original language and source provenance. Do not translate source wording.
 - Support no-code curricula. No downstream step may assume `statement_code` or `normalized_statement_code` exists.
 - Use deterministic UUIDv5 IDs only. Never use random UUIDs for stable KG entities or relationships.
-- Treat `source_text` as an evidence quote, not the only provenance and not necessarily final canonical KG text.
-- Keep extraction separate from relationship resolution. Do not infer parentage during SFI extraction.
+- Treat `source_text` as an evidence quote, not the only provenance and not necessarily final KG text.
+- Keep extraction, dedup, finalization, relationship resolution, and final export as separate concerns.
 
 ## Current implementation status
 
-Steps 1-8 are implemented and should be treated as the completed historical path.
+Steps 1-9 are implemented and should be treated as the completed historical path.
 
 Implemented:
 
 1. Load/validate stitched `DocumentIR` and `RunConfig.kgs` / `CreateKGConfig`.
 2. Build and persist `kg_run_manifest.json`.
-3. Plan extraction windows from `DocumentIR.segments`.
-4. Persist `extraction_window_plan.json`.
-5. Build source-faithful `ExtractionWindow` records.
-6. Persist `extraction_windows.jsonl`.
-7. Run compact-prompt LLM SFI extraction.
-8. Validate `SFIExtractionResult` records for schema correctness, window identity, source-visible codes, source-supported `source_text` and `description`, and valid table row/header indexes.
-9. Persist `sfi_extraction_results.jsonl` incrementally and refresh `sfi_extraction_summary.json`.
-10. Resume Step 4/5 from a valid JSONL prefix when `overwrite=False`.
-11. Build and persist `sfi_candidate_registry.json`.
-12. Validate result/window alignment and unique window-local candidate IDs before registry flattening.
-13. Compute normalized text/code/context keys, duplicate buckets, registry warnings, and registry summary counts.
-14. Build bounded Step 7 dedup review components from duplicate buckets, warnings, repeated source text, and source-provenance overlap.
-15. Run LLM-assisted dedup review over bounded review sets.
-16. Validate dedup review responses for exact candidate coverage, closed-enum decisions, non-empty reasons, and hard merge guardrails.
-17. Convert reviewed, unresolved, and singleton candidates into merge groups covering every registry candidate exactly once.
-18. Persist `sfi_dedup_review_requests.jsonl`, `sfi_dedup_review_responses.jsonl`, `sfi_merge_report.json`, `sfi_merge_groups.json`, `sfi_merge_conflicts.json`, and `sfi_merge_needs_review.json`.
-19. Reuse complete Step 7 artifacts only after content-current validation; otherwise resume from a valid request/response prefix.
-20. Mint deterministic final SFI records from eligible `merged` and `singleton` groups.
-21. Preserve merge provenance, source provenance, audit flags, and same-code/different-content disambiguators.
-22. Persist `sfi_final_records.json` and `sfi_final_summary.json` using JSON-mode serialization for UUID-bearing models.
+3. Plan and persist source-faithful extraction windows from `DocumentIR.segments`.
+4. Run compact-prompt LLM SFI extraction over each extraction window.
+5. Validate and persist `SFIExtractionResult` records incrementally.
+6. Build and persist the global SFI candidate registry.
+7. Build bounded dedup review sets, run LLM-assisted dedup review, and persist merge groups covering every registry candidate exactly once.
+8. Mint deterministic final SFI records from eligible `merged` and `singleton` groups, excluding `conflict` and `needs_review` groups from automatic finalization.
+9. Recover final SFI source contexts, build bounded parent-candidate sets, run LLM-assisted direct `hasChild` parent selection, validate the graph, and persist relationship-resolution artifacts.
 
-## Remaining implementation work
-
-Steps 9-11 remain.
-
-### Step 9: Resolve final hasChild edges
-
-Implement `resolve_has_child_edges()`.
-
-Inputs:
+Key implemented artifacts:
 
 ```text
-CreateKGConfig
-DocumentIR
-KGDirs
-sfi_final_records.json / Sequence[SFIFinalRecord]
-sfi_final_summary.json / SFIFinalSummary | None
-extraction_windows.jsonl, loaded from kg_dirs when code-parent hints are needed
-```
-
-Purpose:
-
-```text
-Create final hasChild edges between the StandardsFramework root and finalized SFIs, and among finalized SFIs themselves, after SFI extraction, merge/dedup, and deterministic final SFI ID minting.
-```
-
-Hard requirements:
-
-- Operate on finalized SFIs only.
-- Do not use temporary extraction candidates, registry candidate IDs, merge group IDs, source codes, headings, auxiliary candidates, or invented nodes as relationship endpoints.
-- Require non-empty `config.academic_standards.sfi_has_child_instructions`.
-- Recover source context from DocumentIR and final-record provenance after finalization.
-- Build bounded, source-grounded candidate parent sets for each final SFI.
-- Let the LLM select one or more direct parents from the provided candidate set, or mark the child unresolved.
-- Allow a finalized SFI to have one or more incoming `hasChild` parents when source evidence supports multiple direct hierarchy memberships.
-- Do not make single-parent tree assumptions in Python.
-- Always include the StandardsFramework root in each bounded parent candidate set as a fallback option.
-- Emit a StandardsFramework root `hasChild` edge only when the LLM selects the StandardsFramework as the child's direct parent, or when the child is unresolved and must receive an explicit root-fallback edge. Do not also add a root edge merely to guarantee reachability when one or more semantic SFI parent(s) were selected.
-
-Recommended Step 9 substeps:
-
-1. Load and validate `sfi_final_records.json` and `sfi_final_summary.json`.
-2. Validate that final UUIDs, identity keys, merge group IDs, and source candidate coverage are safe and unique.
-3. Fail if conflict or needs-review groups were excluded unless an explicitly supported incomplete-universe policy exists in code.
-4. Build lookup indexes by UUID, statement type, normalized code, raw code, source windows, source segments, source context keys, table references, and source order.
-5. Recover source context for every final SFI.
-6. Persist `sfi_final_contexts.json` as a debug artifact.
-7. Build source-grounded candidate parent sets, always including the StandardsFramework root fallback.
-   - Candidate generation is retrieval only: do not auto-resolve parentage in Python, do not emit deterministic parent decisions, and do not collapse the LLM parent-selection step.
-   - Generate candidates from multiple evidence channels when available: code-parent hints; same or nearby source-context keys; same source segment, window, table row/header, or table-local-code context; nearest preceding grouping SFIs in source order; section-path labels matched to finalized SFI records; statement-type compatibility from `sfi_has_child_instructions`; and the StandardsFramework root fallback.
-   - Attach evidence reasons to each candidate parent, such as `code_parent_hint`, `same_source_context_key`, `nearby_source_context_key`, `same_source_segment`, `same_source_window`, `same_table_context`, `nearest_preceding_grouping`, `matched_section_path_label`, `statement_type_compatible`, or `root_fallback`.
-   - De-duplicate candidate parents by final endpoint UUID, merging all retrieval reasons and evidence snippets into one parent-candidate record per endpoint.
-   - Rerank bounded parent candidates deterministically before prompting. Prefer direct, source-grounded, local evidence over broad fallback evidence: explicit code-parent hints and matched finalized grouping labels first when compatible; then same/nearby source context and table/window/segment evidence; then nearest preceding grouping evidence; then broader statement-type-compatible candidates; keep the StandardsFramework root as the final fallback candidate.
-   - Enforce a bounded maximum candidate-set size. If too many candidates remain after de-duplication and reranking, keep the strongest local/source-grounded candidates, always keep any high-signal code-parent or matched-section candidates, always keep the StandardsFramework root fallback, and record truncation metadata for audit.
-8. Use code-parent matches as evidence only when normalized codes are present, compatible, and not contradicted by audit/source-context evidence.
-9. Preserve same-code/different-content audited records as separate endpoints; never collapse or choose by code alone.
-10. Treat raw `statement_code` with null `normalized_statement_code` as source-visible evidence only.
-11. Batch children for LLM-assisted parent selection.
-12. Validate each LLM response for exact child coverage, known parent IDs, no self-loops, no invented relationship types, no duplicate parent decisions for the same parent/child pair, non-empty reason/evidence, and at least one parent for every resolved child.
-13. Assemble deterministic `hasChild` edges, preserving multiple-parent decisions and unresolved/root-fallback status.
-14. Validate graph constraints: endpoint existence, no self-loops, no cycles among SFI-to-SFI edges, no duplicate parent/child edges, reachability from StandardsFramework, deterministic relationship IDs, and summary consistency.
-15. Persist Step 9 artifacts.
-
-Expected Step 9 artifacts:
-
-```text
+kg_run_manifest.json
+extraction_window_plan.json
+extraction_windows.jsonl
+sfi_extraction_results.jsonl
+sfi_extraction_summary.json
+sfi_candidate_registry.json
+sfi_dedup_review_requests.jsonl
+sfi_dedup_review_responses.jsonl
+sfi_merge_report.json
+sfi_merge_groups.json
+sfi_merge_conflicts.json
+sfi_merge_needs_review.json
+sfi_final_records.json
+sfi_final_summary.json
 sfi_final_contexts.json
 has_child_candidate_parent_sets.jsonl
 has_child_resolution_requests.jsonl
@@ -147,9 +86,33 @@ has_child_unresolved_edges.json
 has_child_resolution_summary.json
 ```
 
-### Step 10: Compile Academic Standards KG objects
+## Remaining implementation work
 
-Implement `compile_academic_standards_kg()`.
+Only the final step remains.
+
+### Step 10: Compile, validate, and write final Academic Standards KG artifacts
+
+Combine the former compile and validation steps into a single final pipeline step.
+
+Purpose:
+
+```text
+Compile finalized SFI records and validated hasChild edges into final Learning Commons-shaped Academic Standards KG artifacts, validate the complete graph, and write all final export files.
+```
+
+Inputs:
+
+```text
+CreateKGConfig
+DocumentIR
+KGDirs
+sfi_final_records.json / Sequence[SFIFinalRecord]
+sfi_final_summary.json / SFIFinalSummary
+has_child_edges_final.json / Sequence[SFIHasChildEdge]
+has_child_unresolved_edges.json / Sequence[SFIHasChildEdge]
+has_child_resolution_summary.json / SFIHasChildResolutionSummary
+kg_run_manifest.json
+```
 
 Objects:
 
@@ -161,31 +124,32 @@ Relationship(hasChild)
 
 Rules:
 
-- One `StandardsFramework` per PDF.
+- Create one `StandardsFramework` per source PDF/framework.
 - Use config metadata for framework title, subject, jurisdiction, provider, language, license, author, attribution, adoption status, and description.
-- Export finalized SFI records as `StandardsFrameworkItem` objects.
+- Export every finalized SFI record as one `StandardsFrameworkItem`.
 - Export only `hasChild` relationships.
-- Use `case_identifier_uuid` for relationship endpoints.
-- Preserve provenance and audit evidence in metadata/provenance fields.
+- Use final SFI UUIDs / CASE identifiers for relationship endpoints.
+- Preserve provenance, source references, merge evidence, relationship evidence, unresolved-root-fallback status, and audit flags in metadata/provenance fields.
+- Do not re-deduplicate, re-mint SFI IDs, infer new relationships, or create LearningComponents.
+- Do not silently drop final SFIs or relationship edges.
 
-### Step 11: Validate and write Academic Standards artifacts
+Validation requirements:
 
-Implement `validate_academic_standards_kg()`.
-
-Validate:
-
-- All KG objects are schema-valid.
-- Every `hasChild` source and target exists.
-- Every SFI is reachable from the StandardsFramework root.
+- All final KG objects are schema-valid.
+- Every `hasChild` source and target endpoint exists.
+- Every final SFI has at least one incoming `hasChild` edge.
+- Every final SFI is reachable from the `StandardsFramework` root.
 - No self-loops.
 - No cycles among SFI-to-SFI `hasChild` edges.
-- No duplicate relationship IDs or duplicate parent/child edges.
-- Every SFI has non-empty description text.
-- Every SFI has deterministic identifier / `case_identifier_uuid` / `case_identifier_uri`.
+- No duplicate relationship IDs.
+- No duplicate parent/child edge pairs.
+- Every SFI has non-empty source-backed description text.
+- Every SFI has deterministic `identifier`, `case_identifier_uuid`, and `case_identifier_uri`.
 - Every SFI has provenance or a clear synthetic provenance explanation.
-- No-code SFIs have stable synthetic context/text keys.
-- Dropped or attached auxiliary content is accounted for in a policy coverage report when implemented.
-- Zero-window or zero-final-SFI output fails.
+- No-code SFIs preserve stable source-context/text identity material.
+- Conflict and needs-review merge exclusions are reported.
+- Unresolved/root-fallback relationship cases are reported.
+- Zero-window, zero-final-SFI, or empty-final-KG output fails.
 
 Expected final artifacts:
 
@@ -196,9 +160,27 @@ standards_framework_items.jsonl
 relationships_has_child.jsonl
 entity_provenance.json
 validation_report.json
-policy_coverage_report.json
 unresolved_items.json
 ```
+
+Optional later artifact, when policy coverage is implemented:
+
+```text
+policy_coverage_report.json
+```
+
+Plan of action:
+
+1. Define final export schemas for the compiled bundle, framework, SFI items, hasChild associations, summary, and validation report.
+2. Centralize or reuse the deterministic `StandardsFramework` UUID helper so Step 9 root edges and Step 10 framework export use the same root ID.
+3. Compile one framework object from `DocumentIR` and KG config metadata.
+4. Compile one `StandardsFrameworkItem` for every `SFIFinalRecord`, preserving final UUIDs, CASE identifiers, source provenance, merge/audit evidence, and identity metadata.
+5. Compile one `Relationship(hasChild)` association for every validated `SFIHasChildEdge`, preserving relationship IDs, endpoints, LLM reason, evidence reasons, and unresolved-root-fallback status.
+6. Build a complete KG bundle plus separate inspectable framework, item, relationship, provenance, unresolved, summary, and validation artifacts.
+7. Run final graph validation over the compiled artifact: endpoint existence, incoming-edge coverage, root reachability, no duplicate edges/IDs, no self-loops, no SFI cycles, schema validity, and non-empty source-backed SFI descriptions.
+8. Cross-check counts and summaries across Step 8, Step 9, and Step 10 artifacts.
+9. Implement `overwrite=True` rebuild behavior and `overwrite=False` exact-payload reuse/rebuild behavior.
+10. Wire the final function into `create_kgs.py` as the last pipeline step and add focused tests for happy path, no-code curricula, same-code/different-content, root fallback, dangling edges, missing incoming edges, cycles, stale artifacts, and serialization round trip.
 
 ## Step-specific implementation notes
 
@@ -208,10 +190,9 @@ unresolved_items.json
 - Select table windows using KG config table include/exclude rules.
 - Preserve DocumentIR source order.
 - Persist inspectable artifacts before any LLM call.
-- Do not add a separate context-enrichment pass to `extraction_windows.jsonl`.
 - Keep extraction windows source-faithful: source text, block/table payloads, provenance, helper views, KG instructions, code matches, and code-parent hints.
 - Do not infer hierarchy or parentage in extraction windows.
-- Step 4 may compact the prompt payload, but validators must still compare LLM outputs against the full persisted `ExtractionWindow`.
+- Step 4 may compact the prompt payload, but validators must compare LLM outputs against the full persisted `ExtractionWindow`.
 - Do not include code-parent hints in the compact Step 4 prompt. Reserve them for Step 9.
 
 ### Steps 4-5: SFI extraction
@@ -220,8 +201,7 @@ unresolved_items.json
 - Emit one `SFIExtractionResult` per extraction window, even when zero candidates are found.
 - Extract only SFI candidates and auxiliary records; do not extract LearningComponents.
 - `description` must preserve source-language wording and be source-supported.
-- For table-derived candidates, `description` must be supported by the cited `table_row_indexes` and/or `table_header_indexes`, not merely by text elsewhere in the same table window.
-- `source_text` must be a visible source evidence quote.
+- For table-derived candidates, `description` and `source_text` must be supported by cited `table_row_indexes` and/or `table_header_indexes`.
 - The model must not clean, translate, paraphrase, infer parent context, or complete descriptions from uncited rows/headers.
 - Validate and retry/repair failed structured outputs.
 - Persist incrementally and support resume from a valid prefix.
@@ -240,13 +220,12 @@ unresolved_items.json
 
 - Treat duplicate buckets, registry warnings, exact source-text repeats, and provenance overlap as review-set construction inputs only.
 - Build bounded review sets; do not send the whole registry to the LLM.
-- Merge overlapping review edges into connected components before review.
 - Split oversized components conservatively; unresolved residues become `needs_review` groups.
 - LLM decisions are `merge`, `keep_separate`, `conflict`, or `needs_review`.
 - Validate exact candidate coverage and hard merge guardrails.
 - Convert reviewed, unresolved, and unreviewed singleton candidates into merge groups covering every registry candidate exactly once.
-- Preserve same-code/different-content audit evidence for Step 8 and Step 9.
-- Do not mint final IDs, infer hierarchy, compile KG objects, or create relationships in Step 7.
+- Preserve same-code/different-content audit evidence for later steps.
+- Do not mint final IDs, infer hierarchy, compile KG objects, or create relationships.
 
 ### Step 8: final SFI records
 
@@ -254,50 +233,68 @@ unresolved_items.json
 - Mint only eligible `merged` and `singleton` groups.
 - Exclude `conflict` and `needs_review` groups from automatic final SFI records and report exclusions.
 - Use deterministic UUIDv5 from canonical identity keys.
-- For same-code/different-content groups, include a deterministic source/text/provenance disambiguator and preserve audit flags/peer references.
-- For no-code items, use source context plus source-text hash material.
+- For same-code/different-content groups, include deterministic source/text/provenance disambiguators and preserve audit flags/peer references.
+- For no-code items, use source context plus source-text/description hash material.
 - Preserve source candidate IDs, merge evidence, source windows, source segments, source page indexes, row/header provenance, audit flags, and candidate evidence.
 - Validate UUID and identity-key uniqueness before writing.
 
+### Step 9: hasChild relationship resolution
+
+- Operate on finalized SFIs only.
+- Do not use extraction candidates, registry IDs, merge group IDs, source codes, headings, auxiliary candidates, or invented nodes as relationship endpoints.
+- Fail before relationship resolution if finalization excluded conflict or needs-review groups, unless an explicitly supported incomplete-universe policy exists.
+- Recover source context from DocumentIR and final-record provenance.
+- Build bounded source-grounded parent-candidate sets for each final SFI.
+- Always include the `StandardsFramework` root fallback candidate.
+- Candidate generation is retrieval only; Python must not auto-resolve direct parentage.
+- Use evidence such as code-parent hints, canonical scope matches, active outline stack, section-path matches, source context keys, source segments/windows, table row/header context, source-order proximity, and statement-type compatibility.
+- Use code-parent hints only with compatible local source evidence. Never choose by code alone.
+- Preserve same-code/different-content audited records as separate endpoints.
+- Let the LLM select one or more direct parents from the bounded set, or mark the child unresolved.
+- Resolved records get selected semantic parent edges. Unresolved records get an explicit marked root-fallback edge.
+- Validate endpoint existence, no duplicate edge pairs, no self-loops, no SFI-to-SFI cycles, reachability from root, statement-type policy, canonical-scope policy, and relationship ID uniqueness.
+
+### Step 10: final KG compile/export/validation
+
+- Compile final KG objects only from Step 8 final SFIs and Step 9 validated edges.
+- Preserve IDs exactly; do not re-mint SFI or relationship UUIDs.
+- Preserve finalization and relationship provenance in export metadata.
+- Validate the complete exported graph, not just individual artifacts.
+- Write final JSON/JSONL artifacts and a validation report.
+
 ## Main pitfalls
 
-### Do not treat raw section_path as a clean ancestor chain
+### Do not treat `section_path` as a clean ancestor chain
 
-`DocumentIR.section_path` can be incomplete, stale, or include superseded sibling headings. In Step 9, pass it to the LLM as ordered evidence and ask the model to infer active context at the source position.
+`DocumentIR.section_path` can be incomplete, stale, or include superseded sibling headings. In Step 9, pass it as evidence; do not treat it as deterministic parentage.
 
 ### Do not make Step 9 a Python-only hierarchy walker
 
-Python should retrieve and package candidate parent evidence. The LLM should choose direct parent(s) or mark unresolved. Avoid country-hardcoded hierarchy logic.
+Python retrieves and packages candidate parent evidence. The LLM chooses direct parent(s) or marks unresolved.
 
 ### Do not assume one parent per SFI
 
-A finalized SFI may have one or more direct `hasChild` parents when the source framework genuinely represents multiple direct hierarchy memberships. Validate against duplicate parent/child edges, not against multiple parents.
+A finalized SFI may have multiple direct `hasChild` parents when source evidence supports multiple direct hierarchy memberships.
 
 ### Do not choose parents by code alone
 
-Codes are strong evidence but not absolute truth. Same-code/different-content records are valid separate nodes. If multiple finalized SFIs share a normalized code, use source context and LLM selection; never collapse or shortcut by code alone.
+Codes are strong evidence but not absolute truth. Same-code/different-content records are valid separate nodes.
 
 ### Do not parse raw codes ad hoc in Step 9
 
-Use `normalized_statement_code` only when present and accepted by configured code patterns. If raw `statement_code` exists but normalized code is null, treat it as source-visible evidence only.
+Use `normalized_statement_code` only when present and accepted by configured code patterns. Raw `statement_code` with null normalized code is source-visible evidence only.
 
 ### Do not rely on page overlap alone
 
-`source_page_indexes` can be broad, especially for table-derived records. Prefer source windows, source segments, table row/header provenance, source context keys, source order, and recovered section evidence.
+Prefer source windows, source segments, table row/header provenance, source context keys, source order, and recovered section evidence.
 
 ### Do not silently omit ambiguous final records
 
-Every finalized SFI must be represented in Step 9 resolution. Resolved records get one or more semantic parent edges. Unresolved records get an explicit marked root-fallback edge and must be listed in unresolved artifacts.
+Every finalized SFI must be represented in relationship resolution and final export. Unresolved records need explicit marked root-fallback edges and unresolved reporting.
 
 ### Do not leak descriptor/guidance/activity content into Standard SFIs
 
-Activities, exemplars, duration, resources, teacher guidance, and descriptors should not become `Standard` SFIs unless KG config explicitly says they are in scope. Default policy:
-
-```text
-expectation -> SFI Standard
-structural context -> SFI Standard Grouping
-descriptor/guidance/activity -> auxiliary/drop/metadata/Other according to policy
-```
+Activities, exemplars, duration, resources, teacher guidance, and descriptors should not become `Standard` SFIs unless KG config explicitly says they are in scope.
 
 ### Do not hash LLM-cleaned text as primary identity material
 
@@ -305,27 +302,30 @@ Use source-derived normalized text, source context, stable source codes, and det
 
 ### Do not produce silent empty outputs
 
-Zero extraction windows or zero final SFIs should fail by default. Silent empty KG artifacts are worse than hard errors during v0.
+Zero extraction windows, zero final SFIs, or empty final KG artifacts should fail by default.
 
 ## Recommended next-session start
 
-Start from these validated Step 8 artifacts:
+Start from these validated Step 9 artifacts:
 
 ```text
 sfi_final_records.json
 sfi_final_summary.json
+sfi_final_contexts.json
+has_child_edges_final.json
+has_child_unresolved_edges.json
+has_child_resolution_summary.json
 sfi_merge_report.json
-sfi_merge_groups.json
 sfi_candidate_registry.json
 extraction_windows.jsonl
 document_ir.json
 kg_run_manifest.json
 ```
 
-Then implement:
+Then implement the single remaining final step:
 
 ```text
-resolve_has_child_edges()
-compile_academic_standards_kg()
-validate_academic_standards_kg()
+compile_validate_and_write_academic_standards_kg()
 ```
+
+or an equivalent Step 10 orchestration function that compiles, validates, and writes the final Academic Standards KG bundle.
