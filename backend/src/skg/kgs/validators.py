@@ -25,12 +25,40 @@ from skg.kgs.schemas import (
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 
-_ACTIVE_OUTLINE_STACK_PARENT_REASON = "active_outline_stack_parent"
-_CODE_PARENT_HINT_REASON = "code_parent_hint"
-_SAME_SOURCE_CONTEXT_KEY_REASON = "same_source_context_key"
-_SAME_TABLE_CONTEXT_REASON = "same_table_context"
-_SAME_TABLE_IMMEDIATE_PARENT_REASON = "same_table_immediate_parent"
-_SOURCE_VISIBLE_DIRECT_PARENT_REASON = "source_visible_direct_parent"
+ACTIVE_OUTLINE_STACK_PARENT_REASON = "active_outline_stack_parent"
+CANONICAL_SCOPE_PARENT_MATCH_REASON = "canonical_scope_parent_match"
+CODE_PARENT_HINT_REASON = "code_parent_hint"
+MATCHED_SECTION_PATH_LABEL_REASON = "matched_section_path_label"
+NEARBY_SOURCE_CONTEXT_KEY_REASON = "nearby_source_context_key"
+NEAREST_PRECEDING_GROUPING_REASON = "nearest_preceding_grouping"
+ROOT_EVIDENCE_REASON = "root_fallback"
+SAME_SOURCE_CONTEXT_KEY_REASON = "same_source_context_key"
+SAME_SOURCE_SEGMENT_REASON = "same_source_segment"
+SAME_SOURCE_WINDOW_REASON = "same_source_window"
+SAME_TABLE_CONTEXT_REASON = "same_table_context"
+SAME_TABLE_IMMEDIATE_PARENT_REASON = "same_table_immediate_parent"
+SOURCE_SCOPE_GROUPING_REASON = "source_scope_grouping"
+SOURCE_VISIBLE_DIRECT_PARENT_REASON = "source_visible_direct_parent"
+STATEMENT_TYPE_COMPATIBLE_REASON = "statement_type_compatible"
+
+CARRY_FORWARD_PARENT_REASONS = frozenset(
+    {
+        ACTIVE_OUTLINE_STACK_PARENT_REASON,
+        MATCHED_SECTION_PATH_LABEL_REASON,
+        NEARBY_SOURCE_CONTEXT_KEY_REASON,
+        NEAREST_PRECEDING_GROUPING_REASON,
+        STATEMENT_TYPE_COMPATIBLE_REASON,
+    }
+)
+HARD_LOCAL_DIRECT_PARENT_REASONS = frozenset(
+    {
+        CANONICAL_SCOPE_PARENT_MATCH_REASON,
+        CODE_PARENT_HINT_REASON,
+        SAME_TABLE_CONTEXT_REASON,
+        SAME_TABLE_IMMEDIATE_PARENT_REASON,
+        SOURCE_SCOPE_GROUPING_REASON,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -337,6 +365,65 @@ def _build_table_row_visible_text_by_index(window: ExtractionWindow) -> dict[int
     return text_by_index
 
 
+def _candidate_direct_parent_evidence_tier(  # pylint: disable=R0911
+    *, candidate: SFIHasChildParentCandidate, child_context: Any
+) -> int:
+    """Assign a dominance tier to one parent candidate.
+
+    Lower tiers are stronger. The validator uses this to reject responses that choose a
+    weak nearby or carry-forward parent while a stronger same-type local parent is
+    present in the bounded candidate set.
+
+    Parameters
+    ----------
+    candidate
+        Parent candidate being evaluated.
+    child_context
+        Final child SFI context from the bounded hasChild request.
+
+    Returns
+    -------
+    int
+        Evidence tier, where 0 is source-visible/hard local and larger values are
+        weaker retrieval or root fallback evidence.
+    """
+
+    evidence_reasons = set(candidate.evidence_reasons or [])
+
+    if candidate.is_root or ROOT_EVIDENCE_REASON in evidence_reasons:
+        return 90
+
+    if SOURCE_VISIBLE_DIRECT_PARENT_REASON in evidence_reasons:
+        return 0
+
+    if _candidate_has_hard_local_direct_parent_evidence(
+        candidate=candidate, child_context=child_context
+    ):
+        return 1
+
+    if ACTIVE_OUTLINE_STACK_PARENT_REASON in evidence_reasons and (
+        SAME_SOURCE_CONTEXT_KEY_REASON in evidence_reasons
+        or SAME_SOURCE_SEGMENT_REASON in evidence_reasons
+        or SAME_SOURCE_WINDOW_REASON in evidence_reasons
+    ):
+        return 2
+
+    if _candidate_has_soft_carry_forward_evidence(candidate):
+        return 3
+
+    if (
+        SAME_SOURCE_CONTEXT_KEY_REASON in evidence_reasons
+        or SAME_SOURCE_SEGMENT_REASON in evidence_reasons
+        or SAME_SOURCE_WINDOW_REASON in evidence_reasons
+    ):
+        return 4
+
+    if evidence_reasons & CARRY_FORWARD_PARENT_REASONS:
+        return 5
+
+    return 6
+
+
 def _candidate_has_direct_code_parent_match(
     *, candidate: SFIHasChildParentCandidate, child_context: Any
 ) -> bool:
@@ -379,28 +466,23 @@ def _candidate_has_direct_code_parent_match(
     return bool(child_code and parent_code and child_code.startswith(f"{parent_code}."))
 
 
-def _candidate_has_strong_direct_parent_evidence(
+def _candidate_has_hard_local_direct_parent_evidence(
     *, candidate: SFIHasChildParentCandidate, child_context: Any
 ) -> bool:
-    """Check whether a selected non-root parent has strong direct-parent evidence.
-
-    This guard prevents `source_visible_direct_parent` false positives from forcing a
-    child onto a wrong-topic parent when the selected non-root parent has stronger
-    code-local or table-local direct-parent evidence. It does not make broad semantic
-    similarity, page overlap, or same-window proximity sufficient by themselves.
+    """Check whether a parent candidate has hard local hierarchy evidence.
 
     Parameters
     ----------
     candidate
-        Parent candidate selected by the LLM response.
+        Parent candidate being evaluated.
     child_context
         Final child SFI context from the bounded hasChild request.
 
     Returns
     -------
     bool
-        True when the selected candidate has code-parent evidence, an exact
-        hierarchical code-prefix match, or strong local source hierarchy evidence.
+        True when the candidate has code-local, canonical-scope, same-table,
+        source-scope, or direct code-prefix evidence.
     """
 
     if candidate.is_root:
@@ -408,26 +490,39 @@ def _candidate_has_strong_direct_parent_evidence(
 
     evidence_reasons = set(candidate.evidence_reasons or [])
 
-    if _CODE_PARENT_HINT_REASON in evidence_reasons:
-        return True
+    return bool(
+        evidence_reasons & HARD_LOCAL_DIRECT_PARENT_REASONS
+        or _candidate_has_direct_code_parent_match(
+            candidate=candidate, child_context=child_context
+        )
+    )
 
-    if _candidate_has_direct_code_parent_match(
-        candidate=candidate, child_context=child_context
-    ):
-        return True
 
-    if _SAME_TABLE_IMMEDIATE_PARENT_REASON in evidence_reasons:
-        return True
+def _candidate_has_soft_carry_forward_evidence(
+    candidate: SFIHasChildParentCandidate,
+) -> bool:
+    """Check whether a candidate has soft carry-forward hierarchy evidence.
 
-    if (
-        _ACTIVE_OUTLINE_STACK_PARENT_REASON in evidence_reasons
-        and _SAME_TABLE_CONTEXT_REASON in evidence_reasons
-    ):
-        return True
+    Parameters
+    ----------
+    candidate
+        Parent candidate being evaluated.
 
+    Returns
+    -------
+    bool
+        True when the candidate is supported by outline, section-path, nearby, or
+        preceding grouping evidence that should not outrank hard local evidence.
+    """
+
+    evidence_reasons = set(candidate.evidence_reasons or [])
     return (
-        _ACTIVE_OUTLINE_STACK_PARENT_REASON in evidence_reasons
-        and _SAME_SOURCE_CONTEXT_KEY_REASON in evidence_reasons
+        ACTIVE_OUTLINE_STACK_PARENT_REASON in evidence_reasons
+        and MATCHED_SECTION_PATH_LABEL_REASON in evidence_reasons
+    ) or (
+        NEAREST_PRECEDING_GROUPING_REASON in evidence_reasons
+        and NEARBY_SOURCE_CONTEXT_KEY_REASON in evidence_reasons
+        and STATEMENT_TYPE_COMPATIBLE_REASON in evidence_reasons
     )
 
 
@@ -461,8 +556,10 @@ def _child_has_viable_source_visible_parent(
             continue
 
         return any(
-            not candidate.is_root
-            and _SOURCE_VISIBLE_DIRECT_PARENT_REASON in candidate.evidence_reasons
+            _candidate_direct_parent_evidence_tier(
+                candidate=candidate, child_context=parent_set.child_context
+            )
+            <= 1
             for candidate in parent_set.parent_candidates
         )
 
@@ -1302,6 +1399,12 @@ def _validate_has_child_parent_selection_policy(
             parent_candidates_by_id=parent_candidates_by_child_id.get(child_id, {}),
             selected_parent_ids=selected_parent_ids,
         )
+        _validate_resolved_child_uses_strongest_local_parent(
+            child_context=child_context_by_child_id.get(child_id),
+            child_id=child_id,
+            parent_candidates_by_id=parent_candidates_by_child_id.get(child_id, {}),
+            selected_parent_ids=selected_parent_ids,
+        )
 
 
 def _validate_header_only_source_location(
@@ -1370,7 +1473,7 @@ def _validate_resolved_child_prefers_source_visible_parent(
         for endpoint_id, candidate in parent_candidates_by_id.items()
         if (
             not candidate.is_root
-            and _SOURCE_VISIBLE_DIRECT_PARENT_REASON in candidate.evidence_reasons
+            and SOURCE_VISIBLE_DIRECT_PARENT_REASON in candidate.evidence_reasons
         )
     }
 
@@ -1401,8 +1504,11 @@ def _validate_resolved_child_prefers_source_visible_parent(
         if endpoint_id in source_visible_parent_ids:
             continue
 
-        if _candidate_has_strong_direct_parent_evidence(
-            candidate=candidate, child_context=child_context
+        if (
+            _candidate_direct_parent_evidence_tier(
+                candidate=candidate, child_context=child_context
+            )
+            <= 1
         ):
             continue
 
@@ -1421,6 +1527,132 @@ def _validate_resolved_child_prefers_source_visible_parent(
         f"same-row table evidence, or active local outline plus matching "
         f"table/source-context evidence. Do not choose a root, nearby, "
         f"same-topic, or semantic parent over a source-visible direct parent."
+    )
+
+
+def _validate_resolved_child_uses_strongest_local_parent(
+    *,
+    child_context: Any,
+    child_id: str,
+    parent_candidates_by_id: dict[str, SFIHasChildParentCandidate],
+    selected_parent_ids: set[str],
+) -> None:
+    """Validate that selected parents do not lose to stronger same-type local parents.
+
+    This dominance guard catches semantically wrong but structurally valid hasChild
+    selections: for example, selecting a nearby previous grouping when another
+    candidate of the same allowed parent type has same-table, source-scope, canonical,
+    or code-local evidence. The rule remains curriculum-agnostic because it compares
+    only candidate evidence tiers and configured statement types.
+
+    Parameters
+    ----------
+    child_context
+        Final child SFI context from the bounded hasChild request.
+    child_id
+        Final SFI UUID string for the child being validated.
+    parent_candidates_by_id
+        Parent candidates for the child keyed by selectable endpoint ID.
+    selected_parent_ids
+        Endpoint IDs selected by the hasChild response for the child.
+
+    Raises
+    ------
+    QualityError
+        If a selected root or soft parent is dominated by a stronger non-root parent
+        candidate of the same direct parent statement type.
+    """
+
+    non_root_candidates = {
+        endpoint_id: candidate
+        for endpoint_id, candidate in parent_candidates_by_id.items()
+        if not candidate.is_root
+    }
+
+    if not non_root_candidates:
+        return
+
+    selected_candidates = [
+        parent_candidates_by_id[endpoint_id]
+        for endpoint_id in selected_parent_ids
+        if endpoint_id in parent_candidates_by_id
+    ]
+    selected_non_root_candidates = [
+        candidate for candidate in selected_candidates if not candidate.is_root
+    ]
+
+    if not selected_non_root_candidates:
+        strongest_candidates = {
+            endpoint_id: candidate
+            for endpoint_id, candidate in non_root_candidates.items()
+            if _candidate_direct_parent_evidence_tier(
+                candidate=candidate, child_context=child_context
+            )
+            <= 1
+        }
+
+        if not strongest_candidates:
+            return
+
+        raise QualityError(
+            f"hasChild response for child {child_id!r} selected the root or no "
+            f"non-root parent while stronger local non-root parent candidates "
+            f"exist: {sorted(strongest_candidates)}."
+        )
+
+    selected_best_tier_by_statement_type: dict[str | None, int] = {}
+
+    for candidate in selected_non_root_candidates:
+        candidate_tier = _candidate_direct_parent_evidence_tier(
+            candidate=candidate, child_context=child_context
+        )
+        existing_tier = selected_best_tier_by_statement_type.get(
+            candidate.statement_type
+        )
+
+        if existing_tier is None or candidate_tier < existing_tier:
+            selected_best_tier_by_statement_type[candidate.statement_type] = (
+                candidate_tier
+            )
+
+    dominated_parent_ids: list[str] = []
+    stronger_parent_ids: list[str] = []
+
+    for endpoint_id, candidate in non_root_candidates.items():
+        candidate_tier = _candidate_direct_parent_evidence_tier(
+            candidate=candidate, child_context=child_context
+        )
+        selected_tier = selected_best_tier_by_statement_type.get(
+            candidate.statement_type
+        )
+
+        if selected_tier is None or candidate_tier >= selected_tier:
+            continue
+
+        if candidate_tier > 1:
+            continue
+
+        stronger_parent_ids.append(endpoint_id)
+        dominated_parent_ids.extend(
+            selected_candidate.endpoint_id
+            for selected_candidate in selected_non_root_candidates
+            if selected_candidate.statement_type == candidate.statement_type
+            and _candidate_direct_parent_evidence_tier(
+                candidate=selected_candidate, child_context=child_context
+            )
+            > candidate_tier
+        )
+
+    if not stronger_parent_ids:
+        return
+
+    raise QualityError(
+        f"hasChild response for child {child_id!r} selected weaker parent "
+        f"endpoint IDs {sorted(set(dominated_parent_ids))}, but the bounded "
+        f"candidate set contains stronger local direct-parent candidates of the "
+        f"same statement type: {sorted(set(stronger_parent_ids))}. Select the "
+        f"hard-local parent, or explain a source conflict by choosing a parent with "
+        f"equal or stronger local evidence."
     )
 
 

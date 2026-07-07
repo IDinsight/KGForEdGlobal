@@ -1570,6 +1570,51 @@ def _process_page_pair(
     return links
 
 
+def _record_missing_edge_verdict(
+    *,
+    current_page_index: int,
+    next_page_index: int,
+    page_pair_debug: list[dict[str, Any]],
+    warnings: list[str],
+) -> None:
+    """Record a missing page-break verdict as an explicit no-continuation decision.
+
+    Missing edge verdicts can occur when the previous verification step intentionally
+    skips a page pair, most commonly because one side of the pair is blank. The
+    stitching policy is conservative: absence of a verifier record is treated as
+    absence of continuation evidence, so no link is emitted for that page break.
+
+    Parameters
+    ----------
+    current_page_index
+        The 0-based page index for the page before the page break.
+    next_page_index
+        The 0-based page index for the page after the page break.
+    page_pair_debug
+        A list to append a structured page-pair debug record to.
+    warnings
+        A list to append the human-readable warning message to.
+    """
+
+    msg = (
+        f"Missing edge verdict for adjacent page pair "
+        f"{current_page_index}->{next_page_index}; assuming no continuation. "
+        f"This commonly occurs when one side is a blank/skipped page."
+    )
+    logger.warning(msg)
+    warnings.append(msg)
+    page_pair_debug.append(
+        {
+            "from_page": current_page_index,
+            "to_page": next_page_index,
+            "verdict_override": False,
+            "verdict_missing": True,
+            "chosen_links": [],
+            "note": "missing_verdict_assumed_no_continuation",
+        }
+    )
+
+
 def _safe_to_ignore_between_pages(item: Block | Table) -> bool:
     """Return True if this item is safe to ignore as 'between' content when determining
     whether an edge continuation item should be considered a candidate.
@@ -1979,8 +2024,9 @@ def compute_page_break_links(
 
     With `verdicts`, high-confidence verdicts take priority over heuristic scoring. If
     a verdict's confidence is at or above `verdict_confidence_threshold`, the verdict's
-    decision (stitch or skip) is applied directly. Otherwise, the existing boundary
-    flag and scoring heuristics are used.
+    decision (stitch or skip) is applied directly. If an adjacent page pair has no
+    verdict record, the linker assumes no continuation and records a debug note instead
+    of raising. Otherwise, the existing boundary flag and scoring heuristics are used.
 
     NB: compute_page_break_links() does not operate on raw PageIR.items. It operates on
     items_mapping, which is created immediately before linking by
@@ -2057,10 +2103,13 @@ def compute_page_break_links(
         edge_record = verdicts.get((cur_page_index, next_page_index))
 
         if edge_record is None:
-            raise ValueError(
-                f"Missing edge verdict for adjacent page pair "
-                f"{cur_page_index}->{next_page_index}."
+            _record_missing_edge_verdict(
+                current_page_index=cur_page_index,
+                next_page_index=next_page_index,
+                page_pair_debug=page_pair_debug,
+                warnings=warnings,
             )
+            continue
 
         page_pair_links = _process_page_pair(
             current_page_ir=current_page_ir,

@@ -40,7 +40,9 @@
 			"code_parent_rules": [],
 			"code_patterns": {},
 			"excluded_table_columns_signatures": [],
-			"excluded_table_section_patterns": [],
+			"excluded_table_section_patterns": [
+				"(?i)(SUBJECTS AND WEEKLY TIME ALLOCATION|weekly\\s+time\\s+allocation)"
+			],
 			"included_table_columns_signatures": [],
 			"included_table_section_patterns": [
 				"(?i)(6\\.2\\.2|6\\.3\\.2|6\\.4\\.2|Mathematics units for Primary One|Mathematics Units for Primary Two|Mathematics Units for Primary Three|SYLLABUS UNITS FOR GRADE ONE|Mathematics Syllabus for Primary \\(P2\\)|Mathematics Syllabus for P3)"
@@ -50,8 +52,8 @@
 			"max_has_child_section_path_labels": 12,
 			"max_rows_per_table_window": 24,
 			"row_overlap": 2,
-			"sfi_deduplication_instructions": "Merge candidates only when they represent the same source-visible curriculum item in the same grade/topic/sub-topic/unit context or are duplicate fragments caused by page/table continuation. Do not merge across P1, P2, and P3 merely because wording or unit numbers repeat. Do not merge different units that share the same number, such as Unit 1 in different grades. Keep repeated topic and sub-topic labels distinct when their grade or parent topic context differs.",
-			"sfi_extraction_instructions": "Extract Academic Standards SFIs only from Section 6 syllabus-unit content. Treat source-visible Grade/P1-P3, Topic Area, Sub-Topic Area, and Unit labels as Standard Grouping SFIs. Treat grade-level key competences, Key Unit Competence statements, and Learning Objectives under Knowledge and Understanding, Skills, and Attitudes and Values as Standard SFIs. Do not extract Content, Learning Activities, Links to other subjects, Assessment criteria, Teaching/learning aids, examples, Number of Periods, front matter, pedagogy, resources, assessment approach, acknowledgements, references, or weekly time allocation as SFIs. Do not infer absent parent labels. Preserve source-visible wording and table row/header evidence.",
+			"sfi_deduplication_instructions": "Merge candidates only when they represent the same source-visible curriculum item, using the curriculum hierarchy rather than the extraction window alone. Merge repeated Grade labels when they have the same canonical grade value (P1, P2, or P3); if block-derived grade section headings such as '6.2 SYLLABUS UNITS FOR GRADE ONE/P1', '6.3 Mathematics Syllabus for Primary (P2)', or '6.4 Mathematics Syllabus for P3' are present, treat them as duplicate grade context for the corresponding P1/P2/P3 grade rather than separate grade nodes. Merge repeated Topic Area labels within the same Grade when they have the same canonical or normalized topic value; do not require the same Unit context, because Topic Area is a parent of Unit. Merge repeated Sub-Topic Area labels within the same Grade and parent Topic Area when they have the same canonical or normalized sub-topic value; do not require the same Unit context, because Sub-Topic Area is a parent of Unit. Keep Topic Area and Sub-Topic Area labels distinct across different grades or different parent topic areas. Do not merge different Units across grades or across different unit numbers/titles merely because wording repeats. Do not merge Grade Key Competences, Key Unit Competences, or learning objectives across units merely because wording is similar; merge them only when they are exact duplicate fragments caused by page/table continuation or the same source-visible statement repeated in the same hierarchy context.",
+			"sfi_extraction_instructions": "Extract Academic Standards SFIs only from Section 6 syllabus-unit content. Treat source-visible Grade/P1-P3, Topic Area, Sub-Topic Area, and Unit labels as Standard Grouping SFIs. Treat grade-level key competences, Key Unit Competence statements, and Learning Objectives under Knowledge and Understanding, Skills, and Attitudes and Values as Standard SFIs. Do not extract Content, Learning Activities, Links to other subjects, Assessment criteria, Teaching/learning aids, examples, Number of Periods, front matter, pedagogy, resources, assessment approach, acknowledgements, references, or weekly time allocation as SFIs. Do not infer absent parent labels. Preserve source-visible wording and table row/header evidence. Do not emit Grade SFIs from numbered section headings or section-title context such as '6.2 SYLLABUS UNITS FOR GRADE ONE/P1', '6.3 Mathematics Syllabus for Primary (P2)', '6.4 Mathematics Syllabus for P3', or 'Mathematics units for Primary One/Two/Three'; treat those headings as context only. Emit Grade SFIs only from source-visible unit-table grade header cells such as 'P1 MATHEMATICS', 'P2 Mathematics', and 'P3 Mathematics'.",
 			"sfi_has_child_instructions": "Resolve direct hasChild parents using the source hierarchy: StandardsFramework root -> Grade -> Topic Area -> Sub-Topic Area -> Unit. Grade Key Competence attaches to Grade. Key Unit Competence attaches to Unit. Knowledge Objective, Skills Objective, and Attitudes and Values Objective attach to the Key Unit Competence from the same unit. Prefer source-visible table/section context, source order, shared window/segment/table evidence, and canonical scope evidence. Do not choose parents by repeated text or unit number alone. Use an unresolved root fallback only when no supplied SFI parent is source-supported.",
 			"sfi_has_child_parent_statement_types": {
 				"Grade": [],
@@ -90,47 +92,39 @@
 			"statement_type_policy": [
 				{
 					"aliases": [
+						"P1 MATHEMATICS",
 						"P1 Mathematics",
 						"P2 Mathematics",
-						"P3 Mathematics",
-						"Primary One",
-						"Primary Two",
-						"Primary Three",
-						"Grade One",
-						"Grade Two",
-						"Grade Three"
+						"P2  Mathematics",
+						"P3 Mathematics"
 					],
 					"controlled_value_scope": "document",
 					"controlled_values": [
 						{
 							"canonical_value": "P1",
 							"aliases": [
-								"Primary One",
-								"Grade One",
-								"Grade 1",
+								"P1",
+								"P1 MATHEMATICS",
 								"P1 Mathematics"
 							]
 						},
 						{
 							"canonical_value": "P2",
 							"aliases": [
-								"Primary Two",
-								"Grade Two",
-								"Grade 2",
-								"P2 Mathematics"
+								"P2",
+								"P2 Mathematics",
+								"P2  Mathematics"
 							]
 						},
 						{
 							"canonical_value": "P3",
 							"aliases": [
-								"Primary Three",
-								"Grade Three",
-								"Grade 3",
+								"P3",
 								"P3 Mathematics"
 							]
 						}
 					],
-					"description": "Use for source-visible lower-primary grade/stage groupings such as P1 Mathematics, P2 Mathematics, P3 Mathematics, Primary One, Primary Two, or Primary Three.",
+					"description": "Use only for source-visible unit-table grade header cells such as 'P1 MATHEMATICS', 'P2 Mathematics', or 'P3 Mathematics'. Do not use for numbered section headings such as '6.2 SYLLABUS UNITS FOR GRADE ONE/P1', '6.3 Mathematics Syllabus for Primary (P2)', '6.4 Mathematics Syllabus for P3', or 'Mathematics units for Primary One/Two/Three'; those headings are context only.",
 					"normalized_statement_type": "Standard Grouping",
 					"statement_type": "Grade"
 				},
@@ -146,36 +140,48 @@
 						{
 							"canonical_value": "Numbers and Operations",
 							"aliases": [
-								"NUMBERS AND OPERATIONS"
+								"NUMBERS AND OPERATIONS",
+								"TOPIC AREA: NUMBERS AND OPERATIONS",
+								"TOPIC AREA:NUMBERS AND OPERATIONS"
 							]
 						},
 						{
 							"canonical_value": "Algebra",
 							"aliases": [
-								"ALGEBRA"
+								"ALGEBRA",
+								"TOPIC AREA: ALGEBRA",
+								"TOPIC AREA:ALGEBRA"
 							]
 						},
 						{
 							"canonical_value": "Measurement",
 							"aliases": [
 								"MEASUREMENT",
-								"MEASUREMENTS"
+								"TOPIC AREA: MEASUREMENT",
+								"TOPIC AREA:MEASUREMENT",
+								"MEASUREMENTS",
+								"TOPIC AREA: MEASUREMENTS",
+								"TOPIC AREA:MEASUREMENTS"
 							]
 						},
 						{
 							"canonical_value": "Geometry",
 							"aliases": [
-								"GEOMETRY"
+								"GEOMETRY",
+								"TOPIC AREA: GEOMETRY",
+								"TOPIC AREA:GEOMETRY"
 							]
 						},
 						{
 							"canonical_value": "Statistics",
 							"aliases": [
-								"STATISTICS"
+								"STATISTICS",
+								"TOPIC AREA: STATISTICS",
+								"TOPIC AREA:STATISTICS"
 							]
 						}
 					],
-					"description": "Use for source-visible TOPIC AREA labels that organize units within a grade.",
+					"description": "Use for source-visible TOPIC AREA labels that organize units within a grade. Topic Area is a parent of Unit; repeated matching Topic Area labels within the same Grade should canonicalize to the same value and be eligible to merge across multiple unit tables.",
 					"normalized_statement_type": "Standard Grouping",
 					"statement_type": "Topic Area"
 				},
@@ -194,117 +200,209 @@
 							"canonical_value": "Whole Numbers",
 							"aliases": [
 								"WHOLE NUMBERS",
-								"WHOLE NUMBERS FROM 0 TO 10000"
+								"SUB-TOPIC AREA: WHOLE NUMBERS",
+								"SUB-TOPIC AREA:WHOLE NUMBERS",
+								"SUB-TOPIC: WHOLE NUMBERS",
+								"SUB-TOPIC:WHOLE NUMBERS",
+								"WHOLE NUMBERS FROM 0 TO 10000",
+								"SUB-TOPIC AREA: WHOLE NUMBERS FROM 0 TO 10000",
+								"SUB-TOPIC AREA:WHOLE NUMBERS FROM 0 TO 10000",
+								"SUB-TOPIC: WHOLE NUMBERS FROM 0 TO 10000",
+								"SUB-TOPIC:WHOLE NUMBERS FROM 0 TO 10000"
 							]
 						},
 						{
 							"canonical_value": "Fractions",
 							"aliases": [
-								"FRACTIONS"
+								"FRACTIONS",
+								"SUB-TOPIC AREA: FRACTIONS",
+								"SUB-TOPIC AREA:FRACTIONS",
+								"SUB-TOPIC: FRACTIONS",
+								"SUB-TOPIC:FRACTIONS"
 							]
 						},
 						{
 							"canonical_value": "Number Pattern",
 							"aliases": [
 								"NUMBER PATTERN",
-								"NUMBER PATTERNS"
+								"SUB-TOPIC AREA: NUMBER PATTERN",
+								"SUB-TOPIC AREA:NUMBER PATTERN",
+								"SUB-TOPIC: NUMBER PATTERN",
+								"SUB-TOPIC:NUMBER PATTERN",
+								"NUMBER PATTERNS",
+								"SUB-TOPIC AREA: NUMBER PATTERNS",
+								"SUB-TOPIC AREA:NUMBER PATTERNS",
+								"SUB-TOPIC: NUMBER PATTERNS",
+								"SUB-TOPIC:NUMBER PATTERNS"
 							]
 						},
 						{
 							"canonical_value": "Length Measurements",
 							"aliases": [
-								"LENGTH MEASUREMENTS"
+								"LENGTH MEASUREMENTS",
+								"SUB-TOPIC AREA: LENGTH MEASUREMENTS",
+								"SUB-TOPIC AREA:LENGTH MEASUREMENTS",
+								"SUB-TOPIC: LENGTH MEASUREMENTS",
+								"SUB-TOPIC:LENGTH MEASUREMENTS"
 							]
 						},
 						{
 							"canonical_value": "Rwandan Currency",
 							"aliases": [
 								"RWANDAN CURRENCY",
+								"SUB-TOPIC AREA: RWANDAN CURRENCY",
+								"SUB-TOPIC AREA:RWANDAN CURRENCY",
+								"SUB-TOPIC: RWANDAN CURRENCY",
+								"SUB-TOPIC:RWANDAN CURRENCY",
 								"CURRENCY",
-								"RWANDAN MONEY"
+								"SUB-TOPIC AREA: CURRENCY",
+								"SUB-TOPIC AREA:CURRENCY",
+								"SUB-TOPIC: CURRENCY",
+								"SUB-TOPIC:CURRENCY",
+								"RWANDAN MONEY",
+								"SUB-TOPIC AREA: RWANDAN MONEY",
+								"SUB-TOPIC AREA:RWANDAN MONEY",
+								"SUB-TOPIC: RWANDAN MONEY",
+								"SUB-TOPIC:RWANDAN MONEY"
 							]
 						},
 						{
 							"canonical_value": "Capacity Measurements",
 							"aliases": [
-								"CAPACITY MEASUREMENTS"
+								"CAPACITY MEASUREMENTS",
+								"SUB-TOPIC AREA: CAPACITY MEASUREMENTS",
+								"SUB-TOPIC AREA:CAPACITY MEASUREMENTS",
+								"SUB-TOPIC: CAPACITY MEASUREMENTS",
+								"SUB-TOPIC:CAPACITY MEASUREMENTS"
 							]
 						},
 						{
 							"canonical_value": "Mass Measurements",
 							"aliases": [
-								"MASS MEASUREMENTS"
+								"MASS MEASUREMENTS",
+								"SUB-TOPIC AREA: MASS MEASUREMENTS",
+								"SUB-TOPIC AREA:MASS MEASUREMENTS",
+								"SUB-TOPIC: MASS MEASUREMENTS",
+								"SUB-TOPIC:MASS MEASUREMENTS"
 							]
 						},
 						{
 							"canonical_value": "Time Measurements",
 							"aliases": [
-								"TIME MEASUREMENTS"
+								"TIME MEASUREMENTS",
+								"SUB-TOPIC AREA: TIME MEASUREMENTS",
+								"SUB-TOPIC AREA:TIME MEASUREMENTS",
+								"SUB-TOPIC: TIME MEASUREMENTS",
+								"SUB-TOPIC:TIME MEASUREMENTS"
 							]
 						},
 						{
 							"canonical_value": "Directions and Lines",
 							"aliases": [
-								"DIRECTIONS AND LINES"
+								"DIRECTIONS AND LINES",
+								"SUB-TOPIC AREA: DIRECTIONS AND LINES",
+								"SUB-TOPIC AREA:DIRECTIONS AND LINES",
+								"SUB-TOPIC: DIRECTIONS AND LINES",
+								"SUB-TOPIC:DIRECTIONS AND LINES"
 							]
 						},
 						{
 							"canonical_value": "Directions and Shapes",
 							"aliases": [
-								"DIRECTIONS AND SHAPES"
+								"DIRECTIONS AND SHAPES",
+								"SUB-TOPIC AREA: DIRECTIONS AND SHAPES",
+								"SUB-TOPIC AREA:DIRECTIONS AND SHAPES",
+								"SUB-TOPIC: DIRECTIONS AND SHAPES",
+								"SUB-TOPIC:DIRECTIONS AND SHAPES"
 							]
 						},
 						{
 							"canonical_value": "Angles and Shapes",
 							"aliases": [
-								"ANGLES AND SHAPES"
+								"ANGLES AND SHAPES",
+								"SUB-TOPIC AREA: ANGLES AND SHAPES",
+								"SUB-TOPIC AREA:ANGLES AND SHAPES",
+								"SUB-TOPIC: ANGLES AND SHAPES",
+								"SUB-TOPIC:ANGLES AND SHAPES"
 							]
 						},
 						{
 							"canonical_value": "Shapes",
 							"aliases": [
-								"SHAPES"
+								"SHAPES",
+								"SUB-TOPIC AREA: SHAPES",
+								"SUB-TOPIC AREA:SHAPES",
+								"SUB-TOPIC: SHAPES",
+								"SUB-TOPIC:SHAPES"
 							]
 						},
 						{
 							"canonical_value": "Types of Lines and Angles",
 							"aliases": [
-								"TYPES OF LINES AND ANGLES"
+								"TYPES OF LINES AND ANGLES",
+								"SUB-TOPIC AREA: TYPES OF LINES AND ANGLES",
+								"SUB-TOPIC AREA:TYPES OF LINES AND ANGLES",
+								"SUB-TOPIC: TYPES OF LINES AND ANGLES",
+								"SUB-TOPIC:TYPES OF LINES AND ANGLES"
 							]
 						},
 						{
 							"canonical_value": "Geometrical Figures and a Circle",
 							"aliases": [
-								"GEOMETRICAL FIGURES AND A CIRCLE"
+								"GEOMETRICAL FIGURES AND A CIRCLE",
+								"SUB-TOPIC AREA: GEOMETRICAL FIGURES AND A CIRCLE",
+								"SUB-TOPIC AREA:GEOMETRICAL FIGURES AND A CIRCLE",
+								"SUB-TOPIC: GEOMETRICAL FIGURES AND A CIRCLE",
+								"SUB-TOPIC:GEOMETRICAL FIGURES AND A CIRCLE"
 							]
 						},
 						{
 							"canonical_value": "Directions",
 							"aliases": [
-								"DIRECTIONS"
+								"DIRECTIONS",
+								"SUB-TOPIC AREA: DIRECTIONS",
+								"SUB-TOPIC AREA:DIRECTIONS",
+								"SUB-TOPIC: DIRECTIONS",
+								"SUB-TOPIC:DIRECTIONS"
 							]
 						},
 						{
 							"canonical_value": "Equation",
 							"aliases": [
 								"EQUATION",
-								"EQUATIONS"
+								"SUB-TOPIC AREA: EQUATION",
+								"SUB-TOPIC AREA:EQUATION",
+								"SUB-TOPIC: EQUATION",
+								"SUB-TOPIC:EQUATION",
+								"EQUATIONS",
+								"SUB-TOPIC AREA: EQUATIONS",
+								"SUB-TOPIC AREA:EQUATIONS",
+								"SUB-TOPIC: EQUATIONS",
+								"SUB-TOPIC:EQUATIONS"
 							]
 						},
 						{
 							"canonical_value": "Reading a Pictograph",
 							"aliases": [
-								"READING A PICTOGRAPH"
+								"READING A PICTOGRAPH",
+								"SUB-TOPIC AREA: READING A PICTOGRAPH",
+								"SUB-TOPIC AREA:READING A PICTOGRAPH",
+								"SUB-TOPIC: READING A PICTOGRAPH",
+								"SUB-TOPIC:READING A PICTOGRAPH"
 							]
 						},
 						{
 							"canonical_value": "Drawings and Geometrical Figures",
 							"aliases": [
-								"DRAWINGS AND GEOMETRICAL FIGURES"
+								"DRAWINGS AND GEOMETRICAL FIGURES",
+								"SUB-TOPIC AREA: DRAWINGS AND GEOMETRICAL FIGURES",
+								"SUB-TOPIC AREA:DRAWINGS AND GEOMETRICAL FIGURES",
+								"SUB-TOPIC: DRAWINGS AND GEOMETRICAL FIGURES",
+								"SUB-TOPIC:DRAWINGS AND GEOMETRICAL FIGURES"
 							]
 						}
 					],
-					"description": "Use for source-visible SUB-TOPIC AREA labels that organize units below a topic area.",
+					"description": "Use for source-visible SUB-TOPIC AREA or SUB-TOPIC labels that organize units below a topic area. Sub-Topic Area is a parent of Unit; repeated matching Sub-Topic Area labels within the same Grade and Topic Area should canonicalize to the same value and be eligible to merge across multiple unit tables.",
 					"normalized_statement_type": "Standard Grouping",
 					"statement_type": "Sub-Topic Area"
 				},
@@ -376,7 +474,7 @@
 			]
 		},
 		"lc": {
-			"generation_instructions": "LearningComponents are out of scope for Academic Standards KG v0; do not generate LearningComponents in this run."
+			"generation_instructions": "LearningComponents are out of scope for Academic Standards KG; do not generate LearningComponents in this run."
 		},
 		"metadata": {
 			"adoption_status": "Third Edition, 2025",

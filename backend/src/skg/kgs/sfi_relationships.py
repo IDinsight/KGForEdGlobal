@@ -48,13 +48,29 @@ from skg.kgs.utils import (
     reset_output_files,
     unique_nonempty,
 )
-from skg.kgs.validators import verify_sfi_has_child_resolution_quality
+from skg.kgs.validators import (
+    ACTIVE_OUTLINE_STACK_PARENT_REASON,
+    CANONICAL_SCOPE_PARENT_MATCH_REASON,
+    CARRY_FORWARD_PARENT_REASONS,
+    CODE_PARENT_HINT_REASON,
+    HARD_LOCAL_DIRECT_PARENT_REASONS,
+    MATCHED_SECTION_PATH_LABEL_REASON,
+    NEARBY_SOURCE_CONTEXT_KEY_REASON,
+    NEAREST_PRECEDING_GROUPING_REASON,
+    ROOT_EVIDENCE_REASON,
+    SAME_SOURCE_CONTEXT_KEY_REASON,
+    SAME_SOURCE_SEGMENT_REASON,
+    SAME_SOURCE_WINDOW_REASON,
+    SAME_TABLE_CONTEXT_REASON,
+    SAME_TABLE_IMMEDIATE_PARENT_REASON,
+    SOURCE_SCOPE_GROUPING_REASON,
+    SOURCE_VISIBLE_DIRECT_PARENT_REASON,
+    STATEMENT_TYPE_COMPATIBLE_REASON,
+    verify_sfi_has_child_resolution_quality,
+)
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, open_json_type, write_to_json
-
-_ROOT_EVIDENCE_REASON = "root_fallback"
-_SOURCE_VISIBLE_DIRECT_PARENT_REASON = "source_visible_direct_parent"
 
 
 @dataclass
@@ -103,7 +119,7 @@ def _add_parent_evidence(
 
     _add_parent_evidence(
         evidence_by_endpoint_id=evidence_by_endpoint_id,
-        evidence_reason="same_table_context",
+        evidence_reason=_SAME_TABLE_CONTEXT_REASON,
         evidence_summary="Child and parent share cited table row/header context.",
         parent_context=topic_context,
     )
@@ -114,7 +130,7 @@ def _add_parent_evidence(
     endpoint_id=str(topic_context.final_sfi_uuid)
     endpoint_kind="StandardsFrameworkItem"
     description="1.1 CONVERSATION"
-    evidence_reasons=["same_table_context"]
+    evidence_reasons=[_SAME_TABLE_CONTEXT_REASON]
     evidence_summary=[
         "Child and parent share cited table row/header context."
     ]
@@ -126,7 +142,7 @@ def _add_parent_evidence(
 
     _add_parent_evidence(
         evidence_by_endpoint_id=evidence_by_endpoint_id,
-        evidence_reason="code_parent_hint",
+        evidence_reason=_CODE_PARENT_HINT_REASON,
         evidence_summary=(
             "Configured code-parent hint maps child code '1.1.1' "
             "to parent code '1.1'."
@@ -138,8 +154,8 @@ def _add_parent_evidence(
     now has both evidence reasons:
 
     evidence_reasons={
-        "same_table_context",
-        "code_parent_hint",
+        _SAME_TABLE_CONTEXT_REASON,
+        _CODE_PARENT_HINT_REASON,
     }
 
     and both evidence summaries:
@@ -202,38 +218,24 @@ def _add_parent_evidence(
 def _add_source_visible_direct_parent_evidence(
     *,
     evidence_by_endpoint_id: dict[str, _ParentEvidence],
-    matched_section_path_label: bool,
-    nearby_source_window: bool,
     parent_context: SFIFinalContext,
     same_table_context: bool,
     source_scope_grouping: bool,
 ) -> None:
-    """Add derived evidence when a candidate is visibly a direct source parent.
+    """Add source-visible evidence for hard local hierarchy matches only.
 
-    The LLM sees many retrieval signals. This function adds a single higher-level,
-    curriculum-agnostic signal when those retrieval signals jointly indicate that the
-    candidate is a direct parent in the source structure itself, rather than merely a
-    parent inferred from a code pattern or topic similarity.
-
-    A source-visible direct parent is intentionally conservative. It must already be
-    an allowed direct parent type, because `_evaluate_parent_child_relationship()` only
-    calls this helper after the direct statement-type policy has passed. The parent is
-    marked source-visible when any of these general source patterns applies:
-
-    - The parent and child share a table row/header context;
-    - The parent is a source-scope grouping/header for row-derived child content;
-    - The active outline parent also matches a local section-path label; or
-    - A nearby preceding grouping also matches the child's local source context.
+    This signal is intentionally narrower than general parent-candidate retrieval. A
+    candidate should be labeled `source_visible_direct_parent` only when local source
+    structure itself supports it as a direct parent, such as same table row/header
+    context or source-scope grouping evidence. Soft carry-forward signals, including
+    active outline stack, nearby windows, and preceding grouping evidence, are promoted
+    later only when no competing hard-local parent of the same direct parent type is
+    available.
 
     Parameters
     ----------
     evidence_by_endpoint_id
         Mutable parent evidence records keyed by selectable endpoint ID.
-    matched_section_path_label
-        Whether the candidate parent text appears in the child's recovered local
-        section path.
-    nearby_source_window
-        Whether the parent appears in a nearby preceding source window.
     parent_context
         Candidate parent final SFI context.
     same_table_context
@@ -243,38 +245,21 @@ def _add_source_visible_direct_parent_evidence(
         content in the same source segment/window.
     """
 
+    if not (same_table_context or source_scope_grouping):
+        return
+
     endpoint_id = str(parent_context.final_sfi_uuid)
     evidence = evidence_by_endpoint_id.get(endpoint_id)
 
     if evidence is None:
         return
 
-    existing_reasons = evidence.evidence_reasons
-    source_visible = (
-        same_table_context
-        or source_scope_grouping
-        or (
-            "active_outline_stack_parent" in existing_reasons
-            and matched_section_path_label
-        )
-        or (
-            "nearest_preceding_grouping" in existing_reasons
-            and "statement_type_compatible" in existing_reasons
-            and nearby_source_window
-        )
-    )
-
-    if not source_visible:
-        return
-
     _add_parent_evidence(
         evidence_by_endpoint_id=evidence_by_endpoint_id,
-        evidence_reason=_SOURCE_VISIBLE_DIRECT_PARENT_REASON,
+        evidence_reason=SOURCE_VISIBLE_DIRECT_PARENT_REASON,
         evidence_summary=(
-            "Parent is a source-visible direct parent candidate based on table, "
-            "outline-stack, section-path, or nearby source-order evidence. This "
-            "source-visible hierarchy evidence may override inconsistent inferred "
-            "code hierarchy."
+            "Parent has hard local source hierarchy evidence as a direct parent "
+            "candidate, based on same-table or source-scope grouping context."
         ),
         parent_context=parent_context,
     )
@@ -301,23 +286,23 @@ def _bound_parent_candidates(
 
     topic:
         endpoint_id="<topic-uuid>"
-        evidence_reasons=["code_parent_hint", "same_table_context"]
+        evidence_reasons=[_CODE_PARENT_HINT_REASON, _SAME_TABLE_CONTEXT_REASON]
 
     strand:
         endpoint_id="<strand-uuid>"
-        evidence_reasons=["matched_section_path_label"]
+        evidence_reasons=[_MATCHED_SECTION_PATH_LABEL_REASON]
 
     grade:
         endpoint_id="<grade-uuid>"
-        evidence_reasons=["nearest_preceding_grouping"]
+        evidence_reasons=[_NEAREST_PRECEDING_GROUPING_REASON]
 
     nearby_group:
         endpoint_id="<nearby-group-uuid>"
-        evidence_reasons=["nearby_source_context_key"]
+        evidence_reasons=[_NEARBY_SOURCE_CONTEXT_KEY_REASON]
 
     weak_group:
         endpoint_id="<weak-group-uuid>"
-        evidence_reasons=["statement_type_compatible"]
+        evidence_reasons=[_STATEMENT_TYPE_COMPATIBLE_REASON]
 
     Calling:
 
@@ -334,16 +319,17 @@ def _bound_parent_candidates(
         ],
     )
 
-    first ranks the non-root candidates by evidence strength. Candidates with
-    `code_parent_hint`, `source_scope_grouping`, or `matched_section_path_label` are
-    treated as high-signal and are preserved first. Because one slot is reserved for
-    the StandardsFramework root, only three non-root candidates can be returned.
+    first ranks the non-root candidates by evidence tier. Hard local evidence such as
+    `code_parent_hint` and `same_table_context` is preserved before soft carry-forward
+    evidence such as `matched_section_path_label` or nearby preceding grouping. Because
+    one slot is reserved for the StandardsFramework root, only three non-root
+    candidates can be returned.
 
     A possible returned list is:
 
     [
-        topic,          # high-signal: code_parent_hint
-        strand,         # high-signal: matched_section_path_label
+        topic,          # hard local signal: code_parent_hint
+        strand,         # carry-forward signal: matched_section_path_label
         grade,          # next strongest remaining candidate
         root_candidate, # always included
     ]
@@ -390,7 +376,7 @@ def _bound_parent_candidates(
         description=kg_config.metadata.framework_title or "StandardsFramework root",
         endpoint_id=str(framework_uuid),
         endpoint_kind="StandardsFramework",
-        evidence_reasons=[_ROOT_EVIDENCE_REASON],
+        evidence_reasons=[ROOT_EVIDENCE_REASON],
         evidence_summary=["StandardsFramework root fallback is always available."],
         final_sfi_uuid=None,
         is_root=True,
@@ -404,32 +390,33 @@ def _bound_parent_candidates(
         statement_type=None,
     )
     sorted_candidates = sorted(non_root_candidates, key=_parent_candidate_rank)
-    high_signal_reasons = {
-        "active_outline_stack_parent",
-        "canonical_scope_parent_match",
-        "code_parent_hint",
-        "matched_section_path_label",
-        "same_table_context",
-        "same_table_immediate_parent",
-        _SOURCE_VISIBLE_DIRECT_PARENT_REASON,
-        "source_scope_grouping",
-    }
     high_signal_candidates = [
         candidate
         for candidate in sorted_candidates
-        if set(candidate.evidence_reasons) & high_signal_reasons
+        if _parent_candidate_evidence_tier(candidate) <= 1
+    ]
+    carry_forward_candidates = [
+        candidate
+        for candidate in sorted_candidates
+        if (
+            candidate not in high_signal_candidates
+            and _parent_candidate_evidence_tier(candidate) <= 3
+        )
     ]
     other_candidates = [
         candidate
         for candidate in sorted_candidates
-        if candidate not in high_signal_candidates
+        if (
+            candidate not in high_signal_candidates
+            and candidate not in carry_forward_candidates
+        )
     ]
     max_parent_candidates = kg_config.academic_standards.max_has_child_parent_candidates
     slots_for_non_root = max_parent_candidates - 1
     selected_non_root = high_signal_candidates[:slots_for_non_root]
     selected_ids = {candidate.endpoint_id for candidate in selected_non_root}
 
-    for candidate in other_candidates:
+    for candidate in [*carry_forward_candidates, *other_candidates]:
         if len(selected_non_root) >= slots_for_non_root:
             break
 
@@ -572,16 +559,16 @@ def _build_candidate_parent_sets(
     [
         parent candidate: listening
             evidence_reasons=[
-                "matched_section_path_label",
-                "nearby_source_context_key",
-                "nearest_preceding_grouping",
-                "statement_type_compatible",
+                _MATCHED_SECTION_PATH_LABEL_REASON,
+                _NEARBY_SOURCE_CONTEXT_KEY_REASON,
+                _NEAREST_PRECEDING_GROUPING_REASON,
+                _STATEMENT_TYPE_COMPATIBLE_REASON,
             ]
 
         parent candidate: grade_4
             evidence_reasons=[
-                "matched_section_path_label",
-                "statement_type_compatible",
+                _MATCHED_SECTION_PATH_LABEL_REASON,
+                _STATEMENT_TYPE_COMPATIBLE_REASON,
             ]
 
         parent candidate: StandardsFramework root
@@ -655,7 +642,7 @@ def _build_candidate_parent_sets(
             ):
                 _add_parent_evidence(
                     evidence_by_endpoint_id=evidence_by_endpoint_id,
-                    evidence_reason="active_outline_stack_parent",
+                    evidence_reason=ACTIVE_OUTLINE_STACK_PARENT_REASON,
                     evidence_summary=(
                         "Parent is the active preceding finalized SFI of the configured "
                         "immediate parent statement type in source order. This is "
@@ -866,7 +853,7 @@ def _build_edges_from_responses(
             description="1.1 CONVERSATION",
             final_sfi_uuid=<topic-uuid>,
             is_root=False,
-            evidence_reasons=["code_parent_hint", "same_table_context"],
+            evidence_reasons=[_CODE_PARENT_HINT_REASON, _SAME_TABLE_CONTEXT_REASON],
             evidence_summary=[
                 "Configured code-parent hint maps child code '1.1.1' to parent code '1.1'.",
                 "Child and parent share cited table row/header context.",
@@ -914,7 +901,7 @@ def _build_edges_from_responses(
         parent_final_sfi_uuid=<topic-uuid>,
         child_final_sfi_uuid=<child-uuid>,
         relationship_type="hasChild",
-        evidence_reasons=["code_parent_hint", "same_table_context"],
+        evidence_reasons=[CODE_PARENT_HINT_REASON, SAME_TABLE_CONTEXT_REASON],
         llm_reason="The specific competence is directly organized under the visible topic.",
         unresolved_root_fallback=False,
         ...
@@ -1004,7 +991,7 @@ def _build_edges_from_responses(
                     description="StandardsFramework root fallback",
                     endpoint_id=str(framework_uuid),
                     endpoint_kind="StandardsFramework",
-                    evidence_reasons=[_ROOT_EVIDENCE_REASON],
+                    evidence_reasons=[ROOT_EVIDENCE_REASON],
                     evidence_summary=[
                         "StandardsFramework root fallback is always available."
                     ],
@@ -1441,7 +1428,7 @@ def _evaluate_parent_child_relationship(
     normalized code maps to the parent's normalized code. The parent candidate receives
     evidence like:
 
-    evidence_reasons=["code_parent_hint"]
+    evidence_reasons=[_CODE_PARENT_HINT_REASON]
     evidence_summary=[
         "Configured code-parent hint maps child code '1.1.1' to parent code '1.1'."
     ]
@@ -1517,7 +1504,7 @@ def _evaluate_parent_child_relationship(
     simple_rules: tuple[tuple[bool, str, str], ...] = (
         (
             canonical_scope_parent_match,
-            "canonical_scope_parent_match",
+            CANONICAL_SCOPE_PARENT_MATCH_REASON,
             (
                 "Parent canonical controlled value is explicitly named in the "
                 "child canonical scope key and shared ancestor scope parts "
@@ -1526,32 +1513,32 @@ def _evaluate_parent_child_relationship(
         ),
         (
             same_source_context_key,
-            "same_source_context_key",
+            SAME_SOURCE_CONTEXT_KEY_REASON,
             "Child and parent share a registry source-context key.",
         ),
         (
             same_source_segment,
-            "same_source_segment",
+            SAME_SOURCE_SEGMENT_REASON,
             "Child and parent share a DocumentIR source segment.",
         ),
         (
             same_source_window,
-            "same_source_window",
+            SAME_SOURCE_WINDOW_REASON,
             "Child and parent share an extraction window.",
         ),
         (
             same_table_context,
-            "same_table_context",
+            SAME_TABLE_CONTEXT_REASON,
             "Child and parent share cited table row/header context.",
         ),
         (
             same_table_context,
-            "same_table_immediate_parent",
+            SAME_TABLE_IMMEDIATE_PARENT_REASON,
             "Parent is an allowed direct parent type in the same cited table row/header context.",
         ),
         (
             source_scope_grouping,
-            "source_scope_grouping",
+            SOURCE_SCOPE_GROUPING_REASON,
             (
                 "Parent is a source-scope grouping/header for row-derived child "
                 "content in the same source segment/window."
@@ -1559,12 +1546,12 @@ def _evaluate_parent_child_relationship(
         ),
         (
             matched_section_path_label,
-            "matched_section_path_label",
+            MATCHED_SECTION_PATH_LABEL_REASON,
             "Parent description matches recovered child section-path evidence.",
         ),
         (
             nearby_source_window,
-            "nearby_source_context_key",
+            NEARBY_SOURCE_CONTEXT_KEY_REASON,
             "Parent appears in a nearby preceding source window.",
         ),
     )
@@ -1589,7 +1576,7 @@ def _evaluate_parent_child_relationship(
     ):
         _add_parent_evidence(
             evidence_by_endpoint_id=evidence_by_endpoint_id,
-            evidence_reason="code_parent_hint",
+            evidence_reason=CODE_PARENT_HINT_REASON,
             evidence_summary=(
                 f"Configured code-parent hint maps child code {child_code!r} "
                 f"to parent code {parent_code!r}, with compatible local source "
@@ -1609,7 +1596,7 @@ def _evaluate_parent_child_relationship(
         if distance <= 8:
             _add_parent_evidence(
                 evidence_by_endpoint_id=evidence_by_endpoint_id,
-                evidence_reason="nearest_preceding_grouping",
+                evidence_reason=NEAREST_PRECEDING_GROUPING_REASON,
                 evidence_summary=(
                     f"Parent is a preceding Standard Grouping within {distance} "
                     f"source-order units."
@@ -1620,7 +1607,7 @@ def _evaluate_parent_child_relationship(
         if distance <= 12:
             _add_parent_evidence(
                 evidence_by_endpoint_id=evidence_by_endpoint_id,
-                evidence_reason="statement_type_compatible",
+                evidence_reason=STATEMENT_TYPE_COMPATIBLE_REASON,
                 evidence_summary=(
                     "Parent is a preceding Standard Grouping compatible with "
                     "hasChild hierarchy instructions."
@@ -1630,11 +1617,58 @@ def _evaluate_parent_child_relationship(
 
     _add_source_visible_direct_parent_evidence(
         evidence_by_endpoint_id=evidence_by_endpoint_id,
-        matched_section_path_label=matched_section_path_label,
-        nearby_source_window=nearby_source_window,
         parent_context=parent_context,
         same_table_context=same_table_context,
         source_scope_grouping=source_scope_grouping,
+    )
+
+
+def _evidence_has_hard_local_direct_parent_support(evidence_reasons: set[str]) -> bool:
+    """Return whether evidence contains hard local direct-parent support.
+
+    Hard local support is source-local or deterministic hierarchy evidence that can
+    safely outrank nearby, preceding, or active-outline carry-forward signals across
+    curricula.
+
+    Parameters
+    ----------
+    evidence_reasons
+        Evidence reasons accumulated for one parent candidate.
+
+    Returns
+    -------
+    bool
+        True when the reason set contains hard local direct-parent evidence.
+    """
+
+    return bool(evidence_reasons & HARD_LOCAL_DIRECT_PARENT_REASONS)
+
+
+def _evidence_has_soft_carry_forward_support(evidence_reasons: set[str]) -> bool:
+    """Return whether evidence contains soft carry-forward parent support.
+
+    Soft carry-forward support keeps plausible outline, section-path, and nearby
+    source-order parents in the bounded candidate set without treating them as direct
+    source-visible truth when a stronger same-type local parent is present.
+
+    Parameters
+    ----------
+    evidence_reasons
+        Evidence reasons accumulated for one parent candidate.
+
+    Returns
+    -------
+    bool
+        True when the reason set contains a conservative carry-forward pattern.
+    """
+
+    return (
+        ACTIVE_OUTLINE_STACK_PARENT_REASON in evidence_reasons
+        and MATCHED_SECTION_PATH_LABEL_REASON in evidence_reasons
+    ) or (
+        NEAREST_PRECEDING_GROUPING_REASON in evidence_reasons
+        and NEARBY_SOURCE_CONTEXT_KEY_REASON in evidence_reasons
+        and STATEMENT_TYPE_COMPATIBLE_REASON in evidence_reasons
     )
 
 
@@ -1667,7 +1701,7 @@ def _finalize_candidate_parent_set(
                 endpoint_id="<topic-uuid>",
                 endpoint_kind="StandardsFrameworkItem",
                 description="1.1 CONVERSATION",
-                evidence_reasons=["code_parent_hint"],
+                evidence_reasons=[_CODE_PARENT_HINT_REASON],
                 evidence_summary=[
                     "Configured code-parent hint maps child code '1.1.1' "
                     "to parent code '1.1'."
@@ -1731,6 +1765,10 @@ def _finalize_candidate_parent_set(
     SFIHasChildCandidateParentSet
         The bounded parent candidate set for the child SFI.
     """
+
+    _promote_source_visible_direct_parent_evidence(
+        evidence_by_endpoint_id=evidence_by_endpoint_id
+    )
 
     non_root_candidates = [
         evidence.candidate.model_copy(
@@ -2296,8 +2334,67 @@ def _load_sfi_final_summary(kg_dirs: KGDirs) -> SFIFinalSummary | None:
     return SFIFinalSummary.model_validate(open_json_type(summary_fp))
 
 
-def _parent_candidate_rank(candidate: SFIHasChildParentCandidate) -> tuple[int, str]:
+def _parent_candidate_evidence_tier(  # pylint: disable=R0911
+    candidate: SFIHasChildParentCandidate,
+) -> int:
+    """Assign a deterministic evidence tier for parent candidate ranking.
+
+    Lower tiers rank earlier. Tiers prevent several weak carry-forward signals from
+    outscoring one hard local hierarchy signal.
+
+    Parameters
+    ----------
+    candidate
+        Parent candidate to classify.
+
+    Returns
+    -------
+    int
+        Evidence tier, where 0 is hard local direct-parent support and larger values
+        represent weaker retrieval or fallback evidence.
+    """
+
+    evidence_reasons = set(candidate.evidence_reasons or [])
+
+    if candidate.is_root or ROOT_EVIDENCE_REASON in evidence_reasons:
+        return 90
+
+    if SOURCE_VISIBLE_DIRECT_PARENT_REASON in evidence_reasons:
+        return 0
+
+    if _evidence_has_hard_local_direct_parent_support(evidence_reasons):
+        return 1
+
+    if ACTIVE_OUTLINE_STACK_PARENT_REASON in evidence_reasons and (
+        SAME_SOURCE_CONTEXT_KEY_REASON in evidence_reasons
+        or SAME_SOURCE_SEGMENT_REASON in evidence_reasons
+        or SAME_SOURCE_WINDOW_REASON in evidence_reasons
+    ):
+        return 2
+
+    if _evidence_has_soft_carry_forward_support(evidence_reasons):
+        return 3
+
+    if (
+        SAME_SOURCE_CONTEXT_KEY_REASON in evidence_reasons
+        or SAME_SOURCE_SEGMENT_REASON in evidence_reasons
+        or SAME_SOURCE_WINDOW_REASON in evidence_reasons
+    ):
+        return 4
+
+    if evidence_reasons & CARRY_FORWARD_PARENT_REASONS:
+        return 5
+
+    return 6
+
+
+def _parent_candidate_rank(
+    candidate: SFIHasChildParentCandidate,
+) -> tuple[int, int, str]:
     """Build deterministic sorting key for parent candidates.
+
+    Ranking is tiered before weighted scoring so that several weak proximity or
+    carry-forward signals cannot outrank one hard local direct-parent signal.
 
     Parameters
     ----------
@@ -2306,28 +2403,29 @@ def _parent_candidate_rank(candidate: SFIHasChildParentCandidate) -> tuple[int, 
 
     Returns
     -------
-    tuple[int, str]
+    tuple[int, int, str]
         Sort key where lower values rank earlier.
     """
 
     weights = {
-        "canonical_scope_parent_match": 110,
-        "code_parent_hint": 100,
-        "active_outline_stack_parent": 70,
-        _SOURCE_VISIBLE_DIRECT_PARENT_REASON: 130,
-        "source_scope_grouping": 95,
-        "matched_section_path_label": 90,
-        "same_table_context": 80,
-        "same_source_context_key": 75,
-        "same_source_segment": 65,
-        "same_source_window": 60,
-        "nearby_source_context_key": 40,
-        "nearest_preceding_grouping": 35,
-        "statement_type_compatible": 15,
-        _ROOT_EVIDENCE_REASON: 0,
+        SOURCE_VISIBLE_DIRECT_PARENT_REASON: 130,
+        CANONICAL_SCOPE_PARENT_MATCH_REASON: 110,
+        CODE_PARENT_HINT_REASON: 100,
+        SOURCE_SCOPE_GROUPING_REASON: 95,
+        MATCHED_SECTION_PATH_LABEL_REASON: 90,
+        SAME_TABLE_CONTEXT_REASON: 80,
+        SAME_TABLE_IMMEDIATE_PARENT_REASON: 80,
+        SAME_SOURCE_CONTEXT_KEY_REASON: 75,
+        ACTIVE_OUTLINE_STACK_PARENT_REASON: 70,
+        SAME_SOURCE_SEGMENT_REASON: 65,
+        SAME_SOURCE_WINDOW_REASON: 60,
+        NEARBY_SOURCE_CONTEXT_KEY_REASON: 40,
+        NEAREST_PRECEDING_GROUPING_REASON: 35,
+        STATEMENT_TYPE_COMPATIBLE_REASON: 15,
+        ROOT_EVIDENCE_REASON: 0,
     }
     score = sum(weights.get(reason, 0) for reason in candidate.evidence_reasons)
-    return -score, candidate.endpoint_id
+    return _parent_candidate_evidence_tier(candidate), -score, candidate.endpoint_id
 
 
 def _parse_controlled_scope_parts(scope_key: str | None) -> list[tuple[str, str]]:
@@ -2358,6 +2456,66 @@ def _parse_controlled_scope_parts(scope_key: str | None) -> list[tuple[str, str]
             parts.append((key_clean, value_clean))
 
     return parts
+
+
+def _promote_source_visible_direct_parent_evidence(
+    evidence_by_endpoint_id: dict[str, _ParentEvidence],
+) -> None:
+    """Promote parent evidence to source-visible only after dominance checks.
+
+    This adds `source_visible_direct_parent` to hard-local parent candidates and to
+    soft carry-forward candidates only when no hard-local candidate of the same direct
+    parent statement type is available. The rule is curriculum-agnostic: it uses only
+    configured parent statement types and source-provenance evidence.
+
+    Parameters
+    ----------
+    evidence_by_endpoint_id
+        Mutable parent evidence records keyed by selectable endpoint ID.
+    """
+
+    hard_statement_types = {
+        evidence.candidate.statement_type
+        for evidence in evidence_by_endpoint_id.values()
+        if _evidence_has_hard_local_direct_parent_support(evidence.evidence_reasons)
+    }
+
+    for evidence in evidence_by_endpoint_id.values():
+        if SOURCE_VISIBLE_DIRECT_PARENT_REASON in evidence.evidence_reasons:
+            continue
+
+        if _evidence_has_hard_local_direct_parent_support(evidence.evidence_reasons):
+            evidence.evidence_reasons.add(SOURCE_VISIBLE_DIRECT_PARENT_REASON)
+
+            if (
+                "Parent has hard local direct-parent evidence that should outrank "
+                "soft carry-forward or nearby-source candidates."
+                not in evidence.evidence_summary
+            ):
+                evidence.evidence_summary.append(
+                    "Parent has hard local direct-parent evidence that should outrank "
+                    "soft carry-forward or nearby-source candidates."
+                )
+
+            continue
+
+        if evidence.candidate.statement_type in hard_statement_types:
+            continue
+
+        if not _evidence_has_soft_carry_forward_support(evidence.evidence_reasons):
+            continue
+
+        evidence.evidence_reasons.add(SOURCE_VISIBLE_DIRECT_PARENT_REASON)
+
+        if (
+            "Parent has soft carry-forward hierarchy evidence and no competing "
+            "hard-local parent of the same direct parent type was available."
+            not in evidence.evidence_summary
+        ):
+            evidence.evidence_summary.append(
+                "Parent has soft carry-forward hierarchy evidence and no competing "
+                "hard-local parent of the same direct parent type was available."
+            )
 
 
 def _reachable_sfi_ids(
@@ -2434,9 +2592,9 @@ def _relationship_code_anomaly_metadata(
     parent_code = normalize_code(parent_candidate.normalized_statement_code)
 
     source_visible_parent_used = (
-        _SOURCE_VISIBLE_DIRECT_PARENT_REASON in parent_candidate.evidence_reasons
+        SOURCE_VISIBLE_DIRECT_PARENT_REASON in parent_candidate.evidence_reasons
     )
-    code_parent_hint_used = "code_parent_hint" in parent_candidate.evidence_reasons
+    code_parent_hint_used = CODE_PARENT_HINT_REASON in parent_candidate.evidence_reasons
 
     selected_coded_parent_conflicts = bool(
         code_implied_parent_code
@@ -2925,6 +3083,58 @@ def _validate_final_contexts_align_with_records(
             )
 
 
+def _validate_has_child_canonical_scope_policy(
+    *, edges: Sequence[SFIHasChildEdge], sfi_final_records: Sequence[SFIFinalRecord]
+) -> None:
+    """Validate resolved SFI parent selections against canonical scope keys.
+
+    This check is intentionally generic. It does not know any curriculum-specific
+    labels, grades, strands, themes, or domains. It only enforces this invariant: when
+    a child final record carries a canonical scope part for the selected parent's
+    statement type, the selected parent must have the same canonical value key for that
+    part.
+
+    Parameters
+    ----------
+    edges
+        Final hasChild edges to validate.
+    sfi_final_records
+        Final SFI records whose canonical scope and value fields are checked.
+
+    Raises
+    ------
+    ValueError
+        If a selected SFI parent conflicts with the child canonical scope.
+    """
+
+    records_by_id = {str(record.final_sfi_uuid): record for record in sfi_final_records}
+
+    for edge in edges:
+        if edge.is_root_edge or edge.unresolved_root_fallback:
+            continue
+
+        child_record = records_by_id[str(edge.target_sfi_uuid)]
+        parent_record = records_by_id[str(edge.source_entity_uuid)]
+
+        if _canonical_scope_conflicts_parent(
+            child_scope_key=child_record.canonical_statement_scope_key,
+            parent_scope_key=parent_record.canonical_statement_scope_key,
+            parent_statement_type=parent_record.statement_type,
+            parent_value_key=parent_record.canonical_statement_value_key,
+        ):
+            raise ValueError(
+                f"hasChild SFI edge violates canonical scope policy: child "
+                f"{child_record.final_sfi_uuid} has canonical_statement_scope_key "
+                f"{child_record.canonical_statement_scope_key!r}, but selected "
+                f"parent {parent_record.final_sfi_uuid} has statement_type "
+                f"{parent_record.statement_type!r}, "
+                f"canonical_statement_scope_key "
+                f"{parent_record.canonical_statement_scope_key!r}, and "
+                f"canonical_statement_value_key "
+                f"{parent_record.canonical_statement_value_key!r}."
+            )
+
+
 def _validate_has_child_statement_type_policy(
     *,
     edges: Sequence[SFIHasChildEdge],
@@ -3224,58 +3434,6 @@ def _validate_graph(
         raise ValueError(
             f"Duplicate hasChild relationship IDs detected: {duplicate_relationship_ids}."
         )
-
-
-def _validate_has_child_canonical_scope_policy(
-    *, edges: Sequence[SFIHasChildEdge], sfi_final_records: Sequence[SFIFinalRecord]
-) -> None:
-    """Validate resolved SFI parent selections against canonical scope keys.
-
-    This check is intentionally generic. It does not know any curriculum-specific
-    labels, grades, strands, themes, or domains. It only enforces this invariant: when
-    a child final record carries a canonical scope part for the selected parent's
-    statement type, the selected parent must have the same canonical value key for that
-    part.
-
-    Parameters
-    ----------
-    edges
-        Final hasChild edges to validate.
-    sfi_final_records
-        Final SFI records whose canonical scope and value fields are checked.
-
-    Raises
-    ------
-    ValueError
-        If a selected SFI parent conflicts with the child canonical scope.
-    """
-
-    records_by_id = {str(record.final_sfi_uuid): record for record in sfi_final_records}
-
-    for edge in edges:
-        if edge.is_root_edge or edge.unresolved_root_fallback:
-            continue
-
-        child_record = records_by_id[str(edge.target_sfi_uuid)]
-        parent_record = records_by_id[str(edge.source_entity_uuid)]
-
-        if _canonical_scope_conflicts_parent(
-            child_scope_key=child_record.canonical_statement_scope_key,
-            parent_scope_key=parent_record.canonical_statement_scope_key,
-            parent_statement_type=parent_record.statement_type,
-            parent_value_key=parent_record.canonical_statement_value_key,
-        ):
-            raise ValueError(
-                f"hasChild SFI edge violates canonical scope policy: child "
-                f"{child_record.final_sfi_uuid} has canonical_statement_scope_key "
-                f"{child_record.canonical_statement_scope_key!r}, but selected "
-                f"parent {parent_record.final_sfi_uuid} has statement_type "
-                f"{parent_record.statement_type!r}, "
-                f"canonical_statement_scope_key "
-                f"{parent_record.canonical_statement_scope_key!r}, and "
-                f"canonical_statement_value_key "
-                f"{parent_record.canonical_statement_value_key!r}."
-            )
 
 
 def _validate_resolution_request_prefix(
