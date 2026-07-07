@@ -54,6 +54,7 @@ from skg.kgs.validators import (
     CARRY_FORWARD_PARENT_REASONS,
     CODE_PARENT_HINT_REASON,
     HARD_LOCAL_DIRECT_PARENT_REASONS,
+    LOCAL_ACTIVE_OUTLINE_DIRECT_PARENT_REASON,
     MATCHED_SECTION_PATH_LABEL_REASON,
     NEARBY_SOURCE_CONTEXT_KEY_REASON,
     NEAREST_PRECEDING_GROUPING_REASON,
@@ -86,6 +87,65 @@ class _ParentEvidence:
 
         self.evidence_reasons = set(self.candidate.evidence_reasons)
         self.evidence_summary = list(self.candidate.evidence_summary)
+
+
+def _add_local_active_outline_direct_parent_evidence(
+    *,
+    child_context: SFIFinalContext,
+    child_table_keys: set[str],
+    evidence_by_endpoint_id: dict[str, _ParentEvidence],
+    parent_context: SFIFinalContext,
+    parent_table_keys: set[str],
+) -> None:
+    """Add hard-local evidence for active-outline parents in the same source scope.
+
+    Active outline evidence by itself is only a carry-forward retrieval signal. It
+    becomes hard local direct-parent evidence only when the active parent and child
+    share a local source container, such as the same extraction window, source segment,
+    source-context key, or paired table row/header context. This keeps previous
+    siblings in the candidate set without allowing them to outrank source-local parents
+    across curricula.
+
+    Parameters
+    ----------
+    child_context
+        Final SFI context for the child.
+    child_table_keys
+        Paired table row/header context keys for the child.
+    evidence_by_endpoint_id
+        Mutable parent evidence records keyed by selectable endpoint ID.
+    parent_context
+        Active-outline parent final SFI context.
+    parent_table_keys
+        Paired table row/header context keys for the parent.
+    """
+
+    # Check whether a child and parent share a local source container.
+    if not (
+        bool(
+            set(child_context.source_context_keys)
+            & set(parent_context.source_context_keys)
+        )
+        or bool(
+            set(child_context.source_segment_ids)
+            & set(parent_context.source_segment_ids)
+        )
+        or bool(
+            set(child_context.source_window_ids) & set(parent_context.source_window_ids)
+        )
+        or bool(child_table_keys & parent_table_keys)
+    ):
+        return
+
+    _add_parent_evidence(
+        evidence_by_endpoint_id=evidence_by_endpoint_id,
+        evidence_reason=LOCAL_ACTIVE_OUTLINE_DIRECT_PARENT_REASON,
+        evidence_summary=(
+            "Parent is the active configured direct parent in source order and shares "
+            "a local source container with the child."
+        ),
+        parent_context=parent_context,
+    )
 
 
 def _add_parent_evidence(
@@ -228,9 +288,9 @@ def _add_source_visible_direct_parent_evidence(
     candidate should be labeled `source_visible_direct_parent` only when local source
     structure itself supports it as a direct parent, such as same table row/header
     context or source-scope grouping evidence. Soft carry-forward signals, including
-    active outline stack, nearby windows, and preceding grouping evidence, are promoted
-    later only when no competing hard-local parent of the same direct parent type is
-    available.
+    active outline stack, nearby windows, and preceding grouping evidence, must remain
+    weaker retrieval evidence and must not be relabeled as source-visible direct parent
+    evidence.
 
     Parameters
     ----------
@@ -650,6 +710,15 @@ def _build_candidate_parent_sets(
                         "hasChild parent."
                     ),
                     parent_context=outline_parent_context,
+                )
+                _add_local_active_outline_direct_parent_evidence(
+                    child_context=child_context,
+                    child_table_keys=child_table_keys,
+                    evidence_by_endpoint_id=evidence_by_endpoint_id,
+                    parent_context=outline_parent_context,
+                    parent_table_keys=table_keys_by_uuid[
+                        outline_parent_context.final_sfi_uuid
+                    ],
                 )
 
         for parent_context in contexts:
@@ -2411,6 +2480,7 @@ def _parent_candidate_rank(
         SOURCE_VISIBLE_DIRECT_PARENT_REASON: 130,
         CANONICAL_SCOPE_PARENT_MATCH_REASON: 110,
         CODE_PARENT_HINT_REASON: 100,
+        LOCAL_ACTIVE_OUTLINE_DIRECT_PARENT_REASON: 100,
         SOURCE_SCOPE_GROUPING_REASON: 95,
         MATCHED_SECTION_PATH_LABEL_REASON: 90,
         SAME_TABLE_CONTEXT_REASON: 80,
@@ -2461,12 +2531,12 @@ def _parse_controlled_scope_parts(scope_key: str | None) -> list[tuple[str, str]
 def _promote_source_visible_direct_parent_evidence(
     evidence_by_endpoint_id: dict[str, _ParentEvidence],
 ) -> None:
-    """Promote parent evidence to source-visible only after dominance checks.
+    """Promote only hard-local parent evidence to source-visible evidence.
 
-    This adds `source_visible_direct_parent` to hard-local parent candidates and to
-    soft carry-forward candidates only when no hard-local candidate of the same direct
-    parent statement type is available. The rule is curriculum-agnostic: it uses only
-    configured parent statement types and source-provenance evidence.
+    This function intentionally does not promote soft carry-forward evidence, even when
+    no competing hard-local parent of the same statement type exists. Carry-forward
+    candidates remain useful retrieval options, but only true hard-local source
+    evidence may be labeled `source_visible_direct_parent`.
 
     Parameters
     ----------
@@ -2474,47 +2544,25 @@ def _promote_source_visible_direct_parent_evidence(
         Mutable parent evidence records keyed by selectable endpoint ID.
     """
 
-    hard_statement_types = {
-        evidence.candidate.statement_type
-        for evidence in evidence_by_endpoint_id.values()
-        if _evidence_has_hard_local_direct_parent_support(evidence.evidence_reasons)
-    }
-
     for evidence in evidence_by_endpoint_id.values():
         if SOURCE_VISIBLE_DIRECT_PARENT_REASON in evidence.evidence_reasons:
             continue
 
-        if _evidence_has_hard_local_direct_parent_support(evidence.evidence_reasons):
-            evidence.evidence_reasons.add(SOURCE_VISIBLE_DIRECT_PARENT_REASON)
-
-            if (
-                "Parent has hard local direct-parent evidence that should outrank "
-                "soft carry-forward or nearby-source candidates."
-                not in evidence.evidence_summary
-            ):
-                evidence.evidence_summary.append(
-                    "Parent has hard local direct-parent evidence that should outrank "
-                    "soft carry-forward or nearby-source candidates."
-                )
-
-            continue
-
-        if evidence.candidate.statement_type in hard_statement_types:
-            continue
-
-        if not _evidence_has_soft_carry_forward_support(evidence.evidence_reasons):
+        if not _evidence_has_hard_local_direct_parent_support(
+            evidence.evidence_reasons
+        ):
             continue
 
         evidence.evidence_reasons.add(SOURCE_VISIBLE_DIRECT_PARENT_REASON)
 
         if (
-            "Parent has soft carry-forward hierarchy evidence and no competing "
-            "hard-local parent of the same direct parent type was available."
+            "Parent has hard local direct-parent evidence that should outrank "
+            "soft carry-forward or nearby-source candidates."
             not in evidence.evidence_summary
         ):
             evidence.evidence_summary.append(
-                "Parent has soft carry-forward hierarchy evidence and no competing "
-                "hard-local parent of the same direct parent type was available."
+                "Parent has hard local direct-parent evidence that should outrank "
+                "soft carry-forward or nearby-source candidates."
             )
 
 

@@ -28,6 +28,7 @@ from skg.schemas import CreateKGConfig
 ACTIVE_OUTLINE_STACK_PARENT_REASON = "active_outline_stack_parent"
 CANONICAL_SCOPE_PARENT_MATCH_REASON = "canonical_scope_parent_match"
 CODE_PARENT_HINT_REASON = "code_parent_hint"
+LOCAL_ACTIVE_OUTLINE_DIRECT_PARENT_REASON = "local_active_outline_direct_parent"
 MATCHED_SECTION_PATH_LABEL_REASON = "matched_section_path_label"
 NEARBY_SOURCE_CONTEXT_KEY_REASON = "nearby_source_context_key"
 NEAREST_PRECEDING_GROUPING_REASON = "nearest_preceding_grouping"
@@ -54,6 +55,7 @@ HARD_LOCAL_DIRECT_PARENT_REASONS = frozenset(
     {
         CANONICAL_SCOPE_PARENT_MATCH_REASON,
         CODE_PARENT_HINT_REASON,
+        LOCAL_ACTIVE_OUTLINE_DIRECT_PARENT_REASON,
         SAME_TABLE_CONTEXT_REASON,
         SAME_TABLE_IMMEDIATE_PARENT_REASON,
         SOURCE_SCOPE_GROUPING_REASON,
@@ -481,8 +483,8 @@ def _candidate_has_hard_local_direct_parent_evidence(
     Returns
     -------
     bool
-        True when the candidate has code-local, canonical-scope, same-table,
-        source-scope, or direct code-prefix evidence.
+        True when the candidate has code-local, canonical-scope, local active-outline,
+        same-table, source-scope, or direct code-prefix evidence.
     """
 
     if candidate.is_root:
