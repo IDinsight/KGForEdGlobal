@@ -704,15 +704,51 @@ def _build_candidate_parent_sets(
             )
         )
 
+        canonical_scope_parent_contexts = _find_canonical_scope_parent_contexts(
+            child_context=child_context,
+            contexts=contexts,
+            parent_statement_types=parent_statement_types_by_child_type.get(
+                child_context.statement_type, set()
+            ),
+        )
+
+        # Add protected recall evidence for parents named by child canonical scope.
+        #
+        # Canonical scope is finalized, configuration-driven hierarchy evidence. When a
+        # child scope explicitly names a compatible direct parent value, this keeps
+        # that parent available to the LLM even if source-local labels are cumulative,
+        # stale, or otherwise noisy. This is recall evidence only; it does not choose
+        # the final hasChild parent.
+        for parent_context in canonical_scope_parent_contexts:
+            _add_parent_evidence(
+                evidence_by_endpoint_id=evidence_by_endpoint_id,
+                evidence_reason=CANONICAL_SCOPE_PARENT_MATCH_REASON,
+                evidence_summary=(
+                    "Parent canonical controlled value is explicitly named in the "
+                    "child canonical scope key, with compatible ancestor scope; added "
+                    "as protected recall evidence before parent-candidate bounding."
+                ),
+                parent_context=parent_context,
+            )
+
         # Add high-signal evidence from the active finalized-SFI outline stack.
         #
         # NB: The active outline stack is a source-order heuristic used only to keep a
         # plausible immediate parent in the bounded candidate set. It does not emit
         # final edges. The LLM must still choose or reject the candidate from the
-        # complete source-grounded evidence menu.
+        # complete source-grounded evidence menu. Stale source-local labels may lower
+        # confidence, but they must not veto a parent that is explicitly named by the
+        # child's compatible canonical scope.
         if outline_parent_context := outline_parent_by_child_uuid.get(
             child_context.final_sfi_uuid
         ):
+            outline_canonical_scope_parent_match = _canonical_scope_matches_parent(
+                child_scope_key=child_context.canonical_statement_scope_key,
+                parent_scope_key=outline_parent_context.canonical_statement_scope_key,
+                parent_statement_type=outline_parent_context.statement_type,
+                parent_value_key=outline_parent_context.canonical_statement_value_key,
+            )
+
             if not (
                 _canonical_scope_conflicts_parent(
                     child_scope_key=child_context.canonical_statement_scope_key,
@@ -720,11 +756,14 @@ def _build_candidate_parent_sets(
                     parent_statement_type=outline_parent_context.statement_type,
                     parent_value_key=outline_parent_context.canonical_statement_value_key,
                 )
-                or _source_local_parent_scope_conflicts_parent(
-                    parent_context=outline_parent_context,
-                    source_local_parent_scope_value_keys_by_type=(
-                        source_local_parent_scope_value_keys_by_type
-                    ),
+                or (
+                    _source_local_parent_scope_conflicts_parent(
+                        parent_context=outline_parent_context,
+                        source_local_parent_scope_value_keys_by_type=(
+                            source_local_parent_scope_value_keys_by_type
+                        ),
+                    )
+                    and not outline_canonical_scope_parent_match
                 )
             ):
                 _add_parent_evidence(
@@ -771,6 +810,11 @@ def _build_candidate_parent_sets(
             evidence_by_endpoint_id=evidence_by_endpoint_id,
             framework_uuid=framework_uuid,
             kg_config=kg_config,
+        )
+        _validate_canonical_scope_parent_recall(
+            candidate_parent_set=parent_set,
+            child_context=child_context,
+            parent_contexts=canonical_scope_parent_contexts,
         )
         parent_sets.append(parent_set)
 
@@ -1673,20 +1717,23 @@ def _evaluate_parent_child_relationship(
     ):
         return
 
-    if _source_local_parent_scope_conflicts_parent(
-        parent_context=parent_context,
-        source_local_parent_scope_value_keys_by_type=(
-            source_local_parent_scope_value_keys_by_type
-        ),
-    ):
-        return
-
     canonical_scope_parent_match = _canonical_scope_matches_parent(
         child_scope_key=child_context.canonical_statement_scope_key,
         parent_scope_key=parent_context.canonical_statement_scope_key,
         parent_statement_type=parent_context.statement_type,
         parent_value_key=parent_context.canonical_statement_value_key,
     )
+
+    if (
+        _source_local_parent_scope_conflicts_parent(
+            parent_context=parent_context,
+            source_local_parent_scope_value_keys_by_type=(
+                source_local_parent_scope_value_keys_by_type
+            ),
+        )
+        and not canonical_scope_parent_match
+    ):
+        return
     parent_code = normalize_code(parent_context.normalized_statement_code)
     source_local_controlled_parent_scope_match = (
         _source_local_parent_scope_matches_parent(
@@ -2021,6 +2068,67 @@ def _finalize_candidate_parent_set(
         parent_candidates=parent_candidates,
         truncation_notes=truncation_notes,
         was_truncated=was_truncated,
+    )
+
+
+def _find_canonical_scope_parent_contexts(
+    *,
+    child_context: SFIFinalContext,
+    contexts: Sequence[SFIFinalContext],
+    parent_statement_types: set[str],
+) -> list[SFIFinalContext]:
+    """Find finalized direct-parent SFIs named by the child canonical scope.
+
+    The lookup is intentionally generic: it uses only the configured direct parent
+    statement types, each candidate parent's statement type/value/scope, and the
+    child's canonical scope key. It does not assume curriculum-specific labels such as
+    grade, theme, strand, domain, unit, or topic.
+
+    Parameters
+    ----------
+    child_context
+        Final SFI context for the child whose canonical parent should be recalled.
+    contexts
+        All finalized SFI contexts available as possible parent candidates.
+    parent_statement_types
+        Configured direct parent statement types allowed for the child type.
+
+    Returns
+    -------
+    list[SFIFinalContext]
+        Deterministically ordered compatible parent contexts explicitly named by the
+        child canonical scope.
+    """
+
+    parent_contexts: list[SFIFinalContext] = []
+
+    if not child_context.canonical_statement_scope_key or not parent_statement_types:
+        return parent_contexts
+
+    for parent_context in contexts:
+        if parent_context.final_sfi_uuid == child_context.final_sfi_uuid:
+            continue
+
+        if parent_context.statement_type not in parent_statement_types:
+            continue
+
+        if not _canonical_scope_matches_parent(
+            child_scope_key=child_context.canonical_statement_scope_key,
+            parent_scope_key=parent_context.canonical_statement_scope_key,
+            parent_statement_type=parent_context.statement_type,
+            parent_value_key=parent_context.canonical_statement_value_key,
+        ):
+            continue
+
+        parent_contexts.append(parent_context)
+
+    return sorted(
+        parent_contexts,
+        key=lambda context: (
+            context.statement_type,
+            context.canonical_statement_value_key or "",
+            str(context.final_sfi_uuid),
+        ),
     )
 
 
@@ -3508,6 +3616,64 @@ def _table_context_keys_from_source_refs(record: SFIFinalRecord) -> set[str]:
     return keys
 
 
+def _validate_canonical_scope_parent_recall(
+    *,
+    candidate_parent_set: SFIHasChildCandidateParentSet,
+    child_context: SFIFinalContext,
+    parent_contexts: Sequence[SFIFinalContext],
+) -> None:
+    """Fail fast when canonical-scope parents are lost before the LLM request.
+
+    If finalized SFIs contain a direct parent explicitly named by the child's
+    compatible canonical scope, at least one such parent must survive into the bounded
+    candidate set. Otherwise the LLM can only choose from an incomplete menu and may be
+    forced into an unresolved root fallback.
+
+    Parameters
+    ----------
+    candidate_parent_set
+        Bounded parent candidate set that will be sent to relationship resolution.
+    child_context
+        Final SFI context for the child being resolved.
+    parent_contexts
+        Canonical-scope-compatible direct parent contexts found before bounding.
+
+    Raises
+    ------
+    ValueError
+        If compatible canonical parents exist but none survive in the bounded candidate
+        parent set.
+    """
+
+    if not parent_contexts:
+        return
+
+    expected_endpoint_ids = {str(context.final_sfi_uuid) for context in parent_contexts}
+    supplied_endpoint_ids = {
+        candidate.endpoint_id
+        for candidate in candidate_parent_set.parent_candidates
+        if not candidate.is_root
+    }
+
+    if expected_endpoint_ids & supplied_endpoint_ids:
+        return
+
+    expected_labels = [
+        (
+            f"{context.statement_type}={context.canonical_statement_value_key} "
+            f"({context.final_sfi_uuid})"
+        )
+        for context in parent_contexts
+    ]
+    raise ValueError(
+        f"Canonical-scope parent recall failed for child "
+        f"{child_context.final_sfi_uuid} ({child_context.statement_type}): "
+        f"child scope {child_context.canonical_statement_scope_key!r} names "
+        f"compatible direct parent candidates {expected_labels!r}, but the "
+        f"bounded parent set does not include any of them."
+    )
+
+
 def _validate_final_contexts_align_with_records(
     *, contexts: Sequence[SFIFinalContext], sfi_final_records: Sequence[SFIFinalRecord]
 ) -> None:
@@ -4130,6 +4296,14 @@ def _validate_selected_parent_candidate_against_source_local_scope(
         return
 
     if parent_candidate.canonical_statement_value_key in expected_value_keys:
+        return
+
+    if _canonical_scope_matches_parent(
+        child_scope_key=child_context.canonical_statement_scope_key,
+        parent_scope_key=parent_candidate.canonical_statement_scope_key,
+        parent_statement_type=parent_candidate.statement_type,
+        parent_value_key=parent_candidate.canonical_statement_value_key,
+    ):
         return
 
     raise ValueError(
