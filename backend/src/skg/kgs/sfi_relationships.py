@@ -2164,11 +2164,13 @@ def _infer_source_local_parent_scope_value_keys(
 ) -> dict[str, set[str]]:
     """Infer typed source-local controlled parent values for one child SFI.
 
-    The inference is intentionally label-aware: it reads typed source labels such as
-    table headers, table-column context labels, and section labels preserved from
-    candidate source refs, and it avoids scanning the child SFI's own description or
-    source text. This prevents a child's title from being mistaken for a parent
-    controlled value when the same phrase appears elsewhere as a valid organizer.
+    The inference is intentionally label-aware: it reads only typed hierarchy-bearing
+    source labels, such as section-path labels and source-context labels that
+    explicitly name configured statement types. It avoids scanning the child SFI's
+    own description, table-row text, objective/content text, activities, resources,
+    or evaluation prompts. This prevents an untyped child phrase from being mistaken
+    for a parent controlled value when the same phrase appears elsewhere as a valid
+    organizer.
 
     Parameters
     ----------
@@ -3405,18 +3407,117 @@ def _source_ref_text_list(*, key: str, source_ref: dict[str, object]) -> list[st
     return unique_nonempty(str(value).strip() for value in values_iterable)
 
 
+def _split_typed_source_hierarchy_segments(
+    *,
+    raw_text: str,
+    statement_type_aliases_by_type: dict[str, set[str]],
+) -> list[tuple[str, str]]:
+    """Split source text into typed hierarchy label/value segments.
+
+    This parser only emits segments whose label explicitly names a configured statement
+    type, such as `Theme: Number` or `Sub-Theme: Whole Number`. Untyped text is ignored
+    so words in a Topic, Performance Objective, Content item, activity, resource, or
+    evaluation prompt cannot be mistaken for a parent organizer. The matching is
+    configuration-driven and does not depend on any curriculum-specific labels.
+
+    Parameters
+    ----------
+    raw_text
+        Source-local text to parse. Artifact prefixes such as `section:` and
+        `table_header[0]:` may be present.
+    statement_type_aliases_by_type
+        Normalized statement-type aliases keyed by configured statement_type.
+
+    Returns
+    -------
+    list[tuple[str, str]]
+        Ordered `(statement_type, value_text)` pairs for typed hierarchy labels.
+    """
+
+    cleaned_text = re.sub(
+        r"^(?:section|table_columns|table_header\[[0-9]+\]):\s*",
+        "",
+        str(raw_text).strip(),
+        flags=re.IGNORECASE,
+    )
+
+    if not cleaned_text:
+        return []
+
+    alias_type_pairs = sorted(
+        (
+            (alias_key, statement_type)
+            for statement_type, aliases in statement_type_aliases_by_type.items()
+            for alias_key in aliases
+            if alias_key
+        ),
+        key=lambda item: (-len(item[0]), item[0], item[1]),
+    )
+
+    if not alias_type_pairs:
+        return []
+
+    alias_patterns: list[str] = []
+
+    for alias_key, _statement_type in alias_type_pairs:
+        alias_parts = [re.escape(part) for part in alias_key.split() if part]
+
+        if not alias_parts:
+            continue
+
+        alias_patterns.append(r"[\s_\-]*".join(alias_parts))
+
+    label_pattern = "|".join(dict.fromkeys(alias_patterns))
+
+    if not label_pattern:
+        return []
+
+    label_regex = re.compile(
+        rf"(?<![A-Za-z0-9])(?P<label>{label_pattern})\s*:", flags=re.IGNORECASE
+    )
+    matches = list(label_regex.finditer(cleaned_text))
+
+    if not matches:
+        return []
+
+    statement_type_by_alias = dict(alias_type_pairs)
+    typed_segments: list[tuple[str, str]] = []
+
+    for match_index, match in enumerate(matches):
+        value_start = match.end()
+        value_end = (
+            matches[match_index + 1].start()
+            if match_index + 1 < len(matches)
+            else len(cleaned_text)
+        )
+        label_key = normalize_text(match.group("label"))
+        statement_type = statement_type_by_alias.get(label_key)
+        value_text = cleaned_text[value_start:value_end].strip(" |\n\t")
+
+        if statement_type and value_text:
+            typed_segments.append((statement_type, value_text))
+
+    return typed_segments
+
+
 def _typed_source_local_parent_texts_by_type(
     *,
     child_context: SFIFinalContext,
     kg_config: CreateKGConfig,
     parent_statement_types: set[str],
 ) -> dict[str, list[str]]:
-    """Collect label-aware local source texts for possible parent types.
+    """Collect typed hierarchy-bearing local source texts for parent types.
+
+    Only typed source hierarchy labels are eligible for source-local parent-scope
+    inference. This intentionally excludes untyped table rows, Topic titles,
+    Performance Objective text, Content text, activities, resources, and evaluation
+    prompts. Those untyped fields may contain words that are also valid controlled
+    organizer values elsewhere, but they do not prove the child's direct parent.
 
     Parameters
     ----------
     child_context
-        Final SFI context whose source-context labels should be parsed.
+        Final SFI context whose hierarchy-bearing source labels should be parsed.
     kg_config
         Runtime KG configuration containing statement-type aliases.
     parent_statement_types
@@ -3425,9 +3526,7 @@ def _typed_source_local_parent_texts_by_type(
     Returns
     -------
     dict[str, list[str]]
-        Ordered source-local texts keyed by parent statement_type. Text labeled as the
-        child's own statement type is excluded so child titles do not become
-        parent-scope evidence.
+        Ordered typed source-local value texts keyed by parent statement_type.
     """
 
     child_statement_type = child_context.statement_type
@@ -3435,24 +3534,26 @@ def _typed_source_local_parent_texts_by_type(
     texts_by_type: dict[str, list[str]] = {
         parent_statement_type: [] for parent_statement_type in parent_statement_types
     }
+    hierarchy_labels = [
+        *child_context.section_path_labels,
+        *child_context.source_context_labels,
+    ]
 
-    for source_context_label in child_context.source_context_labels:
-        for segment in _source_context_label_segments(source_context_label):
-            segment_statement_type = _source_label_statement_type(
-                segment=segment,
-                statement_type_aliases_by_type=statement_type_aliases_by_type,
-            )
-
+    for hierarchy_label in hierarchy_labels:
+        for (
+            segment_statement_type,
+            segment_value,
+        ) in _split_typed_source_hierarchy_segments(
+            raw_text=hierarchy_label,
+            statement_type_aliases_by_type=statement_type_aliases_by_type,
+        ):
             if segment_statement_type == child_statement_type:
                 continue
 
-            for parent_statement_type in sorted(parent_statement_types):
-                if segment_statement_type is None:
-                    texts_by_type[parent_statement_type].append(segment)
-                elif segment_statement_type == parent_statement_type:
-                    texts_by_type[parent_statement_type].append(
-                        segment.split(":", 1)[1].strip()
-                    )
+            if segment_statement_type not in parent_statement_types:
+                continue
+
+            texts_by_type[segment_statement_type].append(segment_value)
 
     return {
         parent_statement_type: unique_nonempty(texts)
