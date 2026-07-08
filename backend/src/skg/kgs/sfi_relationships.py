@@ -3352,60 +3352,6 @@ def _typed_source_local_parent_texts_by_type(
     }
 
 
-def _with_record_source_context_labels(
-    *, contexts: Sequence[SFIFinalContext], sfi_final_records: Sequence[SFIFinalRecord]
-) -> list[SFIFinalContext]:
-    """Attach source-context labels from final records to loaded contexts.
-
-    This keeps Step 9 compatible with older `sfi_final_contexts.json` artifacts that
-    predate the explicit `source_context_labels` field while allowing fresh Step 8
-    artifacts to carry the same evidence directly.
-
-    Parameters
-    ----------
-    contexts
-        Loaded final SFI contexts.
-    sfi_final_records
-        Current final SFI records containing candidate source refs.
-
-    Returns
-    -------
-    list[SFIFinalContext]
-        Contexts with source-context labels populated from the corresponding final
-        records when they were absent or incomplete.
-    """
-
-    records_by_uuid = {record.final_sfi_uuid: record for record in sfi_final_records}
-    enriched_contexts: list[SFIFinalContext] = []
-
-    for context in contexts:
-        record = records_by_uuid.get(context.final_sfi_uuid)
-
-        if record is None:
-            enriched_contexts.append(context)
-            continue
-
-        source_context_labels = unique_nonempty(
-            label
-            for source_ref in record.candidate_source_refs
-            if isinstance(source_ref, dict)
-            for label in _source_ref_text_list(
-                key="source_context_labels", source_ref=source_ref
-            )
-        )
-
-        if source_context_labels == context.source_context_labels:
-            enriched_contexts.append(context)
-        else:
-            enriched_contexts.append(
-                context.model_copy(
-                    update={"source_context_labels": source_context_labels}
-                )
-            )
-
-    return enriched_contexts
-
-
 def _source_ref_int_list(*, key: str, source_ref: dict[str, object]) -> list[int]:
     """Collect sorted integer values from one candidate source-ref field.
 
@@ -3665,8 +3611,7 @@ def _validate_final_contexts_align_with_records(
                 context.source_context_keys == record.source_context_keys
             ),
             "source_context_labels": (
-                not context.source_context_labels
-                or context.source_context_labels == expected_source_context_labels
+                context.source_context_labels == expected_source_context_labels
             ),
             "source_page_indexes": context.source_page_indexes
             == record.source_page_indexes,
@@ -4353,9 +4298,6 @@ def resolve_has_child_edges(
     # parent sets for hasChild resolution requests.
     extraction_windows = _load_extraction_windows(kg_dirs)
     contexts = _load_final_contexts(contexts_fp)
-    contexts = _with_record_source_context_labels(
-        contexts=contexts, sfi_final_records=sfi_final_records
-    )
     _validate_final_contexts_align_with_records(
         contexts=contexts, sfi_final_records=sfi_final_records
     )
