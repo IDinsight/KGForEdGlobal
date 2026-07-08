@@ -28,14 +28,14 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.kgs.create_extraction_windows import (
-    build_llm_extraction_windows,
-    plan_extraction_windows,
-)
 from skg.kgs.llm import KGUsageTracker
 from skg.kgs.sfi_dedup import merge_sfi_candidates
 from skg.kgs.sfi_export import compile_academic_standards_kg
 from skg.kgs.sfi_extraction import extract_sfi_candidates_from_windows
+from skg.kgs.sfi_extraction_windows import (
+    build_llm_extraction_windows,
+    plan_extraction_windows,
+)
 from skg.kgs.sfi_finalization import mint_final_sfi_ids
 from skg.kgs.sfi_registry import build_candidate_registry
 from skg.kgs.sfi_relationships import resolve_has_child_edges
