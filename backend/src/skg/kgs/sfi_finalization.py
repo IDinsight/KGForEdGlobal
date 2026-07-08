@@ -510,6 +510,14 @@ def _build_sfi_final_contexts(
         source_context_labels = _source_ref_text_values(
             key="source_context_labels", record=record
         )
+
+        if not source_context_labels:
+            raise ValueError(
+                f"Final SFI {record.final_sfi_uuid} has no source_context_labels "
+                f"in candidate_source_refs; rerun SFI registry and dedup with "
+                f"source-context-label support before SFI finalization."
+            )
+
         contexts.append(
             SFIFinalContext(
                 audit_flags=record.audit_flags,

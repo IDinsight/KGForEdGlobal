@@ -971,11 +971,11 @@ class SFIRegistryCandidate(BaseSchema):
         min_length=1,
     )
     source_context_labels: list[str] = Field(
-        default_factory=list,
         description=(
             "Human-readable source-derived context labels, such as section path, "
             "source segment, table header, or table row context."
         ),
+        min_length=1,
     )
     source_segment_ids: list[str] = Field(
         description="ExtractionWindow.source_segment_ids for source recovery.",
@@ -1161,8 +1161,8 @@ class SFIDedupReviewCandidate(BaseSchema):
         min_length=1,
     )
     source_context_labels: list[str] = Field(
-        default_factory=list,
         description="Human-readable source-derived context labels from the registry.",
+        min_length=1,
     )
     source_segment_ids: list[str] = Field(
         description="Source segment IDs associated with the candidate.", min_length=1
@@ -1492,13 +1492,13 @@ class SFIFinalContext(BaseSchema):
     section_path_labels: list[str] = Field(default_factory=list)
     source_context_keys: list[str] = Field(default_factory=list)
     source_context_labels: list[str] = Field(
-        default_factory=list,
         description=(
             "Source-visible context labels recovered from candidate source refs, "
             "such as section labels and typed table header labels. These labels are "
             "used only as relationship-resolution evidence and never as minted "
             "relationship endpoints."
         ),
+        min_length=1,
     )
     source_order: int = Field(description="Deterministic source-order index.", ge=0)
     source_page_indexes: list[int] = Field(default_factory=list)
