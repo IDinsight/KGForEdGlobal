@@ -38,6 +38,7 @@ SAME_SOURCE_SEGMENT_REASON = "same_source_segment"
 SAME_SOURCE_WINDOW_REASON = "same_source_window"
 SAME_TABLE_CONTEXT_REASON = "same_table_context"
 SAME_TABLE_IMMEDIATE_PARENT_REASON = "same_table_immediate_parent"
+SOURCE_LOCAL_CONTROLLED_PARENT_SCOPE_REASON = "source_local_controlled_parent_scope"
 SOURCE_SCOPE_GROUPING_REASON = "source_scope_grouping"
 SOURCE_VISIBLE_DIRECT_PARENT_REASON = "source_visible_direct_parent"
 STATEMENT_TYPE_COMPATIBLE_REASON = "statement_type_compatible"
@@ -56,6 +57,7 @@ HARD_LOCAL_DIRECT_PARENT_REASONS = frozenset(
         CANONICAL_SCOPE_PARENT_MATCH_REASON,
         CODE_PARENT_HINT_REASON,
         LOCAL_ACTIVE_OUTLINE_DIRECT_PARENT_REASON,
+        SOURCE_LOCAL_CONTROLLED_PARENT_SCOPE_REASON,
         SAME_TABLE_CONTEXT_REASON,
         SAME_TABLE_IMMEDIATE_PARENT_REASON,
         SOURCE_SCOPE_GROUPING_REASON,
@@ -484,7 +486,8 @@ def _candidate_has_hard_local_direct_parent_evidence(
     -------
     bool
         True when the candidate has code-local, canonical-scope, local active-outline,
-        same-table, source-scope, or direct code-prefix evidence.
+        source-local controlled parent scope, same-table, source-scope, or direct
+        code-prefix evidence.
     """
 
     if candidate.is_root:

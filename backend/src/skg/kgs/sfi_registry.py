@@ -75,7 +75,11 @@ def _build_block_source_context(block: dict[str, Any]) -> tuple[list[str], list[
     local_code = str(block.get("local_code") or "").strip()
     section_texts = _extract_section_texts(block.get("section_path") or [])
 
-    for section_label in section_texts:
+    # DocumentIR section paths can be cumulative. Emit block context labels
+    # recent/local-first so label truncation preserves the nearest section evidence
+    # instead of stale broad headings from earlier in the document. Keep key_parts in
+    # source path order below to avoid unnecessary source-context-key churn.
+    for section_label in reversed(section_texts):
         labels.append(f"section:{section_label}")
 
     if block_type:
@@ -978,7 +982,8 @@ def _extract_section_texts(section_path: Sequence[Any]) -> list[str]:
     Returns
     -------
     list[str]
-        Truncated section labels in path order, excluding empty entries.
+        Truncated section labels in original path order, excluding empty entries.
+        Callers may reverse this list when they need recent/local-first labels.
     """
 
     section_texts: list[str] = []

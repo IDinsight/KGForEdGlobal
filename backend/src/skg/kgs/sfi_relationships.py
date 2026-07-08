@@ -64,6 +64,7 @@ from skg.kgs.validators import (
     SAME_SOURCE_WINDOW_REASON,
     SAME_TABLE_CONTEXT_REASON,
     SAME_TABLE_IMMEDIATE_PARENT_REASON,
+    SOURCE_LOCAL_CONTROLLED_PARENT_SCOPE_REASON,
     SOURCE_SCOPE_GROUPING_REASON,
     SOURCE_VISIBLE_DIRECT_PARENT_REASON,
     STATEMENT_TYPE_COMPATIBLE_REASON,
@@ -72,6 +73,13 @@ from skg.kgs.validators import (
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, open_json_type, write_to_json
+
+
+@dataclass(frozen=True)
+class _ControlledValueMatchPolicy:
+    """Normalized controlled-value aliases for one configured statement type."""
+
+    alias_to_value_key: dict[str, str]
 
 
 @dataclass
@@ -664,6 +672,7 @@ def _build_candidate_parent_sets(
     parent_statement_types_by_child_type = _build_direct_parent_statement_types(
         kg_config
     )
+    value_match_policies = _build_controlled_value_match_policies(kg_config)
     outline_parent_by_child_uuid = _build_active_outline_parent_map(
         contexts=contexts,
         kg_config=kg_config,
@@ -684,6 +693,15 @@ def _build_candidate_parent_sets(
         child_code = normalize_code(child_context.normalized_statement_code)
         child_table_keys = table_keys_by_uuid[child_context.final_sfi_uuid]
         evidence_by_endpoint_id: dict[str, _ParentEvidence] = {}
+        source_local_parent_scope_value_keys_by_type = (
+            _infer_source_local_parent_scope_value_keys(
+                child_context=child_context,
+                parent_statement_types=parent_statement_types_by_child_type.get(
+                    child_context.statement_type, set()
+                ),
+                value_match_policies=value_match_policies,
+            )
+        )
 
         # Add high-signal evidence from the active finalized-SFI outline stack.
         #
@@ -694,11 +712,19 @@ def _build_candidate_parent_sets(
         if outline_parent_context := outline_parent_by_child_uuid.get(
             child_context.final_sfi_uuid
         ):
-            if not _canonical_scope_conflicts_parent(
-                child_scope_key=child_context.canonical_statement_scope_key,
-                parent_scope_key=outline_parent_context.canonical_statement_scope_key,
-                parent_statement_type=outline_parent_context.statement_type,
-                parent_value_key=outline_parent_context.canonical_statement_value_key,
+            if not (
+                _canonical_scope_conflicts_parent(
+                    child_scope_key=child_context.canonical_statement_scope_key,
+                    parent_scope_key=outline_parent_context.canonical_statement_scope_key,
+                    parent_statement_type=outline_parent_context.statement_type,
+                    parent_value_key=outline_parent_context.canonical_statement_value_key,
+                )
+                or _source_local_parent_scope_conflicts_parent(
+                    parent_context=outline_parent_context,
+                    source_local_parent_scope_value_keys_by_type=(
+                        source_local_parent_scope_value_keys_by_type
+                    ),
+                )
             ):
                 _add_parent_evidence(
                     evidence_by_endpoint_id=evidence_by_endpoint_id,
@@ -734,6 +760,9 @@ def _build_candidate_parent_sets(
                 parent_context=parent_context,
                 parent_statement_types_by_child_type=parent_statement_types_by_child_type,
                 parent_table_keys=table_keys_by_uuid[parent_context.final_sfi_uuid],
+                source_local_parent_scope_value_keys_by_type=(
+                    source_local_parent_scope_value_keys_by_type
+                ),
             )
 
         parent_set = _finalize_candidate_parent_set(
@@ -768,6 +797,52 @@ def _build_controlled_scope_part_label(statement_type: str | None) -> str:
 
     label = re.sub(r"[^0-9a-z]+", "_", normalize_text(statement_type or "")).strip("_")
     return label or "scope"
+
+
+def _build_controlled_value_match_policies(
+    kg_config: CreateKGConfig,
+) -> dict[str, _ControlledValueMatchPolicy]:
+    """Build normalized controlled-value match policies from runtime config.
+
+    Parameters
+    ----------
+    kg_config
+        Runtime KG configuration containing statement-type controlled values.
+
+    Returns
+    -------
+    dict[str, _ControlledValueMatchPolicy]
+        Match policies keyed by source-facing statement_type. Statement types without
+        configured controlled values are omitted.
+    """
+
+    policies: dict[str, _ControlledValueMatchPolicy] = {}
+
+    for statement_type_policy in kg_config.academic_standards.statement_type_policy:
+        alias_to_value_key: dict[str, str] = {}
+
+        for controlled_value in statement_type_policy.controlled_values:
+            canonical_value_key = _normalize_controlled_value_key(
+                controlled_value.canonical_value
+            )
+
+            if not canonical_value_key:
+                continue
+
+            aliases = [controlled_value.canonical_value, *controlled_value.aliases]
+
+            for alias in aliases:
+                alias_key = _normalize_controlled_value_key(alias)
+
+                if alias_key:
+                    alias_to_value_key[alias_key] = canonical_value_key
+
+        if alias_to_value_key:
+            policies[statement_type_policy.statement_type] = (
+                _ControlledValueMatchPolicy(alias_to_value_key=alias_to_value_key)
+            )
+
+    return policies
 
 
 def _build_direct_parent_statement_types(
@@ -1391,6 +1466,52 @@ def _context_source_position_key(
     )
 
 
+def _controlled_value_keys_in_text(
+    *, policy: _ControlledValueMatchPolicy, text: str
+) -> set[str]:
+    """Find configured controlled-value keys mentioned in source-local text.
+
+    Matching is generic and curriculum-agnostic: exact aliases match directly, and
+    aliases may also match as complete normalized phrases inside a broader section or
+    table label. This handles labels such as `Mathematics Syllabus for P3` when the
+    configured controlled value is `P3` without hard-coding any grade terminology.
+
+    Parameters
+    ----------
+    policy
+        Controlled-value match policy for the parent statement type.
+    text
+        Source-local label or description to inspect.
+
+    Returns
+    -------
+    set[str]
+        Normalized canonical controlled-value keys found in the supplied text.
+    """
+
+    text_key = _normalize_controlled_value_key(text)
+
+    if not text_key:
+        return set()
+
+    matched_value_keys: set[str] = set()
+    exact_value_key = policy.alias_to_value_key.get(text_key)
+
+    if exact_value_key:
+        matched_value_keys.add(exact_value_key)
+
+    padded_text_key = f" {text_key} "
+
+    for alias_key, canonical_value_key in policy.alias_to_value_key.items():
+        if alias_key.isdigit() or len(alias_key) < 2:
+            continue
+
+        if f" {alias_key} " in padded_text_key:
+            matched_value_keys.add(canonical_value_key)
+
+    return matched_value_keys
+
+
 def _detect_sfi_cycles(edges: Sequence[SFIHasChildEdge]) -> list[list[str]]:
     """Detect directed cycles among SFI-to-SFI hasChild edges.
 
@@ -1461,6 +1582,7 @@ def _evaluate_parent_child_relationship(
     parent_context: SFIFinalContext,
     parent_statement_types_by_child_type: dict[str, set[str]],
     parent_table_keys: set[str],
+    source_local_parent_scope_value_keys_by_type: dict[str, set[str]],
 ) -> None:
     """Evaluate relationship between a child and parent context to record evidence.
 
@@ -1524,6 +1646,8 @@ def _evaluate_parent_child_relationship(
         Allowed direct parent statement types keyed by child statement_type.
     parent_table_keys
         Table context keys for the potential parent.
+    source_local_parent_scope_value_keys_by_type
+        Inferred local controlled parent value keys keyed by parent statement_type.
     """
 
     if parent_context.statement_type not in parent_statement_types_by_child_type.get(
@@ -1539,6 +1663,14 @@ def _evaluate_parent_child_relationship(
     ):
         return
 
+    if _source_local_parent_scope_conflicts_parent(
+        parent_context=parent_context,
+        source_local_parent_scope_value_keys_by_type=(
+            source_local_parent_scope_value_keys_by_type
+        ),
+    ):
+        return
+
     canonical_scope_parent_match = _canonical_scope_matches_parent(
         child_scope_key=child_context.canonical_statement_scope_key,
         parent_scope_key=parent_context.canonical_statement_scope_key,
@@ -1546,6 +1678,14 @@ def _evaluate_parent_child_relationship(
         parent_value_key=parent_context.canonical_statement_value_key,
     )
     parent_code = normalize_code(parent_context.normalized_statement_code)
+    source_local_controlled_parent_scope_match = (
+        _source_local_parent_scope_matches_parent(
+            parent_context=parent_context,
+            source_local_parent_scope_value_keys_by_type=(
+                source_local_parent_scope_value_keys_by_type
+            ),
+        )
+    )
     matched_section_path_label = _context_matches_section_path(
         child_context=child_context, parent_context=parent_context
     )
@@ -1571,6 +1711,14 @@ def _evaluate_parent_child_relationship(
     # globally repeated or audit-disambiguated codes cannot become high-signal parent
     # evidence without compatible local source support.
     simple_rules: tuple[tuple[bool, str, str], ...] = (
+        (
+            source_local_controlled_parent_scope_match,
+            SOURCE_LOCAL_CONTROLLED_PARENT_SCOPE_REASON,
+            (
+                "Parent controlled value matches the child's nearest source-local "
+                "label for the configured direct parent statement type."
+            ),
+        ),
         (
             canonical_scope_parent_match,
             CANONICAL_SCOPE_PARENT_MATCH_REASON,
@@ -1887,6 +2035,61 @@ def _get_hierarchy_statement_types(kg_config: CreateKGConfig) -> list[str]:
         return list(standards.sfi_has_child_statement_type_hierarchy)
 
     return [item.statement_type for item in standards.statement_type_policy]
+
+
+def _infer_source_local_parent_scope_value_keys(
+    *,
+    child_context: SFIFinalContext,
+    parent_statement_types: set[str],
+    value_match_policies: dict[str, _ControlledValueMatchPolicy],
+) -> dict[str, set[str]]:
+    """Infer nearest source-local controlled parent values for one child SFI.
+
+    The inference uses only configured controlled values and the child's recovered
+    source-local labels. It is not specific to grade/course/strand terminology. For
+    each allowed parent statement type with controlled values, the first recent/local
+    label that mentions a controlled value supplies the expected parent value key. This
+    prevents stale carry-forward parents from earlier sections from outranking the
+    local source scope.
+
+    Parameters
+    ----------
+    child_context
+        Final SFI context whose local source labels are inspected.
+    parent_statement_types
+        Allowed direct parent statement types for the child.
+    value_match_policies
+        Controlled-value match policies keyed by statement_type.
+
+    Returns
+    -------
+    dict[str, set[str]]
+        Inferred local controlled parent value keys keyed by parent statement_type.
+    """
+
+    inferred_value_keys_by_type: dict[str, set[str]] = {}
+    local_texts = unique_nonempty(
+        [
+            *child_context.section_path_labels,
+            *child_context.candidate_source_texts,
+            child_context.description,
+        ]
+    )
+
+    for parent_statement_type in sorted(parent_statement_types):
+        policy = value_match_policies.get(parent_statement_type)
+
+        if policy is None:
+            continue
+
+        for local_text in local_texts:
+            value_keys = _controlled_value_keys_in_text(policy=policy, text=local_text)
+
+            if value_keys:
+                inferred_value_keys_by_type[parent_statement_type] = value_keys
+                break
+
+    return inferred_value_keys_by_type
 
 
 def _is_nearby_source_window(
@@ -2403,6 +2606,23 @@ def _load_sfi_final_summary(kg_dirs: KGDirs) -> SFIFinalSummary | None:
     return SFIFinalSummary.model_validate(open_json_type(summary_fp))
 
 
+def _normalize_controlled_value_key(value: object) -> str:
+    """Normalize controlled-value text for alias and scope comparison.
+
+    Parameters
+    ----------
+    value
+        Raw controlled value, alias, source label, or description.
+
+    Returns
+    -------
+    str
+        Casefolded key with non-alphanumeric runs collapsed to spaces.
+    """
+
+    return re.sub(r"[^0-9a-z]+", " ", str(value or "").casefold()).strip()
+
+
 def _parent_candidate_evidence_tier(  # pylint: disable=R0911
     candidate: SFIHasChildParentCandidate,
 ) -> int:
@@ -2478,6 +2698,7 @@ def _parent_candidate_rank(
 
     weights = {
         SOURCE_VISIBLE_DIRECT_PARENT_REASON: 130,
+        SOURCE_LOCAL_CONTROLLED_PARENT_SCOPE_REASON: 120,
         CANONICAL_SCOPE_PARENT_MATCH_REASON: 110,
         CODE_PARENT_HINT_REASON: 100,
         LOCAL_ACTIVE_OUTLINE_DIRECT_PARENT_REASON: 100,
@@ -2873,6 +3094,68 @@ def _should_add_code_parent_hint_evidence(
         "same_code_different_content" in child_context.audit_flags
         or "same_code_different_content" in parent_context.audit_flags
     )
+
+
+def _source_local_parent_scope_conflicts_parent(
+    *,
+    parent_context: SFIFinalContext,
+    source_local_parent_scope_value_keys_by_type: dict[str, set[str]],
+) -> bool:
+    """Check whether a parent conflicts with a child's local controlled scope.
+
+    Parameters
+    ----------
+    parent_context
+        Candidate parent final SFI context.
+    source_local_parent_scope_value_keys_by_type
+        Inferred local controlled parent value keys keyed by parent statement_type.
+
+    Returns
+    -------
+    bool
+        True when the child locally names a value for this parent type and the
+        candidate parent has a different canonical value key.
+    """
+
+    expected_value_keys = source_local_parent_scope_value_keys_by_type.get(
+        parent_context.statement_type, set()
+    )
+
+    if not expected_value_keys or not parent_context.canonical_statement_value_key:
+        return False
+
+    return parent_context.canonical_statement_value_key not in expected_value_keys
+
+
+def _source_local_parent_scope_matches_parent(
+    *,
+    parent_context: SFIFinalContext,
+    source_local_parent_scope_value_keys_by_type: dict[str, set[str]],
+) -> bool:
+    """Check whether a parent matches a child's local controlled scope.
+
+    Parameters
+    ----------
+    parent_context
+        Candidate parent final SFI context.
+    source_local_parent_scope_value_keys_by_type
+        Inferred local controlled parent value keys keyed by parent statement_type.
+
+    Returns
+    -------
+    bool
+        True when the child locally names a value for this parent type and the
+        candidate parent has the same canonical value key.
+    """
+
+    expected_value_keys = source_local_parent_scope_value_keys_by_type.get(
+        parent_context.statement_type, set()
+    )
+
+    if not expected_value_keys or not parent_context.canonical_statement_value_key:
+        return False
+
+    return parent_context.canonical_statement_value_key in expected_value_keys
 
 
 def _source_ref_int_list(*, key: str, source_ref: dict[str, object]) -> list[int]:
