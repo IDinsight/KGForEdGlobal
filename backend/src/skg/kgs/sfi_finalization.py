@@ -507,6 +507,9 @@ def _build_sfi_final_contexts(
         table_row_indexes = _source_ref_int_values(
             key="table_row_indexes", record=record
         )
+        source_context_labels = _source_ref_text_values(
+            key="source_context_labels", record=record
+        )
         contexts.append(
             SFIFinalContext(
                 audit_flags=record.audit_flags,
@@ -520,6 +523,7 @@ def _build_sfi_final_contexts(
                 normalized_statement_type=record.normalized_statement_type,
                 section_path_labels=section_path_labels,
                 source_context_keys=record.source_context_keys,
+                source_context_labels=source_context_labels,
                 source_order=source_order,
                 source_page_indexes=record.source_page_indexes,
                 source_registry_candidate_ids=record.source_registry_candidate_ids,
@@ -1146,6 +1150,45 @@ def _source_ref_int_values(*, key: str, record: SFIFinalRecord) -> list[int]:
                 continue
 
     return sorted(values)
+
+
+def _source_ref_text_values(*, key: str, record: SFIFinalRecord) -> list[str]:
+    """Collect unique string values from final-record source refs.
+
+    Parameters
+    ----------
+    key
+        Candidate source-ref key to collect, such as `source_context_labels`.
+    record
+        Final SFI record whose candidate source refs should be inspected.
+
+    Returns
+    -------
+    list[str]
+        Unique non-empty string values in first-seen source-ref order. Invalid or empty
+        values are ignored.
+    """
+
+    values: list[str] = []
+
+    for source_ref in record.candidate_source_refs:
+        if not isinstance(source_ref, dict):
+            continue
+
+        raw_values = source_ref.get(key) or []
+
+        if isinstance(raw_values, (str, bytes)) or not isinstance(raw_values, Sequence):
+            values_iterable: Any = [raw_values]
+        else:
+            values_iterable = raw_values
+
+        for value in values_iterable:
+            text = str(value).strip()
+
+            if text and text not in values:
+                values.append(text)
+
+    return values
 
 
 def _validate_final_sfi_records(final_sfi_records: Sequence[SFIFinalRecord]) -> None:

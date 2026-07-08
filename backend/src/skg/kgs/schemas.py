@@ -1491,6 +1491,15 @@ class SFIFinalContext(BaseSchema):
     normalized_statement_type: NormalizedStatementType
     section_path_labels: list[str] = Field(default_factory=list)
     source_context_keys: list[str] = Field(default_factory=list)
+    source_context_labels: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Source-visible context labels recovered from candidate source refs, "
+            "such as section labels and typed table header labels. These labels are "
+            "used only as relationship-resolution evidence and never as minted "
+            "relationship endpoints."
+        ),
+    )
     source_order: int = Field(description="Deterministic source-order index.", ge=0)
     source_page_indexes: list[int] = Field(default_factory=list)
     source_registry_candidate_ids: list[str] = Field(default_factory=list)

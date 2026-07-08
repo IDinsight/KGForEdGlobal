@@ -696,6 +696,7 @@ def _build_candidate_parent_sets(
         source_local_parent_scope_value_keys_by_type = (
             _infer_source_local_parent_scope_value_keys(
                 child_context=child_context,
+                kg_config=kg_config,
                 parent_statement_types=parent_statement_types_by_child_type.get(
                     child_context.statement_type, set()
                 ),
@@ -976,6 +977,7 @@ def _build_edges_from_responses(
     *,
     document_ir: DocumentIR,
     framework_uuid: uuid.UUID,
+    kg_config: CreateKGConfig,
     parent_sets: Sequence[SFIHasChildCandidateParentSet],
     responses: Sequence[SFIHasChildResolutionResponse],
 ) -> list[SFIHasChildEdge]:
@@ -1096,6 +1098,8 @@ def _build_edges_from_responses(
         Source DocumentIR used to scope relationship IDs.
     framework_uuid
         Deterministic StandardsFramework root UUID.
+    kg_config
+        Runtime KG configuration containing controlled-value and parent-scope policy.
     parent_sets
         Bounded parent candidate sets supplied to the LLM.
     responses
@@ -1165,6 +1169,12 @@ def _build_edges_from_responses(
 
             # Build resolved edges.
             for parent_endpoint_id in child_resolution.selected_parent_endpoint_ids:
+                parent_candidate = parent_candidates[parent_endpoint_id]
+                _validate_selected_parent_candidate_against_source_local_scope(
+                    child_context=child_context,
+                    kg_config=kg_config,
+                    parent_candidate=parent_candidate,
+                )
                 edges.append(
                     _build_edge(
                         child_context=child_context,
@@ -1172,7 +1182,7 @@ def _build_edges_from_responses(
                         document_ir=document_ir,
                         framework_uuid=framework_uuid,
                         llm_reason=child_resolution.reason,
-                        parent_candidate=parent_candidates[parent_endpoint_id],
+                        parent_candidate=parent_candidate,
                         unresolved_root_fallback=False,
                     )
                 )
@@ -1498,7 +1508,7 @@ def _controlled_value_keys_in_text(
     exact_value_key = policy.alias_to_value_key.get(text_key)
 
     if exact_value_key:
-        matched_value_keys.add(exact_value_key)
+        return {exact_value_key}
 
     padded_text_key = f" {text_key} "
 
@@ -2040,22 +2050,24 @@ def _get_hierarchy_statement_types(kg_config: CreateKGConfig) -> list[str]:
 def _infer_source_local_parent_scope_value_keys(
     *,
     child_context: SFIFinalContext,
+    kg_config: CreateKGConfig,
     parent_statement_types: set[str],
     value_match_policies: dict[str, _ControlledValueMatchPolicy],
 ) -> dict[str, set[str]]:
-    """Infer nearest source-local controlled parent values for one child SFI.
+    """Infer typed source-local controlled parent values for one child SFI.
 
-    The inference uses only configured controlled values and the child's recovered
-    source-local labels. It is not specific to grade/course/strand terminology. For
-    each allowed parent statement type with controlled values, the first recent/local
-    label that mentions a controlled value supplies the expected parent value key. This
-    prevents stale carry-forward parents from earlier sections from outranking the
-    local source scope.
+    The inference is intentionally label-aware: it reads typed source labels such as
+    table headers, table-column context labels, and section labels preserved from
+    candidate source refs, and it avoids scanning the child SFI's own description or
+    source text. This prevents a child's title from being mistaken for a parent
+    controlled value when the same phrase appears elsewhere as a valid organizer.
 
     Parameters
     ----------
     child_context
-        Final SFI context whose local source labels are inspected.
+        Final SFI context whose typed local source labels are inspected.
+    kg_config
+        Runtime KG configuration containing statement-type aliases.
     parent_statement_types
         Allowed direct parent statement types for the child.
     value_match_policies
@@ -2068,12 +2080,10 @@ def _infer_source_local_parent_scope_value_keys(
     """
 
     inferred_value_keys_by_type: dict[str, set[str]] = {}
-    local_texts = unique_nonempty(
-        [
-            *child_context.section_path_labels,
-            *child_context.candidate_source_texts,
-            child_context.description,
-        ]
+    local_texts_by_parent_type = _typed_source_local_parent_texts_by_type(
+        child_context=child_context,
+        kg_config=kg_config,
+        parent_statement_types=parent_statement_types,
     )
 
     for parent_statement_type in sorted(parent_statement_types):
@@ -2082,7 +2092,7 @@ def _infer_source_local_parent_scope_value_keys(
         if policy is None:
             continue
 
-        for local_text in local_texts:
+        for local_text in local_texts_by_parent_type.get(parent_statement_type, []):
             value_keys = _controlled_value_keys_in_text(policy=policy, text=local_text)
 
             if value_keys:
@@ -2090,6 +2100,47 @@ def _infer_source_local_parent_scope_value_keys(
                 break
 
     return inferred_value_keys_by_type
+
+
+def _label_matches_statement_type(
+    *,
+    label: str,
+    statement_type: str,
+    statement_type_aliases_by_type: dict[str, set[str]],
+) -> bool:
+    """Return whether a normalized source label names one statement type.
+
+    Parameters
+    ----------
+    label
+        Source-local label text, usually the portion before a colon.
+    statement_type
+        Canonical statement_type whose aliases should be matched.
+    statement_type_aliases_by_type
+        Normalized statement-type aliases keyed by canonical statement_type.
+
+    Returns
+    -------
+    bool
+        True when the label is exactly an alias or begins with an alias followed by a
+        number or separator, such as `Unit 10` for the configured `Unit` type.
+    """
+
+    label_key = normalize_text(label)
+
+    if not label_key:
+        return False
+
+    for alias_key in statement_type_aliases_by_type.get(statement_type, set()):
+        if not alias_key:
+            continue
+
+        if label_key == alias_key or re.match(
+            rf"^{re.escape(alias_key)}(?:\s|\d|$)", label_key
+        ):
+            return True
+
+    return False
 
 
 def _is_nearby_source_window(
@@ -2280,6 +2331,7 @@ def _load_and_validate_existing_relationship_artifacts(
         expected_edges = _build_edges_from_responses(
             document_ir=document_ir,
             framework_uuid=framework_uuid,
+            kg_config=kg_config,
             parent_sets=parent_sets,
             responses=loaded_responses,
         )
@@ -3096,6 +3148,64 @@ def _should_add_code_parent_hint_evidence(
     )
 
 
+def _source_context_label_segments(text: str) -> list[str]:
+    """Split one source-context label into source-local semantic segments.
+
+    Parameters
+    ----------
+    text
+        Source-context label from a final SFI context.
+
+    Returns
+    -------
+    list[str]
+        Ordered non-empty source-local label segments with artifact prefixes removed.
+    """
+
+    cleaned_text = re.sub(
+        r"^(?:section|table_columns|table_header\[[0-9]+\]):\s*",
+        "",
+        str(text).strip(),
+        flags=re.IGNORECASE,
+    )
+    raw_segments = re.split(r"\s*(?:\|\|+|\|)\s*", cleaned_text)
+    return unique_nonempty(segment.strip() for segment in raw_segments if segment)
+
+
+def _source_label_statement_type(
+    *, segment: str, statement_type_aliases_by_type: dict[str, set[str]]
+) -> str | None:
+    """Identify the configured statement type explicitly named by a segment label.
+
+    Parameters
+    ----------
+    segment
+        Source-local segment, such as `SUB-TOPIC AREA: FRACTIONS` or `Unit 4: ...`.
+    statement_type_aliases_by_type
+        Normalized statement-type aliases keyed by canonical statement_type.
+
+    Returns
+    -------
+    str | None
+        The matching statement_type, or None when the segment has no typed label.
+    """
+
+    if ":" not in segment:
+        return None
+
+    label = segment.split(":", 1)[0]
+
+    for statement_type in sorted(statement_type_aliases_by_type):
+        if _label_matches_statement_type(
+            label=label,
+            statement_type=statement_type,
+            statement_type_aliases_by_type=statement_type_aliases_by_type,
+        ):
+            return statement_type
+
+    return None
+
+
 def _source_local_parent_scope_conflicts_parent(
     *,
     parent_context: SFIFinalContext,
@@ -3156,6 +3266,144 @@ def _source_local_parent_scope_matches_parent(
         return False
 
     return parent_context.canonical_statement_value_key in expected_value_keys
+
+
+def _source_ref_text_list(*, key: str, source_ref: dict[str, object]) -> list[str]:
+    """Collect source-ref string values in first-seen order.
+
+    Parameters
+    ----------
+    key
+        Source-ref field to read, such as `source_context_labels`.
+    source_ref
+        Candidate source-ref dictionary from a final SFI record.
+
+    Returns
+    -------
+    list[str]
+        Unique non-empty string values. Invalid or empty values are ignored.
+    """
+
+    raw_values = source_ref.get(key)
+
+    if raw_values is None:
+        return []
+
+    if isinstance(raw_values, (str, bytes)) or not isinstance(raw_values, Sequence):
+        values_iterable: Any = [raw_values]
+    else:
+        values_iterable = raw_values
+
+    return unique_nonempty(str(value).strip() for value in values_iterable)
+
+
+def _typed_source_local_parent_texts_by_type(
+    *,
+    child_context: SFIFinalContext,
+    kg_config: CreateKGConfig,
+    parent_statement_types: set[str],
+) -> dict[str, list[str]]:
+    """Collect label-aware local source texts for possible parent types.
+
+    Parameters
+    ----------
+    child_context
+        Final SFI context whose source-context labels should be parsed.
+    kg_config
+        Runtime KG configuration containing statement-type aliases.
+    parent_statement_types
+        Allowed direct parent statement types for the child.
+
+    Returns
+    -------
+    dict[str, list[str]]
+        Ordered source-local texts keyed by parent statement_type. Text labeled as the
+        child's own statement type is excluded so child titles do not become
+        parent-scope evidence.
+    """
+
+    child_statement_type = child_context.statement_type
+    statement_type_aliases_by_type = _statement_type_aliases_by_type(kg_config)
+    texts_by_type: dict[str, list[str]] = {
+        parent_statement_type: [] for parent_statement_type in parent_statement_types
+    }
+
+    for source_context_label in child_context.source_context_labels:
+        for segment in _source_context_label_segments(source_context_label):
+            segment_statement_type = _source_label_statement_type(
+                segment=segment,
+                statement_type_aliases_by_type=statement_type_aliases_by_type,
+            )
+
+            if segment_statement_type == child_statement_type:
+                continue
+
+            for parent_statement_type in sorted(parent_statement_types):
+                if segment_statement_type is None:
+                    texts_by_type[parent_statement_type].append(segment)
+                elif segment_statement_type == parent_statement_type:
+                    texts_by_type[parent_statement_type].append(
+                        segment.split(":", 1)[1].strip()
+                    )
+
+    return {
+        parent_statement_type: unique_nonempty(texts)
+        for parent_statement_type, texts in texts_by_type.items()
+    }
+
+
+def _with_record_source_context_labels(
+    *, contexts: Sequence[SFIFinalContext], sfi_final_records: Sequence[SFIFinalRecord]
+) -> list[SFIFinalContext]:
+    """Attach source-context labels from final records to loaded contexts.
+
+    This keeps Step 9 compatible with older `sfi_final_contexts.json` artifacts that
+    predate the explicit `source_context_labels` field while allowing fresh Step 8
+    artifacts to carry the same evidence directly.
+
+    Parameters
+    ----------
+    contexts
+        Loaded final SFI contexts.
+    sfi_final_records
+        Current final SFI records containing candidate source refs.
+
+    Returns
+    -------
+    list[SFIFinalContext]
+        Contexts with source-context labels populated from the corresponding final
+        records when they were absent or incomplete.
+    """
+
+    records_by_uuid = {record.final_sfi_uuid: record for record in sfi_final_records}
+    enriched_contexts: list[SFIFinalContext] = []
+
+    for context in contexts:
+        record = records_by_uuid.get(context.final_sfi_uuid)
+
+        if record is None:
+            enriched_contexts.append(context)
+            continue
+
+        source_context_labels = unique_nonempty(
+            label
+            for source_ref in record.candidate_source_refs
+            if isinstance(source_ref, dict)
+            for label in _source_ref_text_list(
+                key="source_context_labels", source_ref=source_ref
+            )
+        )
+
+        if source_context_labels == context.source_context_labels:
+            enriched_contexts.append(context)
+        else:
+            enriched_contexts.append(
+                context.model_copy(
+                    update={"source_context_labels": source_context_labels}
+                )
+            )
+
+    return enriched_contexts
 
 
 def _source_ref_int_list(*, key: str, source_ref: dict[str, object]) -> list[int]:
@@ -3222,6 +3470,32 @@ def _source_ref_segment_ids(source_ref: dict[str, object]) -> list[str]:
         segment_ids_iterable = raw_segment_ids
 
     return unique_nonempty(str(segment_id) for segment_id in segment_ids_iterable)
+
+
+def _statement_type_aliases_by_type(kg_config: CreateKGConfig) -> dict[str, set[str]]:
+    """Build normalized statement-type aliases from runtime config.
+
+    Parameters
+    ----------
+    kg_config
+        Runtime KG configuration containing statement-type policy items.
+
+    Returns
+    -------
+    dict[str, set[str]]
+        Normalized aliases keyed by canonical statement_type.
+    """
+
+    aliases_by_type: dict[str, set[str]] = {}
+
+    for policy_item in kg_config.academic_standards.statement_type_policy:
+        aliases_by_type[policy_item.statement_type] = {
+            alias_key
+            for alias in [policy_item.statement_type, *policy_item.aliases]
+            if (alias_key := normalize_text(alias))
+        }
+
+    return aliases_by_type
 
 
 def _table_context_keys_from_source_refs(record: SFIFinalRecord) -> set[str]:
@@ -3356,6 +3630,14 @@ def _validate_final_contexts_align_with_records(
                 )
             }
         )
+        expected_source_context_labels = unique_nonempty(
+            label
+            for source_ref in record.candidate_source_refs
+            if isinstance(source_ref, dict)
+            for label in _source_ref_text_list(
+                key="source_context_labels", source_ref=source_ref
+            )
+        )
         checks = {
             "audit_flags": context.audit_flags == record.audit_flags,
             "candidate_source_texts": (
@@ -3381,6 +3663,10 @@ def _validate_final_contexts_align_with_records(
             ),
             "source_context_keys": (
                 context.source_context_keys == record.source_context_keys
+            ),
+            "source_context_labels": (
+                not context.source_context_labels
+                or context.source_context_labels == expected_source_context_labels
             ),
             "source_page_indexes": context.source_page_indexes
             == record.source_page_indexes,
@@ -3856,6 +4142,60 @@ def _validate_resolution_response_prefix(
             ) from e
 
 
+def _validate_selected_parent_candidate_against_source_local_scope(
+    *,
+    child_context: SFIFinalContext,
+    kg_config: CreateKGConfig,
+    parent_candidate: SFIHasChildParentCandidate,
+) -> None:
+    """Reject selected parents that conflict with typed source-local scope.
+
+    Parameters
+    ----------
+    child_context
+        Final SFI context for the resolved child.
+    kg_config
+        Runtime KG configuration containing controlled-value policy.
+    parent_candidate
+        Parent candidate selected by relationship resolution.
+
+    Raises
+    ------
+    ValueError
+        If typed local source labels name a controlled value for the selected parent
+        statement type and the selected parent has a different canonical value.
+    """
+
+    if parent_candidate.is_root or not parent_candidate.statement_type:
+        return
+
+    source_local_parent_scope_value_keys_by_type = (
+        _infer_source_local_parent_scope_value_keys(
+            child_context=child_context,
+            kg_config=kg_config,
+            parent_statement_types={parent_candidate.statement_type},
+            value_match_policies=_build_controlled_value_match_policies(kg_config),
+        )
+    )
+    expected_value_keys = source_local_parent_scope_value_keys_by_type.get(
+        parent_candidate.statement_type, set()
+    )
+
+    if not expected_value_keys or not parent_candidate.canonical_statement_value_key:
+        return
+
+    if parent_candidate.canonical_statement_value_key in expected_value_keys:
+        return
+
+    raise ValueError(
+        f"Resolved hasChild parent conflicts with typed source-local scope for "
+        f"child {child_context.final_sfi_uuid}: parent endpoint "
+        f"{parent_candidate.endpoint_id} has {parent_candidate.statement_type!r} "
+        f"canonical value key {parent_candidate.canonical_statement_value_key!r}, "
+        f"but local source labels imply one of {sorted(expected_value_keys)!r}."
+    )
+
+
 def _validate_sfi_final_records_and_summary(
     *, kg_dirs: KGDirs, sfi_final_records: Sequence[SFIFinalRecord]
 ) -> None:
@@ -4013,6 +4353,9 @@ def resolve_has_child_edges(
     # parent sets for hasChild resolution requests.
     extraction_windows = _load_extraction_windows(kg_dirs)
     contexts = _load_final_contexts(contexts_fp)
+    contexts = _with_record_source_context_labels(
+        contexts=contexts, sfi_final_records=sfi_final_records
+    )
     _validate_final_contexts_align_with_records(
         contexts=contexts, sfi_final_records=sfi_final_records
     )
@@ -4109,6 +4452,7 @@ def resolve_has_child_edges(
     edges = _build_edges_from_responses(
         document_ir=document_ir,
         framework_uuid=framework_uuid,
+        kg_config=kg_config,
         parent_sets=parent_sets,
         responses=responses,
     )
