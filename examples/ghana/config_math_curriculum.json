@@ -52,6 +52,8 @@
 			},
 			"excluded_table_columns_signatures": [],
 			"excluded_table_section_patterns": [],
+			"included_source_page_end_index": null,
+			"included_source_page_start_index": 0,
 			"included_table_columns_signatures": [
 				"content standards|indicators and exemplars|subject specific practices and core competencies",
 				"content standard|indicators and exemplars|subject specific practices and core competencies"

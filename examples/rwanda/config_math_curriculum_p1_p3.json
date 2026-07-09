@@ -43,6 +43,8 @@
 			"excluded_table_section_patterns": [
 				"(?i)(SUBJECTS AND WEEKLY TIME ALLOCATION|weekly\\s+time\\s+allocation)"
 			],
+      "included_source_page_end_index": null,
+			"included_source_page_start_index": 0,
 			"included_table_columns_signatures": [],
 			"included_table_section_patterns": [
 				"(?i)(6\\.2\\.2|6\\.3\\.2|6\\.4\\.2|Mathematics units for Primary One|Mathematics Units for Primary Two|Mathematics Units for Primary Three|SYLLABUS UNITS FOR GRADE ONE|Mathematics Syllabus for Primary \\(P2\\)|Mathematics Syllabus for P3)"
