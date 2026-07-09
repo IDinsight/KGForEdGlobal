@@ -45,6 +45,8 @@
 			},
 			"excluded_table_columns_signatures": [],
 			"excluded_table_section_patterns": [],
+			"included_source_page_end_index": null,
+			"included_source_page_start_index": 22,
 			"included_table_columns_signatures": [
 				"content domain, chapter, key concepts|learning outcomes – ncert|content domain specific learning outcomes|indicators",
 				"Content Domain, Chapter, Key Concepts|Learning Outcomes – NCERT|Content Domain Specific Learning Outcomes|Indicators",

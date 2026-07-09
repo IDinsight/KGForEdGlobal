@@ -887,19 +887,6 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
             "eligible."
         ),
     )
-    included_table_columns_signatures: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Column signatures that identify table segments eligible for SFI extraction."
-        ),
-    )
-    included_table_section_patterns: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Regex patterns over bounded nearby heading/section text that can include "
-            "tables when column signatures alone are not sufficient."
-        ),
-    )
     included_source_page_end_index: Optional[int] = Field(
         default=None,
         description=(
@@ -915,7 +902,20 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
             "Windows whose source pages fall outside the configured range are not sent "
             "to the LLM and instead receive an empty SFI extraction result."
         ),
-        ge=1,
+        ge=0,
+    )
+    included_table_columns_signatures: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Column signatures that identify table segments eligible for SFI extraction."
+        ),
+    )
+    included_table_section_patterns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Regex patterns over bounded nearby heading/section text that can include "
+            "tables when column signatures alone are not sufficient."
+        ),
     )
     max_dedup_review_set_candidates: Optional[int] = Field(
         default=None,
