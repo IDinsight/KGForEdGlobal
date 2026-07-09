@@ -1,0 +1,524 @@
+{
+	"page_ir_extraction": {
+		"country": "India",
+		"dpi": 250,
+		"end_page": null,
+		"languages": [
+			"en"
+		],
+		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results/kg_for_ed",
+		"overwrite": false,
+		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/india/cbse/learning_standards_science.pdf",
+		"start_page": 0,
+		"use_extracted_hints": true,
+		"year": 2025
+	},
+	"page_ir_verification": {
+		"end_page": null,
+		"min_confidence_to_patch": 0.5,
+		"min_confidence_to_select_positive": 0.5,
+		"min_confidence_to_stop_negative_search": 0.9,
+		"next_page_crop_padding_px": 120,
+		"overwrite": false,
+		"start_page": 0
+	},
+	"document_ir": {
+		"keep_artifacts": false,
+		"max_section_path_length": 24,
+		"min_link_score": 1.0,
+		"overwrite": true,
+		"repair_hyphenation": true,
+		"sort_items_by_bbox": true,
+		"table_filldown_enabled": true,
+		"table_filldown_group_cols_max": 1,
+		"verification_auto_stitch_confidence": 0.7
+	},
+	"kgs": {
+		"overwrite": false,
+		"as": {
+			"bilingual_pair_policy": null,
+			"code_parent_rules": [],
+			"code_patterns": {
+				"ncert_learning_outcome": "\\bLO\\s*[0-9]{1,2}\\b",
+				"content_domain_specific_learning_outcome": "\\bCLO\\s*[0-9]{1,3}\\b",
+				"indicator": "\\bC\\s*[0-9]{1,3}\\b"
+			},
+			"excluded_table_columns_signatures": [],
+			"excluded_table_section_patterns": [
+				"Sample\\s+Pedagogical\\s+Processes",
+				"Assessment\\s+Strategies",
+				"Question\\s+Paper\\s+Design",
+				"Sample\\s+Assessment\\s+Items",
+				"Marking\\s+Scheme",
+				"Reference\\s+Documents"
+			],
+			"included_table_columns_signatures": [
+				"Content Domain, Chapter, Key Concepts|Learning Outcomes – NCERT|Content Domain Specific Learning Outcomes|Indicators",
+				"Content Domain, Chapter, Key Concepts | Learning Outcomes – NCERT | Content Domain Specific Learning Outcomes | Indicators",
+				"Content Domain, Chapter, Key Concepts|Learning Outcomes - NCERT|Content Domain Specific Learning Outcomes|Indicators",
+				"Content Domain, Chapter, Key Concepts | Learning Outcomes - NCERT | Content Domain Specific Learning Outcomes | Indicators"
+			],
+			"included_table_section_patterns": [
+				"Content\\s+Domain\\s+Specific\\s+Learning\\s+Outcomes\\s+and\\s+Indicators",
+				"\\b9\\.1\\s+Class\\s+IX\\b",
+				"\\b9\\.2\\s+Class\\s+X\\b"
+			],
+			"max_dedup_review_set_candidates": 30,
+			"max_has_child_parent_candidates": 24,
+			"max_has_child_section_path_labels": 16,
+			"max_rows_per_table_window": 8,
+			"row_overlap": 1,
+			"sfi_deduplication_instructions": "Merge only candidates that represent the same source-backed SFI under the same curriculum scope. Class values Class IX and Class X should each merge within the document but remain distinct from each other. Content Domain values should merge only within their Class scope. Chapter values should merge only within their Class and Content Domain scope. NCERT Learning Outcome candidates with the same LO code and same source-visible statement may merge within the same Class, but Class IX LO# and Class X LO# must remain distinct. CLO# and C# codes are strong identity signals; keep same-code/different-content cases as review/conflict rather than silently merging. Never merge different statement_type values, and never merge a CLO with an Indicator even when text is similar.",
+			"sfi_extraction_instructions": "Extract Academic Standards SFIs from the CBSE Learning Framework - Science source, focusing on standards-bearing content in Section 9, 'Content Domain Specific Learning Outcomes and Indicators.' Extract Class IX/Class X headings, Content Domain groupings, Chapter groupings, NCERT Learning Outcome statements when an LO code and source-visible statement are present, Content Domain Specific Learning Outcomes labeled CLO#, and Indicators labeled C#. Preserve English source wording. Preserve visible statement codes exactly when present. Treat the 'Key concepts' text in the left column as source context for the chapter, not as a standalone SFI. Do not extract front matter, foreword, preface, acknowledgements, process descriptions, Nature of Science narrative, content-domain summary tables, cognitive-level examples, pedagogical processes, assessment strategies, question paper design, sample assessment items, marking schemes, or reference documents as SFIs. Do not infer hierarchy or parentage in extraction; use only visible source text, table row/header evidence, and persisted provenance.",
+			"sfi_has_child_instructions": "Resolve hasChild using the source hierarchy of Section 9. StandardsFramework root should parent Class nodes. Class should parent Content Domain nodes and NCERT Learning Outcome nodes. Content Domain should parent Chapter nodes. Chapter should parent the Content Domain Specific Learning Outcomes visible in that chapter's table rows. A Content Domain Specific Learning Outcome may also have the corresponding NCERT Learning Outcome from the same visible row as an additional direct parent when the source row explicitly maps that LO to the CLO. Indicators must be children of the source-visible CLO in the same table row or immediately continued row group. Do not create parent relationships from Key concepts text. Prefer same-row, same-table, same-window, same-source-context, and compatible canonical-scope evidence over broad nearby-heading evidence. Use StandardsFramework root fallback only when no supplied source-supported parent is available.",
+			"sfi_has_child_parent_statement_types": {
+				"Class": [],
+				"Content Domain": [
+					"Class"
+				],
+				"NCERT Learning Outcome": [
+					"Class"
+				],
+				"Chapter": [
+					"Content Domain"
+				],
+				"Content Domain Specific Learning Outcome": [
+					"Chapter",
+					"NCERT Learning Outcome"
+				],
+				"Indicator": [
+					"Content Domain Specific Learning Outcome"
+				]
+			},
+			"sfi_has_child_statement_type_hierarchy": [
+				"Class",
+				"Content Domain",
+				"NCERT Learning Outcome",
+				"Chapter",
+				"Content Domain Specific Learning Outcome",
+				"Indicator"
+			],
+			"statement_type_policy": [
+				{
+					"aliases": [
+						"grade",
+						"stage",
+						"class heading"
+					],
+          "code_type": null,
+					"controlled_value_scope": "document",
+					"controlled_value_scope_parent_statement_types": [],
+					"controlled_values": [
+						{
+							"canonical_value": "Class IX",
+							"aliases": [
+								"9.1 Class IX",
+								"Class 9",
+								"Grade 9",
+								"IX"
+							]
+						},
+						{
+							"canonical_value": "Class X",
+							"aliases": [
+								"9.2 Class X",
+								"Class 10",
+								"Grade 10",
+								"X"
+							]
+						}
+					],
+					"description": "Use for the source-visible class-level headings that scope the standards tables, primarily Class IX and Class X.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Class"
+				},
+				{
+					"aliases": [
+						"domain",
+						"content domain",
+						"theme"
+					],
+          "code_type": null,
+					"controlled_value_scope": "nearest_parent_values",
+					"controlled_value_scope_parent_statement_types": [
+						"Class"
+					],
+					"controlled_values": [
+						{
+							"canonical_value": "Materials",
+							"aliases": []
+						},
+						{
+							"canonical_value": "The World of the Living",
+							"aliases": [
+								"World of living",
+								"World of the Living",
+								"The World of living"
+							]
+						},
+						{
+							"canonical_value": "Natural Phenomena",
+							"aliases": []
+						},
+						{
+							"canonical_value": "How things work",
+							"aliases": [
+								"How Things Work"
+							]
+						},
+						{
+							"canonical_value": "Moving things, People and Ideas",
+							"aliases": [
+								"Moving things, people and ideas",
+								"Moving Things, People and Ideas"
+							]
+						},
+						{
+							"canonical_value": "Natural Resources",
+							"aliases": []
+						},
+						{
+							"canonical_value": "Food",
+							"aliases": []
+						}
+					],
+					"description": "Use for the source-visible science content-domain/theme groupings such as Materials, The World of the Living, Natural Phenomena, and Natural Resources.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Content Domain"
+				},
+				{
+					"aliases": [
+						"Learning Outcomes – NCERT",
+						"Learning Outcomes - NCERT",
+						"NCERT LO",
+						"LO"
+					],
+          "code_type": "ncert_learning_outcome",
+					"controlled_value_scope": "source_context",
+					"controlled_value_scope_parent_statement_types": [],
+					"controlled_values": [],
+					"description": "Use for NCERT secondary-level learning outcome statements labeled LO1, LO2, etc. Extract only when the LO code and source-visible statement text are present.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "NCERT Learning Outcome"
+				},
+				{
+					"aliases": [
+						"chapter",
+						"textbook chapter"
+					],
+          "code_type": null,
+					"controlled_value_scope": "nearest_parent_values",
+					"controlled_value_scope_parent_statement_types": [
+						"Class",
+						"Content Domain"
+					],
+					"controlled_values": [
+						{
+							"canonical_value": "Matter in our surroundings",
+							"aliases": [
+								"Chapter 1 - Matter in our surroundings",
+								"Chapter 1 – Matter in our surroundings"
+							]
+						},
+						{
+							"canonical_value": "Is matter around us pure?",
+							"aliases": [
+								"Chapter 2 - Is matter around us pure?",
+								"Chapter 2 – Is matter around us pure?"
+							]
+						},
+						{
+							"canonical_value": "Atoms and Molecules",
+							"aliases": [
+								"Chapter 3 - Atoms and Molecules",
+								"Chapter 3 – Atoms and Molecules"
+							]
+						},
+						{
+							"canonical_value": "Structure of Atoms",
+							"aliases": [
+								"Structure of atoms",
+								"Chapter 4 - Structure of Atoms",
+								"Chapter 4 – Structure of atoms"
+							]
+						},
+						{
+							"canonical_value": "The fundamental unit of life",
+							"aliases": [
+								"The Fundamental Unit of Life",
+								"Chapter 5 - The fundamental unit of life",
+								"Chapter 5 – The fundamental unit of life"
+							]
+						},
+						{
+							"canonical_value": "Tissues",
+							"aliases": [
+								"Chapter 6 - Tissues",
+								"Chapter 6 – Tissues"
+							]
+						},
+						{
+							"canonical_value": "Diversity in living organisms",
+							"aliases": [
+								"Diversity in Living Organisms",
+								"Chapter 7 - Diversity in living organisms",
+								"Chapter 7 – Diversity in living organisms"
+							]
+						},
+						{
+							"canonical_value": "Why do we fall ill?",
+							"aliases": [
+								"Chapter 8 - Why do we fall ill?",
+								"Chapter 8 – Why do we fall ill?"
+							]
+						},
+						{
+							"canonical_value": "Motion",
+							"aliases": [
+								"Chapter 9 - Motion",
+								"Chapter 9 – Motion"
+							]
+						},
+						{
+							"canonical_value": "Forces and Laws of Motion",
+							"aliases": [
+								"Force and laws of motion",
+								"Forces and laws of motion",
+								"Chapter 10 - Forces and Laws of Motion",
+								"Chapter 10 – Forces and Laws of Motion"
+							]
+						},
+						{
+							"canonical_value": "Gravitation",
+							"aliases": [
+								"Chapter 11 - Gravitation",
+								"Chapter 11 – Gravitation"
+							]
+						},
+						{
+							"canonical_value": "Work and Energy",
+							"aliases": [
+								"Chapter 12 - Work and Energy",
+								"Chapter 12 – Work and Energy"
+							]
+						},
+						{
+							"canonical_value": "Sound",
+							"aliases": [
+								"Chapter 13 - Sound",
+								"Chapter 13 – Sound"
+							]
+						},
+						{
+							"canonical_value": "Natural Resources",
+							"aliases": [
+								"Chapter 14 - Natural Resources",
+								"Chapter 14 – Natural Resources"
+							]
+						},
+						{
+							"canonical_value": "Improvement in Food Resources",
+							"aliases": [
+								"Chapter 15 - Improvement in Food Resources",
+								"Chapter 15 – Improvement in Food Resources"
+							]
+						},
+						{
+							"canonical_value": "Chemical reactions and equations",
+							"aliases": [
+								"Chemical reactions and chemical equations",
+								"Chapter 1 - Chemical reactions and equations",
+								"Chapter 1 – Chemical reactions and equations"
+							]
+						},
+						{
+							"canonical_value": "Acids, bases and salts",
+							"aliases": [
+								"Chapter 2 - Acids, bases and salts",
+								"Chapter 2 – Acids, bases and salts"
+							]
+						},
+						{
+							"canonical_value": "Metals and Non-metals",
+							"aliases": [
+								"Metals and Non-metals",
+								"Metals and non-metals",
+								"Chapter 3 - Metals and Non-metals",
+								"Chapter 3 – Metals and Non-metals"
+							]
+						},
+						{
+							"canonical_value": "Carbon and its compounds",
+							"aliases": [
+								"Chapter 4 - Carbon and its compounds",
+								"Chapter 4 – Carbon and its compounds"
+							]
+						},
+						{
+							"canonical_value": "Periodic classification of elements",
+							"aliases": [
+								"Chapter 5 - Periodic classification of elements",
+								"Chapter 5 – Periodic classification of elements"
+							]
+						},
+						{
+							"canonical_value": "Life processes",
+							"aliases": [
+								"Life Processes",
+								"Chapter 6 - Life processes",
+								"Chapter 6 – Life processes"
+							]
+						},
+						{
+							"canonical_value": "Control and Coordination",
+							"aliases": [
+								"Control and coordination",
+								"Chapter 7 - Control and Coordination",
+								"Chapter 7 – Control and Coordination"
+							]
+						},
+						{
+							"canonical_value": "How do organisms reproduce?",
+							"aliases": [
+								"Chapter 8 - How do organisms reproduce?",
+								"Chapter 8 – How do organisms reproduce?"
+							]
+						},
+						{
+							"canonical_value": "Heredity and Evolution",
+							"aliases": [
+								"Heredity and evolution",
+								"Chapter 9 - Heredity and Evolution",
+								"Chapter 9 – Heredity and Evolution"
+							]
+						},
+						{
+							"canonical_value": "Light - Reflection and refraction",
+							"aliases": [
+								"Light – Reflection and refraction",
+								"Light - Reflection and Refraction",
+								"Light – Reflection and Refraction",
+								"Chapter 10 - Light - Reflection and refraction",
+								"Chapter 10 – Light – Reflection and refraction"
+							]
+						},
+						{
+							"canonical_value": "Human eye and colourful world",
+							"aliases": [
+								"Human Eye and Colourful World",
+								"Chapter 11 - Human eye and colourful world",
+								"Chapter 11 – Human eye and colourful world"
+							]
+						},
+						{
+							"canonical_value": "Electricity",
+							"aliases": [
+								"Chapter 12 - Electricity",
+								"Chapter 12 – Electricity"
+							]
+						},
+						{
+							"canonical_value": "Magnetic effects of electric current",
+							"aliases": [
+								"Magnetic Effects of Electric Current",
+								"Chapter 13 - Magnetic effects of electric current",
+								"Chapter 13 – Magnetic effects of electric current"
+							]
+						},
+						{
+							"canonical_value": "Sources of energy",
+							"aliases": [
+								"Sources of Energy",
+								"Chapter 14 - Sources of energy",
+								"Chapter 14 – Sources of energy"
+							]
+						},
+						{
+							"canonical_value": "Our environment",
+							"aliases": [
+								"Our Environment",
+								"Chapter 15 - Our environment",
+								"Chapter 15 – Our environment"
+							]
+						},
+						{
+							"canonical_value": "Sustainable Management of Natural Resources",
+							"aliases": [
+								"Management of natural resources",
+								"Sustainable management of natural resources",
+								"Chapter 16 - Management of natural resources",
+								"Chapter 16 – Management of natural resources",
+								"Chapter 16 - Sustainable Management of Natural Resources",
+								"Chapter 16 – Sustainable Management of Natural Resources"
+							]
+						}
+					],
+					"description": "Use for source-visible textbook chapter groupings in the Section 9 tables. Include the chapter title, not the descriptive key-concepts paragraph.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Chapter"
+				},
+				{
+					"aliases": [
+						"Content Domain Specific Learning Outcomes",
+						"CLO",
+						"chapter-specific learning outcome",
+						"content-domain-specific learning outcome"
+					],
+          "code_type": "content_domain_specific_learning_outcome",
+					"controlled_value_scope": "source_context",
+					"controlled_value_scope_parent_statement_types": [],
+					"controlled_values": [],
+					"description": "Use for chapter-specific learning outcome statements labeled CLO1, CLO2, etc. These are the main standards-level outcomes that are broken down into indicators.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Content Domain Specific Learning Outcome"
+				},
+				{
+					"aliases": [
+						"Indicators",
+						"indicator",
+						"C"
+					],
+          "code_type": "indicator",
+					"controlled_value_scope": "source_context",
+					"controlled_value_scope_parent_statement_types": [],
+					"controlled_values": [],
+					"description": "Use for source-visible indicators labeled C1, C2, etc. These are the leaf-level measurable indicators under CLOs.",
+					"normalized_statement_type": "Standard",
+					"statement_type": "Indicator"
+				}
+			],
+			"synthetic_merge_key_fields": [
+				"country",
+				"subject",
+				"grade_level",
+				"normalized_statement_type",
+				"statement_type",
+				"hierarchy_context",
+				"normalized_text"
+			]
+		},
+		"lc": {
+			"generation_instructions": "Learning Components are out of scope for Academic Standards KG v0 for this CBSE Science run. Do not generate LearningComponent records."
+		},
+		"metadata": {
+			"adoption_status": "Unknown",
+			"attribution_statement": "Learning Framework - Science, Central Board of Secondary Education (CBSE), developed in collaboration with Azim Premji University.",
+			"author": "Central Board of Secondary Education (CBSE) and Azim Premji University",
+			"country": "India",
+			"framework_title": "Learning Framework - Science",
+			"grades_or_stages": [
+				"Secondary Stage",
+				"Class IX",
+				"Class X"
+			],
+			"jurisdiction": "India",
+			"languages": [
+				"en"
+			],
+			"license": "Not specified in source PDF",
+			"primary_language": "en",
+			"provider": "Central Board of Secondary Education (CBSE)",
+			"subject": "Science"
+		}
+	}
+}
