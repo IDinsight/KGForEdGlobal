@@ -23,6 +23,159 @@ from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, write_to_json
 
+_PAGE_SCOPE_SKIP_NOTE = (
+    "Skipped SFI extraction because this window has no source pages inside the "
+    "configured included_source_page_start_index/included_source_page_end_index "
+    "range."
+)
+
+
+def _build_page_scope_skipped_sfi_extraction_result(
+    *, extraction_window: ExtractionWindow
+) -> SFIExtractionResult:
+    """Build an empty extraction result for a window outside configured page scope.
+
+    Parameters
+    ----------
+    extraction_window
+        Source-faithful extraction window that should not be sent to the LLM because
+        its provenance pages fall outside the configured included source-page range.
+
+    Returns
+    -------
+    SFIExtractionResult
+        Empty SFI extraction result that preserves the one-result-per-window invariant.
+    """
+
+    return SFIExtractionResult(
+        auxiliary_candidates=[],
+        extraction_notes=[_PAGE_SCOPE_SKIP_NOTE],
+        sfi_candidates=[],
+        window_id=extraction_window.window_id,
+        window_index=extraction_window.window_index,
+        window_source_segment_ids=extraction_window.source_segment_ids,
+    )
+
+
+def _is_page_scope_skipped_sfi_extraction_result(
+    *, extraction_result: SFIExtractionResult
+) -> bool:
+    """Return whether an extraction result was produced by the page-scope gate.
+
+    Parameters
+    ----------
+    extraction_result
+        SFI extraction result to inspect.
+
+    Returns
+    -------
+    bool
+        True when the result carries the deterministic page-scope skip note and has no
+        SFI or auxiliary candidates.
+    """
+
+    return (
+        not extraction_result.auxiliary_candidates
+        and not extraction_result.sfi_candidates
+        and _PAGE_SCOPE_SKIP_NOTE in extraction_result.extraction_notes
+    )
+
+
+def _source_page_indexes_from_window(
+    *, extraction_window: ExtractionWindow
+) -> list[int]:
+    """Collect sorted 0-based source page indexes from an extraction window.
+
+    Parameters
+    ----------
+    extraction_window
+        Source-faithful extraction window whose provenance should be inspected.
+
+    Returns
+    -------
+    list[int]
+        Sorted unique page indexes found in window-level and table-row provenance.
+    """
+
+    page_indexes: set[int] = set()
+
+    for source_ref in extraction_window.source_provenance:
+        page_index = source_ref.get("page_index")
+
+        if isinstance(page_index, int):
+            page_indexes.add(page_index)
+
+    if extraction_window.table is not None:
+        for row_ref in extraction_window.table.row_provenance:
+            page_index = row_ref.get("page_index")
+
+            if isinstance(page_index, int):
+                page_indexes.add(page_index)
+
+    return sorted(page_indexes)
+
+
+def _source_pages_are_inside_included_range(
+    *, end_index: int | None, source_page_indexes: Sequence[int], start_index: int
+) -> bool:
+    """Return whether all source pages are inside the configured page range.
+
+    Parameters
+    ----------
+    end_index
+        Inclusive 0-based page index where KG extraction should stop, or None to
+        include all pages from start_index through the end of the PDF.
+    source_page_indexes
+        0-based source page indexes associated with an extraction window.
+    start_index
+        Inclusive 0-based page index where KG extraction should start.
+
+    Returns
+    -------
+    bool
+        True when the window has source-page provenance and every source page falls
+        inside the configured range.
+    """
+
+    if not source_page_indexes:
+        return False
+
+    if end_index is None:
+        return all(page_index >= start_index for page_index in source_page_indexes)
+
+    return all(
+        start_index <= page_index <= end_index for page_index in source_page_indexes
+    )
+
+
+def _window_is_inside_included_source_pages(
+    *, extraction_window: ExtractionWindow, kg_config: CreateKGConfig
+) -> bool:
+    """Return whether a window should be sent to the SFI extraction LLM.
+
+    Parameters
+    ----------
+    extraction_window
+        Source-faithful extraction window under consideration.
+    kg_config
+        Runtime KG configuration containing the included 0-based source-page range.
+
+    Returns
+    -------
+    bool
+        True when the extraction window is fully inside the configured source-page
+        range; False when it should receive an empty skipped extraction result.
+    """
+
+    source_page_indexes = _source_page_indexes_from_window(
+        extraction_window=extraction_window
+    )
+    return _source_pages_are_inside_included_range(
+        end_index=kg_config.academic_standards.included_source_page_end_index,
+        source_page_indexes=source_page_indexes,
+        start_index=kg_config.academic_standards.included_source_page_start_index,
+    )
+
 
 def _build_sfi_extraction_summary(
     sfi_extraction_results: Sequence[SFIExtractionResult],
@@ -210,6 +363,30 @@ def _validate_existing_sfi_extraction_results(
                 f"source_segment_ids={extraction_window.source_segment_ids!r}."
             )
 
+        expected_skipped_result = _build_page_scope_skipped_sfi_extraction_result(
+            extraction_window=extraction_window
+        )
+        window_is_inside_scope = _window_is_inside_included_source_pages(
+            extraction_window=extraction_window, kg_config=kg_config
+        )
+
+        if not window_is_inside_scope:
+            if result != expected_skipped_result:
+                raise ValueError(
+                    f"Existing SFI extraction result at position {result_index} does "
+                    f"not match the current page-scope skipped result for window "
+                    f"{extraction_window.window_id!r}."
+                )
+
+            continue
+
+        if _is_page_scope_skipped_sfi_extraction_result(extraction_result=result):
+            raise ValueError(
+                f"Existing SFI extraction result at position {result_index} is a "
+                f"page-scope skipped result, but the current extraction window "
+                f"{extraction_window.window_id!r} is inside the configured page scope."
+            )
+
         try:
             verify_sfi_extraction_quality(
                 extraction_result=result, kg_config=kg_config, window=extraction_window
@@ -323,17 +500,30 @@ def extract_sfi_candidates_from_windows(
         extraction_windows[len(sfi_extraction_results) :],
         start=len(sfi_extraction_results) + 1,
     ):
-        logger.info(
-            f"Running SFI extraction for window "
-            f"{current_window_number}/{total_windows}: "
-            f"window_id={extraction_window.window_id}..."
-        )
+        if not _window_is_inside_included_source_pages(
+            extraction_window=extraction_window, kg_config=kg_config
+        ):
+            logger.info(
+                f"Skipping SFI extraction for window "
+                f"{current_window_number}/{total_windows} because it is outside "
+                f"the configured source-page range: "
+                f"window_id={extraction_window.window_id}."
+            )
+            sfi_extraction_result = _build_page_scope_skipped_sfi_extraction_result(
+                extraction_window=extraction_window
+            )
+        else:
+            logger.info(
+                f"Running SFI extraction for window "
+                f"{current_window_number}/{total_windows}: "
+                f"window_id={extraction_window.window_id}..."
+            )
+            sfi_extraction_result = extract_sfi_candidates(
+                extraction_window=extraction_window,
+                kg_config=kg_config,
+                usage_tracker=usage_tracker,
+            )
 
-        sfi_extraction_result = extract_sfi_candidates(
-            extraction_window=extraction_window,
-            kg_config=kg_config,
-            usage_tracker=usage_tracker,
-        )
         sfi_extraction_results.append(sfi_extraction_result)
         append_jsonl_model(fp=save_fp, model=sfi_extraction_result)
         _persist_sfi_extraction_summary(

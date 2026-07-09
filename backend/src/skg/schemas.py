@@ -900,6 +900,23 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
             "tables when column signatures alone are not sufficient."
         ),
     )
+    included_source_page_end_index: Optional[int] = Field(
+        default=None,
+        description=(
+            "Inclusive 0-based source page index where KG SFI extraction should stop. "
+            "Set to null to include all pages from included_source_page_start_index "
+            "through the end of the source PDF."
+        ),
+        ge=1,
+    )
+    included_source_page_start_index: int = Field(
+        description=(
+            "Inclusive 0-based source page index where KG SFI extraction should start. "
+            "Windows whose source pages fall outside the configured range are not sent "
+            "to the LLM and instead receive an empty SFI extraction result."
+        ),
+        ge=1,
+    )
     max_dedup_review_set_candidates: Optional[int] = Field(
         default=None,
         description=(
@@ -1486,6 +1503,25 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
 
         return v
 
+    def _validate_included_source_pages(self) -> None:
+        """Ensure the configured source-page inclusion range is internally valid.
+
+        Raises
+        ------
+        ValueError
+            If included_source_page_end_index is not greater than
+            included_source_page_start_index when an end index is configured.
+        """
+
+        if self.included_source_page_end_index is None:
+            return
+
+        if self.included_source_page_start_index >= self.included_source_page_end_index:
+            raise ValueError(
+                "CreateKGConfig.as.included_source_page_start_index must be less than "
+                "as.included_source_page_end_index when an end index is configured."
+            )
+
     def _validate_windowing(self) -> None:
         """Ensure table row windowing configuration is internally consistent.
 
@@ -1680,11 +1716,12 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         """
 
         known = set(self.code_patterns.keys())
-        self._validate_windowing()
         self._validate_code_parent_rules(known)
         self._validate_has_child_statement_type_policy()
+        self._validate_included_source_pages()
         self._validate_selection_overlap_policy()
         self._validate_statement_type_policy_code_types(known)
+        self._validate_windowing()
         return self
 
 
