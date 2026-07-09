@@ -44,29 +44,19 @@
 				"indicator": "\\bC\\s*[0-9]{1,3}\\b"
 			},
 			"excluded_table_columns_signatures": [],
-			"excluded_table_section_patterns": [
-				"Sample\\s+Pedagogical\\s+Processes",
-				"Assessment\\s+Strategies",
-				"Question\\s+Paper\\s+Design",
-				"Sample\\s+Assessment\\s+Items",
-				"Marking\\s+Scheme",
-				"Reference\\s+Documents"
-			],
+			"excluded_table_section_patterns": [],
 			"included_table_columns_signatures": [
+				"content domain, chapter, key concepts|learning outcomes – ncert|content domain specific learning outcomes|indicators",
 				"Content Domain, Chapter, Key Concepts|Learning Outcomes – NCERT|Content Domain Specific Learning Outcomes|Indicators",
 				"Content Domain, Chapter, Key Concepts | Learning Outcomes – NCERT | Content Domain Specific Learning Outcomes | Indicators",
 				"Content Domain, Chapter, Key Concepts|Learning Outcomes - NCERT|Content Domain Specific Learning Outcomes|Indicators",
 				"Content Domain, Chapter, Key Concepts | Learning Outcomes - NCERT | Content Domain Specific Learning Outcomes | Indicators"
 			],
-			"included_table_section_patterns": [
-				"Content\\s+Domain\\s+Specific\\s+Learning\\s+Outcomes\\s+and\\s+Indicators",
-				"\\b9\\.1\\s+Class\\s+IX\\b",
-				"\\b9\\.2\\s+Class\\s+X\\b"
-			],
+			"included_table_section_patterns": [],
 			"max_dedup_review_set_candidates": 30,
 			"max_has_child_parent_candidates": 24,
 			"max_has_child_section_path_labels": 16,
-			"max_rows_per_table_window": 8,
+			"max_rows_per_table_window": 12,
 			"row_overlap": 1,
 			"sfi_deduplication_instructions": "Merge only candidates that represent the same source-backed SFI under the same curriculum scope. Class values Class IX and Class X should each merge within the document but remain distinct from each other. Content Domain values should merge only within their Class scope. Chapter values should merge only within their Class and Content Domain scope. NCERT Learning Outcome candidates with the same LO code and same source-visible statement may merge within the same Class, but Class IX LO# and Class X LO# must remain distinct. CLO# and C# codes are strong identity signals; keep same-code/different-content cases as review/conflict rather than silently merging. Never merge different statement_type values, and never merge a CLO with an Indicator even when text is similar.",
 			"sfi_extraction_instructions": "Extract Academic Standards SFIs from the CBSE Learning Framework - Science source, focusing on standards-bearing content in Section 9, 'Content Domain Specific Learning Outcomes and Indicators.' Extract Class IX/Class X headings, Content Domain groupings, Chapter groupings, NCERT Learning Outcome statements when an LO code and source-visible statement are present, Content Domain Specific Learning Outcomes labeled CLO#, and Indicators labeled C#. Preserve English source wording. Preserve visible statement codes exactly when present. Treat the 'Key concepts' text in the left column as source context for the chapter, not as a standalone SFI. Do not extract front matter, foreword, preface, acknowledgements, process descriptions, Nature of Science narrative, content-domain summary tables, cognitive-level examples, pedagogical processes, assessment strategies, question paper design, sample assessment items, marking schemes, or reference documents as SFIs. Do not infer hierarchy or parentage in extraction; use only visible source text, table row/header evidence, and persisted provenance.",
@@ -105,7 +95,7 @@
 						"stage",
 						"class heading"
 					],
-          "code_type": null,
+					"code_type": null,
 					"controlled_value_scope": "document",
 					"controlled_value_scope_parent_statement_types": [],
 					"controlled_values": [
@@ -138,7 +128,7 @@
 						"content domain",
 						"theme"
 					],
-          "code_type": null,
+					"code_type": null,
 					"controlled_value_scope": "nearest_parent_values",
 					"controlled_value_scope_parent_statement_types": [
 						"Class"
@@ -193,7 +183,7 @@
 						"NCERT LO",
 						"LO"
 					],
-          "code_type": "ncert_learning_outcome",
+					"code_type": "ncert_learning_outcome",
 					"controlled_value_scope": "source_context",
 					"controlled_value_scope_parent_statement_types": [],
 					"controlled_values": [],
@@ -206,7 +196,7 @@
 						"chapter",
 						"textbook chapter"
 					],
-          "code_type": null,
+					"code_type": null,
 					"controlled_value_scope": "nearest_parent_values",
 					"controlled_value_scope_parent_statement_types": [
 						"Class",
@@ -464,7 +454,7 @@
 						"chapter-specific learning outcome",
 						"content-domain-specific learning outcome"
 					],
-          "code_type": "content_domain_specific_learning_outcome",
+					"code_type": "content_domain_specific_learning_outcome",
 					"controlled_value_scope": "source_context",
 					"controlled_value_scope_parent_statement_types": [],
 					"controlled_values": [],
@@ -478,7 +468,7 @@
 						"indicator",
 						"C"
 					],
-          "code_type": "indicator",
+					"code_type": "indicator",
 					"controlled_value_scope": "source_context",
 					"controlled_value_scope_parent_statement_types": [],
 					"controlled_values": [],
