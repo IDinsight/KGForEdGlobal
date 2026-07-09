@@ -26,12 +26,12 @@ class BackendSettings(BaseSettings):
     LLM_ANTHROPIC_EFFORT: str = "high"
     LLM_ANTHROPIC_THINKING_BUDGET_TOKENS: int = 16384
     LLM_MAX_OUTPUT_TOKENS: int = 18432
-    LLM_KG_MODEL: str = "anthropic:claude-opus-4-7"
+    LLM_KG_MODEL: str = "anthropic:claude-opus-4-8"
     LLM_OPENAI_REASONING_EFFORT: str = "high"
     LLM_OPENAI_TEMPERATURE: float = 0.0
     LLM_OPENAI_TOP_P: float = 0.95
-    LLM_PAGE_IR_EXTRACTION_MODEL: str = "anthropic:claude-opus-4-7"
-    LLM_PAGE_IR_VERIFICATION_MODEL: str = "anthropic:claude-opus-4-7"
+    LLM_PAGE_IR_EXTRACTION_MODEL: str = "anthropic:claude-opus-4-8"
+    LLM_PAGE_IR_VERIFICATION_MODEL: str = "anthropic:claude-opus-4-8"
 
     # Logging
     LOGGING_LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
