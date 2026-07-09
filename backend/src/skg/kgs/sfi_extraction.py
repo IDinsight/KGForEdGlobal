@@ -81,6 +81,49 @@ def _build_sfi_extraction_summary(
     )
 
 
+def _get_window_scope_source_refs(
+    extraction_window: ExtractionWindow,
+) -> list[dict[str, object]]:
+    """Return provenance records that define the page scope for one window.
+
+    Block windows are scoped by their block segment provenance. Table windows are
+    scoped by selected-row provenance rather than whole-table segment provenance, so a
+    row-window is not excluded merely because another row in the stitched table segment
+    falls outside the configured page range.
+
+    Parameters
+    ----------
+    extraction_window
+        Source-faithful extraction window whose page-scope provenance should be used.
+
+    Returns
+    -------
+    list[dict[str, object]]
+        Provenance records used to decide whether the specific extraction window is
+        inside the configured source-page range.
+
+    Raises
+    ------
+    ValueError
+        If a table extraction window lacks selected-row provenance. Without row-level
+        provenance, the page scope of the selected table rows cannot be determined
+        reliably.
+    """
+
+    if extraction_window.table is None:
+        return list(extraction_window.source_provenance)
+
+    if extraction_window.table.row_provenance is None:
+        raise ValueError(
+            f"Table extraction windows must include row_provenance for page-scope "
+            f"filtering. Whole-table segment provenance is not precise enough to "
+            f"decide whether selected table rows are inside the configured source-page "
+            f"range: window_id={extraction_window.window_id!r}."
+        )
+
+    return list(extraction_window.table.row_provenance)
+
+
 def _load_existing_sfi_extraction_results(save_fp: Path) -> list[SFIExtractionResult]:
     """Load existing SFI extraction results from a JSONL artifact.
 
@@ -314,11 +357,7 @@ def _window_is_inside_included_source_pages(
         range; False when it should receive an empty skipped extraction result.
     """
 
-    source_refs = list(extraction_window.source_provenance)
-
-    if extraction_window.table is not None:
-        source_refs.extend(extraction_window.table.row_provenance)
-
+    source_refs = _get_window_scope_source_refs(extraction_window)
     source_page_indexes = {
         ref["page_index"]
         for ref in source_refs
