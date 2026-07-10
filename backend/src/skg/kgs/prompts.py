@@ -1127,6 +1127,9 @@ def validate_sfi_extraction_result(
     """
 
     config_context = {
+        "bilingual_pair_policy": (
+            kg_config.academic_standards.bilingual_pair_policy
+        ),
         "code_patterns": kg_config.academic_standards.code_patterns,
         "country": kg_config.metadata.country,
         "grades_or_stages": kg_config.metadata.grades_or_stages,
@@ -1170,10 +1173,11 @@ Do not assume the draft is correct. Return an `SFIExtractionValidationVerdict`.
 ## Runtime curriculum policy
 {json_dumps(config_context)}
 
-The runtime `sfi_validation_instructions` field is authoritative for curriculum-specific
-edge cases and tricky distinctions. When it conflicts with generic semantic guidance,
-follow the runtime instructions unless doing so would invent source text or violate the
-structured output contract.
+The runtime `bilingual_pair_policy` and `sfi_validation_instructions` fields are
+authoritative for curriculum-specific multilingual handling, edge cases, and tricky
+distinctions. When they conflict with generic semantic guidance, follow the runtime
+instructions unless doing so would invent source text or violate the structured output
+contract.
 
 ## What to validate
 
