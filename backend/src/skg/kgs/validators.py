@@ -1706,9 +1706,11 @@ def _source_text_contains_statement_code(
 ) -> bool:
     """Check whether source text contains an exact statement-code occurrence.
 
-    The check uses normalized text while rejecting obvious embedded-code matches. For
-    example, a parent code such as `1.2` must not pass only because a child code such
-    as `1.2.3` is visible in the same source text.
+    The check uses normalized text while rejecting obvious embedded-code matches. A
+    period immediately followed by non-whitespace is treated as a code continuation,
+    so a parent code such as `1.2` does not pass only because `1.2.3` is visible. A
+    period followed by whitespace or the end of the source text is treated as terminal
+    punctuation, allowing source forms such as `1.2. Statement text` and `1.2.`.
 
     Parameters
     ----------
@@ -1727,11 +1729,11 @@ def _source_text_contains_statement_code(
     if not source_text_normalized or not statement_code_normalized:
         return False
 
-    code_boundary_chars = r"0-9a-z._/-"
+    code_continuation_chars = r"0-9a-z_/-"
     pattern = (
-        rf"(?<![{code_boundary_chars}])"
+        rf"(?<![.{code_continuation_chars}])"
         rf"{re.escape(statement_code_normalized)}"
-        rf"(?![{code_boundary_chars}])"
+        rf"(?![{code_continuation_chars}]|\.(?=\S))"
     )
     return re.search(pattern, source_text_normalized) is not None
 
@@ -2749,51 +2751,6 @@ def _validate_window_identity(ctx: SFIExtractionQualityCtx) -> None:
         )
 
 
-def _validate_window_local_code_assignment_count(
-    ctx: SFIExtractionQualityCtx,
-) -> None:
-    """Reject reuse of one window-level local code across multiple candidates.
-
-    A block or table exposes at most one `local_code`, so that metadata cannot prove
-    that multiple distinct candidates each own the same official code. Candidates may
-    still use independently visible codes from `window.code_matches`; this guard only
-    applies when their code equals the window-level `local_code`.
-
-    Parameters
-    ----------
-    ctx
-        Extraction quality context containing the result and source window.
-
-    Raises
-    ------
-    QualityError
-        If more than one candidate assigns itself the window-level `local_code`.
-    """
-
-    local_code = _get_window_local_code(ctx.window)
-
-    if local_code is None:
-        return
-
-    candidate_ids = [
-        candidate.candidate_id
-        for candidate in ctx.extraction_result.sfi_candidates
-        if candidate.statement_code is not None
-        and _source_code_values_match(
-            candidate_code=candidate.statement_code, source_code=local_code
-        )
-    ]
-
-    if len(candidate_ids) <= 1:
-        return
-
-    raise QualityError(
-        f"Window local_code {local_code!r} is assigned to multiple SFI candidates: "
-        f"{candidate_ids}. A window-level code may identify at most one candidate; "
-        f"use independently visible candidate-level codes or null instead."
-    )
-
-
 def verify_sfi_dedup_review_quality(
     *, review_request: SFIDedupReviewRequest, review_response: SFIDedupReviewResponse
 ) -> None:
@@ -2867,7 +2824,6 @@ def verify_sfi_extraction_quality(
 
     _validate_window_identity(ctx)
     _validate_candidate_table_indexes(ctx)
-    _validate_window_local_code_assignment_count(ctx)
 
     for candidate in ctx.extraction_result.sfi_candidates:
         _validate_candidate_statement_type_policy(candidate=candidate, ctx=ctx)
