@@ -68,16 +68,21 @@ HARD_LOCAL_DIRECT_PARENT_REASONS = frozenset(
 
 @dataclass(frozen=True)
 class SourceTextSupport:
-    """Source-visible text support with the languages that produced it.
+    """Source-visible text support with completeness and language metadata.
 
     Attributes
     ----------
+    description_complete
+        Whether the support is a source unit from which a complete candidate
+        description may be selected. Window-level aggregate supports remain useful for
+        evidence-quote visibility but are not complete description units.
     languages
         Source language tags contributing to the support text.
     text_normalized
         Whitespace-normalized, casefolded source-visible text.
     """
 
+    description_complete: bool
     languages: frozenset[str]
     text_normalized: str
 
@@ -145,12 +150,18 @@ def _append_row_cell_texts(*, row: dict[str, Any], texts: list[str]) -> None:
 
 
 def _append_source_text_support(
-    *, languages: set[str], supports: list[SourceTextSupport], text: str
+    *,
+    description_complete: bool = True,
+    languages: set[str],
+    supports: list[SourceTextSupport],
+    text: str,
 ) -> None:
     """Append one non-empty normalized source-text support.
 
     Parameters
     ----------
+    description_complete
+        Whether this support may establish a complete candidate description.
     languages
         Source language tags contributing to `text`.
     supports
@@ -164,12 +175,50 @@ def _append_source_text_support(
     if not text_normalized:
         return
 
-    supports.append(
-        SourceTextSupport(
-            languages=frozenset(language for language in languages if language),
-            text_normalized=text_normalized,
-        )
+    support = SourceTextSupport(
+        description_complete=description_complete,
+        languages=frozenset(language for language in languages if language),
+        text_normalized=text_normalized,
     )
+
+    if support not in supports:
+        supports.append(support)
+
+
+def _append_source_text_unit_supports(
+    *, languages: set[str], supports: list[SourceTextSupport], text: str
+) -> None:
+    """Append a complete source unit and its visible line-level units.
+
+    NB: Line-level supports preserve legitimate complete statements separated by source
+    line breaks. Sentence and clause boundaries within each support are evaluated by
+    `_source_supports_complete_text`; arbitrary interior substrings are not treated as
+    complete descriptions.
+
+    Parameters
+    ----------
+    languages
+        Source language tags contributing to the source unit.
+    supports
+        Mutable support accumulator.
+    text
+        Source-visible unit text.
+    """
+
+    text_clean = str(text or "").strip()
+
+    if not text_clean:
+        return
+
+    _append_source_text_support(languages=languages, supports=supports, text=text_clean)
+
+    for line in text_clean.splitlines():
+        line_clean = line.strip()
+
+        if line_clean:
+            _append_source_text_support(
+                languages=languages, supports=supports, text=line_clean
+            )
 
 
 def _build_block_payload_source_text_supports(
@@ -200,7 +249,7 @@ def _build_block_payload_source_text_supports(
             language = _get_text_unit_language(
                 fallback=fallback_language, text_unit=text_unit
             )
-            _append_source_text_support(
+            _append_source_text_unit_supports(
                 languages={language}, supports=supports, text=text
             )
 
@@ -217,12 +266,12 @@ def _build_block_payload_source_text_supports(
                     language = _get_text_unit_language(
                         fallback=fallback_language, text_unit=figure_text
                     )
-                    _append_source_text_support(
+                    _append_source_text_unit_supports(
                         languages={language}, supports=supports, text=text
                     )
                     break
             elif isinstance(figure_text, str) and figure_text.strip():
-                _append_source_text_support(
+                _append_source_text_unit_supports(
                     languages={fallback_language}, supports=supports, text=figure_text
                 )
                 break
@@ -267,9 +316,21 @@ def _build_block_source_text_supports(
             language = _get_text_unit_language(
                 fallback=window.primary_language, text_unit=item.get("text")
             )
-            _append_source_text_support(
+            _append_source_text_unit_supports(
                 languages={language}, supports=supports, text=source_text
             )
+
+            item_text_unit = item.get("text")
+            item_text = (
+                str(item_text_unit.get("text") or "").strip()
+                if isinstance(item_text_unit, dict)
+                else str(item_text_unit or "").strip()
+            )
+
+            if item_text and _normalize_text(item_text) != _normalize_text(source_text):
+                _append_source_text_unit_supports(
+                    languages={language}, supports=supports, text=item_text
+                )
     else:
         slices = block.get("slices")
 
@@ -295,7 +356,10 @@ def _build_block_source_text_supports(
         language for support in supports for language in support.languages
     } or {window.primary_language}
     _append_source_text_support(
-        languages=combined_languages, supports=supports, text=window.source_text
+        description_complete=False,
+        languages=combined_languages,
+        supports=supports,
+        text=window.source_text,
     )
     return supports
 
@@ -381,6 +445,45 @@ def _build_candidate_source_text_supports(
     return _build_table_source_text_supports(candidate=candidate, window=ctx.window)
 
 
+def _build_description_support_targets(
+    *, description: str, statement_code: Optional[str]
+) -> list[str]:
+    """Build complete-description targets with optional visible code prefixes.
+
+    Parameters
+    ----------
+    description
+        Candidate description text.
+    statement_code
+        Optional separately captured source-visible code.
+
+    Returns
+    -------
+    list[str]
+        Normalized description targets. Code-prefixed variants allow a complete
+        statement to be validated when its source cell begins with the same code but
+        the candidate stores that code separately in `statement_code`.
+    """
+
+    targets = [_normalize_text(description)]
+
+    if statement_code is None:
+        return targets
+
+    code = str(statement_code).strip().rstrip(" .:;-)–—")
+
+    if not code:
+        return targets
+
+    for separator in [" ", ". ", ": ", ") ", " - ", " – ", " — "]:
+        target = _normalize_text(f"{code}{separator}{description}")
+
+        if target not in targets:
+            targets.append(target)
+
+    return targets
+
+
 def _build_list_item_source_text(item: dict[str, Any]) -> str:
     """Render one serialized list item with its visible marker.
 
@@ -444,7 +547,7 @@ def _build_normalized_text_blob_for_indexes(
 def _build_row_source_text_supports(
     *, primary_language: str, row: dict[str, Any]
 ) -> list[SourceTextSupport]:
-    """Build cell-level and whole-row source supports.
+    """Build language-aware supports for all contiguous visible cell ranges.
 
     Parameters
     ----------
@@ -456,12 +559,12 @@ def _build_row_source_text_supports(
     Returns
     -------
     list[SourceTextSupport]
-        Individual-cell and whole-row supports.
+        Supports for every contiguous range of text-bearing cells. Each support carries
+        only the languages used by that range, so unrelated cells in another language
+        do not force a monolingual candidate to use `mul`.
     """
 
-    supports: list[SourceTextSupport] = []
-    row_texts: list[str] = []
-    row_languages: set[str] = set()
+    visible_cells: list[tuple[str, str]] = []
 
     for cell in row.get("cells") or []:
         text_unit = cell.get("text") or {}
@@ -470,18 +573,29 @@ def _build_row_source_text_supports(
         if not text:
             continue
 
-        language = _get_text_unit_language(
-            fallback=primary_language, text_unit=text_unit
+        visible_cells.append(
+            (
+                text,
+                _get_text_unit_language(fallback=primary_language, text_unit=text_unit),
+            )
         )
-        row_texts.append(text)
-        row_languages.add(language)
-        _append_source_text_support(languages={language}, supports=supports, text=text)
 
-    _append_source_text_support(
-        languages=row_languages or {primary_language},
-        supports=supports,
-        text="\n".join(row_texts),
-    )
+    supports: list[SourceTextSupport] = []
+
+    for start_index in range(len(visible_cells)):
+        range_languages: set[str] = set()
+        range_texts: list[str] = []
+
+        for end_index in range(start_index, len(visible_cells)):
+            text, language = visible_cells[end_index]
+            range_languages.add(language)
+            range_texts.append(text)
+            _append_source_text_unit_supports(
+                languages=range_languages.copy(),
+                supports=supports,
+                text="\n".join(range_texts),
+            )
+
     return supports
 
 
@@ -612,7 +726,7 @@ def _build_table_channel_source_text_supports(
                     )
                 )
 
-        _append_source_text_support(
+        _append_source_text_unit_supports(
             languages=run_languages or {primary_language},
             supports=supports,
             text="\n".join(run_texts),
@@ -645,7 +759,7 @@ def _build_table_channel_source_text_supports(
                 )
 
             if len(column_texts) > 1:
-                _append_source_text_support(
+                _append_source_text_unit_supports(
                     languages=column_languages,
                     supports=supports,
                     text="\n".join(column_texts),
@@ -843,7 +957,7 @@ def _build_table_source_text_supports(
                             )
                         )
 
-                _append_source_text_support(
+                _append_source_text_unit_supports(
                     languages=combined_languages or {window.primary_language},
                     supports=supports,
                     text="\n".join(combined_texts),
@@ -1315,6 +1429,62 @@ def _source_supports_contiguous_text(
     )
 
 
+def _source_supports_complete_text(
+    *, supports: list[SourceTextSupport], target_text_normalized: str
+) -> bool:
+    """Check whether target text is a complete source unit or bounded clause.
+
+    Parameters
+    ----------
+    supports
+        Candidate-scoped source supports.
+    target_text_normalized
+        Normalized candidate description.
+
+    Returns
+    -------
+    bool
+        True when the target equals a complete support or begins and ends at strong
+        source boundaries within one. Prefix/suffix truncation inside an ordinary
+        phrase is rejected.
+    """
+
+    if not target_text_normalized:
+        return False
+
+    boundary_characters = frozenset(".!?;:")
+
+    for support in supports:
+        if not support.description_complete:
+            continue
+
+        source_text = support.text_normalized
+        search_start = 0
+
+        while True:
+            match_start = source_text.find(target_text_normalized, search_start)
+
+            if match_start < 0:
+                break
+
+            match_end = match_start + len(target_text_normalized)
+            prefix = source_text[:match_start].rstrip()
+            suffix = source_text[match_end:].lstrip()
+            left_bounded = not prefix or prefix[-1] in boundary_characters
+            right_bounded = (
+                not suffix
+                or suffix[0] in boundary_characters
+                or target_text_normalized[-1] in boundary_characters
+            )
+
+            if left_bounded and right_bounded:
+                return True
+
+            search_start = match_start + 1
+
+    return False
+
+
 def _source_text_contains_statement_code(
     *, source_text_normalized: str, statement_code_normalized: str
 ) -> bool:
@@ -1458,9 +1628,15 @@ def _validate_candidate_description_is_source_supported(
         )
 
     supports = _build_candidate_source_text_supports(candidate=candidate, ctx=ctx)
+    description_targets = _build_description_support_targets(
+        description=candidate.description, statement_code=candidate.statement_code
+    )
 
-    if _source_supports_contiguous_text(
-        supports=supports, target_text_normalized=description_normalized
+    if any(
+        _source_supports_complete_text(
+            supports=supports, target_text_normalized=description_target
+        )
+        for description_target in description_targets
     ):
         return
 
@@ -1471,10 +1647,11 @@ def _validate_candidate_description_is_source_supported(
     )
     raise QualityError(
         f"Candidate {candidate.candidate_id!r} has description that is not a "
-        f"contiguous source-visible excerpt supported by {support_label}. Use exact "
-        f"source-language wording. For split table statements, combine only complete "
-        f"visible fragments from adjacent cited cells or adjacent cited rows; do not "
-        f"delete or interleave words from a longer statement."
+        f"complete source-visible unit or strongly bounded source clause supported by "
+        f"{support_label}. Preserve the complete statement or grouping label. For "
+        f"split table statements, combine only complete visible fragments from "
+        f"adjacent cited cells or adjacent cited rows; do not delete, interleave, or "
+        f"truncate words from the beginning or end of a longer statement."
     )
 
 

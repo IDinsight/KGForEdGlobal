@@ -829,7 +829,7 @@ def extract_sfi_candidates_from_window(
 
 ## Candidate field policy
 - candidate_id must be unique within this window, such as sfi_1, sfi_2, etc.
-- description should preserve the exact source-language wording of the SFI. For learning expectations, use the official statement text. For groupings, use the grouping label or heading text. Do not clean, translate, correct spelling, normalize, expand, or infer description text.
+- description should preserve the complete exact source-language wording of the SFI. For learning expectations, use the full official statement text. For groupings, use the complete grouping label or heading text. Do not clean, translate, correct spelling, normalize, expand, infer, or truncate description text.
 - statement_type must use exactly one canonical source-facing role from statement_type_policy.
 - statement_code should be the official/source-visible code when present. Use null when no code is visible.
 - language must match the source language tag on the exact block.source_units or table cells that support description/source_text. Use "mul" when the candidate combines visible text from more than one source language. Use the KG config primary language only when the supporting source units have no language metadata.
@@ -843,7 +843,7 @@ def extract_sfi_candidates_from_window(
 - description should contain the complete source-visible SFI statement or grouping label, including visible continuation fragments when an official statement is split across adjacent table rows or cells.
 - source_text is a source-visible evidence quote for validation. It is not the final canonical KG statement text and it is not the only downstream provenance.
 - Keep source_text concise but sufficient. For coded table statements, quote only official code and statement text, not examples, exemplars, teacher guidance, activities, or competencies. When a statement is split across multiple visible rows/cells, quote the complete visible statement only if the contributing fragments can be represented as a source-visible excerpt; otherwise quote the strongest exact visible fragment and rely on table_row_indexes/table_header_indexes for downstream source recovery.
-- For table candidates, the safest valid output is often description equal to source_text. Use a longer description only when it is a contiguous source-visible excerpt from a cited cell/row or a complete statement assembled from adjacent cited cells or adjacent cited rows. Do not create a description by deleting or interleaving words from a longer source statement.
+- For table candidates, the safest valid output is often description equal to source_text when source_text contains the complete official statement. A description may also be a complete source-visible cell, contiguous cell range, bounded clause, or statement assembled from adjacent cited cells or adjacent cited rows. Do not create a description by deleting, interleaving, or truncating words from the beginning or end of a longer source statement.
 
 ## Source fidelity rules
 - Preserve source-language text. Do not translate. Use block.source_units and table-cell language fields to assign candidate and auxiliary language accurately.
