@@ -395,9 +395,10 @@ def _extract_figure_source_text(block_payload: dict[str, Any]) -> str:
 def _extract_list_items_source_text(list_items: list[Any]) -> str:
     """Render serialized list items with visible markers in source order.
 
-    Each output line preserves the item's visible marker and text. Marker punctuation
-    is retained exactly as serialized so list-based identifiers remain available to
-    extraction prompts, code-pattern matching, and code-parent hint generation.
+    Each output line preserves the original item text. The structured marker is
+    prepended only when the text does not already begin with the same complete marker.
+    This keeps list-based identifiers available to extraction prompts and code matching
+    without duplicating markers already embedded in source text.
 
     Parameters
     ----------
@@ -429,7 +430,14 @@ def _extract_list_items_source_text(list_items: list[Any]) -> str:
         else:
             text = ""
 
-        line = " ".join(part for part in [marker, text] if part)
+        if (
+            marker
+            and text
+            and _text_starts_with_complete_marker(marker=marker, text=text)
+        ):
+            line = text
+        else:
+            line = " ".join(part for part in [marker, text] if part)
 
         if line:
             item_lines.append(line)
@@ -524,6 +532,47 @@ def _matches_any_pattern(*, patterns: Sequence[str], text: str) -> bool:
     """
 
     return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def _text_starts_with_complete_marker(*, marker: str, text: str) -> bool:
+    """Return whether text begins with the same complete structured list marker.
+
+    NFKC normalization and whitespace collapsing are used only for comparison; the
+    caller retains the original marker and text for output. Numeric hierarchy
+    continuations are not treated as complete matches, so marker `2.` does not match
+    text beginning with `2.1` and marker `2.1` does not match `2.1.1`.
+
+    Parameters
+    ----------
+    marker
+        Structured source-visible list marker.
+    text
+        Source-visible list-item text.
+
+    Returns
+    -------
+    bool
+        True when text already begins with the complete marker; otherwise False.
+    """
+
+    marker_key = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", marker)).strip()
+    text_key = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text)).lstrip()
+
+    if not marker_key or not text_key.startswith(marker_key):
+        return False
+
+    remainder = text_key[len(marker_key) :]
+
+    if not remainder or remainder[0].isspace():
+        return True
+
+    if marker_key.endswith("."):
+        return not remainder[0].isdigit()
+
+    if marker_key[-1].isalnum():
+        return remainder[0] in {":", ";", ")", "]", "}"}
+
+    return True
 
 
 def _validate_document_ir(document_ir_fp: Path) -> DocumentIR:
