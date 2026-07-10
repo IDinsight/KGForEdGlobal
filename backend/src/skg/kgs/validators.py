@@ -969,6 +969,127 @@ def _candidate_has_soft_carry_forward_evidence(
     )
 
 
+def _candidate_order_targets(candidate: SFICandidate) -> list[str]:
+    """Build normalized candidate texts in preferred source-location order.
+
+    A source quote containing the complete description is the most specific location
+    target, especially when it includes a visible code. When the quote is only an
+    excerpt of a longer description, the complete description is preferred instead.
+
+    Parameters
+    ----------
+    candidate
+        Candidate whose source-location targets should be built.
+
+    Returns
+    -------
+    list[str]
+        Non-empty normalized targets ordered from most to least specific.
+    """
+
+    description_normalized = _normalize_text(candidate.description)
+    evidence_normalized = _normalize_text(candidate.source_text)
+
+    if description_normalized and description_normalized in evidence_normalized:
+        ordered_targets = [evidence_normalized, description_normalized]
+    else:
+        ordered_targets = [description_normalized, evidence_normalized]
+
+    return [target for target in ordered_targets if target]
+
+
+def _candidate_source_order_key(
+    *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
+) -> tuple[int, int, int]:
+    """Build a comparable source-order key for one validated SFI candidate.
+
+    Block candidates are ordered by their earliest visible text occurrence in the
+    block. Table candidates are ordered with raw headers before body rows, rows in the
+    extraction window's source order, and text within a row from left to right.
+
+    Parameters
+    ----------
+    candidate
+        Candidate whose source-order key should be built.
+    ctx
+        Extraction quality context containing the source window.
+
+    Returns
+    -------
+    tuple[int, int, int]
+        Channel rank, row/source-unit rank, and normalized text offset.
+    """
+
+    table = ctx.window.table
+
+    if table is None:
+        return (
+            0,
+            0,
+            _candidate_text_order_offset(
+                candidate=candidate, source_text=ctx.window.source_text
+            ),
+        )
+
+    body_row_positions = {
+        row_index: position for position, row_index in enumerate(table.row_indexes)
+    }
+    source_locations: list[tuple[int, int, dict[str, Any]]] = [
+        (0, header_index, table.header_rows[header_index])
+        for header_index in candidate.table_header_indexes
+    ]
+    source_locations.extend(
+        (1, body_row_positions[row_index], row)
+        for row_index, row in zip(table.row_indexes, table.rows)
+        if row_index in candidate.table_row_indexes
+    )
+
+    if not source_locations:
+        return (2, 0, 0)
+
+    source_locations.sort(key=lambda location: (location[0], location[1]))
+    normalized_rows: list[str] = []
+    row_spans: list[tuple[int, int, int, int]] = []
+    stream_length = 0
+
+    for channel_rank, row_rank, row in source_locations:
+        row_text_normalized = _normalize_text(_flatten_table_row_text(row))
+
+        if not row_text_normalized:
+            continue
+
+        if normalized_rows:
+            stream_length += 1
+
+        row_start = stream_length
+        stream_length += len(row_text_normalized)
+        row_spans.append((row_start, stream_length, channel_rank, row_rank))
+        normalized_rows.append(row_text_normalized)
+
+    source_stream = " ".join(normalized_rows)
+
+    for target_text_normalized in _candidate_order_targets(candidate):
+        target_start = source_stream.find(target_text_normalized)
+
+        if target_start < 0:
+            continue
+
+        for row_start, row_end, channel_rank, row_rank in row_spans:
+            if target_start >= row_end:
+                continue
+
+            return (channel_rank, row_rank, max(0, target_start - row_start))
+
+    channel_rank, row_rank, row = source_locations[0]
+    return (
+        channel_rank,
+        row_rank,
+        _candidate_text_order_offset(
+            candidate=candidate, source_text=_flatten_table_row_text(row)
+        ),
+    )
+
+
 def _candidate_source_text_is_linked_to_description(
     candidate: SFICandidate,
 ) -> bool:
@@ -1008,6 +1129,38 @@ def _candidate_source_text_is_linked_to_description(
             for source_text_variant in source_text_variants
         )
     )
+
+
+def _candidate_text_order_offset(*, candidate: SFICandidate, source_text: str) -> int:
+    """Find the earliest candidate-text offset within one source unit.
+
+    The most specific source-visible form is preferred: a quote containing the complete
+    description is used first, while a longer description is preferred when the quote
+    is only an excerpt.
+
+    Parameters
+    ----------
+    candidate
+        Candidate whose source position should be located.
+    source_text
+        Source-visible block or table-row text to search.
+
+    Returns
+    -------
+    int
+        Earliest normalized character offset, or zero when neither candidate text field
+        can be located in the supplied source unit.
+    """
+
+    source_text_normalized = _normalize_text(source_text)
+
+    for target_text_normalized in _candidate_order_targets(candidate):
+        offset = source_text_normalized.find(target_text_normalized)
+
+        if offset >= 0:
+            return offset
+
+    return 0
 
 
 def _child_has_viable_source_visible_parent(
@@ -1183,13 +1336,42 @@ def _find_redundant_candidate_table_locations(
 
             if any(
                 _source_support_matches_candidate(
-                    candidate=reduced_candidate, support=support, window=ctx.window
+                    candidate=reduced_candidate,
+                    structural_label_keys=set(ctx.statement_type_alias_to_canonical),
+                    support=support,
+                    window=ctx.window,
                 )
                 for support in reduced_supports
             ):
                 redundant_locations.append(f"{field_name}={index}")
 
     return redundant_locations
+
+
+def _flatten_table_row_text(row: dict[str, Any]) -> str:
+    """Flatten one raw table row into source-order visible cell text.
+
+    Parameters
+    ----------
+    row
+        Serialized raw table row.
+
+    Returns
+    -------
+    str
+        Visible cell text joined from left to right.
+    """
+
+    texts: list[str] = []
+
+    for cell in row.get("cells") or []:
+        text_unit = cell.get("text") or {}
+        text = str(text_unit.get("text") or "").strip()
+
+        if text:
+            texts.append(text)
+
+    return "\n".join(texts)
 
 
 def _get_text_unit_language(*, fallback: str, text_unit: Any) -> str:
@@ -1626,12 +1808,17 @@ def _source_supports_contiguous_text(
 
 
 def _source_support_contains_complete_text(
-    *, support: SourceTextSupport, target_text_normalized: str
+    *,
+    structural_label_keys: set[str],
+    support: SourceTextSupport,
+    target_text_normalized: str,
 ) -> bool:
     """Check whether one evidence span supports a complete description target.
 
     Parameters
     ----------
+    structural_label_keys
+        Normalized canonical statement-type labels and aliases from runtime config.
     support
         Source evidence span to inspect.
     target_text_normalized
@@ -1671,11 +1858,21 @@ def _source_support_contains_complete_text(
         ):
             right_boundary_index += 1
 
-        left_bounded = left_boundary_index < 0 or (
-            source_text[left_boundary_index] in boundary_characters
-            and _is_strong_source_boundary(
-                boundary_index=left_boundary_index, source_text=source_text
+        target_starts_with_structural_label = (
+            match_start == 0 or source_text[match_start - 1].isspace()
+        ) and _text_starts_with_structural_label(
+            structural_label_keys=structural_label_keys,
+            text=target_text_normalized,
+        )
+        left_bounded = (
+            left_boundary_index < 0
+            or (
+                source_text[left_boundary_index] in boundary_characters
+                and _is_strong_source_boundary(
+                    boundary_index=left_boundary_index, source_text=source_text
+                )
             )
+            or target_starts_with_structural_label
         )
         target_boundary_index = len(target_text_normalized) - 1
         target_ends_at_boundary = target_text_normalized[
@@ -1683,6 +1880,12 @@ def _source_support_contains_complete_text(
         ] in boundary_characters and _is_strong_source_boundary(
             boundary_index=target_boundary_index,
             source_text=target_text_normalized,
+        )
+        next_text_starts_with_structural_label = right_boundary_index < len(
+            source_text
+        ) and _text_starts_with_structural_label(
+            structural_label_keys=structural_label_keys,
+            text=source_text[right_boundary_index:],
         )
         right_bounded = (
             right_boundary_index >= len(source_text)
@@ -1692,6 +1895,7 @@ def _source_support_contains_complete_text(
                     boundary_index=right_boundary_index, source_text=source_text
                 )
             )
+            or next_text_starts_with_structural_label
             or target_ends_at_boundary
         )
 
@@ -1794,7 +1998,11 @@ def _source_support_has_candidate_locations(
 
 
 def _source_support_matches_candidate(
-    *, candidate: SFICandidate, support: SourceTextSupport, window: ExtractionWindow
+    *,
+    candidate: SFICandidate,
+    structural_label_keys: set[str],
+    support: SourceTextSupport,
+    window: ExtractionWindow,
 ) -> bool:
     """Check whether one source span jointly supports all candidate evidence fields.
 
@@ -1802,6 +2010,8 @@ def _source_support_matches_candidate(
     ----------
     candidate
         Candidate to validate.
+    structural_label_keys
+        Normalized canonical statement-type labels and aliases from runtime config.
     support
         Source-visible evidence span to inspect.
     window
@@ -1821,7 +2031,9 @@ def _source_support_matches_candidate(
 
     if not any(
         _source_support_contains_complete_text(
-            support=support, target_text_normalized=description_target
+            structural_label_keys=structural_label_keys,
+            support=support,
+            target_text_normalized=description_target,
         )
         for description_target in description_targets
     ):
@@ -1894,6 +2106,98 @@ def _statement_code_is_directly_linked_to_description(candidate: SFICandidate) -
     }
 
 
+def _text_starts_with_structural_label(
+    *, structural_label_keys: set[str], text: str
+) -> bool:
+    """Check whether text starts with a configured source-facing field label.
+
+    The visible label before the first colon is normalized with the same generic
+    punctuation-insensitive key used for runtime statement-type labels and aliases.
+    This allows adjacent labeled fields on one physical line without hard-coding any
+    curriculum vocabulary or treating arbitrary text before a later colon as a label.
+
+    Parameters
+    ----------
+    structural_label_keys
+        Normalized canonical statement-type labels and aliases from runtime config.
+    text
+        Normalized source text beginning at a possible field-label boundary.
+
+    Returns
+    -------
+    bool
+        True when the first colon-delimited prefix exactly matches a configured label.
+    """
+
+    label_text, separator, _ = text.lstrip().partition(":")
+
+    if not separator:
+        return False
+
+    label_key = _normalize_statement_type_key(label_text)
+    return bool(label_key and label_key in structural_label_keys)
+
+
+def _validate_candidate_ids_and_source_order(
+    ctx: SFIExtractionQualityCtx,
+) -> None:
+    """Validate sequential candidate IDs and nondecreasing source order.
+
+    Candidate list position becomes downstream source-order provenance, so IDs must
+    exactly encode that position and candidates must not move backward through the
+    visible block or table content. Candidates with the same source-order key are
+    allowed because repeated or jointly sourced items can share an exact location.
+
+    Parameters
+    ----------
+    ctx
+        Extraction quality context containing candidates and their source window.
+
+    Raises
+    ------
+    QualityError
+        If candidate IDs are not exactly `sfi_1` through `sfi_N` in list order, or if
+        the candidate list moves backward in source order.
+    """
+
+    candidates = ctx.extraction_result.sfi_candidates
+    actual_candidate_ids = [candidate.candidate_id for candidate in candidates]
+    expected_candidate_ids = [
+        f"sfi_{candidate_number}" for candidate_number in range(1, len(candidates) + 1)
+    ]
+
+    if actual_candidate_ids != expected_candidate_ids:
+        raise QualityError(
+            f"SFI candidate IDs must be sequential and correspond exactly to list "
+            f"position. Expected {expected_candidate_ids!r}; got "
+            f"{actual_candidate_ids!r}. Return candidates in source order using "
+            f"candidate_id values sfi_1 through sfi_N."
+        )
+
+    source_order_keys = [
+        _candidate_source_order_key(candidate=candidate, ctx=ctx)
+        for candidate in candidates
+    ]
+
+    for candidate_index in range(1, len(candidates)):
+        previous_key = source_order_keys[candidate_index - 1]
+        current_key = source_order_keys[candidate_index]
+
+        if current_key >= previous_key:
+            continue
+
+        previous_candidate = candidates[candidate_index - 1]
+        current_candidate = candidates[candidate_index]
+        raise QualityError(
+            f"SFI candidates must be returned in source order. Candidate "
+            f"{current_candidate.candidate_id!r} appears before "
+            f"{previous_candidate.candidate_id!r} in the visible source but was "
+            f"returned later. Order block candidates by first contributing text; "
+            f"order table candidates by headers before body rows, rows in source "
+            f"order, and cells/text from left to right."
+        )
+
+
 def _validate_candidate_source_evidence(
     *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
 ) -> None:
@@ -1929,7 +2233,10 @@ def _validate_candidate_source_evidence(
         support
         for support in supports
         if _source_support_matches_candidate(
-            candidate=candidate, support=support, window=ctx.window
+            candidate=candidate,
+            structural_label_keys=set(ctx.statement_type_alias_to_canonical),
+            support=support,
+            window=ctx.window,
         )
     ]
 
@@ -2830,6 +3137,7 @@ def verify_sfi_extraction_quality(
         _validate_candidate_statement_code(candidate=candidate, ctx=ctx)
         _validate_candidate_source_evidence(candidate=candidate, ctx=ctx)
 
+    _validate_candidate_ids_and_source_order(ctx)
     window_supports = _build_window_source_text_supports(ctx)
 
     for auxiliary_candidate in ctx.extraction_result.auxiliary_candidates:
