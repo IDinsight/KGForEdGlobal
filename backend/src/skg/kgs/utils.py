@@ -534,24 +534,47 @@ def _matches_any_pattern(*, patterns: Sequence[str], text: str) -> bool:
     return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
 
 
-def _validate_document_ir(document_ir_fp: Path) -> DocumentIR:
+def _validate_document_ir(*, document_ir_fp: Path, expected_doc_key: str) -> DocumentIR:
     """Validate basic DocumentIR assumptions required by KG creation.
 
     Parameters
     ----------
     document_ir_fp
         The file path to the stitched DocumentIR JSON.
+    expected_doc_key
+        The document key computed from the configured source PDF.
+
+    Returns
+    -------
+    DocumentIR
+        The validated stitched DocumentIR.
 
     Raises
     ------
     ValueError
-        If required document-level fields or segment identifiers are missing.
+        If the expected document key is blank, the DocumentIR key does not match it, or
+        required document-level fields or segment identifiers are missing.
     """
 
-    document_ir = DocumentIR.model_validate(open_json_type(document_ir_fp))
+    expected_doc_key_clean = str(expected_doc_key or "").strip()
 
-    if not document_ir.doc_key.strip():
+    if not expected_doc_key_clean:
+        raise ValueError("Expected DocumentIR doc_key must be non-empty.")
+
+    document_ir = DocumentIR.model_validate(open_json_type(document_ir_fp))
+    document_ir_doc_key = document_ir.doc_key.strip()
+
+    if not document_ir_doc_key:
         raise ValueError("DocumentIR.doc_key must be non-empty.")
+
+    if document_ir_doc_key != expected_doc_key_clean:
+        raise ValueError(
+            f"DocumentIR doc_key mismatch.\n"
+            f"  DocumentIR path:       {document_ir_fp}\n"
+            f"  expected doc_key:      {expected_doc_key_clean}\n"
+            f"  DocumentIR.doc_key:    {document_ir_doc_key}\n"
+            f"The loaded DocumentIR does not belong to the configured source PDF."
+        )
 
     if not document_ir.pages:
         raise ValueError("DocumentIR.pages must be non-empty.")
@@ -977,7 +1000,11 @@ def get_table_selection_reasons(
 
 
 def load_and_validate_inputs(
-    *, config: CreateKGConfig, document_ir_fp: Path, kg_dirs: KGDirs
+    *,
+    config: CreateKGConfig,
+    document_ir_fp: Path,
+    expected_doc_key: str,
+    kg_dirs: KGDirs,
 ) -> KGInputs:
     """Load, validate, and prep KG creation run inputs.
 
@@ -988,6 +1015,8 @@ def load_and_validate_inputs(
         attributes.
     document_ir_fp
         Path to the stitched DocumentIR JSON file.
+    expected_doc_key
+        Document key computed from the configured source PDF.
     kg_dirs
         Directories for storing KG run artifacts.
 
@@ -1004,7 +1033,9 @@ def load_and_validate_inputs(
 
     # Validate the DocumentIR object. The CreateKGConfig has already been parsed and
     # validated by the runtime config loader.
-    document_ir = _validate_document_ir(document_ir_fp)
+    document_ir = _validate_document_ir(
+        document_ir_fp=document_ir_fp, expected_doc_key=expected_doc_key
+    )
 
     # Count code pattern matches in the document IR.
     code_pattern_match_counts = _count_code_pattern_matches(
