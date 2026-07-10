@@ -356,6 +356,10 @@ def _extract_cell_text(cell: TableCell) -> Optional[str]:
 def _extract_figure_source_text(block_payload: dict[str, Any]) -> str:
     """Extract source-visible text from serialized figure fields.
 
+    Figure alt text is descriptive metadata and is not treated as source-visible
+    evidence. Only embedded text and source-visible captions are eligible for the
+    extraction-window source text used by prompting and code matching.
+
     Parameters
     ----------
     block_payload
@@ -364,8 +368,7 @@ def _extract_figure_source_text(block_payload: dict[str, Any]) -> str:
     Returns
     -------
     str
-        Embedded text, caption text, or text-bearing alt text, otherwise an empty
-        string.
+        Embedded text or caption text, otherwise an empty string.
     """
 
     figure = block_payload.get("figure")
@@ -386,14 +389,15 @@ def _extract_figure_source_text(block_payload: dict[str, Any]) -> str:
     if isinstance(caption, str) and caption.strip():
         return caption.strip()
 
-    if figure.get("contains_text") and figure.get("alt_text"):
-        return str(figure["alt_text"]).strip()
-
     return ""
 
 
 def _extract_list_items_source_text(list_items: list[Any]) -> str:
-    """Join serialized list-item text in source order.
+    """Render serialized list items with visible markers in source order.
+
+    Each output line preserves the item's visible marker and text. Marker punctuation
+    is retained exactly as serialized so list-based identifiers remain available to
+    extraction prompts, code-pattern matching, and code-parent hint generation.
 
     Parameters
     ----------
@@ -409,20 +413,28 @@ def _extract_list_items_source_text(list_items: list[Any]) -> str:
     if not isinstance(list_items, list):
         return ""
 
-    item_texts: list[str] = []
+    item_lines: list[str] = []
 
     for item in list_items:
         if not isinstance(item, dict):
             continue
 
+        marker = str(item.get("marker") or "").strip()
         item_text = item.get("text")
 
         if isinstance(item_text, dict):
-            item_texts.append(str(item_text.get("text") or "").strip())
-        elif item_text:
-            item_texts.append(str(item_text).strip())
+            text = str(item_text.get("text") or "").strip()
+        elif item_text is not None:
+            text = str(item_text).strip()
+        else:
+            text = ""
 
-    return "\n".join(item_text for item_text in item_texts if item_text)
+        line = " ".join(part for part in [marker, text] if part)
+
+        if line:
+            item_lines.append(line)
+
+    return "\n".join(item_lines)
 
 
 def _extract_observed_languages(document_ir: DocumentIR) -> list[str]:
