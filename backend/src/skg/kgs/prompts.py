@@ -368,32 +368,33 @@ def _build_compact_extraction_window_payload(
 def _build_compact_filldown_context_row_payload(
     *,
     filldown_row: dict[str, Any],
-    header_labels: list[str],
-    raw_row: dict[str, Any],
+    raw_grid_row: dict[str, Any],
     row_index: int,
 ) -> Optional[dict[str, Any]]:
     """Build helper-only filldown context cells for one table row.
 
+    The filldown and raw-grid rows are both rectangular and column-aligned. Only helper
+    values that differ from the raw structural grid are retained, which keeps the
+    prompt compact while exposing repeated grouping context when it is useful.
+
     Parameters
     ----------
     filldown_row
-        Filldown helper-view row aligned to the raw source row.
-    header_labels
-        Column labels from the final canonical header row, when available.
-    raw_row
-        Raw source row aligned to the filldown helper row.
+        Filldown helper-view row aligned to the raw structural grid row.
+    raw_grid_row
+        Span-expanded raw row used to distinguish added helper context from visible
+        source content.
     row_index
         Source table row index for this row.
 
     Returns
     -------
     Optional[dict[str, Any]]
-        Compact helper-context row payload, or `None` when the filldown row adds no
-        helper-only context beyond the raw source row.
+        Compact helper-context row payload, or `None` when filldown adds no context.
     """
 
     cells: list[dict[str, Any]] = []
-    raw_cells = raw_row.get("cells") or []
+    raw_grid_cells = raw_grid_row.get("cells") or []
 
     for column_index, cell in enumerate(filldown_row.get("cells") or []):
         text_unit = cell.get("text") or {}
@@ -402,83 +403,105 @@ def _build_compact_filldown_context_row_payload(
         if not text:
             continue
 
-        raw_cell = raw_cells[column_index] if column_index < len(raw_cells) else {}
-        raw_text_unit = raw_cell.get("text") or {}
+        raw_grid_cell = (
+            raw_grid_cells[column_index] if column_index < len(raw_grid_cells) else {}
+        )
+        raw_text_unit = raw_grid_cell.get("text") or {}
         raw_text = str(raw_text_unit.get("text") or "").strip()
-        helper_only = bool(cell.get("synthetic") or cell.get("rowspan_placeholder"))
 
-        if text == raw_text and not helper_only:
+        if text == raw_text:
             continue
 
-        payload: dict[str, Any] = {
-            "column_index": column_index,
-            "header": (
-                header_labels[column_index]
-                if column_index < len(header_labels)
-                else None
-            ),
-            "language": text_unit.get("language"),
-            "source_visibility": "helper_context_only",
-            "text": text,
-        }
-
-        if cell.get("rowspan_placeholder"):
-            payload["rowspan_placeholder"] = True
-
-        if cell.get("synthetic"):
-            payload["synthetic"] = True
-
-        cells.append(payload)
+        cells.append(
+            {
+                "column_index": column_index,
+                "language": text_unit.get("language"),
+                "text": text,
+            }
+        )
 
     if not cells:
         return None
 
-    return {"cells": cells, "row_index": row_index}
+    return {
+        "cells": cells,
+        "row_index": row_index,
+        "source_visibility": "helper_context_only",
+    }
 
 
-def _build_compact_header_row_payload(
-    *, header_row: dict[str, Any], header_row_index: int
-) -> dict[str, Any]:
-    """Build a compact prompt-facing table header row payload.
+def _build_compact_header_rows(
+    *, header_rows: list[dict[str, Any]], n_cols: int
+) -> list[dict[str, Any]]:
+    """Build compact raw header rows with true grid column ranges.
+
+    Row spans are tracked across declared header rows so every visible header cell is
+    assigned to the columns it actually covers. The result remains sparse: merged cells
+    are represented once with a column range rather than repeated across the expanded
+    grid.
 
     Parameters
     ----------
-    header_row
-        Raw source table header row payload.
-    header_row_index
-        Source table header row index within the table header block.
+    header_rows
+        Raw source header rows in table order.
+    n_cols
+        Total table grid width.
 
     Returns
     -------
-    dict[str, Any]
-        Compact header row payload with text-bearing cells only.
+    list[dict[str, Any]]
+        Compact source-visible header rows with exact cell placement.
     """
 
-    cells: list[dict[str, Any]] = []
+    active_rowspans = [0] * n_cols
+    compact_rows: list[dict[str, Any]] = []
 
-    for column_index, cell in enumerate(header_row.get("cells") or []):
-        text_unit = cell.get("text") or {}
-        text = str(text_unit.get("text") or "").strip()
-
-        if not text:
-            continue
-
-        payload: dict[str, Any] = {
-            "column_index": column_index,
-            "language": text_unit.get("language"),
-            "source_visibility": "source_visible_header",
-            "text": text,
+    for header_row_index, header_row in enumerate(header_rows):
+        available_column_indexes = {
+            column_index
+            for column_index, remaining_rows in enumerate(active_rowspans)
+            if remaining_rows == 0
         }
+        mapped_cells = _map_raw_row_cells_to_column_ranges(
+            available_column_indexes=available_column_indexes,
+            n_cols=n_cols,
+            row=header_row,
+        )
+        cells: list[dict[str, Any]] = []
+        next_active_rowspans = [
+            max(0, remaining_rows - 1) for remaining_rows in active_rowspans
+        ]
 
-        if cell.get("col_span") is not None:
-            payload["col_span"] = cell.get("col_span")
+        for cell, column_start_index, column_end_index_exclusive in mapped_cells:
+            cell_payload = _build_compact_source_cell_payload(
+                cell=cell,
+                column_end_index_exclusive=column_end_index_exclusive,
+                column_start_index=column_start_index,
+            )
 
-        if cell.get("row_span") is not None:
-            payload["row_span"] = cell.get("row_span")
+            if cell_payload is not None:
+                cells.append(cell_payload)
 
-        cells.append(payload)
+            row_span = max(1, int(cell.get("row_span") or 1))
 
-    return {"cells": cells, "header_row_index": header_row_index}
+            if row_span > 1:
+                for column_index in range(
+                    column_start_index, column_end_index_exclusive
+                ):
+                    next_active_rowspans[column_index] = max(
+                        next_active_rowspans[column_index], row_span - 1
+                    )
+
+        compact_rows.append(
+            {
+                "cells": cells,
+                "header_row_index": header_row_index,
+                "source_visibility": "source_visible_header",
+            }
+        )
+        active_rowspans = next_active_rowspans
+
+    return compact_rows
 
 
 def _build_compact_kg_config_context(kg_config: CreateKGConfig) -> dict[str, Any]:
@@ -515,69 +538,185 @@ def _build_compact_kg_config_context(kg_config: CreateKGConfig) -> dict[str, Any
     return kg_config_context
 
 
-def _build_compact_row_payload(
-    *,
-    header_labels: list[str],
-    row: dict[str, Any],
-    row_index: int,
-    source_visibility: str,
-) -> dict[str, Any]:
-    """Build a compact prompt-facing table row payload.
+def _build_compact_rowspan_context_row_payload(
+    *, grid_row: dict[str, Any], grid_sources: list[dict[str, Any]], row_index: int
+) -> Optional[dict[str, Any]]:
+    """Build sparse helper context for cells inherited through row spans.
+
+    Adjacent expanded-grid cells from the same source row with identical text are
+    collapsed into one column range. These values explain table structure but remain
+    explicitly non-quotable helper context.
 
     Parameters
     ----------
-    header_labels
-        Column labels from the final canonical header row, when available.
-    row
-        Source or helper-view table row payload.
+    grid_row
+        Span-expanded row aligned to `grid_sources`.
+    grid_sources
+        Source-row origin metadata for each expanded grid column.
     row_index
-        Source table row index for this row.
-    source_visibility
-        Visibility label for the row's cells, such as `source_visible` or
-        `helper_context_only`.
+        Current source table row index.
+
+    Returns
+    -------
+    Optional[dict[str, Any]]
+        Sparse inherited row-span context, or `None` when none is present.
+    """
+
+    grid_cells = grid_row.get("cells") or []
+    cells: list[dict[str, Any]] = []
+    column_index = 0
+
+    while column_index < min(len(grid_cells), len(grid_sources)):
+        source_row_index = grid_sources[column_index].get("source_row")
+        text_unit = grid_cells[column_index].get("text") or {}
+        text = str(text_unit.get("text") or "").strip()
+
+        if source_row_index == row_index or not text:
+            column_index += 1
+            continue
+
+        column_end_index_exclusive = column_index + 1
+
+        while column_end_index_exclusive < min(len(grid_cells), len(grid_sources)):
+            next_source_row_index = grid_sources[column_end_index_exclusive].get(
+                "source_row"
+            )
+            next_text_unit = grid_cells[column_end_index_exclusive].get("text") or {}
+            next_text = str(next_text_unit.get("text") or "").strip()
+
+            if next_source_row_index != source_row_index or next_text != text:
+                break
+
+            column_end_index_exclusive += 1
+
+        cells.append(
+            {
+                "column_range": [column_index, column_end_index_exclusive],
+                "language": text_unit.get("language"),
+                "source_row_index": source_row_index,
+                "text": text,
+            }
+        )
+        column_index = column_end_index_exclusive
+
+    if not cells:
+        return None
+
+    return {
+        "cells": cells,
+        "row_index": row_index,
+        "source_visibility": "helper_context_only",
+    }
+
+
+def _build_compact_source_cell_payload(
+    *, cell: dict[str, Any], column_end_index_exclusive: int, column_start_index: int
+) -> Optional[dict[str, Any]]:
+    """Build one compact text-bearing source cell with exact grid placement.
+
+    Parameters
+    ----------
+    cell
+        Raw serialized table cell.
+    column_end_index_exclusive
+        Exclusive ending grid column occupied by the cell.
+    column_start_index
+        Inclusive starting grid column occupied by the cell.
+
+    Returns
+    -------
+    Optional[dict[str, Any]]
+        Compact cell payload, or `None` for a cell without visible text.
+    """
+
+    text_unit = cell.get("text") or {}
+    text = str(text_unit.get("text") or "").strip()
+
+    if not text:
+        return None
+
+    payload: dict[str, Any] = {
+        "column_range": [column_start_index, column_end_index_exclusive],
+        "language": text_unit.get("language"),
+        "text": text,
+    }
+    row_span = max(1, int(cell.get("row_span") or 1))
+
+    if row_span > 1:
+        payload["row_span"] = row_span
+
+    return payload
+
+
+def _build_compact_source_row_payload(
+    *,
+    grid_sources: Optional[list[dict[str, Any]]],
+    n_cols: int,
+    row: dict[str, Any],
+    row_index: int,
+) -> dict[str, Any]:
+    """Build one compact body row with exact source-grid column placement.
+
+    When grid-source metadata is available, columns occupied by inherited row spans are
+    excluded from raw-cell placement. Without that optional helper, cells are placed
+    from left to right using their explicit column spans.
+
+    Parameters
+    ----------
+    grid_sources
+        Optional span-expanded source-row origins for each grid column.
+    n_cols
+        Total table grid width.
+    row
+        Raw serialized source row.
+    row_index
+        Source table row index.
 
     Returns
     -------
     dict[str, Any]
-        Compact row payload with text-bearing cells only.
+        Compact source-visible row with exact cell column ranges.
     """
 
-    cells: list[dict[str, Any]] = []
-
-    for column_index, cell in enumerate(row.get("cells") or []):
-        text_unit = cell.get("text") or {}
-        text = str(text_unit.get("text") or "").strip()
-
-        if not text:
-            continue
-
-        payload: dict[str, Any] = {
-            "column_index": column_index,
-            "header": (
-                header_labels[column_index]
-                if column_index < len(header_labels)
-                else None
-            ),
-            "language": text_unit.get("language"),
-            "source_visibility": source_visibility,
-            "text": text,
+    if grid_sources is None:
+        available_column_indexes = set(range(n_cols))
+    else:
+        available_column_indexes = {
+            column_index
+            for column_index, source_info in enumerate(grid_sources)
+            if source_info.get("source_row") == row_index
         }
 
-        if cell.get("rowspan_placeholder"):
-            payload["rowspan_placeholder"] = True
+    mapped_cells = _map_raw_row_cells_to_column_ranges(
+        available_column_indexes=available_column_indexes, n_cols=n_cols, row=row
+    )
+    cells: list[dict[str, Any]] = []
 
-        if cell.get("synthetic"):
-            payload["synthetic"] = True
+    for cell, column_start_index, column_end_index_exclusive in mapped_cells:
+        cell_payload = _build_compact_source_cell_payload(
+            cell=cell,
+            column_end_index_exclusive=column_end_index_exclusive,
+            column_start_index=column_start_index,
+        )
 
-        cells.append(payload)
+        if cell_payload is not None:
+            cells.append(cell_payload)
 
-    return {"cells": cells, "row_index": row_index}
+    return {
+        "cells": cells,
+        "row_index": row_index,
+        "source_visibility": "source_visible_row",
+    }
 
 
 def _build_compact_table_payload(
     extraction_window: ExtractionWindow,
 ) -> Optional[dict[str, Any]]:
     """Build a compact prompt-facing table payload for SFI extraction.
+
+    Raw visible cells are represented sparsely with exact span-expanded column ranges.
+    Optional grid helpers contribute only inherited row-span and filldown context, so
+    the prompt preserves table geometry without repeating the complete rectangular grid.
 
     Parameters
     ----------
@@ -595,51 +734,63 @@ def _build_compact_table_payload(
     if table is None:
         return None
 
-    header_labels = (
-        table.header_rows_canonical[-1] if table.header_rows_canonical else []
+    grid_sources_by_row = (
+        table.grid_sources
+        if table.grid_sources is not None
+        else [None] * len(table.rows)
     )
+    source_rows = [
+        _build_compact_source_row_payload(
+            grid_sources=grid_sources, n_cols=table.n_cols, row=row, row_index=row_index
+        )
+        for grid_sources, row, row_index in zip(
+            grid_sources_by_row, table.rows, table.row_indexes
+        )
+    ]
     payload: dict[str, Any] = {
-        "header_rows": [
-            _build_compact_header_row_payload(
-                header_row=header_row, header_row_index=header_row_index
-            )
-            for header_row_index, header_row in enumerate(table.header_rows)
-        ],
-        "header_rows_canonical": table.header_rows_canonical,
+        "declared_header_row_count": table.header_row_count,
+        "header_rows": _build_compact_header_rows(
+            header_rows=table.header_rows, n_cols=table.n_cols
+        ),
         "local_code": table.local_code,
-        "source_rows": [
-            _build_compact_row_payload(
-                header_labels=header_labels,
-                row=row,
-                row_index=row_index,
-                source_visibility="source_visible_row",
-            )
-            for row_index, row in zip(table.row_indexes, table.rows)
-        ],
+        "n_cols": table.n_cols,
+        "source_rows": source_rows,
         "table_source_policy": (
-            "Quote source_text only from block.source_text, table.header_rows cell "
-            "text, or table.source_rows cell text. Use header_rows_canonical to "
-            "understand table structure, but prefer table.header_rows for verbatim "
-            "header source_text. For table-derived SFI candidates, description must "
-            "be copied from the same cited table.header_rows and/or "
-            "table.source_rows text. If unsure, set description equal to "
-            "source_text. Do not clean, translate, correct spelling, normalize, "
-            "expand, or infer table descriptions from surrounding context. If an "
-            "official table statement is split across adjacent source rows or "
-            "cells, use all visible contributing fragments to build the candidate "
-            "description and include all contributing table_row_indexes. Use "
-            "source_text as a source-visible evidence quote, not as the only "
-            "downstream provenance or final KG statement text. Use "
-            "filldown_context_rows only to understand repeated row-span context; "
-            "do not quote helper_context_only cells as source_text or description."
+            "The table is a zero-based grid with n_cols columns. Every raw visible "
+            "cell is represented once by column_range=[start, end), using an "
+            "exclusive ending column. Use those ranges and row order to interpret "
+            "merged headers and body columns. A source_rows entry may itself be a "
+            "continuation or "
+            "subheader row, so determine its role from visible wording and geometry "
+            "rather than assuming every source_rows entry is ordinary data. Quote "
+            "source_text only from block.source_text, table.header_rows cell text, "
+            "or table.source_rows cell text. For table-derived SFI candidates, "
+            "description must be copied from the same cited table.header_rows and/or "
+            "table.source_rows text. If unsure, set description equal to source_text. "
+            "Do not clean, translate, correct spelling, normalize, expand, or infer "
+            "table descriptions from surrounding context. If an official table "
+            "statement is split across adjacent source rows or cells, use all visible "
+            "contributing fragments and include all contributing table_row_indexes. "
+            "Use rowspan_context_rows and filldown_context_rows only to understand "
+            "structural carryover; never quote helper_context_only rows as source_text "
+            "or description."
         ),
     }
 
-    if table.rows_filldown is not None:
+    if table.rows_grid is not None and table.grid_sources is not None:
+        rowspan_context_rows = _build_rowspan_context_rows(
+            grid_rows=table.rows_grid,
+            grid_sources_rows=table.grid_sources,
+            row_indexes=table.row_indexes,
+        )
+
+        if rowspan_context_rows:
+            payload["rowspan_context_rows"] = rowspan_context_rows
+
+    if table.rows_filldown is not None and table.rows_grid is not None:
         filldown_context_rows = _build_filldown_context_rows(
             filldown_rows=table.rows_filldown,
-            header_labels=header_labels,
-            raw_rows=table.rows,
+            raw_grid_rows=table.rows_grid,
             row_indexes=table.row_indexes,
         )
 
@@ -694,38 +845,33 @@ def _build_dedup_review_focus_instructions(
 def _build_filldown_context_rows(
     *,
     filldown_rows: list[dict[str, Any]],
-    header_labels: list[str],
-    raw_rows: list[dict[str, Any]],
+    raw_grid_rows: list[dict[str, Any]],
     row_indexes: list[int],
 ) -> list[dict[str, Any]]:
-    """Build compact filldown context rows aligned to source table rows.
+    """Build sparse filldown context aligned to structural grid columns.
 
     Parameters
     ----------
     filldown_rows
-        Filldown helper-view rows aligned to `row_indexes`.
-    header_labels
-        Column labels from the final canonical header row, when available.
-    raw_rows
-        Raw source rows aligned to `row_indexes`.
+        Rectangular filldown helper rows aligned to `row_indexes`.
+    raw_grid_rows
+        Rectangular span-expanded raw rows aligned to `row_indexes`.
     row_indexes
-        Source table row indexes included in the window.
+        Source table row indexes represented by both helper sequences.
 
     Returns
     -------
     list[dict[str, Any]]
-        Helper-only filldown context rows. These rows are context for interpreting
-        row spans and should not be quoted as source-visible evidence.
+        Helper-only filldown rows containing only values added beyond the raw grid.
     """
 
     context_rows: list[dict[str, Any]] = []
 
-    for row_index, filldown_row, raw_row in zip(row_indexes, filldown_rows, raw_rows):
+    for filldown_row, raw_grid_row, row_index in zip(
+        filldown_rows, raw_grid_rows, row_indexes
+    ):
         context_row = _build_compact_filldown_context_row_payload(
-            filldown_row=filldown_row,
-            header_labels=header_labels,
-            raw_row=raw_row,
-            row_index=row_index,
+            filldown_row=filldown_row, raw_grid_row=raw_grid_row, row_index=row_index
         )
 
         if context_row is not None:
@@ -762,6 +908,44 @@ def _build_list_item_source_text(item: dict[str, Any]) -> str:
         return text
 
     return " ".join(part for part in [marker, text] if part)
+
+
+def _build_rowspan_context_rows(
+    *,
+    grid_rows: list[dict[str, Any]],
+    grid_sources_rows: list[list[dict[str, Any]]],
+    row_indexes: list[int],
+) -> list[dict[str, Any]]:
+    """Build sparse inherited row-span context for selected source rows.
+
+    Parameters
+    ----------
+    grid_rows
+        Span-expanded rows aligned to `row_indexes`.
+    grid_sources_rows
+        Per-column source-row origins aligned to `grid_rows`.
+    row_indexes
+        Source table row indexes represented by the helper sequences.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Helper-only rows containing cells inherited from earlier source rows.
+    """
+
+    context_rows: list[dict[str, Any]] = []
+
+    for grid_row, grid_sources, row_index in zip(
+        grid_rows, grid_sources_rows, row_indexes
+    ):
+        context_row = _build_compact_rowspan_context_row_payload(
+            grid_row=grid_row, grid_sources=grid_sources, row_index=row_index
+        )
+
+        if context_row is not None:
+            context_rows.append(context_row)
+
+    return context_rows
 
 
 def _get_block_language(extraction_window: ExtractionWindow) -> str:
@@ -834,6 +1018,67 @@ def _get_text_unit_language(*, fallback: str, text_unit: Any) -> str:
             return language.strip()
 
     return fallback
+
+
+def _map_raw_row_cells_to_column_ranges(
+    *, available_column_indexes: set[int], n_cols: int, row: dict[str, Any]
+) -> list[tuple[dict[str, Any], int, int]]:
+    """Map raw table cells to their true span-expanded grid column ranges.
+
+    Synthetic row-span placeholders are omitted because they are represented separately
+    as helper-only inherited row-span context. Empty source cells still participate in
+    placement so following visible cells retain correct columns.
+
+    Parameters
+    ----------
+    available_column_indexes
+        Grid columns originating from the current source row.
+    n_cols
+        Total table grid width.
+    row
+        Raw serialized table row.
+
+    Returns
+    -------
+    list[tuple[dict[str, Any], int, int]]
+        Raw non-placeholder cells with inclusive start and exclusive end columns.
+
+    Raises
+    ------
+    ValueError
+        If no contiguous range can represent the raw cell within the supplied grid.
+    """
+
+    column_cursor = 0
+    mapped_cells: list[tuple[dict[str, Any], int, int]] = []
+
+    for cell in row.get("cells") or []:
+        if cell.get("rowspan_placeholder"):
+            continue
+
+        col_span = max(1, int(cell.get("col_span") or 1))
+
+        # Find the next contiguous available column range.
+        for column_start_index in range(column_cursor, n_cols - col_span + 1):
+            column_end_index_exclusive = column_start_index + col_span
+
+            if available_column_indexes.issuperset(
+                range(column_start_index, column_end_index_exclusive)
+            ):
+                mapped_cells.append(
+                    (cell, column_start_index, column_end_index_exclusive)
+                )
+                column_cursor = column_end_index_exclusive
+                break
+        else:
+            # If the loop finishes without breaking, a valid range was not found.
+            raise ValueError(
+                f"Could not place a raw table cell in the compact structural grid: "
+                f"column_cursor={column_cursor}, col_span={col_span}, n_cols={n_cols}, "
+                f"available_columns={sorted(available_column_indexes)}."
+            )
+
+    return mapped_cells
 
 
 def extract_sfi_candidates_from_window(
@@ -1127,9 +1372,7 @@ def validate_sfi_extraction_result(
     """
 
     config_context = {
-        "bilingual_pair_policy": (
-            kg_config.academic_standards.bilingual_pair_policy
-        ),
+        "bilingual_pair_policy": (kg_config.academic_standards.bilingual_pair_policy),
         "code_patterns": kg_config.academic_standards.code_patterns,
         "country": kg_config.metadata.country,
         "grades_or_stages": kg_config.metadata.grades_or_stages,
