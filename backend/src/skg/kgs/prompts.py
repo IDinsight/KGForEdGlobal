@@ -16,6 +16,63 @@ from skg.schemas import CreateKGConfig
 from skg.utils.general import PromptPair, json_dumps
 
 
+def _build_compact_block_list_item_source_units(
+    extraction_window: ExtractionWindow,
+) -> list[dict[str, Any]]:
+    """Build source-visible units from a block's serialized list items.
+
+    Each list item retains its own item-level language so multilingual lists are not
+    flattened into the configured primary language. Items without visible source text
+    are skipped.
+
+    Parameters
+    ----------
+    extraction_window
+        Source-faithful extraction window whose block carries the list items.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Source-visible list-item units in source order.
+    """
+
+    block = extraction_window.block
+
+    if block is None:
+        return []
+
+    list_items = block.get("list_items")
+
+    if not (isinstance(list_items, list) and list_items):
+        return []
+
+    source_units: list[dict[str, Any]] = []
+
+    for item_index, item in enumerate(list_items):
+        if not isinstance(item, dict):
+            continue
+
+        source_text = _build_list_item_source_text(item)
+
+        if not source_text:
+            continue
+
+        language = _get_text_unit_language(
+            fallback=extraction_window.primary_language, text_unit=item.get("text")
+        )
+        source_units.append(
+            {
+                "item_index": item_index,
+                "language": language,
+                "marker": item.get("marker"),
+                "source_text": source_text,
+                "source_visibility": "source_visible_list_item",
+            }
+        )
+
+    return source_units
+
+
 def _build_compact_block_payload(
     extraction_window: ExtractionWindow,
 ) -> Optional[dict[str, Any]]:
@@ -124,6 +181,53 @@ def _build_compact_block_slice_source_unit(
     return None
 
 
+def _build_compact_block_slice_source_units(
+    extraction_window: ExtractionWindow,
+) -> list[dict[str, Any]]:
+    """Build source-visible units from a block's serialized slices.
+
+    Slices without visible text are skipped. Returns an empty list when the block has
+    no slices or none of them expose source-visible text.
+
+    Parameters
+    ----------
+    extraction_window
+        Source-faithful extraction window whose block carries the slices.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Source-visible slice units in source order.
+    """
+
+    block = extraction_window.block
+
+    if block is None:
+        return []
+
+    slices = block.get("slices")
+
+    if not isinstance(slices, list):
+        return []
+
+    source_units: list[dict[str, Any]] = []
+
+    for slice_index, slice_payload in enumerate(slices):
+        if not isinstance(slice_payload, dict):
+            continue
+
+        source_unit = _build_compact_block_slice_source_unit(
+            fallback_language=extraction_window.primary_language,
+            slice_index=slice_index,
+            slice_payload=slice_payload,
+        )
+
+        if source_unit is not None:
+            source_units.append(source_unit)
+
+    return source_units
+
+
 def _build_compact_block_source_units(
     extraction_window: ExtractionWindow,
 ) -> list[dict[str, Any]]:
@@ -149,56 +253,17 @@ def _build_compact_block_source_units(
     if block is None:
         return []
 
-    list_items = block.get("list_items")
+    list_item_source_units = _build_compact_block_list_item_source_units(
+        extraction_window
+    )
 
-    if isinstance(list_items, list) and list_items:
-        source_units: list[dict[str, Any]] = []
+    if list_item_source_units:
+        return list_item_source_units
 
-        for item_index, item in enumerate(list_items):
-            if not isinstance(item, dict):
-                continue
+    slice_source_units = _build_compact_block_slice_source_units(extraction_window)
 
-            source_text = _build_list_item_source_text(item)
-
-            if not source_text:
-                continue
-
-            text_unit = item.get("text")
-            language = _get_text_unit_language(
-                fallback=extraction_window.primary_language, text_unit=text_unit
-            )
-            source_units.append(
-                {
-                    "item_index": item_index,
-                    "language": language,
-                    "marker": item.get("marker"),
-                    "source_text": source_text,
-                    "source_visibility": "source_visible_list_item",
-                }
-            )
-
-        return source_units
-
-    slices = block.get("slices")
-
-    if isinstance(slices, list):
-        source_units = []
-
-        for slice_index, slice_payload in enumerate(slices):
-            if not isinstance(slice_payload, dict):
-                continue
-
-            source_unit = _build_compact_block_slice_source_unit(
-                fallback_language=extraction_window.primary_language,
-                slice_index=slice_index,
-                slice_payload=slice_payload,
-            )
-
-            if source_unit is not None:
-                source_units.append(source_unit)
-
-        if source_units:
-            return source_units
+    if slice_source_units:
+        return slice_source_units
 
     return [
         {
