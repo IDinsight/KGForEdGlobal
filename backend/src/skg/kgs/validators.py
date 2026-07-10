@@ -1967,11 +1967,11 @@ def _validate_candidate_statement_code(
 ) -> None:
     """Validate candidate code type, source identity, and statement association.
 
-    Segment/table `local_code` is accepted as first-class metadata evidence when it
-    exactly equals the candidate code and matches the resolved configured code type.
-    Otherwise, the code must exactly equal a typed `window.code_matches` value, occur
-    in candidate `source_text`, and be directly paired with the complete candidate
-    description.
+    A candidate code must exactly match either the window `local_code` or a typed
+    `window.code_matches` value. Regardless of which source exposes the code, the
+    candidate's own source quote must contain the exact standalone code and directly
+    pair it with the complete candidate description. This prevents segment- or
+    table-level identifiers from being copied onto unrelated candidates.
 
     Parameters
     ----------
@@ -1992,12 +1992,9 @@ def _validate_candidate_statement_code(
 
     code_type = _resolve_candidate_statement_code_type(candidate=candidate, ctx=ctx)
     local_code = _get_window_local_code(ctx.window)
-
-    if local_code is not None and _source_code_values_match(
+    matches_local_code = local_code is not None and _source_code_values_match(
         candidate_code=candidate.statement_code, source_code=local_code
-    ):
-        return
-
+    )
     matching_code_matches = [
         code_match
         for code_match in ctx.window.code_matches
@@ -2008,7 +2005,7 @@ def _validate_candidate_statement_code(
         )
     ]
 
-    if not matching_code_matches:
+    if not matches_local_code and not matching_code_matches:
         raise QualityError(
             f"Candidate {candidate.candidate_id!r} has statement_code "
             f"{candidate.statement_code!r}, but it is neither the exact window "
@@ -2021,7 +2018,7 @@ def _validate_candidate_statement_code(
         statement_code_normalized=_normalize_text(candidate.statement_code),
     ):
         raise QualityError(
-            f"Candidate {candidate.candidate_id!r} uses text-derived statement_code "
+            f"Candidate {candidate.candidate_id!r} has statement_code "
             f"{candidate.statement_code!r}, but candidate source_text does not contain "
             f"that exact standalone code. Quote the code together with the complete "
             f"statement description, or use null."
@@ -2029,10 +2026,10 @@ def _validate_candidate_statement_code(
 
     if not _statement_code_is_directly_linked_to_description(candidate):
         raise QualityError(
-            f"Candidate {candidate.candidate_id!r} uses text-derived statement_code "
+            f"Candidate {candidate.candidate_id!r} has statement_code "
             f"{candidate.statement_code!r}, but source_text does not directly pair that "
             f"code with the complete candidate description. Do not borrow a code from "
-            f"another statement in the block or cited table rows."
+            f"another statement, a segment label, or a table identifier."
         )
 
 
@@ -2752,6 +2749,51 @@ def _validate_window_identity(ctx: SFIExtractionQualityCtx) -> None:
         )
 
 
+def _validate_window_local_code_assignment_count(
+    ctx: SFIExtractionQualityCtx,
+) -> None:
+    """Reject reuse of one window-level local code across multiple candidates.
+
+    A block or table exposes at most one `local_code`, so that metadata cannot prove
+    that multiple distinct candidates each own the same official code. Candidates may
+    still use independently visible codes from `window.code_matches`; this guard only
+    applies when their code equals the window-level `local_code`.
+
+    Parameters
+    ----------
+    ctx
+        Extraction quality context containing the result and source window.
+
+    Raises
+    ------
+    QualityError
+        If more than one candidate assigns itself the window-level `local_code`.
+    """
+
+    local_code = _get_window_local_code(ctx.window)
+
+    if local_code is None:
+        return
+
+    candidate_ids = [
+        candidate.candidate_id
+        for candidate in ctx.extraction_result.sfi_candidates
+        if candidate.statement_code is not None
+        and _source_code_values_match(
+            candidate_code=candidate.statement_code, source_code=local_code
+        )
+    ]
+
+    if len(candidate_ids) <= 1:
+        return
+
+    raise QualityError(
+        f"Window local_code {local_code!r} is assigned to multiple SFI candidates: "
+        f"{candidate_ids}. A window-level code may identify at most one candidate; "
+        f"use independently visible candidate-level codes or null instead."
+    )
+
+
 def verify_sfi_dedup_review_quality(
     *, review_request: SFIDedupReviewRequest, review_response: SFIDedupReviewResponse
 ) -> None:
@@ -2825,6 +2867,7 @@ def verify_sfi_extraction_quality(
 
     _validate_window_identity(ctx)
     _validate_candidate_table_indexes(ctx)
+    _validate_window_local_code_assignment_count(ctx)
 
     for candidate in ctx.extraction_result.sfi_candidates:
         _validate_candidate_statement_type_policy(candidate=candidate, ctx=ctx)
