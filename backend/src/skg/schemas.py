@@ -941,6 +941,16 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
             "normalized_text",
         ]
     )
+    table_section_pattern_page_lookback: int = Field(
+        default=2,
+        description=(
+            "Maximum number of pages before a table's start page from which "
+            "DocumentIR section-path headings may be used for included/excluded "
+            "table section-pattern matching. If no heading falls within the bounded "
+            "page range, the nearest preceding section-path heading is used."
+        ),
+        ge=0,
+    )
 
     @staticmethod
     def _clean_has_child_parent_values(

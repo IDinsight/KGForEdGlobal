@@ -368,7 +368,8 @@
 				"hierarchy_context",
 				"source_context_key",
 				"normalized_text"
-			]
+			],
+			"table_section_pattern_page_lookback": 2
 		},
 		"lc": {
 			"generation_instructions": "Decompose each final Nigeria Primary 1-3 Mathematics Standard SFI into one or more atomic mathematical skills or concepts. Do not create classroom activities, teacher actions, pupil tasks, resources, examples, or assessment prompts as LearningComponents."

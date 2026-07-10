@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 # Package Library
 from skg.config import Settings
-from skg.document_ir.schemas import DocumentIR
+from skg.document_ir.schemas import DocumentIR, TableSegment
 from skg.page_ir_extraction.schemas import TableCell, TextUnit
 from skg.schemas import CreateKGConfig, ExtractionConfig, RunCtx
 from skg.utils.general import make_dir, open_json_type, write_to_json
@@ -60,7 +60,7 @@ class KGInputs:
     table_columns_signature_counts
         Counts of table column signatures observed in table segments.
     table_selection_match_counts
-        Counts showing how the observed table signatures match the CreateKGConfig
+        Counts showing how table segments match the complete CreateKGConfig
         table-selection policy.
     warnings
         Non-fatal warnings.
@@ -76,6 +76,63 @@ class KGInputs:
     table_columns_signature_counts: dict[str, int]
     table_selection_match_counts: dict[str, Any]
     warnings: list[str]
+
+
+def _build_table_section_selection_text(
+    *, max_page_lookback: int, segment: TableSegment
+) -> str:
+    """Build bounded source context for table section-pattern matching.
+
+    Section paths may retain older headings that are no longer active. This function
+    therefore uses headings on the table's start page or within a configurable number
+    of preceding pages. When no heading falls inside that page window, the nearest
+    preceding section-path entry is retained as a conservative fallback. Table-local
+    code and column-signature metadata are appended after the bounded heading context.
+
+    Parameters
+    ----------
+    max_page_lookback
+        Maximum number of pages before the table start page from which section-path
+        headings may be used. Zero restricts matching to headings on the start page.
+    segment
+        Candidate stitched table segment.
+
+    Returns
+    -------
+    str
+        Bounded heading context plus table-local metadata for selection matching.
+
+    Raises
+    ------
+    ValueError
+        If max_page_lookback is negative.
+    """
+
+    if max_page_lookback < 0:
+        raise ValueError("max_page_lookback must be non-negative.")
+
+    table_start_page = min(
+        provenance.page_index for provenance in segment.segment_provenance
+    )
+    earliest_heading_page = table_start_page - max_page_lookback
+    nearby_heading_refs = [
+        heading_ref
+        for heading_ref in segment.section_path
+        if earliest_heading_page <= heading_ref.page_index <= table_start_page
+    ]
+
+    if not nearby_heading_refs and segment.section_path:
+        nearby_heading_refs = [segment.section_path[-1]]
+
+    parts = [heading_ref.text for heading_ref in nearby_heading_refs]
+
+    if segment.local_code:
+        parts.append(str(segment.local_code))
+
+    if segment.columns_signature:
+        parts.append(str(segment.columns_signature))
+
+    return "\n".join(part for part in parts if part)
 
 
 def _count_code_pattern_matches(
@@ -101,18 +158,15 @@ def _count_code_pattern_matches(
         If a segment kind is unrecognized.
     """
 
-    # 1. Extract text from block segments and table cells.
+    # 1. Extract the same source-visible text used by extraction windows.
     texts: list[str] = []
 
     for segment in document_ir.segments:
         if segment.kind == "block":
-            text = segment.combined_text
+            block_payload = segment.model_dump(mode="json")
 
-            if text is None and segment.text:
-                text = segment.text.text
-
-            if text and (clean_text := str(text).strip()):
-                texts.append(clean_text)
+            if block_text := extract_block_source_text(block_payload):
+                texts.append(block_text)
         elif segment.kind == "table":
             for row in segment.rows:
                 for cell in row.cells:
@@ -161,7 +215,10 @@ def _count_table_columns_signatures(document_ir: DocumentIR) -> dict[str, int]:
 def _count_table_selection_matches(
     *, document_ir: DocumentIR, kg_config: CreateKGConfig
 ) -> dict[str, Any]:
-    """Count how observed table signatures match the KG config table-selection policy.
+    """Count matches against the complete table-selection policy.
+
+    Counts cover exact column signatures, bounded section-pattern matches, and the
+    final number of table segments selected after exclusion precedence.
 
     Parameters
     ----------
@@ -173,30 +230,77 @@ def _count_table_selection_matches(
     Returns
     -------
     dict[str, Any]
-        Summary counts for included and excluded table column signatures.
+        Selection counts by configured rule plus aggregate table-selection totals.
     """
 
+    academic_standards = kg_config.academic_standards
     observed_counts: Counter[str] = Counter()
+    included_section_pattern_counts = {
+        pattern: 0 for pattern in academic_standards.included_table_section_patterns
+    }
+    excluded_section_pattern_counts = {
+        pattern: 0 for pattern in academic_standards.excluded_table_section_patterns
+    }
+    included_section_pattern_segment_count = 0
+    excluded_section_pattern_segment_count = 0
+    selected_table_segment_count = 0
+    table_segment_count = 0
 
     for segment in document_ir.segments:
         if segment.kind != "table":
             continue
 
+        table_segment_count += 1
         observed_counts[segment.columns_signature or "<missing>"] += 1
+        section_text = _build_table_section_selection_text(
+            max_page_lookback=academic_standards.table_section_pattern_page_lookback,
+            segment=segment,
+        )
+        included_pattern_matched = False
+        excluded_pattern_matched = False
+
+        for pattern in academic_standards.included_table_section_patterns:
+            if re.search(pattern, section_text, flags=re.IGNORECASE):
+                included_section_pattern_counts[pattern] += 1
+                included_pattern_matched = True
+
+        for pattern in academic_standards.excluded_table_section_patterns:
+            if re.search(pattern, section_text, flags=re.IGNORECASE):
+                excluded_section_pattern_counts[pattern] += 1
+                excluded_pattern_matched = True
+
+        if included_pattern_matched:
+            included_section_pattern_segment_count += 1
+
+        if excluded_pattern_matched:
+            excluded_section_pattern_segment_count += 1
+
+        if get_table_selection_reasons(kg_config=kg_config, segment=segment):
+            selected_table_segment_count += 1
 
     excluded_signature_counts = {
         signature: observed_counts.get(signature, 0)
-        for signature in kg_config.academic_standards.excluded_table_columns_signatures
+        for signature in academic_standards.excluded_table_columns_signatures
     }
     included_signature_counts = {
         signature: observed_counts.get(signature, 0)
-        for signature in kg_config.academic_standards.included_table_columns_signatures
+        for signature in academic_standards.included_table_columns_signatures
     }
     return {
+        "excluded_table_section_pattern_counts": excluded_section_pattern_counts,
+        "excluded_table_section_pattern_match_total": (
+            excluded_section_pattern_segment_count
+        ),
         "excluded_table_signature_counts": excluded_signature_counts,
         "excluded_table_signature_match_total": sum(excluded_signature_counts.values()),
+        "included_table_section_pattern_counts": included_section_pattern_counts,
+        "included_table_section_pattern_match_total": (
+            included_section_pattern_segment_count
+        ),
         "included_table_signature_counts": included_signature_counts,
         "included_table_signature_match_total": sum(included_signature_counts.values()),
+        "selected_table_segment_count": selected_table_segment_count,
+        "table_segment_count": table_segment_count,
     }
 
 
@@ -247,6 +351,78 @@ def _extract_cell_text(cell: TableCell) -> Optional[str]:
         return None
 
     return str(text).strip() or None
+
+
+def _extract_figure_source_text(block_payload: dict[str, Any]) -> str:
+    """Extract source-visible text from serialized figure fields.
+
+    Parameters
+    ----------
+    block_payload
+        JSON-serializable block payload containing optional figure data.
+
+    Returns
+    -------
+    str
+        Embedded text, caption text, or text-bearing alt text, otherwise an empty
+        string.
+    """
+
+    figure = block_payload.get("figure")
+
+    if not isinstance(figure, dict):
+        return ""
+
+    embedded_text = figure.get("embedded_text")
+
+    if isinstance(embedded_text, dict) and embedded_text.get("text"):
+        return str(embedded_text["text"]).strip()
+
+    caption = figure.get("caption")
+
+    if isinstance(caption, dict) and caption.get("text"):
+        return str(caption["text"]).strip()
+
+    if isinstance(caption, str) and caption.strip():
+        return caption.strip()
+
+    if figure.get("contains_text") and figure.get("alt_text"):
+        return str(figure["alt_text"]).strip()
+
+    return ""
+
+
+def _extract_list_items_source_text(list_items: list[Any]) -> str:
+    """Join serialized list-item text in source order.
+
+    Parameters
+    ----------
+    list_items
+        Serialized list-item payloads.
+
+    Returns
+    -------
+    str
+        Newline-delimited source-visible list text, or an empty string.
+    """
+
+    if not isinstance(list_items, list):
+        return ""
+
+    item_texts: list[str] = []
+
+    for item in list_items:
+        if not isinstance(item, dict):
+            continue
+
+        item_text = item.get("text")
+
+        if isinstance(item_text, dict):
+            item_texts.append(str(item_text.get("text") or "").strip())
+        elif item_text:
+            item_texts.append(str(item_text).strip())
+
+    return "\n".join(item_text for item_text in item_texts if item_text)
 
 
 def _extract_observed_languages(document_ir: DocumentIR) -> list[str]:
@@ -319,6 +495,25 @@ def _language_base(language: str) -> str:
     return language.replace("_", "-").split("-")[0].casefold()
 
 
+def _matches_any_pattern(*, patterns: Sequence[str], text: str) -> bool:
+    """Return whether any configured regex pattern matches text.
+
+    Parameters
+    ----------
+    patterns
+        Regex patterns to test.
+    text
+        Text to inspect.
+
+    Returns
+    -------
+    bool
+        True when at least one pattern matches; otherwise False.
+    """
+
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+
 def _validate_document_ir(document_ir_fp: Path) -> DocumentIR:
     """Validate basic DocumentIR assumptions required by KG creation.
 
@@ -379,7 +574,7 @@ def _validate_kg_config_compatibility(
     segment_counts
         Counts of segment kinds in the DocumentIR.
     table_selection_match_counts
-        Counts showing how observed table signatures match the table-selection policy.
+        Counts showing how table segments match the complete selection policy.
 
     Returns
     -------
@@ -422,25 +617,28 @@ def _validate_kg_config_compatibility(
             )
             raise ValueError(message)
 
-    if (
+    table_inclusion_rules_configured = bool(
         kg_config.academic_standards.included_table_columns_signatures
         or kg_config.academic_standards.included_table_section_patterns
-    ) and segment_counts.get("table", 0) == 0:
-        warnings.append(
-            "CreateKGConfig contains table-selection rules, but the DocumentIR "
-            "contains no table segments."
-        )
+    )
 
-    if kg_config.academic_standards.included_table_columns_signatures:
-        included_match_total = table_selection_match_counts[
-            "included_table_signature_match_total"
-        ]
-
-        if included_match_total == 0:
+    if (
+        table_inclusion_rules_configured
+        and table_selection_match_counts["selected_table_segment_count"] == 0
+    ):
+        if segment_counts.get("table", 0) == 0:
             raise ValueError(
-                "CreateKGConfig configured as.included_table_columns_signatures, but no "
-                "matching table segments were observed in the DocumentIR. "
+                "CreateKGConfig contains table inclusion rules, but the DocumentIR "
+                "contains no table segments."
             )
+
+        raise ValueError(
+            "CreateKGConfig contains table inclusion rules, but no table segments "
+            "were selected after applying bounded section-pattern matching and "
+            "exclusion precedence. Check included/excluded table column signatures, "
+            "included/excluded table section patterns, and "
+            "table_section_pattern_page_lookback."
+        )
 
     return warnings
 
@@ -559,6 +757,7 @@ def build_run_manifest(kg_run_inputs: KGInputs) -> dict[str, Any]:
             "excluded_table_section_patterns": kg_config.academic_standards.excluded_table_section_patterns,
             "included_table_columns_signatures": kg_config.academic_standards.included_table_columns_signatures,
             "included_table_section_patterns": kg_config.academic_standards.included_table_section_patterns,
+            "table_section_pattern_page_lookback": kg_config.academic_standards.table_section_pattern_page_lookback,
         },
         "warnings": kg_run_inputs.warnings,
     }
@@ -672,6 +871,89 @@ def cross_check_stitching_run(
         )
 
     return document_ir_fp
+
+
+def extract_block_source_text(block_payload: dict[str, Any]) -> str:
+    """Build source-faithful text from a serialized block segment payload.
+
+    The extraction order matches the Academic Standards window builder: combined text,
+    ordinary text, list-item text, then figure text. Keeping this logic in one shared
+    function ensures preflight code-pattern scanning and extraction-window construction
+    agree about which block content is extractable.
+
+    Parameters
+    ----------
+    block_payload
+        JSON-serializable block segment payload.
+
+    Returns
+    -------
+    str
+        Source-visible block text, or an empty string when no useful text is present.
+    """
+
+    if text := block_payload.get("combined_text"):
+        return str(text).strip()
+
+    text_unit = block_payload.get("text")
+
+    if isinstance(text_unit, dict) and text_unit.get("text"):
+        return str(text_unit["text"]).strip()
+
+    return _extract_list_items_source_text(
+        block_payload.get("list_items") or []
+    ) or _extract_figure_source_text(block_payload)
+
+
+def get_table_selection_reasons(
+    *, kg_config: CreateKGConfig, segment: TableSegment
+) -> list[str]:
+    """Return deterministic reasons for selecting a table for SFI extraction.
+
+    Exclusion rules take precedence over inclusion rules. Section-pattern rules are
+    evaluated against bounded nearby heading context built with
+    `table_section_pattern_page_lookback` so stale section-path entries cannot select
+    unrelated later tables.
+
+    Parameters
+    ----------
+    kg_config
+        Country/document-specific KG extraction configuration.
+    segment
+        Candidate stitched table segment.
+
+    Returns
+    -------
+    list[str]
+        Stable selection reasons, or an empty list when the table is not selected.
+    """
+
+    academic_standards = kg_config.academic_standards
+    columns_signature = segment.columns_signature or "<missing>"
+    section_text = _build_table_section_selection_text(
+        max_page_lookback=academic_standards.table_section_pattern_page_lookback,
+        segment=segment,
+    )
+
+    if columns_signature in academic_standards.excluded_table_columns_signatures:
+        return []
+
+    if _matches_any_pattern(
+        patterns=academic_standards.excluded_table_section_patterns, text=section_text
+    ):
+        return []
+
+    reasons: list[str] = []
+
+    if columns_signature in academic_standards.included_table_columns_signatures:
+        reasons.append("table_columns_signature_included_match")
+
+    if _matches_any_pattern(
+        patterns=academic_standards.included_table_section_patterns, text=section_text
+    ):
+        reasons.append("table_section_included_pattern_match")
+
+    return reasons
 
 
 def load_and_validate_inputs(

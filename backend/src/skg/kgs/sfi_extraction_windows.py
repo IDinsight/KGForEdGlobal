@@ -35,38 +35,10 @@ from skg.kgs.schemas import (
     ExtractionWindowPlanArtifact,
     ExtractionWindowPlanItem,
     ExtractionWindowTablePayload,
-    unique_clean_strings,
 )
+from skg.kgs.utils import extract_block_source_text, get_table_selection_reasons
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, write_to_json
-
-
-def _build_block_source_text(block_payload: dict[str, Any]) -> str:
-    """Build source text for a block extraction window.
-
-    Parameters
-    ----------
-    block_payload
-        JSON-serializable block segment payload.
-
-    Returns
-    -------
-    str
-        Source text for the block window, or an empty string when the block has no
-        useful prompt text.
-    """
-
-    if text := block_payload.get("combined_text"):
-        return str(text).strip()
-
-    text_unit = block_payload.get("text")
-
-    if isinstance(text_unit, dict) and text_unit.get("text"):
-        return str(text_unit["text"]).strip()
-
-    return _extract_list_items_text(
-        block_payload.get("list_items") or []
-    ) or _extract_figure_text(block_payload)
 
 
 def _build_block_windows(
@@ -99,7 +71,7 @@ def _build_block_windows(
     """
 
     block_payload = segment.model_dump(mode="json")
-    source_text = _build_block_source_text(block_payload)
+    source_text = extract_block_source_text(block_payload)
     return (
         []
         if not source_text
@@ -268,44 +240,36 @@ def _build_source_section_path_key(
 def _build_table_source_text(
     *, rows: list[dict[str, Any]], table_payload: ExtractionWindowTablePayload
 ) -> str:
-    """Build compact source text from selected table headers and body rows.
+    """Build source-faithful text from raw table headers and selected body rows.
+
+    The rendered text intentionally excludes canonicalized headers, synthetic row
+    labels, and source row numbers. Code matching therefore operates only on text
+    visible in the raw stitched table cells. Tabs separate cells and newlines separate
+    rows without adding matchable alphanumeric content.
 
     Parameters
     ----------
     rows
-        Selected raw source rows represented as dictionaries.
+        Selected raw source body rows represented as dictionaries.
     table_payload
-        Table payload containing headers and row indexes.
+        Table payload containing raw headers and selected body-row metadata.
 
     Returns
     -------
     str
-        Human-readable table source text for code matching and debugging.
+        Raw source-visible table cell text suitable for prompting and code matching.
     """
 
-    lines: list[str] = []
-    canonical_header_lines = [
-        " | ".join(str(cell_text or "").strip() for cell_text in row)
-        for row in table_payload.header_rows_canonical
-    ]
-    header_lines = [line for line in canonical_header_lines if line.strip(" |")]
+    source_rows = [*table_payload.header_rows, *rows]
+    row_lines: list[str] = []
 
-    if not header_lines:
-        header_lines = [
-            " | ".join(_extract_table_row_cell_texts(header_row))
-            for header_row in table_payload.header_rows
-        ]
-        header_lines = [line for line in header_lines if line.strip(" |")]
+    for row in source_rows:
+        cell_texts = _extract_table_row_cell_texts(row)
 
-    if header_lines:
-        lines.append("Headers: " + " ||| ".join(header_lines))
+        if any(cell_texts):
+            row_lines.append("\t".join(cell_texts))
 
-    for row_index, row in zip(table_payload.row_indexes, rows):
-        lines.append(
-            f"Row {row_index}: " + " | ".join(_extract_table_row_cell_texts(row))
-        )
-
-    return "\n".join(lines).strip()
+    return "\n".join(row_lines).strip()
 
 
 def _build_table_window_for_row_indexes(
@@ -632,78 +596,6 @@ def _deterministic_uuid(canonical_string: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, canonical_string))
 
 
-def _extract_figure_text(block_payload: dict[str, Any]) -> str:
-    """Extract source text from a block payload's figure fields.
-
-    Parameters
-    ----------
-    block_payload
-        JSON-serializable block payload containing optional figure data.
-
-    Returns
-    -------
-    str
-        Source text drawn from embedded text, caption, or alt text, or an empty string
-        when no useful figure text is present.
-    """
-
-    figure = block_payload.get("figure")
-
-    if not isinstance(figure, dict):
-        return ""
-
-    embedded_text = figure.get("embedded_text")
-
-    if isinstance(embedded_text, dict) and embedded_text.get("text"):
-        return str(embedded_text["text"]).strip()
-
-    caption = figure.get("caption")
-
-    if isinstance(caption, dict) and caption.get("text"):
-        return str(caption["text"]).strip()
-
-    if isinstance(caption, str) and caption.strip():
-        return caption.strip()
-
-    if figure.get("contains_text") and figure.get("alt_text"):
-        return str(figure["alt_text"]).strip()
-
-    return ""
-
-
-def _extract_list_items_text(list_items: list[Any]) -> str:
-    """Join the text fields of list items into a single newline-delimited string.
-
-    Parameters
-    ----------
-    list_items
-        List items extracted from a block payload.
-
-    Returns
-    -------
-    str
-        Newline-joined item text, or an empty string when no item text is present.
-    """
-
-    if not isinstance(list_items, list):
-        return ""
-
-    item_texts: list[str] = []
-
-    for item in list_items:
-        if not isinstance(item, dict):
-            continue
-
-        item_text = item.get("text")
-
-        if isinstance(item_text, dict):
-            item_texts.append(str(item_text.get("text") or "").strip())
-        elif item_text:
-            item_texts.append(str(item_text).strip())
-
-    return "\n".join(item_text for item_text in item_texts if item_text)
-
-
 def _extract_table_row_cell_texts(row: dict[str, Any]) -> list[str]:
     """Extract visible cell text from a serialized table row.
 
@@ -737,56 +629,6 @@ def _extract_table_row_cell_texts(row: dict[str, Any]) -> list[str]:
         cell_texts.append(cell_text)
 
     return cell_texts
-
-
-def _get_table_plan_reasons(
-    *, kg_config: CreateKGConfig, segment: TableSegment
-) -> list[str]:
-    """Return reasons for planning a table segment for extraction.
-
-    Parameters
-    ----------
-    kg_config
-        Country/document-specific KG extraction configuration.
-    segment
-        Candidate table segment.
-
-    Returns
-    -------
-    list[str]
-        Table plan reasons, empty when the table should be skipped.
-    """
-
-    columns_signature = segment.columns_signature or "<missing>"
-    section_text = _table_section_text(segment)
-
-    if (
-        columns_signature
-        in kg_config.academic_standards.excluded_table_columns_signatures
-    ):
-        return []
-
-    if _matches_any_pattern(
-        patterns=kg_config.academic_standards.excluded_table_section_patterns,
-        text=section_text,
-    ):
-        return []
-
-    reasons: list[str] = []
-
-    if (
-        columns_signature
-        in kg_config.academic_standards.included_table_columns_signatures
-    ):
-        reasons.append("table_columns_signature_included_match")
-
-    if _matches_any_pattern(
-        patterns=kg_config.academic_standards.included_table_section_patterns,
-        text=section_text,
-    ):
-        reasons.append("table_section_included_pattern_match")
-
-    return unique_clean_strings(reasons)
 
 
 def _iter_row_index_chunks(
@@ -849,25 +691,6 @@ def _iter_row_index_chunks(
         current_start_position = current_end_position - row_overlap
 
     return chunks
-
-
-def _matches_any_pattern(*, patterns: Sequence[str], text: str) -> bool:
-    """Return whether any configured regex pattern matches text.
-
-    Parameters
-    ----------
-    patterns
-        Regex patterns to test.
-    text
-        Text to inspect.
-
-    Returns
-    -------
-    bool
-        True if any pattern matches; otherwise False.
-    """
-
-    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
 
 
 def _model_dump_by_indexes(
@@ -955,31 +778,6 @@ def _optional_model_dump_by_indexes(
         return None
 
     return _model_dump_by_indexes(indexes=indexes, values=values)
-
-
-def _table_section_text(segment: TableSegment) -> str:
-    """Build text used only for table section-pattern selection rules.
-
-    Parameters
-    ----------
-    segment
-        Candidate table segment.
-
-    Returns
-    -------
-    str
-        Source-adjacent heading text plus table metadata for table selection.
-    """
-
-    parts = [heading_ref.text for heading_ref in segment.section_path]
-
-    if segment.local_code:
-        parts.append(str(segment.local_code))
-
-    if segment.columns_signature:
-        parts.append(str(segment.columns_signature))
-
-    return "\n".join(part for part in parts if part)
 
 
 def _validate_extraction_window_coverage(
@@ -1217,14 +1015,16 @@ def plan_extraction_windows(
 
     for segment in document_ir.segments:
         if segment.kind == "block":
-            source_text = _build_block_source_text(segment.model_dump(mode="json"))
+            source_text = extract_block_source_text(segment.model_dump(mode="json"))
 
             if not source_text:
                 continue
 
             plan_reasons = ["block_has_extractable_source_text"]
         elif segment.kind == "table":
-            plan_reasons = _get_table_plan_reasons(kg_config=kg_config, segment=segment)
+            plan_reasons = get_table_selection_reasons(
+                kg_config=kg_config, segment=segment
+            )
 
             if not plan_reasons:
                 continue

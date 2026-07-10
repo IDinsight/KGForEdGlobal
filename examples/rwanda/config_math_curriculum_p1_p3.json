@@ -470,7 +470,8 @@
 				"statement_type",
 				"hierarchy_context",
 				"normalized_text"
-			]
+			],
+			"table_section_pattern_page_lookback": 2
 		},
 		"lc": {
 			"generation_instructions": "LearningComponents are out of scope for Academic Standards KG; do not generate LearningComponents in this run."
