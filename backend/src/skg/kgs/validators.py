@@ -963,6 +963,47 @@ def _candidate_has_soft_carry_forward_evidence(
     )
 
 
+def _candidate_source_text_is_linked_to_description(
+    candidate: SFICandidate,
+) -> bool:
+    """Check whether candidate evidence text directly quotes its description.
+
+    A source quote may begin with the same separately captured statement code. In that
+    case, the exact standalone leading code is removed before testing whether the
+    remaining visible quote is a contiguous excerpt of the description.
+
+    Parameters
+    ----------
+    candidate
+        Candidate whose description and evidence quote should refer to the same source
+        statement.
+
+    Returns
+    -------
+    bool
+        True when the normalized source quote, with an optional exact leading code
+        removed, and the normalized description are contiguous excerpts of one another.
+    """
+
+    description_normalized = _normalize_text(candidate.description)
+    source_text_normalized = _normalize_text(candidate.source_text)
+    source_text_without_code = _remove_leading_statement_code(
+        source_text=candidate.source_text, statement_code=candidate.statement_code
+    )
+    source_text_variants = {source_text_normalized, source_text_without_code}
+    return bool(
+        description_normalized
+        and any(
+            source_text_variant
+            and (
+                description_normalized in source_text_variant
+                or source_text_variant in description_normalized
+            )
+            for source_text_variant in source_text_variants
+        )
+    )
+
+
 def _child_has_viable_source_visible_parent(
     *, child_id: str, resolution_request: SFIHasChildResolutionRequest
 ) -> bool:
@@ -1347,6 +1388,53 @@ def _normalized_source_contains_visible_excerpt(
     )
 
 
+def _remove_leading_statement_code(
+    *, source_text: str, statement_code: Optional[str]
+) -> str:
+    """Remove an exact standalone leading statement code from source text.
+
+    The code is removed only when it appears at the beginning of the normalized source
+    quote and is followed by a supported source-visible separator. This avoids treating
+    a longer code, embedded code-like text, or a code occurrence in the statement body
+    as a removable prefix.
+
+    Parameters
+    ----------
+    source_text
+        Candidate evidence quote that may begin with the separately captured code.
+    statement_code
+        Optional source-visible statement code stored on the candidate.
+
+    Returns
+    -------
+    str
+        Normalized source text with the leading code and separator removed when they
+        form an exact standalone prefix; otherwise the unchanged normalized text.
+    """
+
+    source_text_normalized = _normalize_text(source_text)
+
+    if statement_code is None:
+        return source_text_normalized
+
+    code = str(statement_code).strip().rstrip(" .:;-)–—")
+    code_normalized = _normalize_text(code)
+
+    if not code_normalized:
+        return source_text_normalized
+
+    separator_pattern = r"(?:\s*[-–—]\s*|[.:)]\s*|\s+)"
+    prefix_match = re.match(
+        rf"^{re.escape(code_normalized)}{separator_pattern}",
+        source_text_normalized,
+    )
+
+    if prefix_match is None:
+        return source_text_normalized
+
+    return source_text_normalized[prefix_match.end() :].strip()
+
+
 def _source_supports_contiguous_text(
     *, supports: list[SourceTextSupport], target_text_normalized: str
 ) -> bool:
@@ -1479,35 +1567,6 @@ def _source_text_contains_statement_code(
         rf"(?![{code_boundary_chars}])"
     )
     return re.search(pattern, source_text_normalized) is not None
-
-
-def _candidate_source_text_is_linked_to_description(
-    candidate: SFICandidate,
-) -> bool:
-    """Check whether candidate evidence text directly quotes its description.
-
-    Parameters
-    ----------
-    candidate
-        Candidate whose description and evidence quote should refer to the same source
-        statement.
-
-    Returns
-    -------
-    bool
-        True when either normalized field is a contiguous excerpt of the other.
-    """
-
-    description_normalized = _normalize_text(candidate.description)
-    source_text_normalized = _normalize_text(candidate.source_text)
-    return bool(
-        description_normalized
-        and source_text_normalized
-        and (
-            description_normalized in source_text_normalized
-            or source_text_normalized in description_normalized
-        )
-    )
 
 
 def _source_support_has_candidate_language(
