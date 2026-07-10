@@ -590,11 +590,18 @@ def _build_row_source_text_supports(
             text, language = visible_cells[end_index]
             range_languages.add(language)
             range_texts.append(text)
-            _append_source_text_unit_supports(
-                languages=range_languages.copy(),
-                supports=supports,
-                text="\n".join(range_texts),
-            )
+            if start_index == end_index:
+                _append_source_text_unit_supports(
+                    languages=range_languages.copy(),
+                    supports=supports,
+                    text="\n".join(range_texts),
+                )
+            else:
+                _append_source_text_support(
+                    languages=range_languages.copy(),
+                    supports=supports,
+                    text="\n".join(range_texts),
+                )
 
     return supports
 
@@ -726,7 +733,7 @@ def _build_table_channel_source_text_supports(
                     )
                 )
 
-        _append_source_text_unit_supports(
+        _append_source_text_support(
             languages=run_languages or {primary_language},
             supports=supports,
             text="\n".join(run_texts),
@@ -759,7 +766,7 @@ def _build_table_channel_source_text_supports(
                 )
 
             if len(column_texts) > 1:
-                _append_source_text_unit_supports(
+                _append_source_text_support(
                     languages=column_languages,
                     supports=supports,
                     text="\n".join(column_texts),
@@ -957,7 +964,7 @@ def _build_table_source_text_supports(
                             )
                         )
 
-                _append_source_text_unit_supports(
+                _append_source_text_support(
                     languages=combined_languages or {window.primary_language},
                     supports=supports,
                     text="\n".join(combined_texts),
@@ -1248,10 +1255,18 @@ def _find_language_sets_for_text(
         return []
 
     shortest_length = min(len(support.text_normalized) for support in matches)
+    shortest_matches = [
+        support
+        for support in matches
+        if len(support.text_normalized) == shortest_length
+    ]
+    smallest_language_count = min(
+        len(support.languages) for support in shortest_matches
+    )
     language_sets: list[frozenset[str]] = []
 
-    for support in matches:
-        if support.text_normalized and len(support.text_normalized) != shortest_length:
+    for support in shortest_matches:
+        if len(support.languages) != smallest_language_count:
             continue
 
         if support.languages not in language_sets:
@@ -1320,6 +1335,62 @@ def _group_contiguous_ordered_indexes(
         groups.append(current_group)
 
     return groups
+
+
+def _is_strong_source_boundary(*, boundary_index: int, source_text: str) -> bool:
+    """Return whether source punctuation marks a strong text boundary.
+
+    Periods embedded in decimal values, hierarchical codes, or dotted abbreviations are
+    not treated as sentence boundaries. Other supported punctuation marks are always
+    strong boundaries.
+
+    Parameters
+    ----------
+    boundary_index
+        Index of the punctuation character in `source_text`.
+    source_text
+        Normalized source text containing the candidate boundary.
+
+    Returns
+    -------
+    bool
+        True when the indexed punctuation is a strong boundary.
+
+    Raises
+    ------
+    ValueError
+        If `boundary_index` does not identify a supported punctuation character.
+    """
+
+    boundary_character = source_text[boundary_index]
+
+    if boundary_character in "!?;:":
+        return True
+
+    if boundary_character != ".":
+        raise ValueError(
+            f"Unsupported source-boundary character: {boundary_character!r}."
+        )
+
+    previous_character = source_text[boundary_index - 1] if boundary_index > 0 else ""
+    next_character = (
+        source_text[boundary_index + 1] if boundary_index + 1 < len(source_text) else ""
+    )
+
+    if previous_character.isalnum() and next_character.isalnum():
+        return False
+
+    token_match = re.search(r"([0-9a-z.]+)\.$", source_text[: boundary_index + 1])
+
+    if token_match is None:
+        return True
+
+    token_body = token_match.group(1)
+
+    if "." in token_body:
+        return False
+
+    return True
 
 
 def _normalize_code_for_parent_match(value: Any) -> str:
@@ -1468,13 +1539,43 @@ def _source_supports_complete_text(
                 break
 
             match_end = match_start + len(target_text_normalized)
-            prefix = source_text[:match_start].rstrip()
-            suffix = source_text[match_end:].lstrip()
-            left_bounded = not prefix or prefix[-1] in boundary_characters
+            left_boundary_index = match_start - 1
+
+            while (
+                left_boundary_index >= 0 and source_text[left_boundary_index].isspace()
+            ):
+                left_boundary_index -= 1
+
+            right_boundary_index = match_end
+
+            while (
+                right_boundary_index < len(source_text)
+                and source_text[right_boundary_index].isspace()
+            ):
+                right_boundary_index += 1
+
+            left_bounded = left_boundary_index < 0 or (
+                source_text[left_boundary_index] in boundary_characters
+                and _is_strong_source_boundary(
+                    boundary_index=left_boundary_index, source_text=source_text
+                )
+            )
+            target_boundary_index = len(target_text_normalized) - 1
+            target_ends_at_boundary = target_text_normalized[
+                target_boundary_index
+            ] in boundary_characters and _is_strong_source_boundary(
+                boundary_index=target_boundary_index,
+                source_text=target_text_normalized,
+            )
             right_bounded = (
-                not suffix
-                or suffix[0] in boundary_characters
-                or target_text_normalized[-1] in boundary_characters
+                right_boundary_index >= len(source_text)
+                or (
+                    source_text[right_boundary_index] in boundary_characters
+                    and _is_strong_source_boundary(
+                        boundary_index=right_boundary_index, source_text=source_text
+                    )
+                )
+                or target_ends_at_boundary
             )
 
             if left_bounded and right_bounded:
@@ -1836,48 +1937,34 @@ def _validate_candidate_table_indexes(ctx: SFIExtractionQualityCtx) -> None:
 def _validate_combined_source_location(
     *,
     candidate: SFICandidate,
-    cited_header_text_normalized: str,
-    cited_row_text_normalized: str,
     source_supported_by_cited_headers: bool,
     source_supported_by_cited_rows: bool,
-    source_text_normalized: str,
+    source_supported_by_cited_table: bool,
 ) -> None:
     """Validate a candidate that cites both header and row indexes.
 
-    Combined citation is only legitimate when neither channel alone supports the
-    complete quote but their combined cited text does.
+    Combined citation is legitimate only when the complete source quote is supported by
+    the candidate-scoped table supports and neither citation channel is unnecessary.
 
     Parameters
     ----------
     candidate
         Candidate to validate.
-    cited_header_text_normalized
-        Normalized text blob built from the cited header indexes.
-    cited_row_text_normalized
-        Normalized text blob built from the cited row indexes.
     source_supported_by_cited_headers
-        Whether the cited header rows alone support the source_text.
+        Whether the cited header rows alone support the source text.
     source_supported_by_cited_rows
-        Whether the cited body rows alone support the source_text.
-    source_text_normalized
-        Normalized candidate source_text.
+        Whether the cited body rows alone support the source text.
+    source_supported_by_cited_table
+        Whether the combined cited table supports contain the source text.
 
     Raises
     ------
     QualityError
-        If the combined cited text does not support the source_text, or if either
-        channel alone supports it (so the other channel should not be populated).
+        If the combined cited supports do not contain the source text, or if either
+        channel alone supports it and the other channel is therefore unnecessary.
     """
 
-    cited_table_text_normalized = _normalize_text(
-        "\n".join([cited_header_text_normalized, cited_row_text_normalized])
-    )
-    source_supported_by_cited_table_text = _normalized_source_contains_visible_excerpt(
-        source_text_normalized=cited_table_text_normalized,
-        target_text_normalized=source_text_normalized,
-    )
-
-    if not source_supported_by_cited_table_text:
+    if not source_supported_by_cited_table:
         raise QualityError(
             f"Candidate {candidate.candidate_id!r} includes "
             f"table_header_indexes={candidate.table_header_indexes!r} and "
@@ -2525,28 +2612,28 @@ def _validate_table_candidate_source_location(
 ) -> None:
     """Validate that table candidate indexes match source-text location.
 
-    The candidate source_text must be supported by the cited source-visible table
-    location. Header-only source_text must cite header indexes only. Row-only
-    source_text must cite row indexes only. Source_text assembled from visible header
-    and body-row text may cite both channels when neither channel alone supports the
-    complete quote but their combined cited text does.
+    Candidate source text must be supported by candidate-scoped table supports built
+    from the cited raw rows. Header-only and row-only quotes must cite only their own
+    channel. Combined quotes may cite both channels when the combined supports are
+    required.
 
     Parameters
     ----------
     candidate
         Candidate to validate.
     ctx
-        Quality-check context.
+        Extraction quality context.
 
     Raises
     ------
     QualityError
-        If a candidate cites indexes that do not support its source_text, cites row
-        indexes for header-only text, cites header indexes for row-only text, or omits
-        the source location implied by its source_text.
+        If cited indexes do not support the source text, or if a citation channel is
+        unnecessary for the quoted text.
     """
 
-    if ctx.window.table is None:
+    table = ctx.window.table
+
+    if table is None:
         raise QualityError(
             f"Candidate {candidate.candidate_id!r} source-location validation "
             f"requires a table window."
@@ -2566,34 +2653,33 @@ def _validate_table_candidate_source_location(
             f"location can be source-validated."
         )
 
-    cited_header_text_normalized = ""
-    cited_row_text_normalized = ""
-
-    if candidate.table_header_indexes:
-        cited_header_text_normalized = _build_normalized_text_blob_for_indexes(
+    header_rows_by_index = dict(enumerate(table.header_rows))
+    body_rows_by_index = dict(zip(table.row_indexes, table.rows))
+    header_supports = (
+        _build_table_channel_source_text_supports(
             indexes=candidate.table_header_indexes,
-            ordered_indexes=list(range(len(ctx.window.table.header_rows))),
-            text_by_index=ctx.table_header_text_normalized_by_index,
+            ordered_indexes=list(header_rows_by_index),
+            primary_language=ctx.window.primary_language,
+            rows_by_index=header_rows_by_index,
         )
-
-    if candidate.table_row_indexes:
-        cited_row_text_normalized = _build_normalized_text_blob_for_indexes(
-            indexes=candidate.table_row_indexes,
-            ordered_indexes=ctx.window.table.row_indexes,
-            text_by_index=ctx.table_row_text_normalized_by_index,
-        )
-
-    source_supported_by_cited_headers = bool(
-        candidate.table_header_indexes
-    ) and _normalized_source_contains_visible_excerpt(
-        source_text_normalized=cited_header_text_normalized,
-        target_text_normalized=source_text_normalized,
+        if candidate.table_header_indexes
+        else []
     )
-    source_supported_by_cited_rows = bool(
-        candidate.table_row_indexes
-    ) and _normalized_source_contains_visible_excerpt(
-        source_text_normalized=cited_row_text_normalized,
-        target_text_normalized=source_text_normalized,
+    row_supports = (
+        _build_table_channel_source_text_supports(
+            indexes=candidate.table_row_indexes,
+            ordered_indexes=table.row_indexes,
+            primary_language=ctx.window.primary_language,
+            rows_by_index=body_rows_by_index,
+        )
+        if candidate.table_row_indexes
+        else []
+    )
+    source_supported_by_cited_headers = _source_supports_contiguous_text(
+        supports=header_supports, target_text_normalized=source_text_normalized
+    )
+    source_supported_by_cited_rows = _source_supports_contiguous_text(
+        supports=row_supports, target_text_normalized=source_text_normalized
     )
 
     if candidate.table_header_indexes and not candidate.table_row_indexes:
@@ -2610,13 +2696,15 @@ def _validate_table_candidate_source_location(
         )
         return
 
+    source_supported_by_cited_table = _source_supports_contiguous_text(
+        supports=_build_candidate_source_text_supports(candidate=candidate, ctx=ctx),
+        target_text_normalized=source_text_normalized,
+    )
     _validate_combined_source_location(
         candidate=candidate,
-        cited_header_text_normalized=cited_header_text_normalized,
-        cited_row_text_normalized=cited_row_text_normalized,
         source_supported_by_cited_headers=source_supported_by_cited_headers,
         source_supported_by_cited_rows=source_supported_by_cited_rows,
-        source_text_normalized=source_text_normalized,
+        source_supported_by_cited_table=source_supported_by_cited_table,
     )
 
 
