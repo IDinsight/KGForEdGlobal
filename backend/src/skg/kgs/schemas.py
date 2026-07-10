@@ -483,6 +483,110 @@ class ExtractionWindowTablePayload(BaseSchema):
         description="Total number of rows in the source TableSegment.", ge=0
     )
 
+    def _validate_body_range(self) -> None:
+        """Validate the body row range against header and source-row bounds.
+
+        Raises
+        ------
+        ValueError
+            If the body range is inconsistent with header_row_count or exceeds
+            source_table_row_count.
+        """
+
+        if self.header_row_count > self.source_table_row_count:
+            raise ValueError("header_row_count cannot exceed source_table_row_count.")
+
+        if self.body_row_end_index_exclusive < self.body_row_start_index:
+            raise ValueError(
+                "body_row_end_index_exclusive must be >= body_row_start_index."
+            )
+
+        if self.body_row_end_index_exclusive > self.source_table_row_count:
+            raise ValueError(
+                "body_row_end_index_exclusive cannot exceed source_table_row_count."
+            )
+
+    def _validate_populated_row_indexes(self) -> None:
+        """Validate a non-empty, contiguous body-row selection.
+
+        Raises
+        ------
+        ValueError
+            If row_indexes are not one contiguous body-row range, fall outside the
+            source-row bounds, or disagree with the declared body range.
+        """
+
+        first, last = self.row_indexes[0], self.row_indexes[-1]
+
+        if self.row_indexes != list(range(first, last + 1)):
+            raise ValueError("row_indexes must form one contiguous source-row range.")
+
+        if first < self.header_row_count:
+            raise ValueError(
+                "row_indexes must reference body rows at or after header_row_count."
+            )
+
+        if last >= self.source_table_row_count:
+            raise ValueError(
+                "row_indexes cannot reference rows outside source_table_row_count."
+            )
+
+        if self.body_row_start_index != first:
+            raise ValueError(
+                "body_row_start_index must equal the first row_indexes value."
+            )
+
+        if self.body_row_end_index_exclusive != last + 1:
+            raise ValueError(
+                "body_row_end_index_exclusive must equal the last row index plus one."
+            )
+
+    def _validate_header_only_range(self) -> None:
+        """Validate the empty body range used by a header-only table window.
+
+        Raises
+        ------
+        ValueError
+            If the body range is not the empty range beginning at header_row_count.
+        """
+
+        if (
+            self.body_row_start_index != self.header_row_count
+            or self.body_row_end_index_exclusive != self.header_row_count
+        ):
+            raise ValueError(
+                "Header-only table windows must use an empty body range beginning at "
+                "header_row_count."
+            )
+
+    def _validate_helper_alignment(self) -> None:
+        """Validate that rows and optional helper views align to row_indexes.
+
+        Raises
+        ------
+        ValueError
+            If rows or any present helper view has a length differing from
+            row_indexes.
+        """
+
+        expected_len = len(self.row_indexes)
+
+        if len(self.rows) != expected_len:
+            raise ValueError("rows must be aligned to row_indexes.")
+
+        for helper_field_name in (
+            "grid_sources",
+            "row_provenance",
+            "rows_filldown",
+            "rows_grid",
+        ):
+            helper_value = getattr(self, helper_field_name)
+
+            if helper_value is not None and len(helper_value) != expected_len:
+                raise ValueError(
+                    f"{helper_field_name} must be aligned to row_indexes when present."
+                )
+
     @model_validator(mode="after")
     def validate_row_ranges(self) -> Self:
         """Validate row-index, row-range, and helper-view consistency.
@@ -501,75 +605,17 @@ class ExtractionWindowTablePayload(BaseSchema):
             If the row range, row indexes, or aligned helper views are inconsistent.
         """
 
-        if self.header_row_count > self.source_table_row_count:
-            raise ValueError("header_row_count cannot exceed source_table_row_count.")
-
-        if self.body_row_end_index_exclusive < self.body_row_start_index:
-            raise ValueError(
-                "body_row_end_index_exclusive must be >= body_row_start_index."
-            )
-
-        if self.body_row_end_index_exclusive > self.source_table_row_count:
-            raise ValueError(
-                "body_row_end_index_exclusive cannot exceed source_table_row_count."
-            )
+        self._validate_body_range()
 
         if self.row_indexes != sorted(set(self.row_indexes)):
             raise ValueError("row_indexes must be strictly increasing and unique.")
 
         if self.row_indexes:
-            expected_row_indexes = list(
-                range(self.row_indexes[0], self.row_indexes[-1] + 1)
-            )
+            self._validate_populated_row_indexes()
+        else:
+            self._validate_header_only_range()
 
-            if self.row_indexes != expected_row_indexes:
-                raise ValueError(
-                    "row_indexes must form one contiguous source-row range."
-                )
-
-            if self.row_indexes[0] < self.header_row_count:
-                raise ValueError(
-                    "row_indexes must reference body rows at or after header_row_count."
-                )
-
-            if self.row_indexes[-1] >= self.source_table_row_count:
-                raise ValueError(
-                    "row_indexes cannot reference rows outside source_table_row_count."
-                )
-
-            if self.body_row_start_index != self.row_indexes[0]:
-                raise ValueError(
-                    "body_row_start_index must equal the first row_indexes value."
-                )
-
-            if self.body_row_end_index_exclusive != self.row_indexes[-1] + 1:
-                raise ValueError(
-                    "body_row_end_index_exclusive must equal the last row index plus one."
-                )
-        elif (
-            self.body_row_start_index != self.header_row_count
-            or self.body_row_end_index_exclusive != self.header_row_count
-        ):
-            raise ValueError(
-                "Header-only table windows must use an empty body range beginning at "
-                "header_row_count."
-            )
-
-        if len(self.rows) != len(self.row_indexes):
-            raise ValueError("rows must be aligned to row_indexes.")
-
-        for helper_field_name in [
-            "grid_sources",
-            "row_provenance",
-            "rows_filldown",
-            "rows_grid",
-        ]:
-            helper_value = getattr(self, helper_field_name)
-
-            if helper_value is not None and len(helper_value) != len(self.row_indexes):
-                raise ValueError(
-                    f"{helper_field_name} must be aligned to row_indexes when present."
-                )
+        self._validate_helper_alignment()
 
         return self
 
