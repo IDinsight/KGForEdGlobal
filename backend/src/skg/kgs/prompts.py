@@ -10,6 +10,7 @@ from skg.kgs.schemas import (
     SFIDedupReviewRequest,
     SFIHasChildResolutionRequest,
 )
+from skg.kgs.utils import text_starts_with_complete_marker
 from skg.schemas import CreateKGConfig
 from skg.utils.general import PromptPair, json_dumps
 
@@ -30,16 +31,181 @@ def _build_compact_block_payload(
         A compact block payload for block windows, or `None` for table windows.
     """
 
-    return (
-        None
-        if extraction_window.block is None
-        else {
-            "block_type": extraction_window.block.get("block_type"),
-            "language": _get_block_language(extraction_window),
-            "local_code": extraction_window.block.get("local_code"),
-            "source_text": extraction_window.source_text,
+    if extraction_window.block is None:
+        return None
+
+    source_units = _build_compact_block_source_units(extraction_window)
+    source_languages = sorted(
+        {
+            str(source_unit.get("language") or "").strip()
+            for source_unit in source_units
+            if str(source_unit.get("language") or "").strip()
         }
     )
+    block_language = (
+        source_languages[0]
+        if len(source_languages) == 1
+        else "mul" if len(source_languages) > 1 else extraction_window.primary_language
+    )
+    return {
+        "block_type": extraction_window.block.get("block_type"),
+        "language": block_language,
+        "local_code": extraction_window.block.get("local_code"),
+        "source_text": extraction_window.source_text,
+        "source_units": source_units,
+    }
+
+
+def _build_compact_block_slice_source_unit(
+    *,
+    fallback_language: str,
+    slice_index: int,
+    slice_payload: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    """Build one source-visible unit from a serialized block slice.
+
+    Parameters
+    ----------
+    fallback_language
+        Language to use when the slice lacks source-language metadata.
+    slice_index
+        Source-order slice index within the stitched block.
+    slice_payload
+        Serialized DocumentIR block-slice payload.
+
+    Returns
+    -------
+    Optional[dict[str, Any]]
+        Prompt-facing source unit, or `None` when the slice has no visible text.
+    """
+
+    text_unit = slice_payload.get("text")
+
+    if isinstance(text_unit, dict):
+        text = str(text_unit.get("text") or "").strip()
+
+        if text:
+            return {
+                "language": _get_text_unit_language(
+                    fallback=fallback_language, text_unit=text_unit
+                ),
+                "slice_index": slice_index,
+                "source_text": text,
+                "source_visibility": "source_visible_block_slice",
+            }
+
+    figure = slice_payload.get("figure")
+
+    if isinstance(figure, dict):
+        for field_name in ["embedded_text", "caption"]:
+            figure_text = figure.get(field_name)
+
+            if isinstance(figure_text, dict):
+                text = str(figure_text.get("text") or "").strip()
+
+                if text:
+                    return {
+                        "language": _get_text_unit_language(
+                            fallback=fallback_language, text_unit=figure_text
+                        ),
+                        "slice_index": slice_index,
+                        "source_text": text,
+                        "source_visibility": "source_visible_block_slice",
+                    }
+            elif isinstance(figure_text, str) and figure_text.strip():
+                return {
+                    "language": fallback_language,
+                    "slice_index": slice_index,
+                    "source_text": figure_text.strip(),
+                    "source_visibility": "source_visible_block_slice",
+                }
+
+    return None
+
+
+def _build_compact_block_source_units(
+    extraction_window: ExtractionWindow,
+) -> list[dict[str, Any]]:
+    """Build source-visible block units with their source languages.
+
+    List items retain item-level languages so multilingual lists are not flattened into
+    the configured primary language. Other block kinds expose the source block text as
+    one unit with the best available DocumentIR language tag.
+
+    Parameters
+    ----------
+    extraction_window
+        Source-faithful extraction window containing a block payload.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Source-visible block units in source order.
+    """
+
+    block = extraction_window.block
+
+    if block is None:
+        return []
+
+    list_items = block.get("list_items")
+
+    if isinstance(list_items, list) and list_items:
+        source_units: list[dict[str, Any]] = []
+
+        for item_index, item in enumerate(list_items):
+            if not isinstance(item, dict):
+                continue
+
+            source_text = _build_list_item_source_text(item)
+
+            if not source_text:
+                continue
+
+            text_unit = item.get("text")
+            language = _get_text_unit_language(
+                fallback=extraction_window.primary_language, text_unit=text_unit
+            )
+            source_units.append(
+                {
+                    "item_index": item_index,
+                    "language": language,
+                    "marker": item.get("marker"),
+                    "source_text": source_text,
+                    "source_visibility": "source_visible_list_item",
+                }
+            )
+
+        return source_units
+
+    slices = block.get("slices")
+
+    if isinstance(slices, list):
+        source_units = []
+
+        for slice_index, slice_payload in enumerate(slices):
+            if not isinstance(slice_payload, dict):
+                continue
+
+            source_unit = _build_compact_block_slice_source_unit(
+                fallback_language=extraction_window.primary_language,
+                slice_index=slice_index,
+                slice_payload=slice_payload,
+            )
+
+            if source_unit is not None:
+                source_units.append(source_unit)
+
+        if source_units:
+            return source_units
+
+    return [
+        {
+            "language": _get_block_language(extraction_window),
+            "source_text": extraction_window.source_text,
+            "source_visibility": "source_visible_block",
+        }
+    ]
 
 
 def _build_compact_dedup_review_payload(
@@ -101,6 +267,24 @@ def _build_compact_extraction_window_payload(
             for code_match in extraction_window.code_matches
         ],
         "segment_kind": extraction_window.segment_kind,
+        "source_context": {
+            "section_path": [
+                {
+                    "item_index": section_ref.get("item_index"),
+                    "page_index": section_ref.get("page_index"),
+                    "source_visibility": "context_only",
+                    "text": section_ref.get("text"),
+                }
+                for section_ref in extraction_window.source_section_path
+            ],
+            "source_context_policy": (
+                "Use section_path only to determine document scope and the source role of "
+                "the visible block/table content. It is not candidate evidence, not an "
+                "inferred KG ancestor chain, and must not be quoted as candidate or "
+                "auxiliary source_text or description unless the same wording is also "
+                "visible in block or table source content."
+            ),
+        },
         "window_id": extraction_window.window_id,
         "window_index": extraction_window.window_index,
         "window_source_segment_ids": extraction_window.source_segment_ids,
@@ -484,12 +668,42 @@ def _build_filldown_context_rows(
     return context_rows
 
 
-def _get_block_language(extraction_window: ExtractionWindow) -> str:
-    """Return the source block language for an extraction window.
+def _build_list_item_source_text(item: dict[str, Any]) -> str:
+    """Render one serialized list item with its visible marker.
 
-    Block windows should preserve the language assigned by DocumentIR to the actual
-    source block. The KG config primary language is only a fallback for malformed or
-    legacy block payloads that do not carry a block-level language value.
+    Parameters
+    ----------
+    item
+        Serialized DocumentIR list-item payload.
+
+    Returns
+    -------
+    str
+        Source-visible list-item text with a non-duplicated marker.
+    """
+
+    marker = str(item.get("marker") or "").strip()
+    text_unit = item.get("text")
+
+    if isinstance(text_unit, dict):
+        text = str(text_unit.get("text") or "").strip()
+    elif text_unit is not None:
+        text = str(text_unit).strip()
+    else:
+        text = ""
+
+    if marker and text and text_starts_with_complete_marker(marker=marker, text=text):
+        return text
+
+    return " ".join(part for part in [marker, text] if part)
+
+
+def _get_block_language(extraction_window: ExtractionWindow) -> str:
+    """Return the best available language for a non-list block window.
+
+    The block-level TextUnit is authoritative when present. Figure embedded text or
+    caption language is used for figure windows. The KG primary language is only a
+    fallback when DocumentIR has no source-language metadata.
 
     Parameters
     ----------
@@ -502,23 +716,58 @@ def _get_block_language(extraction_window: ExtractionWindow) -> str:
         Source block language when available; otherwise the window primary language.
     """
 
-    if extraction_window.block is None:
+    block = extraction_window.block
+
+    if block is None:
         return extraction_window.primary_language
 
-    block_text = extraction_window.block.get("text")
+    language = _get_text_unit_language(fallback="", text_unit=block.get("text"))
 
-    if isinstance(block_text, dict):
-        language = block_text.get("language")
+    if language:
+        return language
+
+    figure = block.get("figure")
+
+    if isinstance(figure, dict):
+        for field_name in ["embedded_text", "caption"]:
+            language = _get_text_unit_language(
+                fallback="", text_unit=figure.get(field_name)
+            )
+
+            if language:
+                return language
+
+    block_language = block.get("language")
+
+    if isinstance(block_language, str) and block_language.strip():
+        return block_language.strip()
+
+    return extraction_window.primary_language
+
+
+def _get_text_unit_language(*, fallback: str, text_unit: Any) -> str:
+    """Return a TextUnit language or a configured fallback.
+
+    Parameters
+    ----------
+    fallback
+        Language to use when the text unit has no usable language tag.
+    text_unit
+        Serialized TextUnit payload or another value.
+
+    Returns
+    -------
+    str
+        Source language tag when available, otherwise `fallback`.
+    """
+
+    if isinstance(text_unit, dict):
+        language = text_unit.get("language")
 
         if isinstance(language, str) and language.strip():
             return language.strip()
 
-    language = extraction_window.block.get("language")
-
-    if isinstance(language, str) and language.strip():
-        return language.strip()
-
-    return extraction_window.primary_language
+    return fallback
 
 
 def extract_sfi_candidates_from_window(
@@ -556,9 +805,10 @@ def extract_sfi_candidates_from_window(
 
 ## Scope
 - Extract candidate SFIs only from the provided compact source window.
+- Use source_context.section_path to determine document scope and the source role of the visible block/table content when the runtime config depends on section context. Treat it as context only, not as candidate evidence or an inferred hierarchy.
 - Return zero SFI candidates when the window contains front matter, examples only, teacher guidance only, activities only, resources only, assessment suggestions only, or unrelated content.
 - Do not infer hierarchy or relationships in this step. Extract only SFI candidates directly visible in this compact source window; final hasChild relationships are resolved later from finalized SFIs and source provenance.
-- Extract grouping SFIs only when the grouping label itself is visible in this window. Do not add absent grade, strand, sub-strand, or parent context.
+- Extract grouping SFIs only when the grouping label itself is visible in block or table source content. Do not emit a grouping solely because it appears in source_context.section_path, and do not add absent grade, strand, sub-strand, or parent context.
 - Use the curriculum-specific extraction KG config below to adapt the generic ontology rules to this document.
 - If the generic instructions and the curriculum-specific runtime config conflict, follow the curriculum-specific runtime config. The runtime config is authoritative for document-specific extraction policy.
 
@@ -582,7 +832,7 @@ def extract_sfi_candidates_from_window(
 - description should preserve the exact source-language wording of the SFI. For learning expectations, use the official statement text. For groupings, use the grouping label or heading text. Do not clean, translate, correct spelling, normalize, expand, or infer description text.
 - statement_type must use exactly one canonical source-facing role from statement_type_policy.
 - statement_code should be the official/source-visible code when present. Use null when no code is visible.
-- language should use the source language tag when visible; otherwise use the KG config primary language.
+- language must match the source language tag on the exact block.source_units or table cells that support description/source_text. Use "mul" when the candidate combines visible text from more than one source language. Use the KG config primary language only when the supporting source units have no language metadata.
 - confidence should reflect how clearly the source window supports the candidate.
 - table_header_indexes and table_row_indexes are source-text location fields, not general context fields.
 - For table candidates, both description and source_text must be supported by the cited table_header_indexes and/or table_row_indexes.
@@ -593,11 +843,11 @@ def extract_sfi_candidates_from_window(
 - description should contain the complete source-visible SFI statement or grouping label, including visible continuation fragments when an official statement is split across adjacent table rows or cells.
 - source_text is a source-visible evidence quote for validation. It is not the final canonical KG statement text and it is not the only downstream provenance.
 - Keep source_text concise but sufficient. For coded table statements, quote only official code and statement text, not examples, exemplars, teacher guidance, activities, or competencies. When a statement is split across multiple visible rows/cells, quote the complete visible statement only if the contributing fragments can be represented as a source-visible excerpt; otherwise quote the strongest exact visible fragment and rely on table_row_indexes/table_header_indexes for downstream source recovery.
-- For table candidates, the safest valid output is often description equal to source_text. Use a longer description only when every added word is copied from the cited table rows/header rows.
+- For table candidates, the safest valid output is often description equal to source_text. Use a longer description only when it is a contiguous source-visible excerpt from a cited cell/row or a complete statement assembled from adjacent cited cells or adjacent cited rows. Do not create a description by deleting or interleaving words from a longer source statement.
 
 ## Source fidelity rules
-- Preserve source-language text. Do not translate.
-- For every candidate and auxiliary record, source_text must be a verbatim source-visible excerpt from block.source_text, table.header_rows cell text, or table.source_rows cell text.
+- Preserve source-language text. Do not translate. Use block.source_units and table-cell language fields to assign candidate and auxiliary language accurately.
+- For every candidate and auxiliary record, source_text must be a verbatim source-visible excerpt from block.source_text/block.source_units, table.header_rows cell text, or table.source_rows cell text. Never quote source_context.section_path or helper-only filldown context.
 - For table candidates, description must be source-visible in the cited table_header_indexes and/or table_row_indexes. Do not use text from another visible row/header unless that row/header index is also cited.
 - If a table statement visibly continues across adjacent source rows or cells, include every contributing table_row_index and assemble the complete official statement in description from those visible fragments. Do not truncate description at the first row/cell.
 - The final KG-building stages recover full source provenance from window_id, window_source_segment_ids, table_row_indexes, table_header_indexes, and the persisted ExtractionWindow/DocumentIR. Do not use source_text to carry hidden context, parentage, or non-visible text.

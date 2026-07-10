@@ -433,7 +433,7 @@ def _extract_list_items_source_text(list_items: list[Any]) -> str:
         if (
             marker
             and text
-            and _text_starts_with_complete_marker(marker=marker, text=text)
+            and text_starts_with_complete_marker(marker=marker, text=text)
         ):
             line = text
         else:
@@ -532,47 +532,6 @@ def _matches_any_pattern(*, patterns: Sequence[str], text: str) -> bool:
     """
 
     return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
-
-
-def _text_starts_with_complete_marker(*, marker: str, text: str) -> bool:
-    """Return whether text begins with the same complete structured list marker.
-
-    NFKC normalization and whitespace collapsing are used only for comparison; the
-    caller retains the original marker and text for output. Numeric hierarchy
-    continuations are not treated as complete matches, so marker `2.` does not match
-    text beginning with `2.1` and marker `2.1` does not match `2.1.1`.
-
-    Parameters
-    ----------
-    marker
-        Structured source-visible list marker.
-    text
-        Source-visible list-item text.
-
-    Returns
-    -------
-    bool
-        True when text already begins with the complete marker; otherwise False.
-    """
-
-    marker_key = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", marker)).strip()
-    text_key = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text)).lstrip()
-
-    if not marker_key or not text_key.startswith(marker_key):
-        return False
-
-    remainder = text_key[len(marker_key) :]
-
-    if not remainder or remainder[0].isspace():
-        return True
-
-    if marker_key.endswith("."):
-        return not remainder[0].isdigit()
-
-    if marker_key[-1].isalnum():
-        return remainder[0] in {":", ";", ")", "]", "}"}
-
-    return True
 
 
 def _validate_document_ir(document_ir_fp: Path) -> DocumentIR:
@@ -1206,6 +1165,47 @@ def reset_output_files(output_fps: Sequence[Path]) -> None:
 
         if output_fp.suffix == ".jsonl":
             output_fp.write_text("", encoding="utf-8")
+
+
+def text_starts_with_complete_marker(*, marker: str, text: str) -> bool:
+    """Return whether text begins with the same complete structured list marker.
+
+    NFKC normalization and whitespace collapsing are used only for comparison; the
+    caller retains the original marker and text for output. Numeric hierarchy
+    continuations are not treated as complete matches, so marker `2.` does not match
+    text beginning with `2.1` and marker `2.1` does not match `2.1.1`.
+
+    Parameters
+    ----------
+    marker
+        Structured source-visible list marker.
+    text
+        Source-visible list-item text.
+
+    Returns
+    -------
+    bool
+        True when text already begins with the complete marker; otherwise False.
+    """
+
+    marker_key = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", marker)).strip()
+    text_key = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text)).lstrip()
+
+    if not marker_key or not text_key.startswith(marker_key):
+        return False
+
+    remainder = text_key[len(marker_key) :]
+
+    if not remainder or remainder[0].isspace():
+        return True
+
+    if marker_key.endswith("."):
+        return not remainder[0].isdigit()
+
+    if marker_key[-1].isalnum():
+        return remainder[0] in {":", ";", ")", "]", "}"}
+
+    return True
 
 
 def unique_nonempty(values: Iterable[Any]) -> list[str]:

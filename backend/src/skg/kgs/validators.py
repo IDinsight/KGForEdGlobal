@@ -9,7 +9,7 @@ in this module enforce quality checks that require access to other inputs.
 import re
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 # Package Library
 from skg.kgs.schemas import (
@@ -22,6 +22,7 @@ from skg.kgs.schemas import (
     SFIHasChildResolutionRequest,
     SFIHasChildResolutionResponse,
 )
+from skg.kgs.utils import text_starts_with_complete_marker
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 
@@ -63,6 +64,22 @@ HARD_LOCAL_DIRECT_PARENT_REASONS = frozenset(
         SOURCE_SCOPE_GROUPING_REASON,
     }
 )
+
+
+@dataclass(frozen=True)
+class SourceTextSupport:
+    """Source-visible text support with the languages that produced it.
+
+    Attributes
+    ----------
+    languages
+        Source language tags contributing to the support text.
+    text_normalized
+        Whitespace-normalized, casefolded source-visible text.
+    """
+
+    languages: frozenset[str]
+    text_normalized: str
 
 
 @dataclass(frozen=True)
@@ -127,6 +144,162 @@ def _append_row_cell_texts(*, row: dict[str, Any], texts: list[str]) -> None:
             texts.append(text)
 
 
+def _append_source_text_support(
+    *, languages: set[str], supports: list[SourceTextSupport], text: str
+) -> None:
+    """Append one non-empty normalized source-text support.
+
+    Parameters
+    ----------
+    languages
+        Source language tags contributing to `text`.
+    supports
+        Mutable support accumulator.
+    text
+        Source-visible text to normalize and append.
+    """
+
+    text_normalized = _normalize_text(text)
+
+    if not text_normalized:
+        return
+
+    supports.append(
+        SourceTextSupport(
+            languages=frozenset(language for language in languages if language),
+            text_normalized=text_normalized,
+        )
+    )
+
+
+def _build_block_payload_source_text_supports(
+    *, fallback_language: str, payload: dict[str, Any]
+) -> list[SourceTextSupport]:
+    """Build source supports from one serialized block or block-slice payload.
+
+    Parameters
+    ----------
+    fallback_language
+        Language used when the payload lacks source-language metadata.
+    payload
+        Serialized block segment or block-slice payload.
+
+    Returns
+    -------
+    list[SourceTextSupport]
+        Source-visible text supports available from the payload.
+    """
+
+    supports: list[SourceTextSupport] = []
+    text_unit = payload.get("text")
+
+    if isinstance(text_unit, dict):
+        text = str(text_unit.get("text") or "").strip()
+
+        if text:
+            language = _get_text_unit_language(
+                fallback=fallback_language, text_unit=text_unit
+            )
+            _append_source_text_support(
+                languages={language}, supports=supports, text=text
+            )
+
+    figure = payload.get("figure")
+
+    if isinstance(figure, dict):
+        for field_name in ["embedded_text", "caption"]:
+            figure_text = figure.get(field_name)
+
+            if isinstance(figure_text, dict):
+                text = str(figure_text.get("text") or "").strip()
+
+                if text:
+                    language = _get_text_unit_language(
+                        fallback=fallback_language, text_unit=figure_text
+                    )
+                    _append_source_text_support(
+                        languages={language}, supports=supports, text=text
+                    )
+                    break
+            elif isinstance(figure_text, str) and figure_text.strip():
+                _append_source_text_support(
+                    languages={fallback_language}, supports=supports, text=figure_text
+                )
+                break
+
+    return supports
+
+
+def _build_block_source_text_supports(
+    window: ExtractionWindow,
+) -> list[SourceTextSupport]:
+    """Build block source supports at list-item and slice granularity.
+
+    Parameters
+    ----------
+    window
+        Source extraction window containing a block payload.
+
+    Returns
+    -------
+    list[SourceTextSupport]
+        Source-visible supports for exact wording and language validation.
+    """
+
+    block = window.block
+
+    if block is None:
+        return []
+
+    supports: list[SourceTextSupport] = []
+    list_items = block.get("list_items")
+
+    if isinstance(list_items, list) and list_items:
+        for item in list_items:
+            if not isinstance(item, dict):
+                continue
+
+            source_text = _build_list_item_source_text(item)
+
+            if not source_text:
+                continue
+
+            language = _get_text_unit_language(
+                fallback=window.primary_language, text_unit=item.get("text")
+            )
+            _append_source_text_support(
+                languages={language}, supports=supports, text=source_text
+            )
+    else:
+        slices = block.get("slices")
+
+        if isinstance(slices, list):
+            for slice_payload in slices:
+                if not isinstance(slice_payload, dict):
+                    continue
+
+                supports.extend(
+                    _build_block_payload_source_text_supports(
+                        fallback_language=window.primary_language, payload=slice_payload
+                    )
+                )
+
+        if not supports:
+            supports.extend(
+                _build_block_payload_source_text_supports(
+                    fallback_language=window.primary_language, payload=block
+                )
+            )
+
+    combined_languages = {
+        language for support in supports for language in support.languages
+    } or {window.primary_language}
+    _append_source_text_support(
+        languages=combined_languages, supports=supports, text=window.source_text
+    )
+    return supports
+
+
 def _build_candidate_cited_table_support_text(
     *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
 ) -> str:
@@ -184,6 +357,60 @@ def _build_candidate_cited_table_support_text(
     return _normalize_text("\n".join(support_parts))
 
 
+def _build_candidate_source_text_supports(
+    *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
+) -> list[SourceTextSupport]:
+    """Build source supports allowed for one candidate.
+
+    Parameters
+    ----------
+    candidate
+        Candidate whose cited source indexes constrain table support.
+    ctx
+        Extraction quality context.
+
+    Returns
+    -------
+    list[SourceTextSupport]
+        Candidate-scoped source-visible supports.
+    """
+
+    if ctx.window.table is None:
+        return _build_block_source_text_supports(ctx.window)
+
+    return _build_table_source_text_supports(candidate=candidate, window=ctx.window)
+
+
+def _build_list_item_source_text(item: dict[str, Any]) -> str:
+    """Render one serialized list item with its visible marker.
+
+    Parameters
+    ----------
+    item
+        Serialized DocumentIR list-item payload.
+
+    Returns
+    -------
+    str
+        Source-visible list-item text with a non-duplicated marker.
+    """
+
+    marker = str(item.get("marker") or "").strip()
+    text_unit = item.get("text")
+
+    if isinstance(text_unit, dict):
+        text = str(text_unit.get("text") or "").strip()
+    elif text_unit is not None:
+        text = str(text_unit).strip()
+    else:
+        text = ""
+
+    if marker and text and text_starts_with_complete_marker(marker=marker, text=text):
+        return text
+
+    return " ".join(part for part in [marker, text] if part)
+
+
 def _build_normalized_text_blob_for_indexes(
     *, indexes: list[int], ordered_indexes: list[int], text_by_index: dict[int, str]
 ) -> str:
@@ -212,6 +439,50 @@ def _build_normalized_text_blob_for_indexes(
             if index in selected_indexes
         )
     )
+
+
+def _build_row_source_text_supports(
+    *, primary_language: str, row: dict[str, Any]
+) -> list[SourceTextSupport]:
+    """Build cell-level and whole-row source supports.
+
+    Parameters
+    ----------
+    primary_language
+        Fallback language when a cell lacks language metadata.
+    row
+        Serialized raw table row.
+
+    Returns
+    -------
+    list[SourceTextSupport]
+        Individual-cell and whole-row supports.
+    """
+
+    supports: list[SourceTextSupport] = []
+    row_texts: list[str] = []
+    row_languages: set[str] = set()
+
+    for cell in row.get("cells") or []:
+        text_unit = cell.get("text") or {}
+        text = str(text_unit.get("text") or "").strip()
+
+        if not text:
+            continue
+
+        language = _get_text_unit_language(
+            fallback=primary_language, text_unit=text_unit
+        )
+        row_texts.append(text)
+        row_languages.add(language)
+        _append_source_text_support(languages={language}, supports=supports, text=text)
+
+    _append_source_text_support(
+        languages=row_languages or {primary_language},
+        supports=supports,
+        text="\n".join(row_texts),
+    )
+    return supports
 
 
 def _build_source_visible_text_blob(
@@ -271,6 +542,116 @@ def _build_statement_type_alias_map(kg_config: CreateKGConfig) -> dict[str, str]
                 alias_to_canonical[key] = item.statement_type
 
     return alias_to_canonical
+
+
+def _build_table_channel_source_text_supports(
+    *,
+    indexes: list[int],
+    ordered_indexes: list[int],
+    primary_language: str,
+    rows_by_index: dict[int, dict[str, Any]],
+) -> list[SourceTextSupport]:
+    """Build supports for one selected table channel.
+
+    A channel is either raw header rows or raw body rows. Supports include individual
+    cells, complete rows, complete text from each adjacent selected-row run, and
+    same-column text across adjacent selected rows. This permits genuine continuation
+    statements without allowing descriptions to skip intervening rows or words.
+
+    Parameters
+    ----------
+    indexes
+        Selected source indexes cited by the candidate.
+    ordered_indexes
+        Complete source-order indexes available in the window channel.
+    primary_language
+        Fallback language when a cell lacks language metadata.
+    rows_by_index
+        Raw table rows keyed by source index.
+
+    Returns
+    -------
+    list[SourceTextSupport]
+        Source-visible supports for the selected channel.
+    """
+
+    selected_indexes_set = set(indexes)
+    selected_indexes = [
+        index for index in ordered_indexes if index in selected_indexes_set
+    ]
+    supports: list[SourceTextSupport] = []
+
+    for index in selected_indexes:
+        supports.extend(
+            _build_row_source_text_supports(
+                primary_language=primary_language, row=rows_by_index[index]
+            )
+        )
+
+    for contiguous_indexes in _group_contiguous_ordered_indexes(
+        indexes=selected_indexes, ordered_indexes=ordered_indexes
+    ):
+        run_texts: list[str] = []
+        run_languages: set[str] = set()
+        max_columns = max(
+            len(rows_by_index[index].get("cells") or []) for index in contiguous_indexes
+        )
+
+        for index in contiguous_indexes:
+            for cell in rows_by_index[index].get("cells") or []:
+                text_unit = cell.get("text") or {}
+                text = str(text_unit.get("text") or "").strip()
+
+                if not text:
+                    continue
+
+                run_texts.append(text)
+                run_languages.add(
+                    _get_text_unit_language(
+                        fallback=primary_language, text_unit=text_unit
+                    )
+                )
+
+        _append_source_text_support(
+            languages=run_languages or {primary_language},
+            supports=supports,
+            text="\n".join(run_texts),
+        )
+
+        if len(contiguous_indexes) < 2:
+            continue
+
+        for column_index in range(max_columns):
+            column_texts: list[str] = []
+            column_languages: set[str] = set()
+
+            for index in contiguous_indexes:
+                cells = rows_by_index[index].get("cells") or []
+
+                if column_index >= len(cells):
+                    continue
+
+                text_unit = cells[column_index].get("text") or {}
+                text = str(text_unit.get("text") or "").strip()
+
+                if not text:
+                    continue
+
+                column_texts.append(text)
+                column_languages.add(
+                    _get_text_unit_language(
+                        fallback=primary_language, text_unit=text_unit
+                    )
+                )
+
+            if len(column_texts) > 1:
+                _append_source_text_support(
+                    languages=column_languages,
+                    supports=supports,
+                    text="\n".join(column_texts),
+                )
+
+    return supports
 
 
 def _build_table_header_visible_text_blob(window: ExtractionWindow) -> str:
@@ -367,6 +748,130 @@ def _build_table_row_visible_text_by_index(window: ExtractionWindow) -> dict[int
         text_by_index[row_index] = _normalize_text("\n".join(texts))
 
     return text_by_index
+
+
+def _build_table_source_text_supports(
+    *, candidate: Optional[SFICandidate], window: ExtractionWindow
+) -> list[SourceTextSupport]:
+    """Build table source supports for a candidate or the full window.
+
+    Parameters
+    ----------
+    candidate
+        Candidate whose indexes constrain support, or `None` for all visible rows.
+    window
+        Table extraction window.
+
+    Returns
+    -------
+    list[SourceTextSupport]
+        Candidate-scoped or full-window source-visible supports.
+
+    Raises
+    ------
+    QualityError
+        If the function is called for a non-table window.
+    """
+
+    table = window.table
+
+    if table is None:
+        raise QualityError("Table source support requires a table window.")
+
+    header_rows_by_index = dict(enumerate(table.header_rows))
+    body_rows_by_index = dict(zip(table.row_indexes, table.rows))
+    header_indexes = (
+        candidate.table_header_indexes
+        if candidate is not None
+        else list(header_rows_by_index)
+    )
+    body_indexes = (
+        candidate.table_row_indexes
+        if candidate is not None
+        else list(body_rows_by_index)
+    )
+    supports: list[SourceTextSupport] = []
+
+    if header_indexes:
+        supports.extend(
+            _build_table_channel_source_text_supports(
+                indexes=header_indexes,
+                ordered_indexes=list(header_rows_by_index),
+                primary_language=window.primary_language,
+                rows_by_index=header_rows_by_index,
+            )
+        )
+
+    if body_indexes:
+        supports.extend(
+            _build_table_channel_source_text_supports(
+                indexes=body_indexes,
+                ordered_indexes=table.row_indexes,
+                primary_language=window.primary_language,
+                rows_by_index=body_rows_by_index,
+            )
+        )
+
+    if header_indexes and body_indexes:
+        header_groups = _group_contiguous_ordered_indexes(
+            indexes=header_indexes, ordered_indexes=list(header_rows_by_index)
+        )
+        body_groups = _group_contiguous_ordered_indexes(
+            indexes=body_indexes, ordered_indexes=table.row_indexes
+        )
+
+        for header_group in header_groups:
+            for body_group in body_groups:
+                combined_texts: list[str] = []
+                combined_languages: set[str] = set()
+
+                for row in [
+                    *(header_rows_by_index[index] for index in header_group),
+                    *(body_rows_by_index[index] for index in body_group),
+                ]:
+                    for cell in row.get("cells") or []:
+                        text_unit = cell.get("text") or {}
+                        text = str(text_unit.get("text") or "").strip()
+
+                        if not text:
+                            continue
+
+                        combined_texts.append(text)
+                        combined_languages.add(
+                            _get_text_unit_language(
+                                fallback=window.primary_language, text_unit=text_unit
+                            )
+                        )
+
+                _append_source_text_support(
+                    languages=combined_languages or {window.primary_language},
+                    supports=supports,
+                    text="\n".join(combined_texts),
+                )
+
+    return supports
+
+
+def _build_window_source_text_supports(
+    ctx: SFIExtractionQualityCtx,
+) -> list[SourceTextSupport]:
+    """Build all source-visible supports for one extraction window.
+
+    Parameters
+    ----------
+    ctx
+        Extraction quality context.
+
+    Returns
+    -------
+    list[SourceTextSupport]
+        Full-window supports for auxiliary source validation.
+    """
+
+    if ctx.window.table is None:
+        return _build_block_source_text_supports(ctx.window)
+
+    return _build_table_source_text_supports(candidate=None, window=ctx.window)
 
 
 def _candidate_direct_parent_evidence_tier(  # pylint: disable=R0911
@@ -596,50 +1101,111 @@ def _extract_leading_code_for_parent_match(value: Any) -> str:
     return _normalize_code_for_parent_match(match.group(1))
 
 
-def _is_ordered_token_subsequence(
-    *, source_text_normalized: str, target_text_normalized: str
-) -> bool:
-    """Check whether target tokens appear in source order.
-
-    This supports table descriptions assembled from multiple visible cells or rows
-    without requiring the description to be one contiguous source quote. It still
-    rejects description words that are absent from the visible source text or appear
-    only in an incompatible order.
+def _find_language_sets_for_text(
+    *, supports: list[SourceTextSupport], target_text: str
+) -> list[frozenset[str]]:
+    """Find the most local language sets supporting source-visible text.
 
     Parameters
     ----------
-    source_text_normalized
-        Normalized source-visible text used as the support text.
-    target_text_normalized
-        Normalized candidate text that must be supported by the source text.
+    supports
+        Candidate-scoped source supports.
+    target_text
+        Candidate description or evidence quote.
 
     Returns
     -------
-    bool
-        True when every target token appears in order in the source tokens.
+    list[frozenset[str]]
+        Language sets from the shortest matching supports.
     """
 
-    source_tokens = source_text_normalized.split()
-    target_tokens = target_text_normalized.split()
+    target_text_normalized = _normalize_text(target_text)
 
-    if not target_tokens:
-        return False
+    if not target_text_normalized:
+        return []
 
-    source_index = 0
+    matches = [
+        support
+        for support in supports
+        if target_text_normalized in support.text_normalized
+    ]
 
-    for target_token in target_tokens:
-        while (
-            source_index < len(source_tokens)
-            and source_tokens[source_index] != target_token
-        ):
-            source_index += 1
+    if not matches:
+        return []
 
-        if source_index == len(source_tokens):
-            return False
+    shortest_length = min(len(support.text_normalized) for support in matches)
+    language_sets: list[frozenset[str]] = []
 
-        source_index += 1
+    for support in matches:
+        if support.text_normalized and len(support.text_normalized) != shortest_length:
+            continue
 
-    return True
+        if support.languages not in language_sets:
+            language_sets.append(support.languages)
+
+    return language_sets
+
+
+def _get_text_unit_language(*, fallback: str, text_unit: Any) -> str:
+    """Return a serialized TextUnit language or a fallback.
+
+    Parameters
+    ----------
+    fallback
+        Language to use when the text unit lacks a usable tag.
+    text_unit
+        Serialized TextUnit payload or another value.
+
+    Returns
+    -------
+    str
+        Source language tag when available, otherwise `fallback`.
+    """
+
+    if isinstance(text_unit, dict):
+        language = text_unit.get("language")
+
+        if isinstance(language, str) and language.strip():
+            return language.strip()
+
+    return fallback
+
+
+def _group_contiguous_ordered_indexes(
+    *, indexes: list[int], ordered_indexes: list[int]
+) -> list[list[int]]:
+    """Group selected indexes that are adjacent in source order.
+
+    Parameters
+    ----------
+    indexes
+        Selected indexes.
+    ordered_indexes
+        Complete source-order index sequence.
+
+    Returns
+    -------
+    list[list[int]]
+        Source-ordered contiguous selected-index runs.
+    """
+
+    selected_indexes = set(indexes)
+    groups: list[list[int]] = []
+    current_group: list[int] = []
+
+    for index in ordered_indexes:
+        if index in selected_indexes:
+            current_group.append(index)
+            continue
+
+        if current_group:
+            groups.append(current_group)
+            current_group = []
+
+    if current_group:
+        groups.append(current_group)
+
+    return groups
 
 
 def _normalize_code_for_parent_match(value: Any) -> str:
@@ -702,10 +1268,9 @@ def _normalized_source_contains_visible_excerpt(
 ) -> bool:
     """Check whether normalized source text contains a visible source excerpt.
 
-    This is intentionally stricter than `_normalized_source_supports_text`. Candidate
-    `source_text` is an evidence quote, so it must be present in the source-visible
-    support text after whitespace normalization. It must not pass merely because its
-    tokens appear as a non-contiguous ordered subsequence.
+    Candidate `source_text` is an evidence quote, so it must be present in the
+    source-visible support text after whitespace normalization. It must not pass merely
+    because its tokens appear as a non-contiguous ordered subsequence.
 
     Parameters
     ----------
@@ -727,38 +1292,26 @@ def _normalized_source_contains_visible_excerpt(
     )
 
 
-def _normalized_source_supports_text(
-    *, source_text_normalized: str, target_text_normalized: str
+def _source_supports_contiguous_text(
+    *, supports: list[SourceTextSupport], target_text_normalized: str
 ) -> bool:
-    """Check whether normalized source text supports normalized target text.
-
-    Direct containment handles ordinary verbatim excerpts. Ordered-token subsequence
-    support handles table text assembled from multiple visible cells, rows, or header
-    and body sources without allowing absent or reordered words.
+    """Check whether source supports contain the target as contiguous wording.
 
     Parameters
     ----------
-    source_text_normalized
-        Normalized source-visible text used as support.
+    supports
+        Candidate-scoped cell, row, adjacent-column, or block supports.
     target_text_normalized
-        Normalized candidate text that must be supported.
+        Normalized candidate description.
 
     Returns
     -------
     bool
-        True when the target is directly contained in the source or appears as an
-        ordered token subsequence of the source.
+        True when a source support contains the complete target text contiguously.
     """
 
-    if not target_text_normalized:
-        return False
-
-    if target_text_normalized in source_text_normalized:
-        return True
-
-    return _is_ordered_token_subsequence(
-        source_text_normalized=source_text_normalized,
-        target_text_normalized=target_text_normalized,
+    return bool(target_text_normalized) and any(
+        target_text_normalized in support.text_normalized for support in supports
     )
 
 
@@ -895,34 +1448,33 @@ def _validate_candidate_description_is_source_supported(
             f"Candidate {candidate.candidate_id!r} has empty description."
         )
 
-    if ctx.window.table is None:
-        support_label = "the visible source window"
-        support_text_normalized = ctx.source_visible_text_normalized
-    else:
-        if not candidate.table_header_indexes and not candidate.table_row_indexes:
-            raise QualityError(
-                f"Table-window candidate {candidate.candidate_id!r} must include at "
-                f"least one table_header_index or table_row_index before its "
-                f"description can be source-validated."
-            )
-
-        support_label = "the cited table header/body rows"
-        support_text_normalized = _build_candidate_cited_table_support_text(
-            candidate=candidate, ctx=ctx
+    if ctx.window.table is not None and (
+        not candidate.table_header_indexes and not candidate.table_row_indexes
+    ):
+        raise QualityError(
+            f"Table-window candidate {candidate.candidate_id!r} must include at "
+            f"least one table_header_index or table_row_index before its "
+            f"description can be source-validated."
         )
 
-    if _normalized_source_supports_text(
-        source_text_normalized=support_text_normalized,
-        target_text_normalized=description_normalized,
+    supports = _build_candidate_source_text_supports(candidate=candidate, ctx=ctx)
+
+    if _source_supports_contiguous_text(
+        supports=supports, target_text_normalized=description_normalized
     ):
         return
 
+    support_label = (
+        "the visible source block"
+        if ctx.window.table is None
+        else "the cited table cells, rows, or adjacent same-column row fragments"
+    )
     raise QualityError(
-        f"Candidate {candidate.candidate_id!r} has description that is not "
-        f"source-supported by {support_label}. Use only visible source-language "
-        f"wording from the cited block/table text and do not add inferred parent "
-        f"context, translations, paraphrases, normalized spellings, or hidden "
-        f"context."
+        f"Candidate {candidate.candidate_id!r} has description that is not a "
+        f"contiguous source-visible excerpt supported by {support_label}. Use exact "
+        f"source-language wording. For split table statements, combine only complete "
+        f"visible fragments from adjacent cited cells or adjacent cited rows; do not "
+        f"delete or interleave words from a longer statement."
     )
 
 
@@ -970,20 +1522,18 @@ def _validate_candidate_source_text_is_visible(
             f"can be source-validated."
         )
 
-    support_text_normalized = _build_candidate_cited_table_support_text(
-        candidate=candidate, ctx=ctx
-    )
+    supports = _build_candidate_source_text_supports(candidate=candidate, ctx=ctx)
 
-    if _normalized_source_contains_visible_excerpt(
-        source_text_normalized=support_text_normalized,
-        target_text_normalized=source_text_normalized,
+    if _source_supports_contiguous_text(
+        supports=supports, target_text_normalized=source_text_normalized
     ):
         return
 
     raise QualityError(
-        f"Candidate {candidate.candidate_id!r} source_text is not supported by its "
-        f"cited raw table header/body rows. Quote source-visible text from the "
-        f"cited table rows/header rows instead of paraphrasing, using constructed "
+        f"Candidate {candidate.candidate_id!r} source_text is not a contiguous "
+        f"source-visible excerpt supported by its cited raw table cells, adjacent "
+        f"rows, or adjacent same-column row fragments. Quote exact visible source "
+        f"text instead of paraphrasing, skipping intervening rows, using constructed "
         f"table source_text, or using helper-only context."
     )
 
@@ -1689,6 +2239,69 @@ def _validate_row_only_source_location(
     )
 
 
+def _validate_source_language(
+    *,
+    description: Optional[str],
+    entity_label: str,
+    language: str,
+    source_text: str,
+    supports: list[SourceTextSupport],
+) -> None:
+    """Validate output language against source units supporting the text.
+
+    Parameters
+    ----------
+    description
+        Candidate description, or `None` for auxiliary material.
+    entity_label
+        Human-readable entity label for errors.
+    language
+        Output language tag to validate.
+    source_text
+        Source-visible evidence quote.
+    supports
+        Candidate-scoped source text and language supports.
+
+    Raises
+    ------
+    QualityError
+        If the output language is incompatible with all source-supported language
+        combinations for the description and source quote.
+    """
+
+    source_language_sets = _find_language_sets_for_text(
+        supports=supports, target_text=source_text
+    )
+
+    if not source_language_sets:
+        return
+
+    description_language_sets = (
+        _find_language_sets_for_text(supports=supports, target_text=description)
+        if description is not None
+        else [frozenset()]
+    )
+
+    if description is not None and not description_language_sets:
+        return
+
+    allowed_languages = {
+        next(iter(combined)) if len(combined) == 1 else "mul"
+        for source_languages in source_language_sets
+        for description_languages in description_language_sets
+        for combined in (source_languages | description_languages,)
+    }
+
+    if language in allowed_languages:
+        return
+
+    raise QualityError(
+        f"{entity_label} has language {language!r}, but its source-supported text "
+        f"requires one of {sorted(allowed_languages)!r}. Use the source TextUnit/cell "
+        f"language, or 'mul' when the candidate combines multiple source languages."
+    )
+
+
 def _validate_source_text_is_visible(
     *, ctx: SFIExtractionQualityCtx, entity_label: str, source_text: str
 ) -> None:
@@ -1714,14 +2327,19 @@ def _validate_source_text_is_visible(
     if not source_text_normalized:
         raise QualityError(f"{entity_label} has empty source_text.")
 
-    if source_text_normalized in ctx.source_visible_text_normalized:
+    supports = _build_window_source_text_supports(ctx)
+
+    if _source_supports_contiguous_text(
+        supports=supports, target_text_normalized=source_text_normalized
+    ):
         return
 
     raise QualityError(
-        f"{entity_label} source_text is not visible in the source window after "
-        f"whitespace normalization. Quote source-visible text from the extraction "
-        f"window instead of paraphrasing, using constructed table source_text, or "
-        f"using helper-only context."
+        f"{entity_label} source_text is not a contiguous source-visible excerpt in "
+        f"the source window after whitespace normalization. Quote visible block/table "
+        f"text instead of paraphrasing, skipping intervening source units, using "
+        f"constructed table source_text, source-context headings, or helper-only "
+        f"context."
     )
 
 
@@ -1954,12 +2572,30 @@ def verify_sfi_extraction_quality(
             candidate=candidate, ctx=ctx
         )
         _validate_candidate_source_text_is_visible(candidate=candidate, ctx=ctx)
+        _validate_source_language(
+            description=candidate.description,
+            entity_label=f"Candidate {candidate.candidate_id!r}",
+            language=candidate.language,
+            source_text=candidate.source_text,
+            supports=_build_candidate_source_text_supports(
+                candidate=candidate, ctx=ctx
+            ),
+        )
+
+    window_supports = _build_window_source_text_supports(ctx)
 
     for auxiliary_candidate in ctx.extraction_result.auxiliary_candidates:
         _validate_source_text_is_visible(
             ctx=ctx,
             entity_label=f"Auxiliary candidate {auxiliary_candidate.auxiliary_id!r}",
             source_text=auxiliary_candidate.source_text,
+        )
+        _validate_source_language(
+            description=None,
+            entity_label=f"Auxiliary candidate {auxiliary_candidate.auxiliary_id!r}",
+            language=auxiliary_candidate.language,
+            source_text=auxiliary_candidate.source_text,
+            supports=window_supports,
         )
 
 
