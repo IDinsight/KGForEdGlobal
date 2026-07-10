@@ -31,7 +31,11 @@ from skg.kgs.schemas import (
     SFIRegistryWarning,
 )
 from skg.kgs.utils import normalize_code, normalize_text
-from skg.kgs.validators import verify_sfi_extraction_quality
+from skg.kgs.validators import (
+    normalize_controlled_value_key,
+    strip_leading_enumerated_prefix,
+    verify_sfi_extraction_quality,
+)
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, write_to_json
@@ -246,7 +250,7 @@ def _build_canonical_statement_value(
         )
 
         if canonical_value:
-            return canonical_value, _normalize_controlled_value_key(canonical_value)
+            return canonical_value, normalize_controlled_value_key(canonical_value)
 
     return None, None
 
@@ -679,9 +683,14 @@ def _build_statement_value_policies(
 
         for controlled_value in item.controlled_values:
             for alias in [controlled_value.canonical_value, *controlled_value.aliases]:
-                alias_key = _normalize_controlled_value_key(alias)
+                alias_keys = {
+                    normalize_controlled_value_key(alias),
+                    normalize_controlled_value_key(
+                        strip_leading_enumerated_prefix(alias)
+                    ),
+                }
 
-                if alias_key:
+                for alias_key in sorted(key for key in alias_keys if key):
                     alias_to_canonical[alias_key] = controlled_value.canonical_value
 
         if not alias_to_canonical:
@@ -918,7 +927,7 @@ def _extract_nearest_canonical_scope_value_key(
         if canonical_value:
             matched_value = canonical_value
 
-    return _normalize_controlled_value_key(matched_value) if matched_value else None
+    return normalize_controlled_value_key(matched_value) if matched_value else None
 
 
 def _extract_parent_value_key_near_label(
@@ -965,7 +974,7 @@ def _extract_parent_value_key_near_label(
         )
 
         if canonical_value:
-            return _normalize_controlled_value_key(canonical_value)
+            return normalize_controlled_value_key(canonical_value)
 
     return None
 
@@ -1185,9 +1194,11 @@ def _find_source_order_parent_value_key(
     DocumentIR section paths can be cumulative at page or layout transitions, so the
     last label in a section-path bag is not always the active scope. This function uses
     extracted controlled organizer candidates in source order instead. Same-window
-    parent candidates are strongest. For configured root-level parents, an immediately
-    following root heading is allowed to scope preceding local headings, which covers
-    PDFs where visual grade headings are emitted just after theme/sub-theme headings.
+    parent candidates are strongest because they reflect local table or layout context.
+    Across windows, root-level organizers scope forward: a following root organizer is
+    used only when no preceding root organizer exists. This prevents a later document
+    section, grade, class, level, or similar root organizer from claiming rows that
+    belong to the previous root scope.
 
     Parameters
     ----------
@@ -1250,8 +1261,6 @@ def _find_source_order_parent_value_key(
     if not parent_matches:
         return None
 
-    # Strongest signal: a parent in the same layout window as the child. Prefer the
-    # closest preceding one, then fall back to the closest following one.
     same_window_matches = [
         parent_match
         for parent_match in parent_matches
@@ -1275,20 +1284,6 @@ def _find_source_order_parent_value_key(
     if same_window_value_key:
         return same_window_value_key
 
-    # Root organizers may be emitted just after the local headings they scope, so a
-    # root parent within one window ahead is allowed to claim the child.
-    if parent_statement_type in root_statement_types:
-        following_root_matches = [
-            parent_match
-            for parent_match in parent_matches
-            if parent_match.candidate_index > child_index
-            and 0 <= parent_match.window_index - child_candidate.window_index <= 1
-        ]
-
-        if following_root_matches:
-            return following_root_matches[0].canonical_statement_value_key
-
-    # Cross-window fallback: nearest preceding parent, otherwise nearest following.
     previous_matches = [
         parent_match
         for parent_match in parent_matches
@@ -1299,6 +1294,19 @@ def _find_source_order_parent_value_key(
         for parent_match in parent_matches
         if parent_match.candidate_index > child_index
     ]
+
+    if parent_statement_type in root_statement_types:
+        previous_root_value_key = _pick(matches=previous_matches, take_first=False)
+
+        if previous_root_value_key:
+            return previous_root_value_key
+
+        following_root_matches = [
+            parent_match
+            for parent_match in following_matches
+            if 0 <= parent_match.window_index - child_candidate.window_index <= 1
+        ]
+        return _pick(matches=following_root_matches, take_first=True)
 
     return _pick(matches=previous_matches, take_first=False) or _pick(
         matches=following_matches, take_first=True
@@ -1391,7 +1399,7 @@ def _label_matches_canonical_value_key(
     if not canonical_value:
         return False
 
-    return _normalize_controlled_value_key(canonical_value) == canonical_value_key
+    return normalize_controlled_value_key(canonical_value) == canonical_value_key
 
 
 def _match_controlled_value(
@@ -1414,7 +1422,7 @@ def _match_controlled_value(
         Canonical controlled value, when matched.
     """
 
-    value_key = _normalize_controlled_value_key(value)
+    value_key = normalize_controlled_value_key(value)
 
     if not value_key:
         return None
@@ -1424,8 +1432,8 @@ def _match_controlled_value(
     if exact:
         return exact
 
-    stripped_key = _normalize_controlled_value_key(
-        _strip_controlled_label_prefixes(value)
+    stripped_key = normalize_controlled_value_key(
+        strip_leading_enumerated_prefix(value)
     )
     exact_stripped = policy.alias_to_canonical.get(stripped_key)
 
@@ -1492,23 +1500,6 @@ def _maybe_append_warning(
             warning_type=warning_type,
         )
     )
-
-
-def _normalize_controlled_value_key(value: str) -> str:
-    """Normalize a controlled statement value or alias for comparison.
-
-    Parameters
-    ----------
-    value
-        Raw controlled value or alias.
-
-    Returns
-    -------
-    str
-        Casefolded key with punctuation and whitespace collapsed.
-    """
-
-    return re.sub(r"[^0-9a-z]+", " ", str(value or "").casefold()).strip()
 
 
 def _resolve_canonical_statement_scope_from_source_order(
@@ -1581,28 +1572,6 @@ def _resolve_canonical_statement_scope_from_source_order(
         )
 
     return "|".join(scope_parts) if scope_parts else fallback
-
-
-def _strip_controlled_label_prefixes(value: str) -> str:
-    """Remove common source-label prefixes before controlled-value matching.
-
-    Parameters
-    ----------
-    value
-        Source-visible value or source context label.
-
-    Returns
-    -------
-    str
-        Value with non-semantic labeling prefixes removed.
-    """
-
-    stripped = str(value or "").strip()
-    stripped = re.sub(r"^section\s*:\s*", "", stripped, flags=re.IGNORECASE)
-    stripped = re.sub(
-        r"^(theme|sub[-\s]*theme|subtheme)\s*:\s*", "", stripped, flags=re.IGNORECASE
-    )
-    return stripped.strip()
 
 
 def _truncate_context_label(value: str) -> str:

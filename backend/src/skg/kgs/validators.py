@@ -71,6 +71,9 @@ class SFIExtractionQualityCtx:
 
     Attributes
     ----------
+    controlled_value_alias_to_canonical_by_statement_type
+        Controlled value aliases and canonical labels keyed by statement type. Used to
+        ensure controlled organizer descriptions are atomic source-facing values.
     extraction_result
         Parsed SFI extraction result produced for the window.
     source_visible_text_normalized
@@ -97,6 +100,7 @@ class SFIExtractionQualityCtx:
         Source extraction window passed to the LLM.
     """
 
+    controlled_value_alias_to_canonical_by_statement_type: dict[str, dict[str, str]]
     extraction_result: SFIExtractionResult
     source_visible_text_normalized: str
     statement_type_alias_to_canonical: dict[str, str]
@@ -182,6 +186,54 @@ def _build_candidate_cited_table_support_text(
         )
 
     return _normalize_text("\n".join(support_parts))
+
+
+def _build_controlled_value_alias_map(
+    kg_config: CreateKGConfig,
+) -> dict[str, dict[str, str]]:
+    """Build controlled-value lookup maps from runtime configuration.
+
+    Parameters
+    ----------
+    kg_config
+        Runtime KG configuration containing statement-type policies and controlled
+        source-facing values.
+
+    Returns
+    -------
+    dict[str, dict[str, str]]
+        Mapping of statement type to normalized value/alias keys and their canonical
+        source-facing values. Ambiguous alias keys are dropped so validation never
+        accepts a description that could map to multiple configured values.
+    """
+
+    controlled_value_aliases_by_type: dict[str, dict[str, str]] = {}
+
+    for item in kg_config.academic_standards.statement_type_policy:
+        alias_to_canonical: dict[str, str] = {}
+        ambiguous_alias_keys: set[str] = set()
+
+        for controlled_value in item.controlled_values:
+            for alias in [controlled_value.canonical_value, *controlled_value.aliases]:
+                for alias_key in sorted(_controlled_value_match_keys(alias)):
+                    existing_value = alias_to_canonical.get(alias_key)
+
+                    if (
+                        existing_value
+                        and existing_value != controlled_value.canonical_value
+                    ):
+                        ambiguous_alias_keys.add(alias_key)
+                        continue
+
+                    alias_to_canonical[alias_key] = controlled_value.canonical_value
+
+        for alias_key in ambiguous_alias_keys:
+            alias_to_canonical.pop(alias_key, None)
+
+        if alias_to_canonical:
+            controlled_value_aliases_by_type[item.statement_type] = alias_to_canonical
+
+    return controlled_value_aliases_by_type
 
 
 def _build_normalized_text_blob_for_indexes(
@@ -571,6 +623,27 @@ def _child_has_viable_source_visible_parent(
     return False
 
 
+def _controlled_value_match_keys(value: str) -> set[str]:
+    """Build normalized keys used to match controlled source-facing values.
+
+    Parameters
+    ----------
+    value
+        Candidate description, canonical value, or alias text.
+
+    Returns
+    -------
+    set[str]
+        Normalized exact and structurally stripped keys. Empty keys are excluded.
+    """
+
+    keys = {
+        normalize_controlled_value_key(value),
+        normalize_controlled_value_key(strip_leading_enumerated_prefix(value)),
+    }
+    return {key for key in keys if key}
+
+
 def _extract_leading_code_for_parent_match(value: Any) -> str:
     """Extract a leading dot-delimited statement code from visible text.
 
@@ -640,6 +713,34 @@ def _is_ordered_token_subsequence(
         source_index += 1
 
     return True
+
+
+def _match_configured_controlled_value(
+    *, alias_to_canonical: dict[str, str], value: str
+) -> str | None:
+    """Match a candidate value against configured controlled values.
+
+    Parameters
+    ----------
+    alias_to_canonical
+        Normalized alias lookup for one controlled statement type.
+    value
+        Candidate description or source-facing value to match.
+
+    Returns
+    -------
+    str | None
+        Canonical controlled value when exactly matched after generic normalization or
+        structural-prefix stripping; otherwise `None`.
+    """
+
+    for value_key in sorted(_controlled_value_match_keys(value)):
+        canonical_value = alias_to_canonical.get(value_key)
+
+        if canonical_value:
+            return canonical_value
+
+    return None
 
 
 def _normalize_code_for_parent_match(value: Any) -> str:
@@ -797,6 +898,35 @@ def _source_text_contains_statement_code(
     return re.search(pattern, source_text_normalized) is not None
 
 
+def _text_contains_enumerator(value: str) -> bool:
+    """Return whether text contains a standalone structural enumerator.
+
+    Parameters
+    ----------
+    value
+        Text segment to inspect.
+
+    Returns
+    -------
+    bool
+        True when the segment contains a numeric, dotted numeric, alphabetic, or
+        roman-numeral enumerator token that is typical of generated document labels.
+    """
+
+    text = str(value or "").strip()
+
+    if not text:
+        return False
+
+    if re.search(r"(?<![0-9a-z])[0-9]+(?:\.[0-9]+)*(?![0-9a-z])", text):
+        return True
+
+    if re.search(r"(?<![0-9a-z])[ivxlcdm]+(?![0-9a-z])", text, flags=re.IGNORECASE):
+        return True
+
+    return bool(re.search(r"(?<![0-9a-z])[a-z](?![0-9a-z])", text, flags=re.IGNORECASE))
+
+
 def _validate_candidate_code_is_visible(
     *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
 ) -> None:
@@ -860,6 +990,55 @@ def _validate_candidate_code_is_visible(
         f"{support_label}. Use null if no official code is visible in the "
         f"candidate's source evidence, and do not copy a code from another row, "
         f"header, or source location."
+    )
+
+
+def _validate_candidate_controlled_value_description(
+    *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
+) -> None:
+    """Validate controlled organizer descriptions are atomic configured values.
+
+    Candidates whose statement type has configured controlled values represent stable
+    configured organizer labels. Their descriptions must resolve to exactly one
+    configured source-facing value after generic normalization. This prevents a model
+    from combining multiple hierarchy levels into one controlled organizer candidate
+    while still allowing the wider `source_text` field to preserve the cited row or
+    heading context.
+
+    Parameters
+    ----------
+    candidate
+        Candidate to validate.
+    ctx
+        Quality-check context.
+
+    Raises
+    ------
+    QualityError
+        If a controlled statement-type candidate description does not match any
+        configured controlled value or alias.
+    """
+
+    alias_to_canonical = ctx.controlled_value_alias_to_canonical_by_statement_type.get(
+        candidate.statement_type
+    )
+
+    if not alias_to_canonical:
+        return
+
+    canonical_value = _match_configured_controlled_value(
+        alias_to_canonical=alias_to_canonical, value=candidate.description
+    )
+
+    if canonical_value:
+        return
+
+    raise QualityError(
+        f"Candidate {candidate.candidate_id!r} has controlled statement_type "
+        f"{candidate.statement_type!r}, but its description "
+        f"{candidate.description!r} does not match a configured controlled value or "
+        f"alias. Use exactly one source-facing controlled organizer label as the "
+        f"description; preserve broader row or heading context only in source_text."
     )
 
 
@@ -1861,6 +2040,75 @@ def _validate_window_identity(ctx: SFIExtractionQualityCtx) -> None:
         )
 
 
+def normalize_controlled_value_key(value: str) -> str:
+    """Normalize a controlled statement value or alias for comparison.
+
+    Parameters
+    ----------
+    value
+        Raw controlled value or alias.
+
+    Returns
+    -------
+    str
+        Casefolded key with non-alphanumeric characters collapsed to whitespace.
+    """
+
+    return re.sub(r"[^0-9a-z]+", " ", str(value or "").casefold()).strip()
+
+
+def strip_leading_enumerated_prefix(value: str) -> str:
+    """Remove a leading enumerated label segment before value matching.
+
+    This normalization is intentionally domain-agnostic: it does not know any
+    curriculum, framework, or heading vocabulary. It removes only a leading segment
+    that contains an explicit enumerator and is separated from the remaining text by
+    common structural punctuation. This lets configured controlled values match
+    source-visible labels that carry layout numbering while avoiding hard-coded
+    assumptions about what the label means.
+
+    Parameters
+    ----------
+    value
+        Candidate description, source text, canonical value, or alias text.
+
+    Returns
+    -------
+    str
+        Value with a leading enumerated structural segment removed when one is
+        detected; otherwise the original stripped value.
+    """
+
+    stripped = str(value or "").strip()
+
+    if not stripped:
+        return ""
+
+    separator_match = re.match(
+        r"^(?P<prefix>.{1,80}?)(?P<separator>[-\u2013\u2014:])\s*(?P<body>.+)$",
+        stripped,
+    )
+
+    if separator_match:
+        prefix = separator_match.group("prefix")
+        body = separator_match.group("body").strip()
+
+        if body and _text_contains_enumerator(prefix):
+            return body
+
+    leading_number_match = re.match(
+        r"^(?P<prefix>[0-9]+(?:\.[0-9]+)+)\s+(?P<body>.+)$", stripped
+    )
+
+    if leading_number_match:
+        body = leading_number_match.group("body").strip()
+
+        if body:
+            return body
+
+    return stripped
+
+
 def verify_sfi_dedup_review_quality(
     *, review_request: SFIDedupReviewRequest, review_response: SFIDedupReviewResponse
 ) -> None:
@@ -1924,6 +2172,9 @@ def verify_sfi_extraction_quality(
     table_row_text_blob = _build_table_row_visible_text_blob(window)
     table_row_text_normalized_by_index = _build_table_row_visible_text_by_index(window)
     ctx = SFIExtractionQualityCtx(
+        controlled_value_alias_to_canonical_by_statement_type=(
+            _build_controlled_value_alias_map(kg_config)
+        ),
         extraction_result=extraction_result,
         source_visible_text_normalized=_normalize_text(
             _build_source_visible_text_blob(
@@ -1949,6 +2200,7 @@ def verify_sfi_extraction_quality(
 
     for candidate in ctx.extraction_result.sfi_candidates:
         _validate_candidate_statement_type_policy(candidate=candidate, ctx=ctx)
+        _validate_candidate_controlled_value_description(candidate=candidate, ctx=ctx)
         _validate_candidate_code_is_visible(candidate=candidate, ctx=ctx)
         _validate_candidate_description_is_source_supported(
             candidate=candidate, ctx=ctx
