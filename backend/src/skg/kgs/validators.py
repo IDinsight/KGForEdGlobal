@@ -99,18 +99,24 @@ class SFIExtractionQualityCtx:
 
     Attributes
     ----------
+    code_patterns_by_type
+        Configured source-code regex patterns keyed by code type.
     extraction_result
         Parsed SFI extraction result produced for the window.
     statement_type_alias_to_canonical
         Mapping from normalized canonical labels and aliases to canonical labels.
+    statement_type_code_type_by_label
+        Optional configured code type for each canonical statement type.
     statement_type_normalized_by_label
         Mapping from canonical statement-type labels to configured normalized types.
     window
         Source extraction window passed to the LLM.
     """
 
+    code_patterns_by_type: dict[str, str]
     extraction_result: SFIExtractionResult
     statement_type_alias_to_canonical: dict[str, str]
+    statement_type_code_type_by_label: dict[str, Optional[str]]
     statement_type_normalized_by_label: dict[str, str]
     window: ExtractionWindow
 
@@ -1211,6 +1217,36 @@ def _get_text_unit_language(*, fallback: str, text_unit: Any) -> str:
     return fallback
 
 
+def _get_window_local_code(window: ExtractionWindow) -> Optional[str]:
+    """Return the source segment/table local code exposed by one window.
+
+    Parameters
+    ----------
+    window
+        Source extraction window.
+
+    Returns
+    -------
+    Optional[str]
+        Stripped block or table local code, or `None` when absent.
+    """
+
+    local_code: Any
+
+    if window.block is not None:
+        local_code = window.block.get("local_code")
+    elif window.table is not None:
+        local_code = window.table.local_code
+    else:
+        local_code = None
+
+    if local_code is None:
+        return None
+
+    local_code_clean = str(local_code).strip()
+    return local_code_clean or None
+
+
 def _group_contiguous_ordered_indexes(
     *, indexes: list[int], ordered_indexes: list[int]
 ) -> list[list[int]]:
@@ -1435,6 +1471,137 @@ def _remove_leading_statement_code(
     return source_text_normalized[prefix_match.end() :].strip()
 
 
+def _remove_trailing_statement_code(
+    *, source_text: str, statement_code: Optional[str]
+) -> str:
+    """Remove an exact standalone trailing statement code from source text.
+
+    The code is removed only when it appears at the end of the normalized source quote
+    and is preceded by a supported source-visible separator.
+
+    Parameters
+    ----------
+    source_text
+        Candidate evidence quote that may end with the separately captured code.
+    statement_code
+        Optional source-visible statement code stored on the candidate.
+
+    Returns
+    -------
+    str
+        Normalized source text with the trailing code and separator removed when they
+        form an exact standalone suffix; otherwise the unchanged normalized text.
+    """
+
+    source_text_normalized = _normalize_text(source_text)
+
+    if statement_code is None:
+        return source_text_normalized
+
+    code = str(statement_code).strip().rstrip(" .:;-)–—")
+    code_normalized = _normalize_text(code)
+
+    if not code_normalized:
+        return source_text_normalized
+
+    separator_pattern = r"(?:\s*[-–—]\s*|[.:)]\s*|\s+)"
+    suffix_match = re.search(
+        rf"{separator_pattern}{re.escape(code_normalized)}$",
+        source_text_normalized,
+    )
+
+    if suffix_match is None:
+        return source_text_normalized
+
+    return source_text_normalized[: suffix_match.start()].strip()
+
+
+def _resolve_candidate_statement_code_type(
+    *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
+) -> str:
+    """Resolve and validate the configured code type for one candidate code.
+
+    The statement-type policy is authoritative when it declares `code_type`. When it
+    does not, the candidate code must unambiguously match exactly one configured code
+    pattern.
+
+    Parameters
+    ----------
+    candidate
+        Candidate containing a non-null statement code.
+    ctx
+        Extraction quality context containing code patterns and statement-type policy.
+
+    Returns
+    -------
+    str
+        Resolved configured code type.
+
+    Raises
+    ------
+    QualityError
+        If the code matches no configured pattern, conflicts with the statement-type
+        policy, or is ambiguous across multiple configured patterns.
+    """
+
+    assert candidate.statement_code is not None
+    matching_code_types = sorted(
+        code_type
+        for code_type, pattern in ctx.code_patterns_by_type.items()
+        if re.fullmatch(pattern, candidate.statement_code) is not None
+    )
+    configured_code_type = ctx.statement_type_code_type_by_label.get(
+        candidate.statement_type
+    )
+
+    if configured_code_type is not None:
+        if configured_code_type not in matching_code_types:
+            raise QualityError(
+                f"Candidate {candidate.candidate_id!r} has statement_code "
+                f"{candidate.statement_code!r}, which does not fully match the "
+                f"configured code pattern {configured_code_type!r} for statement_type "
+                f"{candidate.statement_type!r}."
+            )
+
+        return configured_code_type
+
+    if not matching_code_types:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} has statement_code "
+            f"{candidate.statement_code!r}, but it does not fully match any configured "
+            f"code pattern. Use null when no configured source code applies."
+        )
+
+    if len(matching_code_types) > 1:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} has statement_code "
+            f"{candidate.statement_code!r}, which ambiguously matches configured code "
+            f"types {matching_code_types}. Configure statement_type_policy.code_type "
+            f"for statement_type {candidate.statement_type!r} or return null."
+        )
+
+    return matching_code_types[0]
+
+
+def _source_code_values_match(*, candidate_code: str, source_code: str) -> bool:
+    """Check exact source-surface equality for two code values.
+
+    Parameters
+    ----------
+    candidate_code
+        Candidate code emitted by the LLM.
+    source_code
+        Code value present in the extraction window.
+
+    Returns
+    -------
+    bool
+        True when the stripped values are exactly equal, including case and punctuation.
+    """
+
+    return candidate_code.strip() == source_code.strip()
+
+
 def _source_supports_contiguous_text(
     *, supports: list[SourceTextSupport], target_text_normalized: str
 ) -> bool:
@@ -1642,7 +1809,8 @@ def _source_support_matches_candidate(
     -------
     bool
         True when the same span supports the complete description, evidence quote,
-        optional code, language, and exact table citations.
+        language, and exact table citations. Candidate code evidence is validated
+        separately because a block/table local_code may be metadata rather than text.
     """
 
     description_targets = _build_description_support_targets(
@@ -1665,20 +1833,63 @@ def _source_support_matches_candidate(
     ):
         return False
 
-    if (
-        candidate.statement_code is not None
-        and not _source_text_contains_statement_code(
-            source_text_normalized=support.text_normalized,
-            statement_code_normalized=_normalize_text(candidate.statement_code),
-        )
-    ):
-        return False
-
     return _source_support_has_candidate_language(
         candidate=candidate, support=support, window=window
     ) and _source_support_has_candidate_locations(
         candidate=candidate, support=support, window=window
     )
+
+
+def _statement_code_is_directly_linked_to_description(candidate: SFICandidate) -> bool:
+    """Check that a text-derived code is directly paired with its description.
+
+    A valid coded quote either contains the code as part of the complete description,
+    or consists only of the complete description plus the same standalone leading or
+    trailing code. This rejects codes borrowed from another statement in a broader
+    block or cited table range.
+
+    Parameters
+    ----------
+    candidate
+        Candidate whose code, description, and source quote should form one source item.
+
+    Returns
+    -------
+    bool
+        True when the source quote directly pairs the code and complete description.
+    """
+
+    if candidate.statement_code is None:
+        return True
+
+    description_normalized = _normalize_text(candidate.description)
+    source_text_normalized = _normalize_text(candidate.source_text)
+    statement_code_normalized = _normalize_text(candidate.statement_code)
+
+    if not description_normalized or not source_text_normalized:
+        return False
+
+    if (
+        source_text_normalized == description_normalized
+        and _source_text_contains_statement_code(
+            source_text_normalized=description_normalized,
+            statement_code_normalized=statement_code_normalized,
+        )
+    ):
+        return True
+
+    source_text_without_leading_code = _remove_leading_statement_code(
+        source_text=candidate.source_text,
+        statement_code=candidate.statement_code,
+    )
+    source_text_without_trailing_code = _remove_trailing_statement_code(
+        source_text=candidate.source_text,
+        statement_code=candidate.statement_code,
+    )
+    return description_normalized in {
+        source_text_without_leading_code,
+        source_text_without_trailing_code,
+    }
 
 
 def _validate_candidate_source_evidence(
@@ -1687,9 +1898,8 @@ def _validate_candidate_source_evidence(
     """Validate all source-grounded candidate fields against one evidence span.
 
     The same source-visible span must support the complete description, evidence quote,
-    optional statement code, language, and exact table citations. This prevents a
-    candidate from combining a description from one source statement with evidence or
-    provenance from another.
+    language, and exact table citations. Candidate code type and locality are validated
+    separately so source-visible block/table local_code metadata is handled correctly.
 
     Parameters
     ----------
@@ -1746,9 +1956,84 @@ def _validate_candidate_source_evidence(
     raise QualityError(
         f"Candidate {candidate.candidate_id!r} is not jointly supported by one "
         f"source-visible evidence span. The same span must support its complete "
-        f"description, source_text, optional statement_code, language, and source "
-        f"locations.{location_guidance}"
+        f"description, source_text, language, and source locations. "
+        f"statement_code is validated separately against local_code or typed code "
+        f"matches.{location_guidance}"
     )
+
+
+def _validate_candidate_statement_code(
+    *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
+) -> None:
+    """Validate candidate code type, source identity, and statement association.
+
+    Segment/table `local_code` is accepted as first-class metadata evidence when it
+    exactly equals the candidate code and matches the resolved configured code type.
+    Otherwise, the code must exactly equal a typed `window.code_matches` value, occur
+    in candidate `source_text`, and be directly paired with the complete candidate
+    description.
+
+    Parameters
+    ----------
+    candidate
+        Candidate to validate.
+    ctx
+        Extraction quality context containing the source window and code policy.
+
+    Raises
+    ------
+    QualityError
+        If the candidate code is untyped, unsupported, not source-visible, or
+        associated with a different statement.
+    """
+
+    if candidate.statement_code is None:
+        return
+
+    code_type = _resolve_candidate_statement_code_type(candidate=candidate, ctx=ctx)
+    local_code = _get_window_local_code(ctx.window)
+
+    if local_code is not None and _source_code_values_match(
+        candidate_code=candidate.statement_code, source_code=local_code
+    ):
+        return
+
+    matching_code_matches = [
+        code_match
+        for code_match in ctx.window.code_matches
+        if code_match.code_type == code_type
+        and _source_code_values_match(
+            candidate_code=candidate.statement_code,
+            source_code=code_match.value,
+        )
+    ]
+
+    if not matching_code_matches:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} has statement_code "
+            f"{candidate.statement_code!r}, but it is neither the exact window "
+            f"local_code nor an exact {code_type!r} code_match value. Copy the exact "
+            f"source code or use null."
+        )
+
+    if not _source_text_contains_statement_code(
+        source_text_normalized=_normalize_text(candidate.source_text),
+        statement_code_normalized=_normalize_text(candidate.statement_code),
+    ):
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} uses text-derived statement_code "
+            f"{candidate.statement_code!r}, but candidate source_text does not contain "
+            f"that exact standalone code. Quote the code together with the complete "
+            f"statement description, or use null."
+        )
+
+    if not _statement_code_is_directly_linked_to_description(candidate):
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} uses text-derived statement_code "
+            f"{candidate.statement_code!r}, but source_text does not directly pair that "
+            f"code with the complete candidate description. Do not borrow a code from "
+            f"another statement in the block or cited table rows."
+        )
 
 
 def _validate_candidate_statement_type_policy(
@@ -2524,8 +2809,13 @@ def verify_sfi_extraction_quality(
     """
 
     ctx = SFIExtractionQualityCtx(
+        code_patterns_by_type=dict(kg_config.academic_standards.code_patterns),
         extraction_result=extraction_result,
         statement_type_alias_to_canonical=_build_statement_type_alias_map(kg_config),
+        statement_type_code_type_by_label={
+            item.statement_type: item.code_type
+            for item in kg_config.academic_standards.statement_type_policy
+        },
         statement_type_normalized_by_label={
             item.statement_type: item.normalized_statement_type
             for item in kg_config.academic_standards.statement_type_policy
@@ -2538,6 +2828,7 @@ def verify_sfi_extraction_quality(
 
     for candidate in ctx.extraction_result.sfi_candidates:
         _validate_candidate_statement_type_policy(candidate=candidate, ctx=ctx)
+        _validate_candidate_statement_code(candidate=candidate, ctx=ctx)
         _validate_candidate_source_evidence(candidate=candidate, ctx=ctx)
 
     window_supports = _build_window_source_text_supports(ctx)
