@@ -20,7 +20,6 @@ import re
 import unicodedata
 import uuid
 
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
@@ -113,6 +112,7 @@ def _build_block_windows(
                 row_range_label=None,
                 segment_kind="block",
                 source_provenance=_model_dump_list(segment.segment_provenance),
+                source_section_path=_model_dump_list(segment.section_path),
                 source_segment_ids=[segment.segment_id],
                 source_text=source_text,
                 table=None,
@@ -135,6 +135,7 @@ def _build_extraction_window(
     row_range_label: Optional[str],
     segment_kind: str,
     source_provenance: list[dict[str, Any]],
+    source_section_path: list[dict[str, Any]],
     source_segment_ids: list[str],
     source_text: str,
     table: Optional[ExtractionWindowTablePayload],
@@ -160,6 +161,8 @@ def _build_extraction_window(
         Source segment kind for the window.
     source_provenance
         Source provenance records.
+    source_section_path
+        Source DocumentIR section-path references preserved in path order.
     source_segment_ids
         Source DocumentIR segment IDs included in the window.
     source_text
@@ -188,6 +191,7 @@ def _build_extraction_window(
             document_ir.doc_key,
             plan_item.segment_kind,
             plan_item.segment_id,
+            _build_source_section_path_key(source_section_path),
             row_range_label or "",
             re.sub(r"\s+", " ", source_text or "").strip().casefold(),
         ]
@@ -220,6 +224,7 @@ def _build_extraction_window(
         primary_language=kg_config.metadata.primary_language,
         segment_kind=segment_kind,
         source_provenance=source_provenance,
+        source_section_path=source_section_path,
         source_segment_ids=source_segment_ids,
         source_text=source_text,
         subject=kg_config.metadata.subject,
@@ -230,10 +235,40 @@ def _build_extraction_window(
     )
 
 
+def _build_source_section_path_key(
+    source_section_path: Sequence[dict[str, Any]],
+) -> str:
+    """Build a stable source-context key component from section-path references.
+
+    Parameters
+    ----------
+    source_section_path
+        Serialized DocumentIR section-heading references in path order.
+
+    Returns
+    -------
+    str
+        Stable path string containing source positions and normalized visible text.
+    """
+
+    key_parts: list[str] = []
+
+    for section_ref in source_section_path:
+        item_index = section_ref.get("item_index", "")
+        page_index = section_ref.get("page_index", "")
+        text = unicodedata.normalize(
+            "NFKC", str(section_ref.get("text") or "")
+        ).casefold()
+        text = re.sub(r"\s+", " ", text).strip()
+        key_parts.append(f"{page_index}:{item_index}:{text}")
+
+    return ">".join(key_parts)
+
+
 def _build_table_source_text(
     *, rows: list[dict[str, Any]], table_payload: ExtractionWindowTablePayload
 ) -> str:
-    """Build compact source text from selected table rows.
+    """Build compact source text from selected table headers and body rows.
 
     Parameters
     ----------
@@ -249,28 +284,26 @@ def _build_table_source_text(
     """
 
     lines: list[str] = []
+    canonical_header_lines = [
+        " | ".join(str(cell_text or "").strip() for cell_text in row)
+        for row in table_payload.header_rows_canonical
+    ]
+    header_lines = [line for line in canonical_header_lines if line.strip(" |")]
 
-    if table_payload.header_rows_canonical:
-        header_lines = [" | ".join(row) for row in table_payload.header_rows_canonical]
+    if not header_lines:
+        header_lines = [
+            " | ".join(_extract_table_row_cell_texts(header_row))
+            for header_row in table_payload.header_rows
+        ]
+        header_lines = [line for line in header_lines if line.strip(" |")]
+
+    if header_lines:
         lines.append("Headers: " + " ||| ".join(header_lines))
 
     for row_index, row in zip(table_payload.row_indexes, rows):
-        cell_texts: list[str] = []
-
-        for cell in row["cells"]:
-            assert isinstance(cell, dict)
-            text_unit = cell.get("text")
-
-            if isinstance(text_unit, dict):
-                cell_text = str(text_unit.get("text") or "").strip()
-            elif text_unit is not None:
-                cell_text = str(text_unit).strip()
-            else:
-                cell_text = ""
-
-            cell_texts.append(cell_text)
-
-        lines.append(f"Row {row_index}: " + " | ".join(cell_texts))
+        lines.append(
+            f"Row {row_index}: " + " | ".join(_extract_table_row_cell_texts(row))
+        )
 
     return "\n".join(lines).strip()
 
@@ -279,24 +312,23 @@ def _build_table_window_for_row_indexes(
     *,
     body_row_indexes: Sequence[int],
     document_ir: DocumentIR,
-    excluded_repeated_header_row_indexes: Sequence[int],
     kg_config: CreateKGConfig,
     plan_item: ExtractionWindowPlanItem,
     segment: TableSegment,
     window_index: int,
 ) -> ExtractionWindow:
-    """Build one table extraction window for selected source row indexes.
+    """Build one table extraction window for selected source body rows.
+
+    An empty `body_row_indexes` sequence creates a header-only extraction window. This
+    preserves a planned table whose source-visible content exists only in its headers.
 
     Parameters
     ----------
     body_row_indexes
-        Source table row indexes to include in this extraction window. These indexes
-        are authoritative and may be non-contiguous when repeated header rows were
-        skipped.
+        Contiguous source table body-row indexes to include. May be empty only for a
+        header-only table window.
     document_ir
         Validated stitched DocumentIR.
-    excluded_repeated_header_row_indexes
-        Source table row indexes skipped because they repeat the table header.
     kg_config
         Country/document-specific KG extraction configuration.
     plan_item
@@ -310,22 +342,24 @@ def _build_table_window_for_row_indexes(
     -------
     ExtractionWindow
         Validated table extraction window.
-
-    Raises
-    ------
-    ValueError
-        If no source row indexes are provided.
     """
 
     row_indexes = list(body_row_indexes)
 
-    if not row_indexes:
-        raise ValueError(
-            "Table extraction windows require at least one body row index."
-        )
+    if row_indexes:
+        body_row_start_index = row_indexes[0]
+        body_row_end_index_exclusive = row_indexes[-1] + 1
+        row_range_label = "rows:" + ",".join(str(index) for index in row_indexes)
+        window_notes = ["table_window_uses_optional_helpers_when_present"]
+    else:
+        body_row_start_index = segment.header_row_count
+        body_row_end_index_exclusive = segment.header_row_count
+        row_range_label = "header-only"
+        window_notes = [
+            "table_window_header_only",
+            "table_window_uses_optional_helpers_when_present",
+        ]
 
-    body_row_start_index = min(row_indexes)
-    body_row_end_index_exclusive = max(row_indexes) + 1
     rows = _model_dump_by_indexes(indexes=row_indexes, values=segment.rows)
     rows_grid = _optional_model_dump_by_indexes(
         indexes=row_indexes, values=segment.rows_grid
@@ -356,20 +390,6 @@ def _build_table_window_for_row_indexes(
         rows_grid=rows_grid,
         source_table_row_count=len(segment.rows),
     )
-    row_range_label = "rows:" + ",".join(str(index) for index in row_indexes)
-    excluded_in_window_span = [
-        index
-        for index in excluded_repeated_header_row_indexes
-        if body_row_start_index <= index < body_row_end_index_exclusive
-    ]
-    window_notes = ["table_window_uses_optional_helpers_when_present"]
-
-    if excluded_in_window_span:
-        excluded_label = ",".join(str(index) for index in excluded_in_window_span)
-        window_notes.append(
-            f"table_window_skipped_repeated_header_rows:{excluded_label}"
-        )
-
     return _build_extraction_window(
         block=None,
         document_ir=document_ir,
@@ -378,6 +398,7 @@ def _build_table_window_for_row_indexes(
         row_range_label=row_range_label,
         segment_kind="table",
         source_provenance=_model_dump_list(segment.segment_provenance),
+        source_section_path=_model_dump_list(segment.section_path),
         source_segment_ids=[segment.segment_id],
         source_text=_build_table_source_text(rows=rows, table_payload=table_payload),
         table=table_payload,
@@ -399,6 +420,10 @@ def _build_table_windows(
 ) -> list[ExtractionWindow]:
     """Build table windows from a planned table segment.
 
+    The stitched `TableSegment.rows` sequence is authoritative. Header handling belongs
+    to DocumentIR stitching, so this function chunks every row at or after
+    `header_row_count` without applying a second repeated-header heuristic.
+
     Parameters
     ----------
     document_ir
@@ -415,47 +440,32 @@ def _build_table_windows(
     Returns
     -------
     list[ExtractionWindow]
-        Table extraction windows.
-
-    Raises
-    ------
-    ValueError
-        If the planned table segment does not contain any rows.
+        Table extraction windows with exact body-row coverage, or one header-only
+        window when the table has no body rows.
     """
 
-    body_start_index = min(segment.header_row_count, len(segment.rows))
-    repeated_header_row_indexes = set(_get_repeated_table_header_row_indexes(segment))
-    body_row_indexes = [
-        row_index
-        for row_index in range(body_start_index, len(segment.rows))
-        if row_index not in repeated_header_row_indexes
-    ]
-
-    if not body_row_indexes:
-        return []
-
-    excluded_repeated_header_row_indexes = _get_repeated_table_header_row_indexes(
-        segment=segment
-    )
-    windows: list[ExtractionWindow] = []
-
-    for row_chunk_indexes in _iter_row_index_chunks(
-        max_rows_per_window=kg_config.academic_standards.max_rows_per_table_window,
-        row_indexes=body_row_indexes,
-        row_overlap=kg_config.academic_standards.row_overlap,
-    ):
-        windows.append(
-            _build_table_window_for_row_indexes(
-                body_row_indexes=row_chunk_indexes,
-                document_ir=document_ir,
-                excluded_repeated_header_row_indexes=excluded_repeated_header_row_indexes,
-                kg_config=kg_config,
-                plan_item=plan_item,
-                segment=segment,
-                window_index=window_start_index + len(windows),
-            )
+    body_row_indexes = list(range(segment.header_row_count, len(segment.rows)))
+    row_index_chunks = (
+        _iter_row_index_chunks(
+            max_rows_per_window=kg_config.academic_standards.max_rows_per_table_window,
+            row_indexes=body_row_indexes,
+            row_overlap=kg_config.academic_standards.row_overlap,
         )
-
+        if body_row_indexes
+        else [[]]
+    )
+    windows = [
+        _build_table_window_for_row_indexes(
+            body_row_indexes=row_chunk_indexes,
+            document_ir=document_ir,
+            kg_config=kg_config,
+            plan_item=plan_item,
+            segment=segment,
+            window_index=window_start_index + chunk_index,
+        )
+        for chunk_index, row_chunk_indexes in enumerate(row_index_chunks)
+    ]
+    _validate_table_window_coverage(segment=segment, windows=windows)
     return windows
 
 
@@ -694,87 +704,39 @@ def _extract_list_items_text(list_items: list[Any]) -> str:
     return "\n".join(item_text for item_text in item_texts if item_text)
 
 
-def _get_repeated_table_header_row_indexes(segment: TableSegment) -> list[int]:
-    """Identify post-header rows that repeat the table's header labels.
+def _extract_table_row_cell_texts(row: dict[str, Any]) -> list[str]:
+    """Extract visible cell text from a serialized table row.
 
     Parameters
     ----------
-    segment
-        Selected table segment.
-
-    Returns
-    -------
-    list[int]
-        Ordered source row indexes that appear to be repeated table header rows.
-
-    Notes
-    -----
-    The detection is curriculum-agnostic: it derives header labels from the table's
-    own canonical header rows, raw header rows, initial grid rows, and column
-    signature. It does not depend on any country-specific or subject-specific labels.
-    """
-
-    header_labels = _get_table_header_labels(segment)
-
-    if not header_labels:
-        return []
-
-    body_start_index = min(segment.header_row_count, len(segment.rows))
-    repeated_header_row_indexes: list[int] = []
-
-    for row_index in range(body_start_index, len(segment.rows)):
-        row_texts = _get_table_row_texts_by_index(
-            prefer_grid=True, row_index=row_index, segment=segment
-        )
-
-        if _is_repeated_table_header_row(
-            header_labels=header_labels, row_texts=row_texts
-        ):
-            repeated_header_row_indexes.append(row_index)
-
-    return repeated_header_row_indexes
-
-
-def _get_table_header_labels(segment: TableSegment) -> list[str]:
-    """Collect normalized header labels from a table segment.
-
-    Parameters
-    ----------
-    segment
-        Selected table segment.
+    row
+        Serialized table row containing a `cells` list.
 
     Returns
     -------
     list[str]
-        Unique normalized labels that define the table's header vocabulary.
+        Cell texts in source order, preserving empty cells.
     """
 
-    labels: list[str] = []
+    cell_texts: list[str] = []
 
-    for row in segment.header_rows_canonical or []:
-        labels.extend(_normalize_table_header_text(cell_text) for cell_text in row)
+    for cell in row.get("cells") or []:
+        if not isinstance(cell, dict):
+            cell_texts.append("")
+            continue
 
-    for row in segment.header_rows or []:
-        labels.extend(
-            _normalize_table_header_text(cell_text)
-            for cell_text in _get_table_row_texts(row)
-        )
+        text_unit = cell.get("text")
 
-    for row_index in range(min(segment.header_row_count, len(segment.rows))):
-        labels.extend(
-            _normalize_table_header_text(cell_text)
-            for cell_text in _get_table_row_texts_by_index(
-                prefer_grid=True, row_index=row_index, segment=segment
-            )
-        )
+        if isinstance(text_unit, dict):
+            cell_text = str(text_unit.get("text") or "").strip()
+        elif text_unit is not None:
+            cell_text = str(text_unit).strip()
+        else:
+            cell_text = ""
 
-    if segment.columns_signature:
-        labels.extend(
-            _normalize_table_header_text(text=cell_text)
-            for cell_text in str(segment.columns_signature).split("|")
-        )
+        cell_texts.append(cell_text)
 
-    return unique_clean_strings(label for label in labels if label)
+    return cell_texts
 
 
 def _get_table_plan_reasons(
@@ -827,146 +789,6 @@ def _get_table_plan_reasons(
     return unique_clean_strings(reasons)
 
 
-def _get_table_row_texts(row: Any) -> list[str]:
-    """Extract plain cell texts from a table row-like object.
-
-    Parameters
-    ----------
-    row
-        Table row represented as a Pydantic model, dictionary, or row-like object.
-
-    Returns
-    -------
-    list[str]
-        Cell texts in source/grid order.
-    """
-
-    cells = row.get("cells") if isinstance(row, dict) else getattr(row, "cells", [])
-    row_texts = []
-
-    for cell in cells or []:
-        # 1. Extract the text_unit from the cell.
-        text_unit = (
-            cell.get("text") if isinstance(cell, dict) else getattr(cell, "text", None)
-        )
-
-        # 2. Extract the actual text value from the text_unit.
-        val = (
-            text_unit.get("text")
-            if isinstance(text_unit, dict)
-            else getattr(text_unit, "text", text_unit)
-        )
-
-        # 3. Clean and append the text.
-        row_texts.append(str(val).strip() if val is not None else "")
-
-    return row_texts
-
-
-def _get_table_row_texts_by_index(
-    *, prefer_grid: bool, row_index: int, segment: TableSegment
-) -> list[str]:
-    """Extract row texts by source row index, preferring grid rows when available.
-
-    Parameters
-    ----------
-    prefer_grid
-        Whether to use `rows_grid` before raw `rows` when the helper view is aligned.
-    row_index
-        Source table row index.
-    segment
-        Selected table segment.
-
-    Returns
-    -------
-    list[str]
-        Cell texts for the requested row.
-    """
-
-    if (
-        prefer_grid
-        and segment.rows_grid is not None
-        and row_index < len(segment.rows_grid)
-    ):
-        row_texts = _get_table_row_texts(segment.rows_grid[row_index])
-
-        if any(text.strip() for text in row_texts):
-            return row_texts
-
-    return _get_table_row_texts(segment.rows[row_index])
-
-
-def _header_label_matches(*, header_labels: Sequence[str], text: str) -> bool:
-    """Return whether normalized text matches a known table header label.
-
-    Parameters
-    ----------
-    header_labels
-        Normalized labels collected from the table's own header metadata.
-    text
-        Candidate cell text to compare.
-
-    Returns
-    -------
-    bool
-        True when the candidate text exactly or near-exactly matches a header label.
-    """
-
-    normalized_text = _normalize_table_header_text(text)
-
-    if not normalized_text:
-        return False
-
-    for header_label in header_labels:
-        if normalized_text == header_label:
-            return True
-
-        if SequenceMatcher(None, normalized_text, header_label).ratio() >= 0.80:
-            return True
-
-    return False
-
-
-def _is_repeated_table_header_row(
-    *, header_labels: Sequence[str], row_texts: Sequence[str]
-) -> bool:
-    """Return whether a row appears to repeat a table header.
-
-    Parameters
-    ----------
-    header_labels
-        Normalized labels collected from the table's own header metadata.
-    row_texts
-        Candidate row cell texts.
-
-    Returns
-    -------
-    bool
-        True when the row's non-empty cells are mostly header-label matches.
-    """
-
-    non_empty_texts = [text for text in row_texts if str(text).strip()]
-
-    if not non_empty_texts:
-        return False
-
-    match_count = sum(
-        1
-        for text in non_empty_texts
-        if _header_label_matches(header_labels=header_labels, text=text)
-    )
-
-    if len(non_empty_texts) == 1:
-        return match_count == 1 and _normalize_table_header_text(
-            non_empty_texts[0]
-        ) in set(header_labels)
-
-    if len(non_empty_texts) == 2:
-        return match_count == 2
-
-    return match_count >= 2 and match_count / len(non_empty_texts) >= 0.75
-
-
 def _iter_row_index_chunks(
     *,
     max_rows_per_window: Optional[int],
@@ -980,8 +802,7 @@ def _iter_row_index_chunks(
     max_rows_per_window
         Maximum number of body rows per window. If None, emit one whole-table chunk.
     row_indexes
-        Ordered source table row indexes eligible for extraction. The indexes may be
-        non-contiguous after repeated header rows are removed.
+        Ordered source table body-row indexes eligible for extraction.
     row_overlap
         Number of overlapping body rows between adjacent chunks.
 
@@ -1087,25 +908,6 @@ def _model_dump_list(values: Sequence[BaseModel]) -> list[dict[str, Any]]:
     return [value.model_dump(mode="json") for value in values]
 
 
-def _normalize_table_header_text(text: Any) -> str:
-    """Normalize candidate header text for repeated-header detection.
-
-    Parameters
-    ----------
-    text
-        Raw table cell text.
-
-    Returns
-    -------
-    str
-        Unicode-normalized, case-folded, whitespace-normalized text.
-    """
-
-    normalized = unicodedata.normalize("NFKC", str(text or "")).casefold()
-    normalized = re.sub(r"[\W_]+", " ", normalized, flags=re.UNICODE)
-    return re.sub(r"\s+", " ", normalized).strip()
-
-
 def _optional_list_by_indexes(
     *, indexes: Sequence[int], values: Optional[Sequence[Any]]
 ) -> Optional[list[Any]]:
@@ -1180,6 +982,132 @@ def _table_section_text(segment: TableSegment) -> str:
     return "\n".join(part for part in parts if part)
 
 
+def _validate_extraction_window_coverage(
+    *,
+    extraction_windows: Sequence[ExtractionWindow],
+    plan_items: Sequence[ExtractionWindowPlanItem],
+) -> None:
+    """Validate planned-segment coverage and contiguous global window indexes.
+
+    Parameters
+    ----------
+    extraction_windows
+        Built extraction windows in persisted order.
+    plan_items
+        Planned source units expected to produce one or more windows.
+
+    Raises
+    ------
+    ValueError
+        If window indexes are non-contiguous, a planned segment is uncovered, or a
+        window references an unplanned segment.
+    """
+
+    expected_window_indexes = list(range(len(extraction_windows)))
+    actual_window_indexes = [window.window_index for window in extraction_windows]
+
+    if actual_window_indexes != expected_window_indexes:
+        raise ValueError(
+            "Extraction window indexes must be contiguous and match persisted order."
+        )
+
+    planned_segment_ids = [plan_item.segment_id for plan_item in plan_items]
+    planned_segment_id_set = set(planned_segment_ids)
+
+    if len(planned_segment_id_set) != len(planned_segment_ids):
+        raise ValueError("Extraction window plan contains duplicate segment_id values.")
+
+    covered_segment_ids = {
+        segment_id
+        for window in extraction_windows
+        for segment_id in window.source_segment_ids
+    }
+    missing_segment_ids = sorted(planned_segment_id_set - covered_segment_ids)
+    unexpected_segment_ids = sorted(covered_segment_ids - planned_segment_id_set)
+
+    if missing_segment_ids or unexpected_segment_ids:
+        raise ValueError(
+            f"Extraction window planned-segment coverage mismatch: "
+            f"missing={missing_segment_ids}; unexpected={unexpected_segment_ids}."
+        )
+
+
+def _validate_table_window_coverage(
+    *, segment: TableSegment, windows: Sequence[ExtractionWindow]
+) -> None:
+    """Validate exact authoritative body-row coverage for one table segment.
+
+    Overlap between adjacent windows is allowed. Every stitched body row must appear in
+    at least one window, no header or out-of-range row may appear, and a header-only
+    table must still produce one inspectable window.
+
+    Parameters
+    ----------
+    segment
+        Source TableSegment whose stitched rows are authoritative.
+    windows
+        Extraction windows built for the table segment.
+
+    Raises
+    ------
+    ValueError
+        If no window is produced or body-row coverage is incomplete or invalid.
+    """
+
+    if not windows:
+        raise ValueError(
+            f"Planned table segment produced no extraction windows: {segment.segment_id}."
+        )
+
+    expected_row_indexes = set(range(segment.header_row_count, len(segment.rows)))
+    covered_row_indexes: set[int] = set()
+
+    for window in windows:
+        if window.segment_kind != "table" or window.table is None:
+            raise ValueError(
+                f"Table segment {segment.segment_id} produced a non-table window."
+            )
+
+        if window.source_segment_ids != [segment.segment_id]:
+            raise ValueError(
+                f"Table window source_segment_ids must equal [{segment.segment_id!r}]."
+            )
+
+        window_row_indexes = window.table.row_indexes
+
+        if expected_row_indexes and not window_row_indexes:
+            raise ValueError(
+                f"Table segment {segment.segment_id} produced an empty body-row "
+                f"window despite having authoritative body rows."
+            )
+
+        unexpected_row_indexes = sorted(set(window_row_indexes) - expected_row_indexes)
+
+        if unexpected_row_indexes:
+            raise ValueError(
+                f"Table window for segment {segment.segment_id} references header or "
+                f"out-of-range rows: {unexpected_row_indexes}."
+            )
+
+        covered_row_indexes.update(window_row_indexes)
+
+    missing_row_indexes = sorted(expected_row_indexes - covered_row_indexes)
+
+    if missing_row_indexes:
+        raise ValueError(
+            f"Table windows for segment {segment.segment_id} do not cover body rows: "
+            f"{missing_row_indexes}."
+        )
+
+    if not expected_row_indexes and (
+        len(windows) != 1 or windows[0].table is None or windows[0].table.row_indexes
+    ):
+        raise ValueError(
+            f"Header-only table segment {segment.segment_id} must produce exactly one "
+            f"window with no body row indexes."
+        )
+
+
 def build_llm_extraction_windows(
     *,
     document_ir: DocumentIR,
@@ -1208,7 +1136,8 @@ def build_llm_extraction_windows(
     Raises
     ------
     ValueError
-        If a planned segment is missing or no windows are produced.
+        If a planned segment is missing, a planned source unit produces no window, or
+        extraction-window coverage is inconsistent.
     """
 
     segments_by_id = {segment.segment_id: segment for segment in document_ir.segments}
@@ -1223,31 +1152,38 @@ def build_llm_extraction_windows(
             )
 
         if segment.kind == "block":
-            extraction_windows.extend(
-                _build_block_windows(
-                    document_ir=document_ir,
-                    kg_config=kg_config,
-                    plan_item=plan_item,
-                    segment=segment,
-                    window_start_index=len(extraction_windows),
-                )
+            planned_windows = _build_block_windows(
+                document_ir=document_ir,
+                kg_config=kg_config,
+                plan_item=plan_item,
+                segment=segment,
+                window_start_index=len(extraction_windows),
             )
         elif segment.kind == "table":
-            extraction_windows.extend(
-                _build_table_windows(
-                    document_ir=document_ir,
-                    kg_config=kg_config,
-                    plan_item=plan_item,
-                    segment=segment,
-                    window_start_index=len(extraction_windows),
-                )
+            planned_windows = _build_table_windows(
+                document_ir=document_ir,
+                kg_config=kg_config,
+                plan_item=plan_item,
+                segment=segment,
+                window_start_index=len(extraction_windows),
             )
         else:
             raise ValueError(f"Unrecognized planned segment kind: {segment.kind}")
 
+        if not planned_windows:
+            raise ValueError(
+                f"Planned source unit produced no extraction windows: "
+                f"segment_id={plan_item.segment_id!r}."
+            )
+
+        extraction_windows.extend(planned_windows)
+
     if not extraction_windows:
         raise ValueError("No extraction windows were produced.")
 
+    _validate_extraction_window_coverage(
+        extraction_windows=extraction_windows, plan_items=plan_items
+    )
     write_extraction_windows(extraction_windows=extraction_windows, save_fp=save_fp)
     return extraction_windows
 

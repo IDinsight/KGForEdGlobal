@@ -307,6 +307,12 @@ class ExtractionWindow(BaseSchema):
     source_provenance: list[dict[str, Any]] = Field(
         default_factory=list, description="Segment/page provenance for the source."
     )
+    source_section_path: list[dict[str, Any]] = Field(
+        description=(
+            "Source DocumentIR section-path references preserved in path order. "
+            "These are source-context hints, not an inferred KG ancestor chain."
+        )
+    )
     source_segment_ids: list[str] = Field(
         description="DocumentIR segment_id values included in this window.",
         min_length=1,
@@ -479,7 +485,10 @@ class ExtractionWindowTablePayload(BaseSchema):
 
     @model_validator(mode="after")
     def validate_row_ranges(self) -> Self:
-        """Validate row-index and row-range consistency.
+        """Validate row-index, row-range, and helper-view consistency.
+
+        Empty `row_indexes` is valid only for a header-only table window. In that case,
+        the body range must be the empty range beginning at `header_row_count`.
 
         Returns
         -------
@@ -489,8 +498,11 @@ class ExtractionWindowTablePayload(BaseSchema):
         Raises
         ------
         ValueError
-            If the row range or aligned helper views are inconsistent.
+            If the row range, row indexes, or aligned helper views are inconsistent.
         """
+
+        if self.header_row_count > self.source_table_row_count:
+            raise ValueError("header_row_count cannot exceed source_table_row_count.")
 
         if self.body_row_end_index_exclusive < self.body_row_start_index:
             raise ValueError(
@@ -500,6 +512,47 @@ class ExtractionWindowTablePayload(BaseSchema):
         if self.body_row_end_index_exclusive > self.source_table_row_count:
             raise ValueError(
                 "body_row_end_index_exclusive cannot exceed source_table_row_count."
+            )
+
+        if self.row_indexes != sorted(set(self.row_indexes)):
+            raise ValueError("row_indexes must be strictly increasing and unique.")
+
+        if self.row_indexes:
+            expected_row_indexes = list(
+                range(self.row_indexes[0], self.row_indexes[-1] + 1)
+            )
+
+            if self.row_indexes != expected_row_indexes:
+                raise ValueError(
+                    "row_indexes must form one contiguous source-row range."
+                )
+
+            if self.row_indexes[0] < self.header_row_count:
+                raise ValueError(
+                    "row_indexes must reference body rows at or after header_row_count."
+                )
+
+            if self.row_indexes[-1] >= self.source_table_row_count:
+                raise ValueError(
+                    "row_indexes cannot reference rows outside source_table_row_count."
+                )
+
+            if self.body_row_start_index != self.row_indexes[0]:
+                raise ValueError(
+                    "body_row_start_index must equal the first row_indexes value."
+                )
+
+            if self.body_row_end_index_exclusive != self.row_indexes[-1] + 1:
+                raise ValueError(
+                    "body_row_end_index_exclusive must equal the last row index plus one."
+                )
+        elif (
+            self.body_row_start_index != self.header_row_count
+            or self.body_row_end_index_exclusive != self.header_row_count
+        ):
+            raise ValueError(
+                "Header-only table windows must use an empty body range beginning at "
+                "header_row_count."
             )
 
         if len(self.rows) != len(self.row_indexes):
