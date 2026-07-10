@@ -672,7 +672,9 @@ def _build_statement_value_policies(
     Returns
     -------
     dict[str, _StatementValuePolicy]
-        Controlled value policies keyed by canonical statement_type.
+        Controlled value policies keyed by canonical statement_type. Ambiguous alias
+        keys are dropped so registry canonicalization never silently chooses between
+        multiple configured controlled values.
     """
 
     policies: dict[str, _StatementValuePolicy] = {}
@@ -680,6 +682,7 @@ def _build_statement_value_policies(
 
     for item in kg_config.academic_standards.statement_type_policy:
         alias_to_canonical: dict[str, str] = {}
+        ambiguous_alias_keys: set[str] = set()
 
         for controlled_value in item.controlled_values:
             for alias in [controlled_value.canonical_value, *controlled_value.aliases]:
@@ -691,7 +694,19 @@ def _build_statement_value_policies(
                 }
 
                 for alias_key in sorted(key for key in alias_keys if key):
+                    existing_value = alias_to_canonical.get(alias_key)
+
+                    if (
+                        existing_value
+                        and existing_value != controlled_value.canonical_value
+                    ):
+                        ambiguous_alias_keys.add(alias_key)
+                        continue
+
                     alias_to_canonical[alias_key] = controlled_value.canonical_value
+
+        for alias_key in ambiguous_alias_keys:
+            alias_to_canonical.pop(alias_key, None)
 
         if not alias_to_canonical:
             continue
