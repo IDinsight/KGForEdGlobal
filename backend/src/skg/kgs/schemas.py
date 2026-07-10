@@ -23,6 +23,7 @@ from pydantic import Field, field_validator, model_validator
 
 # Package Library
 from skg.schemas import BaseSchema, LanguageField, NormalizedStatementType
+from skg.utils.general import strip_and_require_non_empty_str
 
 _AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo"}
 _AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
@@ -31,41 +32,6 @@ _ProgressionSubtype = Literal["developmental_prerequisite", "recurring_practice"
 _SFIDedupReviewFocus = Literal["general", "same_normalized_source_text"]
 SFIDedupDecision = Literal["conflict", "keep_separate", "merge", "needs_review"]
 SFIMergeDecision = Literal["conflict", "merged", "needs_review", "singleton"]
-
-
-def _strip_and_require_non_empty_str(v: str) -> str:
-    """Strip whitespace and require non-empty string for required fields.
-
-    Parameters
-    ----------
-    v
-        The input string value to validate.
-
-    Returns
-    -------
-    str
-        The validated and stripped string value.
-
-    Raises
-    ------
-    TypeError
-        If the input is not a string.
-    ValueError
-        If the input value is None or an empty string after stripping.
-    """
-
-    if v is None:
-        raise ValueError("Required field cannot be None")
-
-    if not isinstance(v, str):
-        raise TypeError("Expected a string")
-
-    v2 = v.strip()
-
-    if not v2:
-        raise ValueError("Required string field cannot be empty")
-
-    return v2
 
 
 def _validate_iso8601_str(v: Optional[str]) -> Optional[str]:
@@ -1656,7 +1622,7 @@ class SFIFinalRecord(BaseSchema):
             Cleaned non-empty string.
         """
 
-        return _strip_and_require_non_empty_str(v)
+        return strip_and_require_non_empty_str(v)
 
     @field_validator("normalized_statement_code", "statement_code", mode="before")
     @classmethod
@@ -2126,7 +2092,7 @@ class StandardsFramework(_CaseIdentifierMixin, _DateValidationMixin, BaseSchema)
             The validated and stripped string value.
         """
 
-        return _strip_and_require_non_empty_str(v)
+        return strip_and_require_non_empty_str(v)
 
 
 class StandardsFrameworkItem(_CaseIdentifierMixin, _DateValidationMixin, BaseSchema):
@@ -2297,7 +2263,7 @@ class StandardsFrameworkItem(_CaseIdentifierMixin, _DateValidationMixin, BaseSch
             The validated and stripped string value.
         """
 
-        return _strip_and_require_non_empty_str(v)
+        return strip_and_require_non_empty_str(v)
 
     @field_validator("statement_code", "statement_type", mode="before")
     @classmethod
@@ -2520,7 +2486,7 @@ class Relationship(_DateValidationMixin, BaseSchema):
             The validated and stripped string value.
         """
 
-        return _strip_and_require_non_empty_str(v)
+        return strip_and_require_non_empty_str(v)
 
     @field_validator("description", mode="before")
     @classmethod
@@ -2948,4 +2914,4 @@ class LearningComponent(_DateValidationMixin, BaseSchema):
             The validated and stripped string value.
         """
 
-        return _strip_and_require_non_empty_str(v)
+        return strip_and_require_non_empty_str(v)

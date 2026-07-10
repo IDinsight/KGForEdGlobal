@@ -21,42 +21,7 @@ from pydantic import (
 )
 
 # Package Library
-from skg.utils.general import make_dir
-
-
-def _strip_and_require_non_empty_str(v: str) -> str:
-    """Strip whitespace and require a non-empty string.
-
-    Parameters
-    ----------
-    v
-        The input string value to validate.
-
-    Returns
-    -------
-    str
-        The stripped non-empty string.
-
-    Raises
-    ------
-    TypeError
-        If the input is not a string.
-    ValueError
-        If the input value is None or empty after stripping.
-    """
-
-    if v is None:
-        raise ValueError("Required field cannot be None")
-
-    if not isinstance(v, str):
-        raise TypeError("Expected a string")
-
-    v_clean = v.strip()
-
-    if not v_clean:
-        raise ValueError("Required string field cannot be empty")
-
-    return v_clean
+from skg.utils.general import make_dir, strip_and_require_non_empty_str
 
 
 def _validate_bcp47(code: str) -> str:
@@ -518,7 +483,7 @@ class _AcademicStandardStatementTypePolicyItem(BaseSchema):
             Cleaned non-empty string.
         """
 
-        return _strip_and_require_non_empty_str(v)
+        return strip_and_require_non_empty_str(v)
 
     @model_validator(mode="after")
     def validate_controlled_value_scope_config(self) -> Self:
@@ -613,7 +578,7 @@ class _ContextHeadingRule(BaseSchema):
             The validated and stripped string value.
         """
 
-        return _strip_and_require_non_empty_str(v)
+        return strip_and_require_non_empty_str(v)
 
     @field_validator("label_template", mode="before")
     @classmethod
@@ -699,7 +664,7 @@ class _ContextResetRule(BaseSchema):
             The validated and stripped on_role value.
         """
 
-        return _strip_and_require_non_empty_str(v)
+        return strip_and_require_non_empty_str(v)
 
     @field_validator("reset_roles")
     @classmethod
@@ -1153,7 +1118,7 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
             The validated and stripped string value.
         """
 
-        return _strip_and_require_non_empty_str(v)
+        return strip_and_require_non_empty_str(v)
 
     @field_validator("bilingual_pair_policy", mode="before")
     @classmethod
@@ -1709,7 +1674,7 @@ class _CreateKGLearningComponentsConfig(BaseSchema):
             The validated and stripped string value.
         """
 
-        return _strip_and_require_non_empty_str(v)
+        return strip_and_require_non_empty_str(v)
 
 
 class _CreateKGMetadata(BaseSchema):
@@ -1782,7 +1747,7 @@ class _CreateKGMetadata(BaseSchema):
             The stripped non-empty string.
         """
 
-        return _strip_and_require_non_empty_str(v)
+        return strip_and_require_non_empty_str(v)
 
     @field_validator("adoption_status", mode="before")
     @classmethod
