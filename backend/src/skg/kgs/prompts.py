@@ -1135,7 +1135,7 @@ def validate_sfi_extraction_result(
             kg_config.academic_standards.sfi_extraction_instructions
         ),
         "sfi_validation_instructions": (
-            kg_config.academic_standards.sfi_validation_instructions
+            kg_config.academic_standards.sfi_extraction_validation_instructions
         ),
         "statement_type_policy": [
             item.model_dump(exclude_none=True, mode="json")
