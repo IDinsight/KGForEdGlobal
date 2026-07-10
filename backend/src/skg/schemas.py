@@ -901,6 +901,13 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
     row_overlap: int = Field(default=1, ge=0)
     sfi_deduplication_instructions: str
     sfi_extraction_instructions: str
+    sfi_extraction_validation_instructions: str = Field(
+        description=(
+            "Curriculum-specific instructions for the second-stage SFI validation "
+            "LLM, including known source anomalies, edge cases, and distinctions "
+            "that require semantic review beyond universal Python integrity checks."
+        )
+    )
     sfi_has_child_instructions: str
     sfi_has_child_parent_statement_types: dict[str, list[str]] = Field(
         default_factory=dict,
@@ -1110,6 +1117,7 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
     @field_validator(
         "sfi_deduplication_instructions",
         "sfi_extraction_instructions",
+        "sfi_extraction_validation_instructions",
         "sfi_has_child_instructions",
         mode="before",
     )

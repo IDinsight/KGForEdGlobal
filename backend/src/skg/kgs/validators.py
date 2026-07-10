@@ -8,7 +8,6 @@ in this module enforce quality checks that require access to other inputs.
 # Standard Library
 import re
 
-from dataclasses import dataclass
 from typing import Any, Optional
 
 # Package Library
@@ -18,11 +17,11 @@ from skg.kgs.schemas import (
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
     SFIExtractionResult,
+    SFIExtractionValidationVerdict,
     SFIHasChildParentCandidate,
     SFIHasChildResolutionRequest,
     SFIHasChildResolutionResponse,
 )
-from skg.kgs.utils import text_starts_with_complete_marker
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 
@@ -66,482 +65,20 @@ HARD_LOCAL_DIRECT_PARENT_REASONS = frozenset(
 )
 
 
-@dataclass(frozen=True)
-class SourceTextSupport:
-    """One source-visible evidence span available to an extracted candidate.
-
-    Attributes
-    ----------
-    description_complete
-        Whether the span may establish a complete candidate description. Aggregate
-        list/window supports remain useful for auxiliary evidence visibility but do not
-        establish complete SFI descriptions.
-    languages
-        Source language tags contributing to the span.
-    table_header_indexes
-        Exact raw table header-row indexes contributing to the span.
-    table_row_indexes
-        Exact raw table body-row indexes contributing to the span.
-    text_normalized
-        Whitespace-normalized, casefolded source-visible text for the span.
-    """
-
-    description_complete: bool
-    languages: frozenset[str]
-    table_header_indexes: frozenset[int]
-    table_row_indexes: frozenset[int]
-    text_normalized: str
-
-
-@dataclass(frozen=True)
-class SFIExtractionQualityCtx:
-    """Context for cross-input SFI extraction quality checks.
-
-    Attributes
-    ----------
-    code_patterns_by_type
-        Configured source-code regex patterns keyed by code type.
-    extraction_result
-        Parsed SFI extraction result produced for the window.
-    statement_type_alias_to_canonical
-        Mapping from normalized canonical labels and aliases to canonical labels.
-    statement_type_code_type_by_label
-        Optional configured code type for each canonical statement type.
-    statement_type_normalized_by_label
-        Mapping from canonical statement-type labels to configured normalized types.
-    window
-        Source extraction window passed to the LLM.
-    """
-
-    code_patterns_by_type: dict[str, str]
-    extraction_result: SFIExtractionResult
-    statement_type_alias_to_canonical: dict[str, str]
-    statement_type_code_type_by_label: dict[str, Optional[str]]
-    statement_type_normalized_by_label: dict[str, str]
-    window: ExtractionWindow
-
-
-def _append_source_text_support(
-    *,
-    description_complete: bool = True,
-    languages: set[str],
-    supports: list[SourceTextSupport],
-    table_header_indexes: Optional[set[int]] = None,
-    table_row_indexes: Optional[set[int]] = None,
-    text: str,
-) -> None:
-    """Append one non-empty normalized source evidence span.
-
-    Parameters
-    ----------
-    description_complete
-        Whether this span may establish a complete candidate description.
-    languages
-        Source language tags contributing to `text`.
-    supports
-        Mutable support accumulator.
-    table_header_indexes
-        Exact raw table header-row indexes contributing to the span.
-    table_row_indexes
-        Exact raw table body-row indexes contributing to the span.
-    text
-        Source-visible text to normalize and append.
-    """
-
-    text_normalized = _normalize_text(text)
-
-    if not text_normalized:
-        return
-
-    support = SourceTextSupport(
-        description_complete=description_complete,
-        languages=frozenset(language for language in languages if language),
-        table_header_indexes=frozenset(table_header_indexes or set()),
-        table_row_indexes=frozenset(table_row_indexes or set()),
-        text_normalized=text_normalized,
-    )
-
-    if support not in supports:
-        supports.append(support)
-
-
-def _append_source_text_unit_supports(
-    *,
-    languages: set[str],
-    supports: list[SourceTextSupport],
-    table_header_indexes: Optional[set[int]] = None,
-    table_row_indexes: Optional[set[int]] = None,
-    text: str,
-) -> None:
-    """Append a complete source unit and its visible line-level units.
-
-    Line-level spans preserve legitimate complete statements separated by source line
-    breaks. Sentence and clause boundaries within each span are evaluated by
-    `_source_support_contains_complete_text`; arbitrary interior substrings are not
-    treated as complete descriptions.
-
-    Parameters
-    ----------
-    languages
-        Source language tags contributing to the source unit.
-    supports
-        Mutable support accumulator.
-    table_header_indexes
-        Exact raw table header-row indexes contributing to the unit.
-    table_row_indexes
-        Exact raw table body-row indexes contributing to the unit.
-    text
-        Source-visible unit text.
-    """
-
-    text_clean = str(text or "").strip()
-
-    if not text_clean:
-        return
-
-    _append_source_text_support(
-        languages=languages,
-        supports=supports,
-        table_header_indexes=table_header_indexes,
-        table_row_indexes=table_row_indexes,
-        text=text_clean,
-    )
-
-    for line in text_clean.splitlines():
-        line_clean = line.strip()
-
-        if line_clean:
-            _append_source_text_support(
-                languages=languages,
-                supports=supports,
-                table_header_indexes=table_header_indexes,
-                table_row_indexes=table_row_indexes,
-                text=line_clean,
-            )
-
-
-def _build_block_payload_source_text_supports(
-    *, fallback_language: str, payload: dict[str, Any]
-) -> list[SourceTextSupport]:
-    """Build source supports from one serialized block or block-slice payload.
-
-    Parameters
-    ----------
-    fallback_language
-        Language used when the payload lacks source-language metadata.
-    payload
-        Serialized block segment or block-slice payload.
-
-    Returns
-    -------
-    list[SourceTextSupport]
-        Source-visible text supports available from the payload.
-    """
-
-    supports: list[SourceTextSupport] = []
-    text_unit = payload.get("text")
-
-    if isinstance(text_unit, dict):
-        text = str(text_unit.get("text") or "").strip()
-
-        if text:
-            language = _get_text_unit_language(
-                fallback=fallback_language, text_unit=text_unit
-            )
-            _append_source_text_unit_supports(
-                languages={language}, supports=supports, text=text
-            )
-
-    figure = payload.get("figure")
-
-    if isinstance(figure, dict):
-        for field_name in ["embedded_text", "caption"]:
-            figure_text = figure.get(field_name)
-
-            if isinstance(figure_text, dict):
-                text = str(figure_text.get("text") or "").strip()
-
-                if text:
-                    language = _get_text_unit_language(
-                        fallback=fallback_language, text_unit=figure_text
-                    )
-                    _append_source_text_unit_supports(
-                        languages={language}, supports=supports, text=text
-                    )
-                    break
-            elif isinstance(figure_text, str) and figure_text.strip():
-                _append_source_text_unit_supports(
-                    languages={fallback_language}, supports=supports, text=figure_text
-                )
-                break
-
-    return supports
-
-
-def _build_block_source_text_supports(
-    window: ExtractionWindow,
-) -> list[SourceTextSupport]:
-    """Build block source supports at list-item and slice granularity.
-
-    Parameters
-    ----------
-    window
-        Source extraction window containing a block payload.
-
-    Returns
-    -------
-    list[SourceTextSupport]
-        Source-visible supports for exact wording and language validation.
-    """
-
-    block = window.block
-
-    if block is None:
-        return []
-
-    supports: list[SourceTextSupport] = []
-    list_items = block.get("list_items")
-    is_list_block = isinstance(list_items, list) and bool(list_items)
-
-    if is_list_block:
-        for item in list_items:
-            if not isinstance(item, dict):
-                continue
-
-            source_text = _build_list_item_source_text(item)
-
-            if not source_text:
-                continue
-
-            language = _get_text_unit_language(
-                fallback=window.primary_language, text_unit=item.get("text")
-            )
-            _append_source_text_unit_supports(
-                languages={language}, supports=supports, text=source_text
-            )
-
-            item_text_unit = item.get("text")
-            item_text = (
-                str(item_text_unit.get("text") or "").strip()
-                if isinstance(item_text_unit, dict)
-                else str(item_text_unit or "").strip()
-            )
-
-            if item_text and _normalize_text(item_text) != _normalize_text(source_text):
-                _append_source_text_unit_supports(
-                    languages={language}, supports=supports, text=item_text
-                )
-    else:
-        slices = block.get("slices")
-
-        if isinstance(slices, list):
-            for slice_payload in slices:
-                if not isinstance(slice_payload, dict):
-                    continue
-
-                supports.extend(
-                    _build_block_payload_source_text_supports(
-                        fallback_language=window.primary_language, payload=slice_payload
-                    )
-                )
-
-        if not supports:
-            supports.extend(
-                _build_block_payload_source_text_supports(
-                    fallback_language=window.primary_language, payload=block
-                )
-            )
-
-    combined_languages = {
-        language for support in supports for language in support.languages
-    } or {window.primary_language}
-    _append_source_text_support(
-        description_complete=not is_list_block,
-        languages=combined_languages,
-        supports=supports,
-        text=window.source_text,
-    )
-    return supports
-
-
-def _build_candidate_source_text_supports(
-    *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
-) -> list[SourceTextSupport]:
-    """Build source supports allowed for one candidate.
-
-    Parameters
-    ----------
-    candidate
-        Candidate whose cited source indexes constrain table support.
-    ctx
-        Extraction quality context.
-
-    Returns
-    -------
-    list[SourceTextSupport]
-        Candidate-scoped source-visible supports.
-    """
-
-    if ctx.window.table is None:
-        return _build_block_source_text_supports(ctx.window)
-
-    return _build_table_source_text_supports(candidate=candidate, window=ctx.window)
-
-
-def _build_description_support_targets(
-    *, description: str, statement_code: Optional[str]
-) -> list[str]:
-    """Build complete-description targets with optional visible code prefixes.
-
-    Parameters
-    ----------
-    description
-        Candidate description text.
-    statement_code
-        Optional separately captured source-visible code.
-
-    Returns
-    -------
-    list[str]
-        Normalized description targets. Code-prefixed variants allow a complete
-        statement to be validated when its source cell begins with the same code but
-        the candidate stores that code separately in `statement_code`.
-    """
-
-    targets = [_normalize_text(description)]
-
-    if statement_code is None:
-        return targets
-
-    code = str(statement_code).strip().rstrip(" .:;-)–—")
-
-    if not code:
-        return targets
-
-    for separator in [" ", ". ", ": ", ") ", " - ", " – ", " — "]:
-        target = _normalize_text(f"{code}{separator}{description}")
-
-        if target not in targets:
-            targets.append(target)
-
-    return targets
-
-
-def _build_list_item_source_text(item: dict[str, Any]) -> str:
-    """Render one serialized list item with its visible marker.
-
-    Parameters
-    ----------
-    item
-        Serialized DocumentIR list-item payload.
-
-    Returns
-    -------
-    str
-        Source-visible list-item text with a non-duplicated marker.
-    """
-
-    marker = str(item.get("marker") or "").strip()
-    text_unit = item.get("text")
-
-    if isinstance(text_unit, dict):
-        text = str(text_unit.get("text") or "").strip()
-    elif text_unit is not None:
-        text = str(text_unit).strip()
-    else:
-        text = ""
-
-    if marker and text and text_starts_with_complete_marker(marker=marker, text=text):
-        return text
-
-    return " ".join(part for part in [marker, text] if part)
-
-
-def _build_row_source_text_supports(
-    *,
-    primary_language: str,
-    row: dict[str, Any],
-    table_header_indexes: set[int],
-    table_row_indexes: set[int],
-) -> list[SourceTextSupport]:
-    """Build evidence spans for every contiguous visible cell range in one row.
-
-    Parameters
-    ----------
-    primary_language
-        Fallback language when a cell lacks language metadata.
-    row
-        Serialized raw table row.
-    table_header_indexes
-        Exact raw table header-row indexes contributing to this row.
-    table_row_indexes
-        Exact raw table body-row indexes contributing to this row.
-
-    Returns
-    -------
-    list[SourceTextSupport]
-        Spans for every contiguous range of text-bearing cells. Each span carries only
-        the languages used by that range and the exact contributing table location.
-    """
-
-    visible_cells: list[tuple[str, str]] = []
-
-    for cell in row.get("cells") or []:
-        text_unit = cell.get("text") or {}
-        text = str(text_unit.get("text") or "").strip()
-
-        if not text:
-            continue
-
-        visible_cells.append(
-            (
-                text,
-                _get_text_unit_language(fallback=primary_language, text_unit=text_unit),
-            )
-        )
-
-    supports: list[SourceTextSupport] = []
-
-    for start_index in range(len(visible_cells)):
-        range_languages: set[str] = set()
-        range_texts: list[str] = []
-
-        for end_index in range(start_index, len(visible_cells)):
-            text, language = visible_cells[end_index]
-            range_languages.add(language)
-            range_texts.append(text)
-            if start_index == end_index:
-                _append_source_text_unit_supports(
-                    languages=range_languages.copy(),
-                    supports=supports,
-                    table_header_indexes=table_header_indexes,
-                    table_row_indexes=table_row_indexes,
-                    text="\n".join(range_texts),
-                )
-            else:
-                _append_source_text_support(
-                    languages=range_languages.copy(),
-                    supports=supports,
-                    table_header_indexes=table_header_indexes,
-                    table_row_indexes=table_row_indexes,
-                    text="\n".join(range_texts),
-                )
-
-    return supports
-
-
-def _build_statement_type_alias_map(kg_config: CreateKGConfig) -> dict[str, str]:
-    """Build canonical statement-type lookup from runtime config policy.
+def _build_statement_type_alias_map(
+    kg_config: CreateKGConfig,
+) -> dict[str, str]:
+    """Build canonical statement-type lookup from runtime configuration.
 
     Parameters
     ----------
     kg_config
-        Runtime KG configuration containing statement-type policy items.
+        Runtime KG configuration.
 
     Returns
     -------
     dict[str, str]
-        Mapping from normalized canonical labels and aliases to canonical labels.
+        Normalized canonical labels and aliases mapped to canonical labels.
     """
 
     alias_to_canonical: dict[str, str] = {}
@@ -554,257 +91,6 @@ def _build_statement_type_alias_map(kg_config: CreateKGConfig) -> dict[str, str]
                 alias_to_canonical[key] = item.statement_type
 
     return alias_to_canonical
-
-
-def _build_table_channel_source_text_supports(
-    *,
-    indexes: list[int],
-    is_header: bool,
-    ordered_indexes: list[int],
-    primary_language: str,
-    rows_by_index: dict[int, dict[str, Any]],
-) -> list[SourceTextSupport]:
-    """Build supports for one selected table channel.
-
-    A channel is either raw header rows or raw body rows. Supports include individual
-    cells, complete rows, complete text from each adjacent selected-row run, and
-    same-column text across adjacent selected rows. This permits genuine continuation
-    statements without allowing descriptions to skip intervening rows or words.
-
-    Parameters
-    ----------
-    indexes
-        Selected source indexes cited by the candidate.
-    is_header
-        Whether the selected indexes identify raw table header rows rather than body
-        rows.
-    ordered_indexes
-        Complete source-order indexes available in the window channel.
-    primary_language
-        Fallback language when a cell lacks language metadata.
-    rows_by_index
-        Raw table rows keyed by source index.
-
-    Returns
-    -------
-    list[SourceTextSupport]
-        Source-visible supports for the selected channel.
-    """
-
-    selected_indexes_set = set(indexes)
-    selected_indexes = [
-        index for index in ordered_indexes if index in selected_indexes_set
-    ]
-    supports: list[SourceTextSupport] = []
-
-    for index in selected_indexes:
-        supports.extend(
-            _build_row_source_text_supports(
-                primary_language=primary_language,
-                row=rows_by_index[index],
-                table_header_indexes={index} if is_header else set(),
-                table_row_indexes=set() if is_header else {index},
-            )
-        )
-
-    for contiguous_indexes in _group_contiguous_ordered_indexes(
-        indexes=selected_indexes, ordered_indexes=ordered_indexes
-    ):
-        run_texts: list[str] = []
-        run_languages: set[str] = set()
-        max_columns = max(
-            len(rows_by_index[index].get("cells") or []) for index in contiguous_indexes
-        )
-
-        for index in contiguous_indexes:
-            for cell in rows_by_index[index].get("cells") or []:
-                text_unit = cell.get("text") or {}
-                text = str(text_unit.get("text") or "").strip()
-
-                if not text:
-                    continue
-
-                run_texts.append(text)
-                run_languages.add(
-                    _get_text_unit_language(
-                        fallback=primary_language, text_unit=text_unit
-                    )
-                )
-
-        _append_source_text_support(
-            languages=run_languages or {primary_language},
-            supports=supports,
-            table_header_indexes=set(contiguous_indexes) if is_header else set(),
-            table_row_indexes=set() if is_header else set(contiguous_indexes),
-            text="\n".join(run_texts),
-        )
-
-        if len(contiguous_indexes) < 2:
-            continue
-
-        for column_index in range(max_columns):
-            column_texts: list[str] = []
-            column_languages: set[str] = set()
-
-            for index in contiguous_indexes:
-                cells = rows_by_index[index].get("cells") or []
-
-                if column_index >= len(cells):
-                    continue
-
-                text_unit = cells[column_index].get("text") or {}
-                text = str(text_unit.get("text") or "").strip()
-
-                if not text:
-                    continue
-
-                column_texts.append(text)
-                column_languages.add(
-                    _get_text_unit_language(
-                        fallback=primary_language, text_unit=text_unit
-                    )
-                )
-
-            if len(column_texts) > 1:
-                _append_source_text_support(
-                    languages=column_languages,
-                    supports=supports,
-                    table_header_indexes=(
-                        set(contiguous_indexes) if is_header else set()
-                    ),
-                    table_row_indexes=(set() if is_header else set(contiguous_indexes)),
-                    text="\n".join(column_texts),
-                )
-
-    return supports
-
-
-def _build_table_source_text_supports(
-    *, candidate: Optional[SFICandidate], window: ExtractionWindow
-) -> list[SourceTextSupport]:
-    """Build table source supports for a candidate or the full window.
-
-    Parameters
-    ----------
-    candidate
-        Candidate whose indexes constrain support, or `None` for all visible rows.
-    window
-        Table extraction window.
-
-    Returns
-    -------
-    list[SourceTextSupport]
-        Candidate-scoped or full-window source-visible supports.
-
-    Raises
-    ------
-    QualityError
-        If the function is called for a non-table window.
-    """
-
-    table = window.table
-
-    if table is None:
-        raise QualityError("Table source support requires a table window.")
-
-    header_rows_by_index = dict(enumerate(table.header_rows))
-    body_rows_by_index = dict(zip(table.row_indexes, table.rows))
-    header_indexes = (
-        candidate.table_header_indexes
-        if candidate is not None
-        else list(header_rows_by_index)
-    )
-    body_indexes = (
-        candidate.table_row_indexes
-        if candidate is not None
-        else list(body_rows_by_index)
-    )
-    supports: list[SourceTextSupport] = []
-
-    if header_indexes:
-        supports.extend(
-            _build_table_channel_source_text_supports(
-                indexes=header_indexes,
-                is_header=True,
-                ordered_indexes=list(header_rows_by_index),
-                primary_language=window.primary_language,
-                rows_by_index=header_rows_by_index,
-            )
-        )
-
-    if body_indexes:
-        supports.extend(
-            _build_table_channel_source_text_supports(
-                indexes=body_indexes,
-                is_header=False,
-                ordered_indexes=table.row_indexes,
-                primary_language=window.primary_language,
-                rows_by_index=body_rows_by_index,
-            )
-        )
-
-    if header_indexes and body_indexes:
-        header_groups = _group_contiguous_ordered_indexes(
-            indexes=header_indexes, ordered_indexes=list(header_rows_by_index)
-        )
-        body_groups = _group_contiguous_ordered_indexes(
-            indexes=body_indexes, ordered_indexes=table.row_indexes
-        )
-
-        for header_group in header_groups:
-            for body_group in body_groups:
-                combined_texts: list[str] = []
-                combined_languages: set[str] = set()
-
-                for row in [
-                    *(header_rows_by_index[index] for index in header_group),
-                    *(body_rows_by_index[index] for index in body_group),
-                ]:
-                    for cell in row.get("cells") or []:
-                        text_unit = cell.get("text") or {}
-                        text = str(text_unit.get("text") or "").strip()
-
-                        if not text:
-                            continue
-
-                        combined_texts.append(text)
-                        combined_languages.add(
-                            _get_text_unit_language(
-                                fallback=window.primary_language, text_unit=text_unit
-                            )
-                        )
-
-                _append_source_text_support(
-                    languages=combined_languages or {window.primary_language},
-                    supports=supports,
-                    table_header_indexes=set(header_group),
-                    table_row_indexes=set(body_group),
-                    text="\n".join(combined_texts),
-                )
-
-    return supports
-
-
-def _build_window_source_text_supports(
-    ctx: SFIExtractionQualityCtx,
-) -> list[SourceTextSupport]:
-    """Build all source-visible supports for one extraction window.
-
-    Parameters
-    ----------
-    ctx
-        Extraction quality context.
-
-    Returns
-    -------
-    list[SourceTextSupport]
-        Full-window supports for auxiliary source validation.
-    """
-
-    if ctx.window.table is None:
-        return _build_block_source_text_supports(ctx.window)
-
-    return _build_table_source_text_supports(candidate=None, window=ctx.window)
 
 
 def _candidate_direct_parent_evidence_tier(  # pylint: disable=R0911
@@ -969,200 +255,6 @@ def _candidate_has_soft_carry_forward_evidence(
     )
 
 
-def _candidate_order_targets(candidate: SFICandidate) -> list[str]:
-    """Build normalized candidate texts in preferred source-location order.
-
-    A source quote containing the complete description is the most specific location
-    target, especially when it includes a visible code. When the quote is only an
-    excerpt of a longer description, the complete description is preferred instead.
-
-    Parameters
-    ----------
-    candidate
-        Candidate whose source-location targets should be built.
-
-    Returns
-    -------
-    list[str]
-        Non-empty normalized targets ordered from most to least specific.
-    """
-
-    description_normalized = _normalize_text(candidate.description)
-    evidence_normalized = _normalize_text(candidate.source_text)
-
-    if description_normalized and description_normalized in evidence_normalized:
-        ordered_targets = [evidence_normalized, description_normalized]
-    else:
-        ordered_targets = [description_normalized, evidence_normalized]
-
-    return [target for target in ordered_targets if target]
-
-
-def _candidate_source_order_key(
-    *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
-) -> tuple[int, int, int]:
-    """Build a comparable source-order key for one validated SFI candidate.
-
-    Block candidates are ordered by their earliest visible text occurrence in the
-    block. Table candidates are ordered with raw headers before body rows, rows in the
-    extraction window's source order, and text within a row from left to right.
-
-    Parameters
-    ----------
-    candidate
-        Candidate whose source-order key should be built.
-    ctx
-        Extraction quality context containing the source window.
-
-    Returns
-    -------
-    tuple[int, int, int]
-        Channel rank, row/source-unit rank, and normalized text offset.
-    """
-
-    table = ctx.window.table
-
-    if table is None:
-        return (
-            0,
-            0,
-            _candidate_text_order_offset(
-                candidate=candidate, source_text=ctx.window.source_text
-            ),
-        )
-
-    body_row_positions = {
-        row_index: position for position, row_index in enumerate(table.row_indexes)
-    }
-    source_locations: list[tuple[int, int, dict[str, Any]]] = [
-        (0, header_index, table.header_rows[header_index])
-        for header_index in candidate.table_header_indexes
-    ]
-    source_locations.extend(
-        (1, body_row_positions[row_index], row)
-        for row_index, row in zip(table.row_indexes, table.rows)
-        if row_index in candidate.table_row_indexes
-    )
-
-    if not source_locations:
-        return (2, 0, 0)
-
-    source_locations.sort(key=lambda location: (location[0], location[1]))
-    normalized_rows: list[str] = []
-    row_spans: list[tuple[int, int, int, int]] = []
-    stream_length = 0
-
-    for channel_rank, row_rank, row in source_locations:
-        row_text_normalized = _normalize_text(_flatten_table_row_text(row))
-
-        if not row_text_normalized:
-            continue
-
-        if normalized_rows:
-            stream_length += 1
-
-        row_start = stream_length
-        stream_length += len(row_text_normalized)
-        row_spans.append((row_start, stream_length, channel_rank, row_rank))
-        normalized_rows.append(row_text_normalized)
-
-    source_stream = " ".join(normalized_rows)
-
-    for target_text_normalized in _candidate_order_targets(candidate):
-        target_start = source_stream.find(target_text_normalized)
-
-        if target_start < 0:
-            continue
-
-        for row_start, row_end, channel_rank, row_rank in row_spans:
-            if target_start >= row_end:
-                continue
-
-            return (channel_rank, row_rank, max(0, target_start - row_start))
-
-    channel_rank, row_rank, row = source_locations[0]
-    return (
-        channel_rank,
-        row_rank,
-        _candidate_text_order_offset(
-            candidate=candidate, source_text=_flatten_table_row_text(row)
-        ),
-    )
-
-
-def _candidate_source_text_is_linked_to_description(
-    candidate: SFICandidate,
-) -> bool:
-    """Check whether candidate evidence text directly quotes its description.
-
-    A source quote may begin with the same separately captured statement code. In that
-    case, the exact standalone leading code is removed before testing whether the
-    remaining visible quote is a contiguous excerpt of the description.
-
-    Parameters
-    ----------
-    candidate
-        Candidate whose description and evidence quote should refer to the same source
-        statement.
-
-    Returns
-    -------
-    bool
-        True when the normalized source quote, with an optional exact leading code
-        removed, and the normalized description are contiguous excerpts of one another.
-    """
-
-    description_normalized = _normalize_text(candidate.description)
-    source_text_normalized = _normalize_text(candidate.source_text)
-    source_text_without_code = _remove_leading_statement_code(
-        source_text=candidate.source_text, statement_code=candidate.statement_code
-    )
-    source_text_variants = {source_text_normalized, source_text_without_code}
-    return bool(
-        description_normalized
-        and any(
-            source_text_variant
-            and (
-                description_normalized in source_text_variant
-                or source_text_variant in description_normalized
-            )
-            for source_text_variant in source_text_variants
-        )
-    )
-
-
-def _candidate_text_order_offset(*, candidate: SFICandidate, source_text: str) -> int:
-    """Find the earliest candidate-text offset within one source unit.
-
-    The most specific source-visible form is preferred: a quote containing the complete
-    description is used first, while a longer description is preferred when the quote
-    is only an excerpt.
-
-    Parameters
-    ----------
-    candidate
-        Candidate whose source position should be located.
-    source_text
-        Source-visible block or table-row text to search.
-
-    Returns
-    -------
-    int
-        Earliest normalized character offset, or zero when neither candidate text field
-        can be located in the supplied source unit.
-    """
-
-    source_text_normalized = _normalize_text(source_text)
-
-    for target_text_normalized in _candidate_order_targets(candidate):
-        offset = source_text_normalized.find(target_text_normalized)
-
-        if offset >= 0:
-            return offset
-
-    return 0
-
-
 def _child_has_viable_source_visible_parent(
     *, child_id: str, resolution_request: SFIHasChildResolutionRequest
 ) -> bool:
@@ -1228,179 +320,8 @@ def _extract_leading_code_for_parent_match(value: Any) -> str:
     return _normalize_code_for_parent_match(match.group(1))
 
 
-def _find_language_sets_for_text(
-    *, supports: list[SourceTextSupport], target_text: str
-) -> list[frozenset[str]]:
-    """Find the most local language sets supporting source-visible text.
-
-    Parameters
-    ----------
-    supports
-        Candidate-scoped source supports.
-    target_text
-        Candidate description or evidence quote.
-
-    Returns
-    -------
-    list[frozenset[str]]
-        Language sets from the shortest matching supports.
-    """
-
-    target_text_normalized = _normalize_text(target_text)
-
-    if not target_text_normalized:
-        return []
-
-    matches = [
-        support
-        for support in supports
-        if target_text_normalized in support.text_normalized
-    ]
-
-    if not matches:
-        return []
-
-    shortest_length = min(len(support.text_normalized) for support in matches)
-    shortest_matches = [
-        support
-        for support in matches
-        if len(support.text_normalized) == shortest_length
-    ]
-    smallest_language_count = min(
-        len(support.languages) for support in shortest_matches
-    )
-    language_sets: list[frozenset[str]] = []
-
-    for support in shortest_matches:
-        if len(support.languages) != smallest_language_count:
-            continue
-
-        if support.languages not in language_sets:
-            language_sets.append(support.languages)
-
-    return language_sets
-
-
-def _find_redundant_candidate_table_locations(
-    *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
-) -> list[str]:
-    """Find cited table locations that are unnecessary for candidate support.
-
-    Each cited header/body row must contribute to the joint evidence span. A location
-    is redundant when removing only that location still leaves a valid source span for
-    the candidate's description, quote, optional code, language, and remaining
-    citations.
-
-    Parameters
-    ----------
-    candidate
-        Table-derived candidate whose citations should be minimal.
-    ctx
-        Extraction quality context containing the table window.
-
-    Returns
-    -------
-    list[str]
-        Stable labels for individually removable table locations.
-    """
-
-    if ctx.window.table is None:
-        return []
-
-    redundant_locations: list[str] = []
-
-    for field_name in ["table_header_indexes", "table_row_indexes"]:
-        indexes = list(getattr(candidate, field_name))
-
-        for index in indexes:
-            reduced_header_indexes = list(candidate.table_header_indexes)
-            reduced_row_indexes = list(candidate.table_row_indexes)
-
-            if field_name == "table_header_indexes":
-                reduced_header_indexes.remove(index)
-            else:
-                reduced_row_indexes.remove(index)
-
-            if not reduced_header_indexes and not reduced_row_indexes:
-                continue
-
-            reduced_candidate = candidate.model_copy(
-                update={
-                    "table_header_indexes": reduced_header_indexes,
-                    "table_row_indexes": reduced_row_indexes,
-                }
-            )
-            reduced_supports = _build_candidate_source_text_supports(
-                candidate=reduced_candidate, ctx=ctx
-            )
-
-            if any(
-                _source_support_matches_candidate(
-                    candidate=reduced_candidate,
-                    structural_label_keys=set(ctx.statement_type_alias_to_canonical),
-                    support=support,
-                    window=ctx.window,
-                )
-                for support in reduced_supports
-            ):
-                redundant_locations.append(f"{field_name}={index}")
-
-    return redundant_locations
-
-
-def _flatten_table_row_text(row: dict[str, Any]) -> str:
-    """Flatten one raw table row into source-order visible cell text.
-
-    Parameters
-    ----------
-    row
-        Serialized raw table row.
-
-    Returns
-    -------
-    str
-        Visible cell text joined from left to right.
-    """
-
-    texts: list[str] = []
-
-    for cell in row.get("cells") or []:
-        text_unit = cell.get("text") or {}
-        text = str(text_unit.get("text") or "").strip()
-
-        if text:
-            texts.append(text)
-
-    return "\n".join(texts)
-
-
-def _get_text_unit_language(*, fallback: str, text_unit: Any) -> str:
-    """Return a serialized TextUnit language or a fallback.
-
-    Parameters
-    ----------
-    fallback
-        Language to use when the text unit lacks a usable tag.
-    text_unit
-        Serialized TextUnit payload or another value.
-
-    Returns
-    -------
-    str
-        Source language tag when available, otherwise `fallback`.
-    """
-
-    if isinstance(text_unit, dict):
-        language = text_unit.get("language")
-
-        if isinstance(language, str) and language.strip():
-            return language.strip()
-
-    return fallback
-
-
 def _get_window_local_code(window: ExtractionWindow) -> Optional[str]:
-    """Return the source segment/table local code exposed by one window.
+    """Return the stripped local code exposed by an extraction window.
 
     Parameters
     ----------
@@ -1410,10 +331,8 @@ def _get_window_local_code(window: ExtractionWindow) -> Optional[str]:
     Returns
     -------
     Optional[str]
-        Stripped block or table local code, or `None` when absent.
+        Block or table local code, or ``None`` when unavailable.
     """
-
-    local_code: Any
 
     if window.block is not None:
         local_code = window.block.get("local_code")
@@ -1427,99 +346,6 @@ def _get_window_local_code(window: ExtractionWindow) -> Optional[str]:
 
     local_code_clean = str(local_code).strip()
     return local_code_clean or None
-
-
-def _group_contiguous_ordered_indexes(
-    *, indexes: list[int], ordered_indexes: list[int]
-) -> list[list[int]]:
-    """Group selected indexes that are adjacent in source order.
-
-    Parameters
-    ----------
-    indexes
-        Selected indexes.
-    ordered_indexes
-        Complete source-order index sequence.
-
-    Returns
-    -------
-    list[list[int]]
-        Source-ordered contiguous selected-index runs.
-    """
-
-    selected_indexes = set(indexes)
-    groups: list[list[int]] = []
-    current_group: list[int] = []
-
-    for index in ordered_indexes:
-        if index in selected_indexes:
-            current_group.append(index)
-            continue
-
-        if current_group:
-            groups.append(current_group)
-            current_group = []
-
-    if current_group:
-        groups.append(current_group)
-
-    return groups
-
-
-def _is_strong_source_boundary(*, boundary_index: int, source_text: str) -> bool:
-    """Return whether source punctuation marks a strong text boundary.
-
-    Periods embedded in decimal values, hierarchical codes, or dotted abbreviations are
-    not treated as sentence boundaries. Other supported punctuation marks are always
-    strong boundaries.
-
-    Parameters
-    ----------
-    boundary_index
-        Index of the punctuation character in `source_text`.
-    source_text
-        Normalized source text containing the candidate boundary.
-
-    Returns
-    -------
-    bool
-        True when the indexed punctuation is a strong boundary.
-
-    Raises
-    ------
-    ValueError
-        If `boundary_index` does not identify a supported punctuation character.
-    """
-
-    boundary_character = source_text[boundary_index]
-
-    if boundary_character in "!?;:":
-        return True
-
-    if boundary_character != ".":
-        raise ValueError(
-            f"Unsupported source-boundary character: {boundary_character!r}."
-        )
-
-    previous_character = source_text[boundary_index - 1] if boundary_index > 0 else ""
-    next_character = (
-        source_text[boundary_index + 1] if boundary_index + 1 < len(source_text) else ""
-    )
-
-    if previous_character.isalnum() and next_character.isalnum():
-        return False
-
-    token_match = re.search(r"([0-9a-z.]+)\.$", source_text[: boundary_index + 1])
-
-    if token_match is None:
-        return True
-
-    token_body = token_match.group(1)
-
-    if "." in token_body:
-        return False
-
-    return True
 
 
 def _normalize_code_for_parent_match(value: Any) -> str:
@@ -1544,7 +370,7 @@ def _normalize_code_for_parent_match(value: Any) -> str:
 
 
 def _normalize_statement_type_key(value: str) -> str:
-    """Build a stable comparison key for statement-type labels and aliases.
+    """Build a punctuation-insensitive statement-type comparison key.
 
     Parameters
     ----------
@@ -1554,185 +380,69 @@ def _normalize_statement_type_key(value: str) -> str:
     Returns
     -------
     str
-        Casefolded key with non-alphanumeric runs collapsed to one space.
+        Casefolded alphanumeric key with runs of punctuation collapsed to spaces.
     """
 
     return re.sub(r"[^0-9a-z]+", " ", str(value or "").casefold()).strip()
 
 
 def _normalize_text(value: str) -> str:
-    """Normalize source text for containment checks.
+    """Normalize visible source text for conservative containment checks.
 
     Parameters
     ----------
     value
-        Raw text.
+        Raw source text.
 
     Returns
     -------
     str
-        Lowercased text with collapsed whitespace.
+        Casefolded text with whitespace collapsed.
     """
 
     return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
 
 
-def _normalized_source_contains_visible_excerpt(
-    *, source_text_normalized: str, target_text_normalized: str
-) -> bool:
-    """Check whether normalized source text contains a visible source excerpt.
+def _validate_candidate_code(
+    *,
+    candidate: SFICandidate,
+    code_patterns_by_type: dict[str, str],
+    statement_type_code_type_by_label: dict[str, Optional[str]],
+    window: ExtractionWindow,
+) -> None:
+    """Validate that an optional candidate code is configured and source-exposed.
 
-    Candidate `source_text` is an evidence quote, so it must be present in the
-    source-visible support text after whitespace normalization. It must not pass merely
-    because its tokens appear as a non-contiguous ordered subsequence.
-
-    Parameters
-    ----------
-    source_text_normalized
-        Normalized source-visible text used as support.
-    target_text_normalized
-        Normalized candidate source_text that must be a visible excerpt.
-
-    Returns
-    -------
-    bool
-        True when the normalized target text is directly contained in the normalized
-        source text, otherwise False.
-    """
-
-    return (
-        bool(target_text_normalized)
-        and target_text_normalized in source_text_normalized
-    )
-
-
-def _remove_leading_statement_code(
-    *, source_text: str, statement_code: Optional[str]
-) -> str:
-    """Remove an exact standalone leading statement code from source text.
-
-    The code is removed only when it appears at the beginning of the normalized source
-    quote and is followed by a supported source-visible separator. This avoids treating
-    a longer code, embedded code-like text, or a code occurrence in the statement body
-    as a removable prefix.
-
-    Parameters
-    ----------
-    source_text
-        Candidate evidence quote that may begin with the separately captured code.
-    statement_code
-        Optional source-visible statement code stored on the candidate.
-
-    Returns
-    -------
-    str
-        Normalized source text with the leading code and separator removed when they
-        form an exact standalone prefix; otherwise the unchanged normalized text.
-    """
-
-    source_text_normalized = _normalize_text(source_text)
-
-    if statement_code is None:
-        return source_text_normalized
-
-    code = str(statement_code).strip().rstrip(" .:;-)–—")
-    code_normalized = _normalize_text(code)
-
-    if not code_normalized:
-        return source_text_normalized
-
-    separator_pattern = r"(?:\s*[-–—]\s*|[.:)]\s*|\s+)"
-    prefix_match = re.match(
-        rf"^{re.escape(code_normalized)}{separator_pattern}",
-        source_text_normalized,
-    )
-
-    if prefix_match is None:
-        return source_text_normalized
-
-    return source_text_normalized[prefix_match.end() :].strip()
-
-
-def _remove_trailing_statement_code(
-    *, source_text: str, statement_code: Optional[str]
-) -> str:
-    """Remove an exact standalone trailing statement code from source text.
-
-    The code is removed only when it appears at the end of the normalized source quote
-    and is preceded by a supported source-visible separator.
-
-    Parameters
-    ----------
-    source_text
-        Candidate evidence quote that may end with the separately captured code.
-    statement_code
-        Optional source-visible statement code stored on the candidate.
-
-    Returns
-    -------
-    str
-        Normalized source text with the trailing code and separator removed when they
-        form an exact standalone suffix; otherwise the unchanged normalized text.
-    """
-
-    source_text_normalized = _normalize_text(source_text)
-
-    if statement_code is None:
-        return source_text_normalized
-
-    code = str(statement_code).strip().rstrip(" .:;-)–—")
-    code_normalized = _normalize_text(code)
-
-    if not code_normalized:
-        return source_text_normalized
-
-    separator_pattern = r"(?:\s*[-–—]\s*|[.:)]\s*|\s+)"
-    suffix_match = re.search(
-        rf"{separator_pattern}{re.escape(code_normalized)}$",
-        source_text_normalized,
-    )
-
-    if suffix_match is None:
-        return source_text_normalized
-
-    return source_text_normalized[: suffix_match.start()].strip()
-
-
-def _resolve_candidate_statement_code_type(
-    *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
-) -> str:
-    """Resolve and validate the configured code type for one candidate code.
-
-    The statement-type policy is authoritative when it declares `code_type`. When it
-    does not, the candidate code must unambiguously match exactly one configured code
-    pattern.
+    This check deliberately does not decide whether the code is semantically attached
+    to the correct statement. The validation LLM handles that judgment. Python only
+    verifies that the exact code is allowed by configuration and appears in the
+    window's deterministic code evidence or local-code metadata.
 
     Parameters
     ----------
     candidate
-        Candidate containing a non-null statement code.
-    ctx
-        Extraction quality context containing code patterns and statement-type policy.
-
-    Returns
-    -------
-    str
-        Resolved configured code type.
+        Candidate containing an optional statement code.
+    code_patterns_by_type
+        Configured code regexes keyed by code type.
+    statement_type_code_type_by_label
+        Configured code type for each canonical statement type.
+    window
+        Source extraction window.
 
     Raises
     ------
     QualityError
-        If the code matches no configured pattern, conflicts with the statement-type
-        policy, or is ambiguous across multiple configured patterns.
+        If the code is not allowed by configuration or is not exposed by the window.
     """
 
-    assert candidate.statement_code is not None
+    if candidate.statement_code is None:
+        return
+
     matching_code_types = sorted(
         code_type
-        for code_type, pattern in ctx.code_patterns_by_type.items()
+        for code_type, pattern in code_patterns_by_type.items()
         if re.fullmatch(pattern, candidate.statement_code) is not None
     )
-    configured_code_type = ctx.statement_type_code_type_by_label.get(
+    configured_code_type = statement_type_code_type_by_label.get(
         candidate.statement_type
     )
 
@@ -1740,722 +450,205 @@ def _resolve_candidate_statement_code_type(
         if configured_code_type not in matching_code_types:
             raise QualityError(
                 f"Candidate {candidate.candidate_id!r} has statement_code "
-                f"{candidate.statement_code!r}, which does not fully match the "
-                f"configured code pattern {configured_code_type!r} for statement_type "
+                f"{candidate.statement_code!r}, which does not match configured "
+                f"code type {configured_code_type!r} for statement_type "
                 f"{candidate.statement_type!r}."
             )
 
-        return configured_code_type
+        resolved_code_type = configured_code_type
+    else:
+        if len(matching_code_types) != 1:
+            raise QualityError(
+                f"Candidate {candidate.candidate_id!r} has statement_code "
+                f"{candidate.statement_code!r}, which must match exactly one "
+                f"configured code pattern when its statement type has no code_type; "
+                f"matched {matching_code_types}."
+            )
 
-    if not matching_code_types:
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} has statement_code "
-            f"{candidate.statement_code!r}, but it does not fully match any configured "
-            f"code pattern. Use null when no configured source code applies."
-        )
+        resolved_code_type = matching_code_types[0]
 
-    if len(matching_code_types) > 1:
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} has statement_code "
-            f"{candidate.statement_code!r}, which ambiguously matches configured code "
-            f"types {matching_code_types}. Configure statement_type_policy.code_type "
-            f"for statement_type {candidate.statement_type!r} or return null."
-        )
-
-    return matching_code_types[0]
-
-
-def _source_code_values_match(*, candidate_code: str, source_code: str) -> bool:
-    """Check exact source-surface equality for two code values.
-
-    Parameters
-    ----------
-    candidate_code
-        Candidate code emitted by the LLM.
-    source_code
-        Code value present in the extraction window.
-
-    Returns
-    -------
-    bool
-        True when the stripped values are exactly equal, including case and punctuation.
-    """
-
-    return candidate_code.strip() == source_code.strip()
-
-
-def _source_supports_contiguous_text(
-    *, supports: list[SourceTextSupport], target_text_normalized: str
-) -> bool:
-    """Check whether source supports contain the target as contiguous wording.
-
-    Parameters
-    ----------
-    supports
-        Candidate-scoped cell, row, adjacent-column, or block supports.
-    target_text_normalized
-        Normalized candidate description.
-
-    Returns
-    -------
-    bool
-        True when a source support contains the complete target text contiguously.
-    """
-
-    return bool(target_text_normalized) and any(
-        target_text_normalized in support.text_normalized for support in supports
+    local_code = _get_window_local_code(window)
+    matches_local_code = (
+        local_code is not None and candidate.statement_code == local_code
+    )
+    matches_code_evidence = any(
+        code_match.code_type == resolved_code_type
+        and code_match.value == candidate.statement_code
+        for code_match in window.code_matches
     )
 
+    if not matches_local_code and not matches_code_evidence:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} has statement_code "
+            f"{candidate.statement_code!r}, but that exact code is not exposed by "
+            f"the extraction window as local_code or typed code evidence."
+        )
 
-def _source_support_contains_complete_text(
-    *,
-    structural_label_keys: set[str],
-    support: SourceTextSupport,
-    target_text_normalized: str,
-) -> bool:
-    """Check whether one evidence span supports a complete description target.
+
+def _validate_candidate_ids(result: SFIExtractionResult) -> None:
+    """Validate sequential source-window candidate identifiers.
 
     Parameters
     ----------
-    structural_label_keys
-        Normalized canonical statement-type labels and aliases from runtime config.
-    support
-        Source evidence span to inspect.
-    target_text_normalized
-        Normalized candidate description target.
+    result
+        Structured extraction result.
 
-    Returns
-    -------
-    bool
-        True when the target equals the complete span or begins and ends at strong
-        source boundaries within it.
+    Raises
+    ------
+    QualityError
+        If candidate IDs do not exactly match their 1-based list positions.
     """
 
-    if not support.description_complete or not target_text_normalized:
-        return False
+    expected_ids = [
+        f"sfi_{candidate_number}"
+        for candidate_number in range(1, len(result.sfi_candidates) + 1)
+    ]
+    actual_ids = [candidate.candidate_id for candidate in result.sfi_candidates]
 
-    boundary_characters = frozenset(".!?;:")
-    source_text = support.text_normalized
-    search_start = 0
-
-    while True:
-        match_start = source_text.find(target_text_normalized, search_start)
-
-        if match_start < 0:
-            return False
-
-        match_end = match_start + len(target_text_normalized)
-        left_boundary_index = match_start - 1
-
-        while left_boundary_index >= 0 and source_text[left_boundary_index].isspace():
-            left_boundary_index -= 1
-
-        right_boundary_index = match_end
-
-        while (
-            right_boundary_index < len(source_text)
-            and source_text[right_boundary_index].isspace()
-        ):
-            right_boundary_index += 1
-
-        target_starts_with_structural_label = (
-            match_start == 0 or source_text[match_start - 1].isspace()
-        ) and _text_starts_with_structural_label(
-            structural_label_keys=structural_label_keys,
-            text=target_text_normalized,
-        )
-        left_bounded = (
-            left_boundary_index < 0
-            or (
-                source_text[left_boundary_index] in boundary_characters
-                and _is_strong_source_boundary(
-                    boundary_index=left_boundary_index, source_text=source_text
-                )
-            )
-            or target_starts_with_structural_label
-        )
-        target_boundary_index = len(target_text_normalized) - 1
-        target_ends_at_boundary = target_text_normalized[
-            target_boundary_index
-        ] in boundary_characters and _is_strong_source_boundary(
-            boundary_index=target_boundary_index,
-            source_text=target_text_normalized,
-        )
-        next_text_starts_with_structural_label = right_boundary_index < len(
-            source_text
-        ) and _text_starts_with_structural_label(
-            structural_label_keys=structural_label_keys,
-            text=source_text[right_boundary_index:],
-        )
-        right_bounded = (
-            right_boundary_index >= len(source_text)
-            or (
-                source_text[right_boundary_index] in boundary_characters
-                and _is_strong_source_boundary(
-                    boundary_index=right_boundary_index, source_text=source_text
-                )
-            )
-            or next_text_starts_with_structural_label
-            or target_ends_at_boundary
+    if actual_ids != expected_ids:
+        raise QualityError(
+            f"SFI candidate IDs must match their 1-based list positions exactly. "
+            f"Expected {expected_ids!r}; got {actual_ids!r}."
         )
 
-        if left_bounded and right_bounded:
-            return True
 
-        search_start = match_start + 1
+def _validate_candidate_source_exists(
+    *, candidate: SFICandidate, window: ExtractionWindow
+) -> None:
+    """Validate that candidate evidence text exists in source-visible window text.
 
-
-def _source_text_contains_statement_code(
-    *, source_text_normalized: str, statement_code_normalized: str
-) -> bool:
-    """Check whether source text contains an exact statement-code occurrence.
-
-    The check uses normalized text while rejecting obvious embedded-code matches. A
-    period immediately followed by non-whitespace is treated as a code continuation,
-    so a parent code such as `1.2` does not pass only because `1.2.3` is visible. A
-    period followed by whitespace or the end of the source text is treated as terminal
-    punctuation, allowing source forms such as `1.2. Statement text` and `1.2.`.
-
-    Parameters
-    ----------
-    source_text_normalized
-        Normalized source-visible text to search.
-    statement_code_normalized
-        Normalized statement code to locate.
-
-    Returns
-    -------
-    bool
-        True when the statement code appears as its own code-like token in the source
-        text, otherwise False.
-    """
-
-    if not source_text_normalized or not statement_code_normalized:
-        return False
-
-    code_continuation_chars = r"0-9a-z_/-"
-    pattern = (
-        rf"(?<![.{code_continuation_chars}])"
-        rf"{re.escape(statement_code_normalized)}"
-        rf"(?![{code_continuation_chars}]|\.(?=\S))"
-    )
-    return re.search(pattern, source_text_normalized) is not None
-
-
-def _source_support_has_candidate_language(
-    *, candidate: SFICandidate, support: SourceTextSupport, window: ExtractionWindow
-) -> bool:
-    """Check candidate language against one joint source evidence span.
+    This is a conservative anti-hallucination check, not a description-completeness,
+    semantic, or citation-minimality check. The validation LLM decides whether the
+    candidate description and selected source locations are appropriate.
 
     Parameters
     ----------
     candidate
-        Candidate whose language tag should match the evidence span.
-    support
-        Joint source evidence span supporting the candidate.
+        Candidate whose source wording should exist in the window.
     window
-        Extraction window providing the fallback primary language.
+        Source extraction window.
 
-    Returns
-    -------
-    bool
-        True when the candidate language equals the span language or `mul` for a
-        multilingual span.
+    Raises
+    ------
+    QualityError
+        If the candidate evidence quote is absent from source-visible window text.
     """
 
-    languages = support.languages or frozenset({window.primary_language})
-    expected_language = next(iter(languages)) if len(languages) == 1 else "mul"
-    return candidate.language == expected_language
+    window_text = _normalize_text(window.source_text)
+    source_text_normalized = _normalize_text(candidate.source_text)
+
+    if not source_text_normalized or source_text_normalized not in window_text:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} source_text is not present in "
+            "the source-visible extraction-window text."
+        )
 
 
-def _source_support_has_candidate_locations(
-    *, candidate: SFICandidate, support: SourceTextSupport, window: ExtractionWindow
-) -> bool:
-    """Check that one evidence span exactly matches candidate table citations.
-
-    Parameters
-    ----------
-    candidate
-        Candidate whose table citations should identify the evidence span.
-    support
-        Joint source evidence span supporting the candidate.
-    window
-        Extraction window containing either a block or table payload.
-
-    Returns
-    -------
-    bool
-        True for block windows, or when table header/body indexes exactly equal the
-        span's contributing locations.
-    """
-
-    if window.table is None:
-        return not support.table_header_indexes and not support.table_row_indexes
-
-    return support.table_header_indexes == frozenset(
-        candidate.table_header_indexes
-    ) and support.table_row_indexes == frozenset(candidate.table_row_indexes)
-
-
-def _source_support_matches_candidate(
+def _validate_candidate_statement_type(
     *,
     candidate: SFICandidate,
-    structural_label_keys: set[str],
-    support: SourceTextSupport,
-    window: ExtractionWindow,
-) -> bool:
-    """Check whether one source span jointly supports all candidate evidence fields.
+    statement_type_alias_to_canonical: dict[str, str],
+    statement_type_normalized_by_label: dict[str, str],
+) -> None:
+    """Validate canonical statement type and normalized type agreement.
 
     Parameters
     ----------
     candidate
         Candidate to validate.
-    structural_label_keys
-        Normalized canonical statement-type labels and aliases from runtime config.
-    support
-        Source-visible evidence span to inspect.
-    window
-        Source extraction window containing the span.
-
-    Returns
-    -------
-    bool
-        True when the same span supports the complete description, evidence quote,
-        language, and exact table citations. Candidate code evidence is validated
-        separately because a block/table local_code may be metadata rather than text.
-    """
-
-    description_targets = _build_description_support_targets(
-        description=candidate.description, statement_code=candidate.statement_code
-    )
-
-    if not any(
-        _source_support_contains_complete_text(
-            structural_label_keys=structural_label_keys,
-            support=support,
-            target_text_normalized=description_target,
-        )
-        for description_target in description_targets
-    ):
-        return False
-
-    source_text_normalized = _normalize_text(candidate.source_text)
-
-    if not _normalized_source_contains_visible_excerpt(
-        source_text_normalized=support.text_normalized,
-        target_text_normalized=source_text_normalized,
-    ):
-        return False
-
-    return _source_support_has_candidate_language(
-        candidate=candidate, support=support, window=window
-    ) and _source_support_has_candidate_locations(
-        candidate=candidate, support=support, window=window
-    )
-
-
-def _statement_code_is_directly_linked_to_description(candidate: SFICandidate) -> bool:
-    """Check that a text-derived code is directly paired with its description.
-
-    A valid coded quote either contains the code as part of the complete description,
-    or consists only of the complete description plus the same standalone leading or
-    trailing code. This rejects codes borrowed from another statement in a broader
-    block or cited table range.
-
-    Parameters
-    ----------
-    candidate
-        Candidate whose code, description, and source quote should form one source item.
-
-    Returns
-    -------
-    bool
-        True when the source quote directly pairs the code and complete description.
-    """
-
-    if candidate.statement_code is None:
-        return True
-
-    description_normalized = _normalize_text(candidate.description)
-    source_text_normalized = _normalize_text(candidate.source_text)
-    statement_code_normalized = _normalize_text(candidate.statement_code)
-
-    if not description_normalized or not source_text_normalized:
-        return False
-
-    if (
-        source_text_normalized == description_normalized
-        and _source_text_contains_statement_code(
-            source_text_normalized=description_normalized,
-            statement_code_normalized=statement_code_normalized,
-        )
-    ):
-        return True
-
-    source_text_without_leading_code = _remove_leading_statement_code(
-        source_text=candidate.source_text,
-        statement_code=candidate.statement_code,
-    )
-    source_text_without_trailing_code = _remove_trailing_statement_code(
-        source_text=candidate.source_text,
-        statement_code=candidate.statement_code,
-    )
-    return description_normalized in {
-        source_text_without_leading_code,
-        source_text_without_trailing_code,
-    }
-
-
-def _text_starts_with_structural_label(
-    *, structural_label_keys: set[str], text: str
-) -> bool:
-    """Check whether text starts with a configured source-facing field label.
-
-    The visible label before the first colon is normalized with the same generic
-    punctuation-insensitive key used for runtime statement-type labels and aliases.
-    This allows adjacent labeled fields on one physical line without hard-coding any
-    curriculum vocabulary or treating arbitrary text before a later colon as a label.
-
-    Parameters
-    ----------
-    structural_label_keys
-        Normalized canonical statement-type labels and aliases from runtime config.
-    text
-        Normalized source text beginning at a possible field-label boundary.
-
-    Returns
-    -------
-    bool
-        True when the first colon-delimited prefix exactly matches a configured label.
-    """
-
-    label_text, separator, _ = text.lstrip().partition(":")
-
-    if not separator:
-        return False
-
-    label_key = _normalize_statement_type_key(label_text)
-    return bool(label_key and label_key in structural_label_keys)
-
-
-def _validate_candidate_ids_and_source_order(
-    ctx: SFIExtractionQualityCtx,
-) -> None:
-    """Validate sequential candidate IDs and nondecreasing source order.
-
-    Candidate list position becomes downstream source-order provenance, so IDs must
-    exactly encode that position and candidates must not move backward through the
-    visible block or table content. Candidates with the same source-order key are
-    allowed because repeated or jointly sourced items can share an exact location.
-
-    Parameters
-    ----------
-    ctx
-        Extraction quality context containing candidates and their source window.
+    statement_type_alias_to_canonical
+        Normalized canonical labels and aliases mapped to canonical labels.
+    statement_type_normalized_by_label
+        Canonical labels mapped to their configured normalized statement type.
 
     Raises
     ------
     QualityError
-        If candidate IDs are not exactly `sfi_1` through `sfi_N` in list order, or if
-        the candidate list moves backward in source order.
-    """
-
-    candidates = ctx.extraction_result.sfi_candidates
-    actual_candidate_ids = [candidate.candidate_id for candidate in candidates]
-    expected_candidate_ids = [
-        f"sfi_{candidate_number}" for candidate_number in range(1, len(candidates) + 1)
-    ]
-
-    if actual_candidate_ids != expected_candidate_ids:
-        raise QualityError(
-            f"SFI candidate IDs must be sequential and correspond exactly to list "
-            f"position. Expected {expected_candidate_ids!r}; got "
-            f"{actual_candidate_ids!r}. Return candidates in source order using "
-            f"candidate_id values sfi_1 through sfi_N."
-        )
-
-    source_order_keys = [
-        _candidate_source_order_key(candidate=candidate, ctx=ctx)
-        for candidate in candidates
-    ]
-
-    for candidate_index in range(1, len(candidates)):
-        previous_key = source_order_keys[candidate_index - 1]
-        current_key = source_order_keys[candidate_index]
-
-        if current_key >= previous_key:
-            continue
-
-        previous_candidate = candidates[candidate_index - 1]
-        current_candidate = candidates[candidate_index]
-        raise QualityError(
-            f"SFI candidates must be returned in source order. Candidate "
-            f"{current_candidate.candidate_id!r} appears before "
-            f"{previous_candidate.candidate_id!r} in the visible source but was "
-            f"returned later. Order block candidates by first contributing text; "
-            f"order table candidates by headers before body rows, rows in source "
-            f"order, and cells/text from left to right."
-        )
-
-
-def _validate_candidate_source_evidence(
-    *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
-) -> None:
-    """Validate all source-grounded candidate fields against one evidence span.
-
-    The same source-visible span must support the complete description, evidence quote,
-    language, and exact table citations. Candidate code type and locality are validated
-    separately so source-visible block/table local_code metadata is handled correctly.
-
-    Parameters
-    ----------
-    candidate
-        Candidate to validate.
-    ctx
-        Extraction quality context containing the source window.
-
-    Raises
-    ------
-    QualityError
-        If description and source text are unrelated, or no single source span jointly
-        supports all candidate evidence fields.
-    """
-
-    if not _candidate_source_text_is_linked_to_description(candidate):
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} has source_text that does not quote "
-            f"its description. source_text must be a contiguous excerpt of description, "
-            f"or contain the complete description with visible code/context."
-        )
-
-    supports = _build_candidate_source_text_supports(candidate=candidate, ctx=ctx)
-    matching_supports = [
-        support
-        for support in supports
-        if _source_support_matches_candidate(
-            candidate=candidate,
-            structural_label_keys=set(ctx.statement_type_alias_to_canonical),
-            support=support,
-            window=ctx.window,
-        )
-    ]
-
-    if matching_supports:
-        redundant_locations = _find_redundant_candidate_table_locations(
-            candidate=candidate, ctx=ctx
-        )
-
-        if redundant_locations:
-            raise QualityError(
-                f"Candidate {candidate.candidate_id!r} cites table locations that do "
-                f"not contribute to its joint source evidence: "
-                f"{redundant_locations}. Cite only the exact raw rows needed for the "
-                f"description, source_text, optional statement_code, and language."
-            )
-
-        return
-
-    location_guidance = (
-        " For table candidates, table_header_indexes and table_row_indexes must equal "
-        "the exact raw rows contributing to that same evidence span; do not include "
-        "unrelated context rows."
-        if ctx.window.table is not None
-        else ""
-    )
-    raise QualityError(
-        f"Candidate {candidate.candidate_id!r} is not jointly supported by one "
-        f"source-visible evidence span. The same span must support its complete "
-        f"description, source_text, language, and source locations. "
-        f"statement_code is validated separately against local_code or typed code "
-        f"matches.{location_guidance}"
-    )
-
-
-def _validate_candidate_statement_code(
-    *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
-) -> None:
-    """Validate candidate code type, source identity, and statement association.
-
-    A candidate code must exactly match either the window `local_code` or a typed
-    `window.code_matches` value. Regardless of which source exposes the code, the
-    candidate's own source quote must contain the exact standalone code and directly
-    pair it with the complete candidate description. This prevents segment- or
-    table-level identifiers from being copied onto unrelated candidates.
-
-    Parameters
-    ----------
-    candidate
-        Candidate to validate.
-    ctx
-        Extraction quality context containing the source window and code policy.
-
-    Raises
-    ------
-    QualityError
-        If the candidate code is untyped, unsupported, not source-visible, or
-        associated with a different statement.
-    """
-
-    if candidate.statement_code is None:
-        return
-
-    code_type = _resolve_candidate_statement_code_type(candidate=candidate, ctx=ctx)
-    local_code = _get_window_local_code(ctx.window)
-    matches_local_code = local_code is not None and _source_code_values_match(
-        candidate_code=candidate.statement_code, source_code=local_code
-    )
-    matching_code_matches = [
-        code_match
-        for code_match in ctx.window.code_matches
-        if code_match.code_type == code_type
-        and _source_code_values_match(
-            candidate_code=candidate.statement_code,
-            source_code=code_match.value,
-        )
-    ]
-
-    if not matches_local_code and not matching_code_matches:
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} has statement_code "
-            f"{candidate.statement_code!r}, but it is neither the exact window "
-            f"local_code nor an exact {code_type!r} code_match value. Copy the exact "
-            f"source code or use null."
-        )
-
-    if not _source_text_contains_statement_code(
-        source_text_normalized=_normalize_text(candidate.source_text),
-        statement_code_normalized=_normalize_text(candidate.statement_code),
-    ):
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} has statement_code "
-            f"{candidate.statement_code!r}, but candidate source_text does not contain "
-            f"that exact standalone code. Quote the code together with the complete "
-            f"statement description, or use null."
-        )
-
-    if not _statement_code_is_directly_linked_to_description(candidate):
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} has statement_code "
-            f"{candidate.statement_code!r}, but source_text does not directly pair that "
-            f"code with the complete candidate description. Do not borrow a code from "
-            f"another statement, a segment label, or a table identifier."
-        )
-
-
-def _validate_candidate_statement_type_policy(
-    *, candidate: SFICandidate, ctx: SFIExtractionQualityCtx
-) -> None:
-    """Validate candidate statement_type against runtime policy.
-
-    Parameters
-    ----------
-    candidate
-        Candidate to validate.
-    ctx
-        Quality-check context.
-
-    Raises
-    ------
-    QualityError
-        If the candidate uses an unknown alias, non-canonical label, or mismatched
-        normalized_statement_type.
+        If the statement type is unsupported, non-canonical, or normalized incorrectly.
     """
 
     statement_type_key = _normalize_statement_type_key(candidate.statement_type)
-    canonical_statement_type = ctx.statement_type_alias_to_canonical.get(
-        statement_type_key
-    )
-    allowed_statement_types = sorted(ctx.statement_type_normalized_by_label)
+    canonical_statement_type = statement_type_alias_to_canonical.get(statement_type_key)
 
     if canonical_statement_type is None:
         raise QualityError(
             f"Candidate {candidate.candidate_id!r} has unsupported statement_type "
-            f"{candidate.statement_type!r}. Use one of the configured canonical "
-            f"statement types: {allowed_statement_types}."
+            f"{candidate.statement_type!r}."
         )
 
     if candidate.statement_type != canonical_statement_type:
         raise QualityError(
-            f"Candidate {candidate.candidate_id!r} uses statement_type "
-            f"{candidate.statement_type!r}, which is an alias or non-canonical "
-            f"label. Use canonical statement_type {canonical_statement_type!r}."
+            f"Candidate {candidate.candidate_id!r} must use canonical statement_type "
+            f"{canonical_statement_type!r}, not {candidate.statement_type!r}."
         )
 
-    expected_normalized_statement_type = ctx.statement_type_normalized_by_label[
+    expected_normalized_type = statement_type_normalized_by_label[
         canonical_statement_type
     ]
 
-    if candidate.normalized_statement_type != expected_normalized_statement_type:
+    if candidate.normalized_statement_type != expected_normalized_type:
         raise QualityError(
-            f"Candidate {candidate.candidate_id!r} has statement_type "
-            f"{candidate.statement_type!r}, which must use "
-            f"normalized_statement_type {expected_normalized_statement_type!r}; "
-            f"got {candidate.normalized_statement_type!r}."
+            f"Candidate {candidate.candidate_id!r} with statement_type "
+            f"{canonical_statement_type!r} must use normalized_statement_type "
+            f"{expected_normalized_type!r}; got "
+            f"{candidate.normalized_statement_type!r}."
         )
 
 
-def _validate_candidate_table_indexes(ctx: SFIExtractionQualityCtx) -> None:
-    """Validate table header/body indexes against the window table payload.
+def _validate_candidate_table_indexes(
+    *, candidate: SFICandidate, window: ExtractionWindow
+) -> None:
+    """Validate candidate table references against the extraction window.
 
     Parameters
     ----------
-    ctx
-        Quality-check context.
+    candidate
+        Candidate containing table header/body references.
+    window
+        Source extraction window.
 
     Raises
     ------
     QualityError
-        If a candidate uses indexes outside the table window, omits all table indexes
-        for a table-derived candidate, or uses table indexes in a block window.
+        If block candidates cite table rows, table candidates omit all references, or
+        any cited index is outside the supplied table window.
     """
 
-    if ctx.window.table is None:
-        invalid_block_candidates = [
-            candidate.candidate_id
-            for candidate in ctx.extraction_result.sfi_candidates
-            if candidate.table_header_indexes or candidate.table_row_indexes
-        ]
+    table = window.table
 
-        if invalid_block_candidates:
+    if table is None:
+        if candidate.table_header_indexes or candidate.table_row_indexes:
             raise QualityError(
-                f"Block-window candidates must not include table_header_indexes or "
-                f"table_row_indexes: {invalid_block_candidates}"
+                f"Block-window candidate {candidate.candidate_id!r} must not cite "
+                "table header or body indexes."
             )
 
         return
 
-    allowed_header_indexes = set(range(len(ctx.window.table.header_rows)))
-    allowed_row_indexes = set(ctx.window.table.row_indexes)
-
-    for candidate in ctx.extraction_result.sfi_candidates:
-        if not candidate.table_header_indexes and not candidate.table_row_indexes:
-            raise QualityError(
-                f"Table-window candidate {candidate.candidate_id!r} must include at "
-                f"least one table_header_index or table_row_index from this window. "
-                f"Allowed header indexes are {sorted(allowed_header_indexes)}; "
-                f"allowed row indexes are {sorted(allowed_row_indexes)}."
-            )
-
-        invalid_header_indexes = sorted(
-            set(candidate.table_header_indexes) - allowed_header_indexes
-        )
-        invalid_row_indexes = sorted(
-            set(candidate.table_row_indexes) - allowed_row_indexes
+    if not candidate.table_header_indexes and not candidate.table_row_indexes:
+        raise QualityError(
+            f"Table-window candidate {candidate.candidate_id!r} must cite at least "
+            "one supplied header or body row index."
         )
 
-        if invalid_header_indexes:
-            raise QualityError(
-                f"Candidate {candidate.candidate_id!r} references "
-                f"table_header_indexes outside this window: {invalid_header_indexes}. "
-                f"Allowed header indexes are {sorted(allowed_header_indexes)}."
-            )
+    allowed_header_indexes = set(range(len(table.header_rows)))
+    allowed_row_indexes = set(table.row_indexes)
+    invalid_header_indexes = sorted(
+        set(candidate.table_header_indexes) - allowed_header_indexes
+    )
+    invalid_row_indexes = sorted(set(candidate.table_row_indexes) - allowed_row_indexes)
 
-        if invalid_row_indexes:
-            raise QualityError(
-                f"Candidate {candidate.candidate_id!r} references table_row_indexes "
-                f"outside this window: {invalid_row_indexes}. Allowed row indexes are "
-                f"{sorted(allowed_row_indexes)}."
-            )
+    if invalid_header_indexes:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} cites unavailable table header "
+            f"indexes: {invalid_header_indexes}."
+        )
+
+    if invalid_row_indexes:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} cites unavailable table body row "
+            f"indexes: {invalid_row_indexes}."
+        )
 
 
 def _validate_dedup_merge_group_code_guardrails(
@@ -2918,126 +1111,23 @@ def _validate_resolved_child_uses_strongest_local_parent(
     )
 
 
-def _validate_source_language(
-    *,
-    description: Optional[str],
-    entity_label: str,
-    language: str,
-    source_text: str,
-    supports: list[SourceTextSupport],
+def _validate_result_identity(
+    *, result: SFIExtractionResult, window: ExtractionWindow
 ) -> None:
-    """Validate output language against source units supporting the text.
+    """Validate exact extraction-window identity copying.
 
     Parameters
     ----------
-    description
-        Candidate description, or `None` for auxiliary material.
-    entity_label
-        Human-readable entity label for errors.
-    language
-        Output language tag to validate.
-    source_text
-        Source-visible evidence quote.
-    supports
-        Candidate-scoped source text and language supports.
+    result
+        Structured extraction result.
+    window
+        Source extraction window.
 
     Raises
     ------
     QualityError
-        If the output language is incompatible with all source-supported language
-        combinations for the description and source quote.
+        If any window identity field differs from the source window.
     """
-
-    source_language_sets = _find_language_sets_for_text(
-        supports=supports, target_text=source_text
-    )
-
-    if not source_language_sets:
-        return
-
-    description_language_sets = (
-        _find_language_sets_for_text(supports=supports, target_text=description)
-        if description is not None
-        else [frozenset()]
-    )
-
-    if description is not None and not description_language_sets:
-        return
-
-    allowed_languages = {
-        next(iter(combined)) if len(combined) == 1 else "mul"
-        for source_languages in source_language_sets
-        for description_languages in description_language_sets
-        for combined in (source_languages | description_languages,)
-    }
-
-    if language in allowed_languages:
-        return
-
-    raise QualityError(
-        f"{entity_label} has language {language!r}, but its source-supported text "
-        f"requires one of {sorted(allowed_languages)!r}. Use the source TextUnit/cell "
-        f"language, or 'mul' when the candidate combines multiple source languages."
-    )
-
-
-def _validate_source_text_is_visible(
-    *, ctx: SFIExtractionQualityCtx, entity_label: str, source_text: str
-) -> None:
-    """Validate that text is a non-empty source-visible excerpt.
-
-    Parameters
-    ----------
-    ctx
-        Quality-check context.
-    entity_label
-        Human-readable label for the candidate or auxiliary record being validated.
-    source_text
-        Source text claimed by the LLM output.
-
-    Raises
-    ------
-    QualityError
-        If source text is empty or not visible in source-visible window text.
-    """
-
-    source_text_normalized = _normalize_text(source_text)
-
-    if not source_text_normalized:
-        raise QualityError(f"{entity_label} has empty source_text.")
-
-    supports = _build_window_source_text_supports(ctx)
-
-    if _source_supports_contiguous_text(
-        supports=supports, target_text_normalized=source_text_normalized
-    ):
-        return
-
-    raise QualityError(
-        f"{entity_label} source_text is not a contiguous source-visible excerpt in "
-        f"the source window after whitespace normalization. Quote visible block/table "
-        f"text instead of paraphrasing, skipping intervening source units, using "
-        f"constructed table source_text, source-context headings, or helper-only "
-        f"context."
-    )
-
-
-def _validate_window_identity(ctx: SFIExtractionQualityCtx) -> None:
-    """Validate that the LLM copied the SFI extraction window identity correctly.
-
-    Parameters
-    ----------
-    ctx
-        Quality-check context.
-
-    Raises
-    ------
-    QualityError
-        If window identifiers do not match the source window.
-    """
-
-    result = ctx.extraction_result
-    window = ctx.window
 
     if result.window_id != window.window_id:
         raise QualityError(
@@ -3091,68 +1181,118 @@ def verify_sfi_dedup_review_quality(
     )
 
 
-def verify_sfi_extraction_quality(
+def verify_sfi_extraction_integrity(
     *,
     extraction_result: SFIExtractionResult,
     kg_config: CreateKGConfig,
     window: ExtractionWindow,
 ) -> None:
-    """Run SFI extraction quality checks on a structured LLM response.
+    """Validate universal integrity constraints for an SFI extraction result.
+
+    This function intentionally avoids curriculum semantics, punctuation heuristics,
+    statement-completeness judgments, citation minimality, and hierarchy inference.
+    Those checks belong to the second-stage validation LLM.
 
     Parameters
     ----------
     extraction_result
-        Parsed SFI extraction result.
+        Draft or final structured extraction result.
     kg_config
-        Runtime KG configuration containing statement-type policy.
+        Runtime KG configuration.
     window
-        Source extraction window passed to the LLM.
+        Source extraction window.
 
     Raises
     ------
     QualityError
-        If any quality check fails.
+        If the result violates a stable identity, policy, source-existence, or
+        reference-integrity constraint.
     """
 
-    ctx = SFIExtractionQualityCtx(
-        code_patterns_by_type=dict(kg_config.academic_standards.code_patterns),
-        extraction_result=extraction_result,
-        statement_type_alias_to_canonical=_build_statement_type_alias_map(kg_config),
-        statement_type_code_type_by_label={
-            item.statement_type: item.code_type
-            for item in kg_config.academic_standards.statement_type_policy
-        },
-        statement_type_normalized_by_label={
-            item.statement_type: item.normalized_statement_type
-            for item in kg_config.academic_standards.statement_type_policy
-        },
-        window=window,
+    statement_type_alias_to_canonical = _build_statement_type_alias_map(kg_config)
+    statement_type_code_type_by_label = {
+        item.statement_type: item.code_type
+        for item in kg_config.academic_standards.statement_type_policy
+    }
+    statement_type_normalized_by_label = {
+        item.statement_type: item.normalized_statement_type
+        for item in kg_config.academic_standards.statement_type_policy
+    }
+
+    _validate_result_identity(result=extraction_result, window=window)
+    _validate_candidate_ids(extraction_result)
+
+    for candidate in extraction_result.sfi_candidates:
+        _validate_candidate_statement_type(
+            candidate=candidate,
+            statement_type_alias_to_canonical=statement_type_alias_to_canonical,
+            statement_type_normalized_by_label=statement_type_normalized_by_label,
+        )
+        _validate_candidate_table_indexes(candidate=candidate, window=window)
+        _validate_candidate_source_exists(candidate=candidate, window=window)
+        _validate_candidate_code(
+            candidate=candidate,
+            code_patterns_by_type=dict(kg_config.academic_standards.code_patterns),
+            statement_type_code_type_by_label=statement_type_code_type_by_label,
+            window=window,
+        )
+
+    window_text = _normalize_text(window.source_text)
+
+    for auxiliary_candidate in extraction_result.auxiliary_candidates:
+        source_text_normalized = _normalize_text(auxiliary_candidate.source_text)
+
+        if not source_text_normalized or source_text_normalized not in window_text:
+            raise QualityError(
+                f"Auxiliary candidate {auxiliary_candidate.auxiliary_id!r} "
+                f"source_text is not present in the source-visible extraction-window "
+                f"text."
+            )
+
+
+def verify_sfi_extraction_validation_integrity(
+    *,
+    draft_result: SFIExtractionResult,
+    kg_config: CreateKGConfig,
+    validation_verdict: SFIExtractionValidationVerdict,
+    window: ExtractionWindow,
+) -> None:
+    """Validate the structured output of the SFI validation LLM.
+
+    Parameters
+    ----------
+    draft_result
+        First-stage extraction result reviewed by the validation LLM.
+    kg_config
+        Runtime KG configuration.
+    validation_verdict
+        Structured validation verdict containing an optional corrected result.
+    window
+        Source extraction window.
+
+    Raises
+    ------
+    QualityError
+        If the verdict contradicts its schema contract or its corrected result violates
+        universal extraction integrity constraints.
+    """
+
+    if validation_verdict.passed:
+        verify_sfi_extraction_integrity(
+            extraction_result=draft_result, kg_config=kg_config, window=window
+        )
+        return
+
+    corrected_result = validation_verdict.corrected_result
+
+    if corrected_result is None:
+        raise QualityError(
+            "A failed SFI extraction validation verdict must include corrected_result."
+        )
+
+    verify_sfi_extraction_integrity(
+        extraction_result=corrected_result, kg_config=kg_config, window=window
     )
-
-    _validate_window_identity(ctx)
-    _validate_candidate_table_indexes(ctx)
-
-    for candidate in ctx.extraction_result.sfi_candidates:
-        _validate_candidate_statement_type_policy(candidate=candidate, ctx=ctx)
-        _validate_candidate_statement_code(candidate=candidate, ctx=ctx)
-        _validate_candidate_source_evidence(candidate=candidate, ctx=ctx)
-
-    _validate_candidate_ids_and_source_order(ctx)
-    window_supports = _build_window_source_text_supports(ctx)
-
-    for auxiliary_candidate in ctx.extraction_result.auxiliary_candidates:
-        _validate_source_text_is_visible(
-            ctx=ctx,
-            entity_label=f"Auxiliary candidate {auxiliary_candidate.auxiliary_id!r}",
-            source_text=auxiliary_candidate.source_text,
-        )
-        _validate_source_language(
-            description=None,
-            entity_label=f"Auxiliary candidate {auxiliary_candidate.auxiliary_id!r}",
-            language=auxiliary_candidate.language,
-            source_text=auxiliary_candidate.source_text,
-            supports=window_supports,
-        )
 
 
 def verify_sfi_has_child_resolution_quality(

@@ -13,6 +13,7 @@ from skg.kgs.schemas import (
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
     SFIExtractionResult,
+    SFIExtractionValidationVerdict,
     SFIHasChildResolutionRequest,
     SFIHasChildResolutionResponse,
 )
@@ -120,28 +121,29 @@ def create_sfi_extraction_agent(
     kg_config: CreateKGConfig,
     max_retries: int = 3,
     model_config: ModelConfig,
-    verify_quality_fn: Callable[..., None],
+    verify_integrity_fn: Callable[..., None],
     window: ExtractionWindow,
 ) -> Agent:
     """Create an Agent configured for SFI candidate extraction.
 
-    The returned agent validates parsed output with Python quality checks. Quality
-    failures raise ModelRetry so pydantic-ai can ask the model to repair its own
-    structured response.
+    The returned agent validates parsed output with universal Python integrity checks.
+    Semantic review and curriculum-specific correction are performed by a separate
+    validation LLM after this draft result is produced. Integrity failures raise
+    `ModelRetry` so the model can repair malformed or unsupported references.
 
     Parameters
     ----------
     instructions
         System-level SFI extraction instructions.
     kg_config
-        Runtime KG configuration used for document-specific validation.
+        Runtime KG configuration used for universal policy validation.
     max_retries
-        Maximum number of quality-error retries.
+        Maximum number of integrity-error retries.
     model_config
         Model configuration containing the model name and model settings helpers.
-    verify_quality_fn
+    verify_integrity_fn
         Callable with signature `(*, extraction_result, kg_config, window)` that raises
-        `QualityError` on failure.
+        `QualityError` when a universal integrity constraint fails.
     window
         Source extraction window being processed.
 
@@ -164,7 +166,7 @@ def create_sfi_extraction_agent(
     def validate_sfi_extraction_quality(
         output: SFIExtractionResult,
     ) -> SFIExtractionResult:
-        """Validate parsed SFI extraction output.
+        """Validate universal integrity of a draft SFI extraction output.
 
         Parameters
         ----------
@@ -174,35 +176,142 @@ def create_sfi_extraction_agent(
         Returns
         -------
         SFIExtractionResult
-            Validated extraction result.
+            Integrity-validated draft extraction result.
 
         Raises
         ------
         ModelRetry
-            If output fails quality checks and should be corrected by the model.
+            If output fails universal integrity checks and should be corrected.
         """
 
         attempt = attempt_counter["value"]
 
         try:
-            verify_quality_fn(
+            verify_integrity_fn(
                 extraction_result=output, kg_config=kg_config, window=window
             )
         except QualityError as e:
             truncated_msg = str(e)[:500]
 
             logger.error(
-                f"SFI extraction quality check failed for window "
+                f"SFI extraction integrity check failed for window "
                 f"{window.window_index} attempt {attempt + 1}: {truncated_msg}"
             )
 
             attempt_counter["value"] += 1
             raise ModelRetry(
-                f"Your structured SFI extraction output has quality issues and must "
+                f"Your structured SFI extraction output violates a universal integrity rule and must "
                 f"be corrected.\n"
                 f"ERROR: {str(e)}\n\n"
                 f"Return a complete SFIExtractionResult that fixes the issue while "
                 f"preserving source fidelity."
+            ) from e
+
+        attempt_counter["value"] += 1
+        return output
+
+    return agent
+
+
+def create_sfi_extraction_validation_agent(
+    *,
+    draft_result: SFIExtractionResult,
+    instructions: str,
+    kg_config: CreateKGConfig,
+    max_retries: int = 3,
+    model_config: ModelConfig,
+    verify_integrity_fn: Callable[..., None],
+    window: ExtractionWindow,
+) -> Agent:
+    """Create an Agent that reviews and corrects a draft SFI extraction result.
+
+    The validation agent receives the same compact source window as the extraction
+    agent plus the complete draft result. It applies generic checker instructions and
+    curriculum-specific runtime guidance, then either accepts the draft or returns a
+    complete corrected `SFIExtractionResult`. Python validates only universal integrity
+    constraints on the corrected result.
+
+    Parameters
+    ----------
+    draft_result
+        First-stage SFI extraction result to review.
+    instructions
+        System-level SFI validation instructions.
+    kg_config
+        Runtime KG configuration used for universal integrity validation.
+    max_retries
+        Maximum number of integrity-error retries.
+    model_config
+        Model configuration containing the model name and settings helpers.
+    verify_integrity_fn
+        Callable with signature
+        `(*, draft_result, kg_config, validation_verdict, window)` that raises
+        `QualityError` on failure.
+    window
+        Source extraction window reviewed by both LLM stages.
+
+    Returns
+    -------
+    Agent
+        Configured SFI extraction validation agent.
+    """
+
+    attempt_counter: dict[str, int] = {"value": 0}
+    agent = Agent(
+        model_config.model,
+        instructions=instructions,
+        model_settings=model_config.kgs_settings("sfi_extraction"),
+        output_retries=max_retries,
+        output_type=model_config.wrap_output_type(SFIExtractionValidationVerdict),
+    )
+
+    @agent.output_validator
+    def validate_sfi_extraction_validation_integrity(
+        output: SFIExtractionValidationVerdict,
+    ) -> SFIExtractionValidationVerdict:
+        """Validate universal integrity of a validation verdict and correction.
+
+        Parameters
+        ----------
+        output
+            Parsed validation verdict from the checker LLM.
+
+        Returns
+        -------
+        SFIExtractionValidationVerdict
+            Integrity-validated validation verdict.
+
+        Raises
+        ------
+        ModelRetry
+            If the verdict or corrected result violates a universal integrity rule.
+        """
+
+        attempt = attempt_counter["value"]
+
+        try:
+            verify_integrity_fn(
+                draft_result=draft_result,
+                kg_config=kg_config,
+                validation_verdict=output,
+                window=window,
+            )
+        except QualityError as e:
+            truncated_msg = str(e)[:500]
+
+            logger.error(
+                f"SFI validation integrity check failed for window "
+                f"{window.window_index} attempt {attempt + 1}: {truncated_msg}"
+            )
+
+            attempt_counter["value"] += 1
+            raise ModelRetry(
+                f"Your SFI validation output violates a universal integrity rule and "
+                f"must be corrected.\n"
+                f"ERROR: {str(e)}\n\n"
+                f"Return a complete SFIExtractionValidationVerdict. When passed=false, "
+                f"corrected_result must be a complete source-grounded "
+                f"SFIExtractionResult with exact window identity and valid references."
             ) from e
 
         attempt_counter["value"] += 1

@@ -957,6 +957,170 @@ class SFIExtractionSummary(BaseSchema):
     windows_without_candidates: int = Field(default=0, ge=0)
 
 
+class SFIExtractionValidationIssue(BaseSchema):
+    """One issue found by the second-stage SFI extraction validation LLM."""
+
+    auxiliary_id: Optional[str] = Field(
+        default=None,
+        description="Optional window-local auxiliary ID associated with the issue.",
+    )
+    candidate_id: Optional[str] = Field(
+        default=None,
+        description="Optional window-local SFI candidate ID associated with the issue.",
+    )
+    issue_type: str = Field(
+        description="Short general issue category, such as omission or source_fidelity.",
+        min_length=1,
+    )
+    message: str = Field(
+        description="Specific source-grounded description of the issue.", min_length=1
+    )
+    severity: Literal["error", "warning"] = Field(
+        description="Whether the issue requires correction or is advisory only."
+    )
+
+    @field_validator("auxiliary_id", "candidate_id", mode="before")
+    @classmethod
+    def clean_optional_issue_ids(cls, v: Optional[str]) -> Optional[str]:
+        """Strip optional issue target IDs and normalize blanks to `None`.
+
+        Parameters
+        ----------
+        v
+            Raw optional issue target ID.
+
+        Returns
+        -------
+        Optional[str]
+            Stripped ID, or `None` for a blank value.
+        """
+
+        if v is None:
+            return None
+
+        value = str(v).strip()
+        return value or None
+
+    @field_validator("issue_type", "message", mode="before")
+    @classmethod
+    def clean_required_issue_strings(cls, v: str) -> str:
+        """Strip and require non-empty issue text fields.
+
+        Parameters
+        ----------
+        v
+            Raw issue string.
+
+        Returns
+        -------
+        str
+            Stripped issue string.
+
+        Raises
+        ------
+        ValueError
+            If the issue string is blank.
+        """
+
+        value = str(v or "").strip()
+
+        if not value:
+            raise ValueError("SFI extraction validation issue text is required.")
+
+        return value
+
+
+class SFIExtractionValidationVerdict(BaseSchema):
+    """Second-stage LLM verdict for one draft SFI extraction result."""
+
+    corrected_result: Optional[SFIExtractionResult] = Field(
+        default=None,
+        description=(
+            "Complete corrected extraction result when passed is false; null when "
+            "the draft is accepted unchanged."
+        ),
+    )
+    issues: list[SFIExtractionValidationIssue] = Field(
+        default_factory=list,
+        description="Source-grounded validation issues found in the draft result.",
+    )
+    passed: bool = Field(
+        description="True when the draft result requires no material correction."
+    )
+    rationale: str = Field(
+        description="Concise overall assessment of the draft extraction result.",
+        min_length=20,
+    )
+
+    @field_validator("rationale", mode="before")
+    @classmethod
+    def clean_rationale(cls, v: str) -> str:
+        """Strip and require a non-empty validation rationale.
+
+        Parameters
+        ----------
+        v
+            Raw rationale.
+
+        Returns
+        -------
+        str
+            Stripped rationale.
+
+        Raises
+        ------
+        ValueError
+            If the rationale is blank.
+        """
+
+        rationale = str(v or "").strip()
+
+        if not rationale:
+            raise ValueError("SFI extraction validation rationale is required.")
+
+        return rationale
+
+    @model_validator(mode="after")
+    def validate_verdict_contract(self) -> Self:
+        """Validate pass/fail agreement with issues and corrected output.
+
+        Returns
+        -------
+        Self
+            Validated verdict.
+
+        Raises
+        ------
+        ValueError
+            If pass/fail state disagrees with corrected_result or error issues.
+        """
+
+        error_issues = [issue for issue in self.issues if issue.severity == "error"]
+
+        if self.passed:
+            if self.corrected_result is not None:
+                raise ValueError(
+                    "corrected_result must be null when validation passed is true."
+                )
+
+            if error_issues:
+                raise ValueError(
+                    "A passing validation verdict must not contain error issues."
+                )
+        else:
+            if self.corrected_result is None:
+                raise ValueError(
+                    "corrected_result is required when validation passed is false."
+                )
+
+            if not error_issues:
+                raise ValueError(
+                    "A failing validation verdict must include at least one error issue."
+                )
+
+        return self
+
+
 # Schemas for SFI candidate registry.
 class SFIRegistryArtifact(BaseSchema):
     """Persisted global SFI candidate registry artifact."""

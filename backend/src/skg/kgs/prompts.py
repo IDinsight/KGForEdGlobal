@@ -8,6 +8,7 @@ from typing import Any, Optional
 from skg.kgs.schemas import (
     ExtractionWindow,
     SFIDedupReviewRequest,
+    SFIExtractionResult,
     SFIHasChildResolutionRequest,
 )
 from skg.kgs.utils import text_starts_with_complete_marker
@@ -435,7 +436,7 @@ def _build_compact_kg_config_context(kg_config: CreateKGConfig) -> dict[str, Any
         "primary_language": kg_config.metadata.primary_language,
         "sfi_extraction_instructions": kg_config.academic_standards.sfi_extraction_instructions,
         "statement_type_policy": [
-            item.model_dump(mode="json", exclude_none=True)
+            item.model_dump(exclude_none=True, mode="json")
             for item in kg_config.academic_standards.statement_type_policy
         ],
         "subject": kg_config.metadata.subject,
@@ -1029,6 +1030,149 @@ Use exactly one of these decisions for each decision group:
 
 ## Bounded dedup review payload JSON
 {json_dumps(user_payload)}
+        """
+    )
+
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
+    )
+
+
+def validate_sfi_extraction_result(
+    *,
+    draft_result: SFIExtractionResult,
+    extraction_window: ExtractionWindow,
+    kg_config: CreateKGConfig,
+) -> PromptPair:
+    """Generate prompts for reviewing and correcting one draft SFI extraction result.
+
+    Parameters
+    ----------
+    draft_result
+        First-stage structured SFI extraction result.
+    extraction_window
+        Source-faithful extraction window used by the first-stage agent.
+    kg_config
+        Country/document-specific KG extraction configuration.
+
+    Returns
+    -------
+    PromptPair
+        System and user messages for the second-stage SFI validation agent.
+    """
+
+    config_context = {
+        "code_patterns": kg_config.academic_standards.code_patterns,
+        "country": kg_config.metadata.country,
+        "grades_or_stages": kg_config.metadata.grades_or_stages,
+        "primary_language": kg_config.metadata.primary_language,
+        "sfi_extraction_instructions": (
+            kg_config.academic_standards.sfi_extraction_instructions
+        ),
+        "sfi_validation_instructions": (
+            kg_config.academic_standards.sfi_validation_instructions
+        ),
+        "statement_type_policy": [
+            item.model_dump(exclude_none=True, mode="json")
+            for item in kg_config.academic_standards.statement_type_policy
+        ],
+        "subject": kg_config.metadata.subject,
+    }
+    source_payload = _build_compact_extraction_window_payload(extraction_window)
+    system_message = dedent(
+        f"""You are a strict Academic Standards SFI validation and correction agent
+(CHECKER MODE) for a Learning Commons-shaped Knowledge Graph.
+
+You will receive:
+1. The compact source window reviewed by an extraction agent.
+2. The complete draft `SFIExtractionResult` produced by that agent.
+3. Generic validation rules below.
+4. Curriculum-specific extraction and validation instructions from runtime config.
+
+## Task
+Independently verify the draft against the supplied source window and runtime policy.
+Do not assume the draft is correct. Return an `SFIExtractionValidationVerdict`.
+
+- Set `passed=true` only when the draft requires no material correction.
+- When `passed=false`, identify every material error and return a complete corrected
+  `SFIExtractionResult` in `corrected_result`.
+- The corrected result replaces the draft in the pipeline. It must be complete and
+  self-contained, not a patch or list of edits.
+- You may add omitted candidates, remove false positives, combine or split candidates,
+  correct statement types, codes, languages, source text, source locations, auxiliary
+  records, notes, ordering, and IDs when the source and runtime policy require it.
+
+## Runtime curriculum policy
+{json_dumps(config_context)}
+
+The runtime `sfi_validation_instructions` field is authoritative for curriculum-specific
+edge cases and tricky distinctions. When it conflicts with generic semantic guidance,
+follow the runtime instructions unless doing so would invent source text or violate the
+structured output contract.
+
+## What to validate
+
+### 1. Completeness and scope
+- Check whether every source-visible item that should be an SFI under the runtime
+  extraction instructions is represented exactly once in the draft.
+- Find material omissions, duplicates, false positives, and over-extraction.
+- Do not require ordinary examples, activities, resources, pedagogy, assessment notes,
+  or other excluded material unless runtime instructions explicitly classify them as
+  SFIs.
+- Do not invent absent grouping labels or parent nodes from section context.
+
+### 2. Semantic classification
+- Verify each candidate's `statement_type` against the configured statement-type policy.
+- Verify `normalized_statement_type` matches the configured canonical type.
+- Distinguish official learning expectations and structural groupings from examples,
+  content details, activities, teacher guidance, assessment criteria, and resources.
+- Apply curriculum-specific exceptions and known source anomalies exactly as instructed.
+
+### 3. Source fidelity
+- Candidate descriptions and `source_text` must preserve source-visible wording and
+  language. Do not translate, paraphrase, normalize, repair spelling, or silently add
+  missing text.
+- `source_context.section_path`, canonical headers, and filldown helper values are
+  context only unless the same wording is visible in raw block/header/body content.
+- Verify that a table candidate cites the raw header/body rows that visibly support it.
+  Citations should be sufficient and source-grounded; do not demand artificial
+  minimality when multiple rows genuinely contribute to one statement.
+- Verify that statements split across adjacent cells or rows are combined or separated
+  according to their actual source role and wording.
+
+### 4. Codes and language
+- Keep `statement_code` null when no official source-visible item code applies.
+- Do not borrow a segment label, section code, table identifier, or nearby statement's
+  code.
+- Verify each candidate language from its supporting source text; use `mul` only when
+  the candidate truly combines multiple source languages.
+
+### 5. Ordering and identifiers
+- Return candidates in source order.
+- In any corrected result, renumber candidates exactly as `sfi_1` through `sfi_N` after
+  all additions, removals, splits, merges, and reordering.
+- Update auxiliary `related_candidate_ids` to the corrected IDs.
+- Copy `window_id`, `window_index`, and `window_source_segment_ids` exactly from the
+  source window.
+
+## Validation verdict contract
+- `issues` should contain only meaningful findings. Use severity `error` for anything
+  that requires a corrected result and `warning` only for non-blocking observations.
+- `passed=true`: `corrected_result` must be null and no issue may have severity `error`.
+- `passed=false`: include at least one error issue and provide a complete corrected
+  result that resolves all error issues.
+- Explain the overall decision in a concise, source-grounded `rationale`.
+- Do not return prose outside the structured verdict.
+        """
+    )
+    user_message = dedent(
+        f"""Validate this draft SFI extraction result against the compact source window.
+
+## Compact source window JSON
+{json_dumps(source_payload)}
+
+## Draft SFIExtractionResult JSON
+{draft_result.model_dump_json(exclude_none=True)}
         """
     )
 

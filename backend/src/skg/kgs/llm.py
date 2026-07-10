@@ -1,33 +1,44 @@
-"""This module contains the orchestration logic for creating various knowledge graph
-artifacts using an LLM.
+"""This module contains the LLM orchestration for Academic Standards knowledge graph
+creation.
+
+SFI extraction uses a two-stage producer/checker flow. The extraction agent produces a
+draft `SFIExtractionResult` and a second validation agent independently reviews the
+same source window, accepts the draft, or returns a complete corrected result.
 """
 
 # Standard Library
 from dataclasses import dataclass
+
+# Third Party Library
+from loguru import logger
 
 # Package Library
 from skg.config import Settings
 from skg.kgs.agents import (
     create_sfi_dedup_agent,
     create_sfi_extraction_agent,
+    create_sfi_extraction_validation_agent,
     create_sfi_has_child_agent,
 )
 from skg.kgs.prompts import (
     extract_sfi_candidates_from_window,
     resolve_sfi_has_child_parents,
     review_sfi_dedup_candidates,
+    validate_sfi_extraction_result,
 )
 from skg.kgs.schemas import (
     ExtractionWindow,
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
     SFIExtractionResult,
+    SFIExtractionValidationVerdict,
     SFIHasChildResolutionRequest,
     SFIHasChildResolutionResponse,
 )
 from skg.kgs.validators import (
     verify_sfi_dedup_review_quality,
-    verify_sfi_extraction_quality,
+    verify_sfi_extraction_integrity,
+    verify_sfi_extraction_validation_integrity,
     verify_sfi_has_child_resolution_quality,
 )
 from skg.schemas import CreateKGConfig
@@ -40,6 +51,7 @@ class KGUsageTracker:
 
     sfi_dedup: AgentUsageBucket
     sfi_extraction: AgentUsageBucket
+    sfi_extraction_validation: AgentUsageBucket
     sfi_has_child: AgentUsageBucket
 
     def __init__(self) -> None:
@@ -47,6 +59,9 @@ class KGUsageTracker:
 
         self.sfi_dedup = AgentUsageBucket(agent_name="sfi_dedup")
         self.sfi_extraction = AgentUsageBucket(agent_name="sfi_extraction")
+        self.sfi_extraction_validation = AgentUsageBucket(
+            agent_name="sfi_extraction_validation"
+        )
         self.sfi_has_child = AgentUsageBucket(agent_name="sfi_has_child")
 
     def to_dict(self) -> dict[str, object]:
@@ -61,6 +76,7 @@ class KGUsageTracker:
         agent_buckets = {
             "sfi_dedup": self.sfi_dedup,
             "sfi_extraction": self.sfi_extraction,
+            "sfi_extraction_validation": self.sfi_extraction_validation,
             "sfi_has_child": self.sfi_has_child,
         }
         totals = {
@@ -92,13 +108,57 @@ class KGUsageTracker:
         }
 
 
+def _run_sfi_extraction_validation(
+    *,
+    draft_result: SFIExtractionResult,
+    extraction_window: ExtractionWindow,
+    kg_config: CreateKGConfig,
+    usage_tracker: KGUsageTracker,
+) -> SFIExtractionValidationVerdict:
+    """Run the second-stage LLM review for one draft extraction result.
+
+    Parameters
+    ----------
+    draft_result
+        First-stage extraction result to review.
+    extraction_window
+        Source-faithful extraction window.
+    kg_config
+        Country/document-specific KG extraction configuration.
+    usage_tracker
+        Usage tracker for validation-agent token accounting.
+
+    Returns
+    -------
+    SFIExtractionValidationVerdict
+        Parsed and integrity-validated checker verdict.
+    """
+
+    prompts = validate_sfi_extraction_result(
+        draft_result=draft_result,
+        extraction_window=extraction_window,
+        kg_config=kg_config,
+    )
+    agent = create_sfi_extraction_validation_agent(
+        draft_result=draft_result,
+        instructions=prompts.system_message,
+        kg_config=kg_config,
+        model_config=Settings.llm_config("kgs"),
+        verify_integrity_fn=verify_sfi_extraction_validation_integrity,
+        window=extraction_window,
+    )
+    result = agent.run_sync(prompts.user_message)
+    usage_tracker.sfi_extraction_validation.add_run_usage(result.usage())
+    return result.output
+
+
 def extract_sfi_candidates(
     *,
     extraction_window: ExtractionWindow,
     kg_config: CreateKGConfig,
     usage_tracker: KGUsageTracker,
 ) -> SFIExtractionResult:
-    """Extract SFI candidates from one extraction window using an LLM.
+    """Extract, validate, and if necessary correct SFIs from one source window.
 
     Parameters
     ----------
@@ -107,12 +167,12 @@ def extract_sfi_candidates(
     kg_config
         Country/document-specific KG extraction configuration.
     usage_tracker
-        Usage tracker to accumulate token usage.
+        Usage tracker to accumulate extraction and validation token usage.
 
     Returns
     -------
     SFIExtractionResult
-        Parsed and quality-validated SFI extraction result.
+        Final integrity-checked result accepted or corrected by the validation LLM.
     """
 
     prompts = extract_sfi_candidates_from_window(
@@ -122,12 +182,42 @@ def extract_sfi_candidates(
         instructions=prompts.system_message,
         kg_config=kg_config,
         model_config=Settings.llm_config("kgs"),
-        verify_quality_fn=verify_sfi_extraction_quality,
+        verify_integrity_fn=verify_sfi_extraction_integrity,
         window=extraction_window,
     )
-    result = agent.run_sync(prompts.user_message)
-    usage_tracker.sfi_extraction.add_run_usage(result.usage())
-    return result.output
+    extraction_run = agent.run_sync(prompts.user_message)
+    usage_tracker.sfi_extraction.add_run_usage(extraction_run.usage())
+    draft_result = extraction_run.output
+    validation_verdict = _run_sfi_extraction_validation(
+        draft_result=draft_result,
+        extraction_window=extraction_window,
+        kg_config=kg_config,
+        usage_tracker=usage_tracker,
+    )
+
+    if validation_verdict.passed:
+        final_result = draft_result
+
+        logger.info(
+            f"SFI validation accepted extraction window "
+            f"{extraction_window.window_index} without correction."
+        )
+    else:
+        corrected_result = validation_verdict.corrected_result
+        assert corrected_result is not None
+        final_result = corrected_result
+
+        logger.warning(
+            f"SFI validation corrected extraction window "
+            f"{extraction_window.window_index}: "
+            f"issues={len(validation_verdict.issues)}; "
+            f"rationale={validation_verdict.rationale[:300]}"
+        )
+
+    verify_sfi_extraction_integrity(
+        extraction_result=final_result, kg_config=kg_config, window=extraction_window
+    )
+    return final_result
 
 
 def resolve_sfi_has_child_parent_request(
