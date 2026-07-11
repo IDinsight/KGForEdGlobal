@@ -10,6 +10,9 @@ import re
 
 from typing import Any, Optional
 
+# Third Party Library
+from loguru import logger
+
 # Package Library
 from skg.kgs.schemas import (
     ExtractionWindow,
@@ -320,6 +323,82 @@ def _extract_leading_code_for_parent_match(value: Any) -> str:
     return _normalize_code_for_parent_match(match.group(1))
 
 
+def _extract_serialized_row_text(row: dict[str, Any]) -> str:
+    """Extract source-visible text from one serialized table row.
+
+    Parameters
+    ----------
+    row
+        Serialized raw table row containing cell payloads.
+
+    Returns
+    -------
+    str
+        Cell text joined in source column order.
+    """
+
+    cell_texts: list[str] = []
+
+    for cell in row.get("cells", []):
+        if not isinstance(cell, dict):
+            continue
+
+        text_payload = cell.get("text")
+
+        if isinstance(text_payload, dict):
+            cell_text = str(text_payload.get("text") or "").strip()
+        else:
+            cell_text = str(text_payload or "").strip()
+
+        if cell_text:
+            cell_texts.append(cell_text)
+
+    return "\n".join(cell_texts)
+
+
+def _get_candidate_cited_source_text(
+    *, candidate: SFICandidate, window: ExtractionWindow
+) -> str:
+    """Collect raw source text from the table locations cited by a candidate.
+
+    Block candidates use the complete block-window source text. Table candidates use
+    only the raw header and body rows cited by the candidate.
+
+    Parameters
+    ----------
+    candidate
+        Candidate containing optional table source indexes.
+    window
+        Source extraction window.
+
+    Returns
+    -------
+    str
+        Source-visible text from the candidate's cited locations.
+    """
+
+    table = window.table
+
+    if table is None:
+        return window.source_text
+
+    cited_rows: list[dict[str, Any]] = []
+
+    for header_index in candidate.table_header_indexes:
+        if 0 <= header_index < len(table.header_rows):
+            cited_rows.append(table.header_rows[header_index])
+
+    rows_by_index = dict(zip(table.row_indexes, table.rows))
+
+    for row_index in candidate.table_row_indexes:
+        row = rows_by_index.get(row_index)
+
+        if row is not None:
+            cited_rows.append(row)
+
+    return "\n".join(_extract_serialized_row_text(row) for row in cited_rows)
+
+
 def _get_window_local_code(window: ExtractionWindow) -> Optional[str]:
     """Return the stripped local code exposed by an extraction window.
 
@@ -346,6 +425,110 @@ def _get_window_local_code(window: ExtractionWindow) -> Optional[str]:
 
     local_code_clean = str(local_code).strip()
     return local_code_clean or None
+
+
+def _log_candidate_source_integrity_warnings(
+    *,
+    candidate: SFICandidate,
+    statement_type_code_type_by_label: dict[str, Optional[str]],
+    window: ExtractionWindow,
+) -> None:
+    """Log non-blocking warnings for candidate-local source-integrity risks.
+
+    These checks are intentionally diagnostic. They flag suspicious field alignment
+    that may require semantic review, but they do not reject an extraction result
+    because source layouts and curriculum conventions vary across documents.
+
+    Parameters
+    ----------
+    candidate
+        Candidate to inspect.
+    statement_type_code_type_by_label
+        Configured code type for each canonical statement type.
+    window
+        Source extraction window.
+    """
+
+    cited_source_text = _get_candidate_cited_source_text(
+        candidate=candidate, window=window
+    )
+    cited_source_text_normalized = _normalize_text(cited_source_text)
+    description_normalized = _normalize_text(candidate.description)
+    source_text_normalized = _normalize_text(candidate.source_text)
+    warning_context = (
+        f"window_id={window.window_id!r}, candidate_id={candidate.candidate_id!r}, "
+        f"statement_type={candidate.statement_type!r}, "
+        f"statement_code={candidate.statement_code!r}, "
+        f"table_header_indexes={candidate.table_header_indexes!r}, "
+        f"table_row_indexes={candidate.table_row_indexes!r}"
+    )
+
+    if description_normalized not in cited_source_text_normalized:
+        logger.warning(
+            f"SFI candidate description is not visibly contained in its cited source "
+            f"locations; {warning_context}."
+        )
+
+    if (
+        window.table is not None
+        and source_text_normalized not in cited_source_text_normalized
+    ):
+        logger.warning(
+            f"SFI candidate source_text is present in the extraction window but not "
+            f"visibly contained in its cited table locations; {warning_context}."
+        )
+
+    statement_code = candidate.statement_code
+
+    if statement_code is not None:
+        code_key = _normalize_code_for_parent_match(statement_code)
+        description_key = _normalize_code_for_parent_match(candidate.description)
+        source_text_key = _normalize_code_for_parent_match(candidate.source_text)
+        cited_source_key = _normalize_code_for_parent_match(cited_source_text)
+
+        if description_key.startswith(code_key) or description_key.endswith(code_key):
+            logger.warning(
+                f"SFI candidate description appears to include its separately "
+                f"represented statement_code; {warning_context}."
+            )
+
+        if code_key not in source_text_key:
+            logger.warning(
+                f"SFI candidate statement_code is validated at window level but is "
+                f"not visibly present in the candidate source_text; {warning_context}."
+            )
+
+        if window.table is not None and code_key not in cited_source_key:
+            logger.warning(
+                f"SFI candidate statement_code is validated at window level but is "
+                f"not visibly present in its cited table locations; {warning_context}."
+            )
+
+        return
+
+    configured_code_type = statement_type_code_type_by_label.get(
+        candidate.statement_type
+    )
+    candidate_source_code_key = _normalize_code_for_parent_match(candidate.source_text)
+    matching_code_values = sorted(
+        {
+            code_match.value
+            for code_match in window.code_matches
+            if (
+                configured_code_type is None
+                or code_match.code_type == configured_code_type
+            )
+            and _normalize_code_for_parent_match(code_match.value)
+            in candidate_source_code_key
+        }
+    )
+
+    if matching_code_values:
+        logger.warning(
+            f"SFI candidate has statement_code=None even though its source_text "
+            f"contains configured code evidence {matching_code_values!r}; "
+            f"{warning_context}."
+        )
 
 
 def _normalize_code_for_parent_match(value: Any) -> str:
@@ -1233,6 +1416,11 @@ def verify_sfi_extraction_integrity(
         _validate_candidate_code(
             candidate=candidate,
             code_patterns_by_type=dict(kg_config.academic_standards.code_patterns),
+            statement_type_code_type_by_label=statement_type_code_type_by_label,
+            window=window,
+        )
+        _log_candidate_source_integrity_warnings(
+            candidate=candidate,
             statement_type_code_type_by_label=statement_type_code_type_by_label,
             window=window,
         )

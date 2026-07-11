@@ -1140,9 +1140,9 @@ def extract_sfi_candidates_from_window(
 
 ## Candidate field policy
 - Return sfi_candidates in source order and assign candidate_id exactly by list position: sfi_1, sfi_2, through sfi_N with no gaps, alternate prefixes, or reordered numbers. For block content, order candidates by the first source-visible text that contributes to each candidate. For tables, order raw header-derived candidates before body-row-derived candidates, then follow table.source_rows order and left-to-right cell/text order within each row. Candidates sharing the same exact source location may use either stable relative order.
-- description should preserve the complete exact source-language wording of the SFI. For learning expectations, use the full official statement text. For groupings, use the complete grouping label or heading text. When multiple explicit labeled fields appear on one physical line, such as one label-value field followed by another label-value field, treat each complete visible field as a separately bounded source span and preserve their source order. Do not clean, translate, correct spelling, normalize, expand, infer, or truncate description text.
+- description should preserve the complete exact source-language wording of the SFI. For learning expectations, use the full official statement text. For groupings, use the complete grouping label or heading text. When a visible code functions as a separate item identifier, exclude that code from description and place it only in statement_code and source_text. Removing a separately represented identifier is not a wording correction. When multiple explicit labeled fields appear on one physical line, such as one label-value field followed by another label-value field, treat each complete visible field as a separately bounded source span and preserve their source order. Do not clean, translate, correct spelling, normalize, expand, infer, or truncate the actual statement wording.
 - statement_type must use exactly one canonical source-facing role from statement_type_policy.
-- statement_code must be an exact source code supported by the configured code policy. Use the exact block.local_code or table.local_code only when that metadata is the item's visible code, it matches the candidate statement_type's configured code_type, and the candidate source_text contains that exact standalone code directly paired with the complete candidate description. Otherwise, use only an exact code_matches[].value whose code_type matches statement_type_policy.code_type for the candidate. When statement_type_policy.code_type is null, emit a code only when it unambiguously matches exactly one configured code pattern. Use null for nearby codes, segment labels, table identifiers that are not item codes, ambiguous codes, codes not visible in the candidate's own source_text, or codes that belong to another statement.
+- statement_code must be an exact source code supported by the configured code policy. Use the exact block.local_code or table.local_code only when that metadata is the item's visible code, it matches the candidate statement_type's configured code_type, and the candidate source_text contains that exact code directly paired with the complete candidate description. Otherwise, use only an exact code_matches[].value whose code_type matches statement_type_policy.code_type for the candidate. A code_match may represent a complete source code immediately adjacent to statement text with no intervening whitespace; separating that complete matched code from the statement is formatting recovery, not semantic repair. Never change a code prefix, character, delimiter, or numeric component. When statement_type_policy.code_type is null, emit a code only when it unambiguously matches exactly one configured code pattern. Use null for nearby codes, segment labels, table identifiers that are not item codes, ambiguous or incomplete codes, codes not visible in the candidate's own source_text, or codes that belong to another statement.
 - language must match the source language tag on the exact block.source_units or table cells that support description/source_text. Use "mul" when the candidate combines visible text from more than one source language. Use the KG config primary language only when the supporting source units have no language metadata.
 - confidence should reflect how clearly the source window supports the candidate.
 - table_header_indexes and table_row_indexes are source-text location fields, not general context fields.
@@ -1154,9 +1154,9 @@ def extract_sfi_candidates_from_window(
 - description should contain the complete source-visible SFI statement or grouping label, including visible continuation fragments when an official statement is split across adjacent table rows or cells.
 - source_text is a source-visible evidence quote for validation. It is not the final canonical KG statement text and it is not the only downstream provenance.
 - For every SFI candidate, source_text must be a contiguous excerpt of description, or contain the complete description with tightly bounded visible source context. Do not use an unrelated quote from another cited row or source unit.
-- Whenever statement_code is non-null, source_text must contain that exact standalone code directly paired with the complete description, whether the code comes from block.local_code, table.local_code, or code_matches. Use only "code + complete description", "complete description + code", or the complete description itself when the code is already part of it. Do not include another statement, another code, a segment label, a table identifier, or unrelated surrounding text merely to make a code visible.
+- Whenever statement_code is non-null, source_text must contain that exact source-code surface form directly paired with the complete description, whether the code comes from block.local_code, table.local_code, or code_matches. Preserve the source's spacing or lack of spacing between the code and statement text. Use only "code + complete description" or "complete description + code" as visibly presented in the source. Keep the separately represented code out of description. Do not include another statement, another code, a segment label, a table identifier, or unrelated surrounding text merely to make a code visible.
 - Keep source_text concise but sufficient. For coded table statements, quote only the official code and complete statement text, not examples, exemplars, teacher guidance, activities, competencies, or neighboring statements. When a statement is split across multiple visible rows/cells, quote the complete visible statement only if the contributing fragments can be represented as a source-visible excerpt; otherwise omit statement_code and quote the strongest exact visible fragment while relying on table_row_indexes/table_header_indexes for downstream source recovery.
-- For table candidates, the safest valid output is often description equal to source_text when source_text contains the complete official statement. A description may also be a complete source-visible cell, contiguous cell range, bounded clause, or statement assembled from adjacent cited cells or adjacent cited rows. Do not create a description by deleting, interleaving, or truncating words from the beginning or end of a longer source statement.
+- For table candidates, description may equal source_text only when source_text contains the complete official statement and no separately represented identifier code or unrelated context. When source_text includes a separate item code, description must contain only the complete official statement wording. A description may also be a complete source-visible cell, contiguous cell range, bounded clause, or statement assembled from adjacent cited cells or adjacent cited rows. Do not create a description by deleting, interleaving, or truncating words from the actual statement wording.
 
 ## Source fidelity rules
 - Preserve source-language text. Do not translate. Use block.source_units and table-cell language fields to assign candidate and auxiliary language accurately.
@@ -1165,8 +1165,8 @@ def extract_sfi_candidates_from_window(
 - For table candidates, description must be source-visible in the cited table_header_indexes and/or table_row_indexes. Cite exactly the raw header/body rows that contribute to the candidate description and source_text; do not include unrelated context rows. Do not use text from another visible row/header unless that row/header index is also cited.
 - If a table statement visibly continues across adjacent source rows or cells, include every contributing table_row_index and assemble the complete official statement in description from those visible fragments. Do not truncate description at the first row/cell.
 - The final KG-building stages recover full source provenance from window_id, window_source_segment_ids, table_row_indexes, table_header_indexes, and the persisted ExtractionWindow/DocumentIR. Do not use source_text to carry hidden context, parentage, or non-visible text.
-- Use code_matches as typed source evidence, not as final KG nodes. Never assign a code_match to a candidate unless its exact value is directly paired with that candidate's complete description in source_text.
-- Treat block.local_code and table.local_code as candidate code evidence only when the exact value is the candidate item's code, matches the applicable configured code pattern, and is visible in candidate source_text directly paired with the complete candidate description. Do not automatically copy a table identifier or segment label into statement_code. When the same exact code is visibly repeated for distinct source items, multiple candidates may preserve it only when each candidate's own source_text and exact cited source locations independently contain that code directly paired with its complete description.
+- Use code_matches as typed source evidence, not as final KG nodes. Never assign a code_match to a candidate unless its exact value is directly paired with that candidate's complete description in source_text. Immediate adjacency between a complete code and the first character of statement text is valid pairing when that is how the source is printed.
+- Treat block.local_code and table.local_code as candidate code evidence only when the exact value is the candidate item's code, matches the applicable configured code pattern, and is visible in candidate source_text directly paired with the complete candidate description. The pairing may use source-visible whitespace or immediate code-to-text adjacency. Do not automatically copy a table identifier or segment label into statement_code. When the same exact code is visibly repeated for distinct source items, multiple candidates may preserve it only when each candidate's own source_text and exact cited source locations independently contain that code directly paired with its complete description.
 - Table headers are source-visible structural evidence. When the curriculum-specific KG config says a table-header label is an official grouping SFI, extract it as a Standard Grouping candidate.
 - For table-row-derived SFI candidates, table_row_indexes must be non-empty and must use the visible table.source_rows[].row_index values containing the quoted candidate source_text.
 - For table-header-derived SFI candidates, table_header_indexes must be non-empty and must use the visible table.header_rows[].header_row_index values containing the quoted candidate source_text; table_row_indexes should be empty unless the quoted source_text also includes visible text from table.source_rows.
@@ -1459,7 +1459,34 @@ contract.
 - Verify each candidate language from its supporting source text; use `mul` only when
   the candidate truly combines multiple source languages.
 
-### 5. Ordering and identifiers
+### 5. Mandatory candidate-by-candidate audit
+For every draft candidate, explicitly verify all of the following before deciding that
+it passes:
+- `description` contains only the complete official statement or grouping wording. A
+  separately represented item code, table label, continuation marker, or unrelated
+  context in `description` is a material error.
+- When `statement_code` is non-null, the exact source-code surface form is visibly
+  paired with this candidate's complete description in its own `source_text` and cited
+  source locations. Immediate code-to-text adjacency is allowed when source-visible.
+- When `statement_code` is null, check the candidate's cited raw source for a complete
+  configured code that is recoverable through formatting-only separation, including a
+  code printed immediately adjacent to statement text. Leaving such a complete code
+  null is a material error. Do not repair incomplete codes or change code characters or
+  components.
+- The cited table rows or headers visibly support this candidate's description and
+  evidence quote, rather than only containing a nearby or parallel statement.
+- The candidate is an SFI under runtime policy, not an exemplar, activity, competency,
+  note, resource, repeated header, or other excluded material.
+- Distinct same-code/different-content source items remain separate, while genuine
+  repeated continuation occurrences are not duplicated within the result.
+- Routine excluded material is not emitted as an auxiliary record when runtime policy
+  says auxiliaries are reserved for genuinely ambiguous source-visible text.
+
+Any failure in this audit that changes candidate content, code, classification,
+coverage, provenance, or auxiliary output requires `passed=false`, an `error` issue,
+and a complete corrected result.
+
+### 6. Ordering and identifiers
 - Return candidates in source order.
 - In any corrected result, renumber candidates exactly as `sfi_1` through `sfi_N` after
   all additions, removals, splits, merges, and reordering.

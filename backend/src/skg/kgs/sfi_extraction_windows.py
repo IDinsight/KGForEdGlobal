@@ -207,6 +207,35 @@ def _build_extraction_window(
     )
 
 
+def _build_glued_code_pattern(pattern: str) -> Optional[str]:
+    """Build a conservative fallback regex for codes glued to statement text.
+
+    The configured code pattern remains authoritative. This function only removes one
+    terminal word-boundary token so a complete code can be detected when an alphabetic
+    statement begins immediately after it, for example `X1.2.3Describe`. The extracted
+    surface form is still revalidated against the original configured pattern before it
+    is accepted.
+
+    Parameters
+    ----------
+    pattern
+        Configured code regex.
+
+    Returns
+    -------
+    Optional[str]
+        Regex without one terminal `\\b` token, or `None` when the pattern does not end
+        with that token.
+    """
+
+    pattern_clean = pattern.rstrip()
+
+    if not pattern_clean.endswith(r"\b"):
+        return None
+
+    return pattern_clean[:-2]
+
+
 def _build_source_section_path_key(
     source_section_path: Sequence[dict[str, Any]],
 ) -> str:
@@ -461,6 +490,33 @@ def _collect_code_matches(
                     end_char=match.end(),
                     start_char=match.start(),
                     value=match.group(0),
+                )
+            )
+
+        glued_pattern = _build_glued_code_pattern(pattern)
+
+        if glued_pattern is None:
+            continue
+
+        for match in re.finditer(glued_pattern, source_text):
+            if match.end() >= len(source_text):
+                continue
+
+            next_character = source_text[match.end()]
+            matched_value = match.group(0)
+
+            if not next_character.isalpha():
+                continue
+
+            if re.fullmatch(pattern, matched_value) is None:
+                continue
+
+            code_matches.append(
+                CodeMatch(
+                    code_type=code_type,
+                    end_char=match.end(),
+                    start_char=match.start(),
+                    value=matched_value,
                 )
             )
 
