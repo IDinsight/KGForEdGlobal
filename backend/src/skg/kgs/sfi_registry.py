@@ -1457,15 +1457,17 @@ def _select_source_order_parent_match(
 ) -> Optional[_SourceOrderParentMatch]:
     """Select a conservative parent occurrence within one active source branch.
 
-    A table-derived child first resolves against all parent occurrences in the same
-    extraction window. The window is usable only when every such occurrence is
-    canonicalized and all canonicalized occurrences represent one distinct value. This
-    supports tables whose parent and child organizers occupy different raw header or
-    body rows without relying on curriculum-specific layouts.
+    A table-derived child may use a same-window parent that has affirmative table-scope
+    evidence: either the parent is header-derived, or the parent and child cite the
+    same raw table row/header. All such applicable occurrences must be canonicalized
+    and agree on one value. This supports table-wide header organizers on a different
+    raw header row while preventing a later unrelated body-row parent from capturing an
+    earlier child merely because both occur in the same extraction window.
 
-    When the current table window has no parent occurrence, the nearest preceding parent
-    occurrence is used only if its controlled value is canonicalized. An uncanonicalized
-    nearest occurrence blocks older parents and causes source-context fallback.
+    When no affirmative same-table parent is available, the nearest preceding parent
+    occurrence is used only if its controlled value is canonicalized. An
+    uncanonicalized nearest occurrence blocks older parents and causes source-context
+    fallback.
 
     Parameters
     ----------
@@ -1488,23 +1490,28 @@ def _select_source_order_parent_match(
     )
 
     if child_is_table_derived:
-        same_window_matches = [
+        child_row_indexes = set(child_candidate.table_row_indexes)
+        affirmative_table_matches = [
             match
             for match in parent_matches
             if match.window_index == child_candidate.window_index
-            and (match.table_header_indexes or match.table_row_indexes)
+            and (
+                match.table_header_indexes
+                or child_row_indexes.intersection(match.table_row_indexes)
+            )
         ]
 
-        if same_window_matches:
+        if affirmative_table_matches:
             canonical_value_keys = {
-                match.canonical_statement_value_key for match in same_window_matches
+                match.canonical_statement_value_key
+                for match in affirmative_table_matches
             }
 
             if None in canonical_value_keys or len(canonical_value_keys) != 1:
                 return None
 
             return min(
-                same_window_matches,
+                affirmative_table_matches,
                 key=lambda match: (
                     abs(match.candidate_index - child_index),
                     match.candidate_index,
