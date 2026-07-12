@@ -42,7 +42,7 @@ class _SourceOrderParentMatch:
     """Source-order match for one controlled parent value."""
 
     candidate_index: int
-    canonical_statement_value_key: str
+    canonical_statement_value_key: Optional[str]
     table_header_indexes: tuple[int, ...]
     table_row_indexes: tuple[int, ...]
     window_index: int
@@ -599,65 +599,6 @@ def _build_scope_part_label(statement_type: str) -> str:
     return label or "scope"
 
 
-def _build_statement_type_depths(kg_config: CreateKGConfig) -> dict[str, int]:
-    """Build hierarchy depths from the configured direct-parent policy.
-
-    Parameters
-    ----------
-    kg_config
-        Runtime KG configuration containing statement-type parent policy.
-
-    Returns
-    -------
-    dict[str, int]
-        Statement-type depths where root-level types have depth zero.
-
-    Raises
-    ------
-    ValueError
-        If the configured parent graph contains a cycle or cannot be resolved.
-    """
-
-    parent_policy = (
-        kg_config.academic_standards.sfi_has_child_parent_statement_types or {}
-    )
-    statement_types = set(parent_policy)
-
-    for parent_statement_types in parent_policy.values():
-        statement_types.update(parent_statement_types)
-
-    depths: dict[str, int] = {}
-    unresolved = set(statement_types)
-
-    while unresolved:
-        progress = False
-
-        for statement_type in sorted(unresolved):
-            parent_statement_types = parent_policy.get(statement_type, [])
-
-            if not parent_statement_types:
-                depths[statement_type] = 0
-            elif all(parent in depths for parent in parent_statement_types):
-                depths[statement_type] = 1 + max(
-                    depths[parent] for parent in parent_statement_types
-                )
-            else:
-                continue
-
-            unresolved.remove(statement_type)
-            progress = True
-            break
-
-        if not progress:
-            raise ValueError(
-                f"Could not resolve statement-type hierarchy depths from "
-                f"sfi_has_child_parent_statement_types; the parent graph may "
-                f"contain a cycle or unresolved reference: {sorted(unresolved)}."
-            )
-
-    return depths
-
-
 def _build_statement_value_policies(
     kg_config: CreateKGConfig,
 ) -> dict[str, _StatementValuePolicy]:
@@ -1021,42 +962,6 @@ def _find_configured_code_matches_in_text(
     return matches
 
 
-def _following_parent_has_affirmative_inversion_evidence(
-    *, child_candidate: SFIRegistryCandidate, parent_match: _SourceOrderParentMatch
-) -> bool:
-    """Check for direct source evidence supporting a following parent occurrence.
-
-    Source-order inversion is accepted only when the child and following parent cite
-    the same raw table row or the same raw table header. Window proximity alone is not
-    evidence because the following organizer may begin the next hierarchy branch. Block
-    candidates and unrelated table locations therefore do not qualify.
-
-    Parameters
-    ----------
-    child_candidate
-        Controlled child candidate whose parent scope is being resolved.
-    parent_match
-        Following parent occurrence under consideration.
-
-    Returns
-    -------
-    bool
-        True when raw table references affirmatively tie the following parent to the
-        child's source location.
-    """
-
-    if parent_match.window_index != child_candidate.window_index:
-        return False
-
-    shared_header_indexes = set(child_candidate.table_header_indexes).intersection(
-        parent_match.table_header_indexes
-    )
-    shared_row_indexes = set(child_candidate.table_row_indexes).intersection(
-        parent_match.table_row_indexes
-    )
-    return bool(shared_header_indexes or shared_row_indexes)
-
-
 def _get_configured_code_types(
     *, code_patterns: dict[str, re.Pattern[str]], statement_code: Optional[str]
 ) -> list[str]:
@@ -1235,13 +1140,13 @@ def _narrow_source_order_scope_bounds(
     parent_matches: Sequence[_SourceOrderParentMatch],
     upper_bound: int,
 ) -> Optional[tuple[int, int]]:
-    """Narrow one active branch using value-aware parent boundaries.
+    """Narrow one active branch using all visible parent occurrences.
 
-    Repeated occurrences of the selected canonical parent value remain in the same
-    branch. Only an occurrence of the same statement type with a different canonical
-    value closes the branch. For a preceding parent, the branch starts at the earliest
-    same-value occurrence after the previous different-value boundary so repeated table
-    headings do not hide valid narrower organizers.
+    Every occurrence of the parent statement type participates in branch boundaries,
+    including occurrences whose controlled value could not be canonicalized. Repeated
+    occurrences of the selected canonical value remain in one branch. A different or
+    uncanonicalized occurrence closes the branch so stale recognized parents cannot
+    carry across a visible but unresolved hierarchy change.
 
     Parameters
     ----------
@@ -1250,9 +1155,10 @@ def _narrow_source_order_scope_bounds(
     lower_bound
         Current inclusive lower branch bound.
     parent_match
-        Selected parent occurrence for this hierarchy level.
+        Selected canonical parent occurrence for this hierarchy level.
     parent_matches
-        All occurrences of this parent statement type inside the current branch.
+        All visible occurrences of this parent statement type inside the current
+        branch, including uncanonicalized occurrences.
     upper_bound
         Current inclusive upper branch bound.
 
@@ -1264,13 +1170,17 @@ def _narrow_source_order_scope_bounds(
     """
 
     selected_value_key = parent_match.canonical_statement_value_key
-    previous_different_matches = [
+
+    if selected_value_key is None:
+        return None
+
+    previous_boundary_matches = [
         match
         for match in parent_matches
         if match.candidate_index < child_index
         and match.canonical_statement_value_key != selected_value_key
     ]
-    next_different_matches = [
+    next_boundary_matches = [
         match
         for match in parent_matches
         if match.candidate_index > child_index
@@ -1278,13 +1188,13 @@ def _narrow_source_order_scope_bounds(
     ]
 
     branch_lower_bound = (
-        previous_different_matches[-1].candidate_index + 1
-        if previous_different_matches
+        previous_boundary_matches[-1].candidate_index + 1
+        if previous_boundary_matches
         else lower_bound
     )
     branch_upper_bound = (
-        next_different_matches[0].candidate_index - 1
-        if next_different_matches
+        next_boundary_matches[0].candidate_index - 1
+        if next_boundary_matches
         else upper_bound
     )
 
@@ -1315,8 +1225,10 @@ def _order_controlled_scope_parent_statement_types(
 ) -> tuple[str, ...]:
     """Order controlled-scope parent types from broadest to narrowest.
 
-    The configured scope-key order is preserved separately for serialization. This
-    resolution order is used only to bound source-order searches consistently.
+    An explicit statement-type hierarchy is authoritative when configured. Otherwise,
+    the order of ``statement_type_policy`` defines the hierarchy, matching the runtime
+    configuration contract. The direct-parent policy, when available, is used only to
+    validate that the requested parent types form one ancestor chain.
 
     Parameters
     ----------
@@ -1333,8 +1245,8 @@ def _order_controlled_scope_parent_statement_types(
     Raises
     ------
     ValueError
-        If a safe hierarchy order cannot be derived or the requested types do not form
-        one ancestor chain.
+        If a configured parent type is absent from the selected hierarchy or the
+        requested types do not form one ancestor chain under the direct-parent policy.
     """
 
     configured_types = tuple(parent_statement_types)
@@ -1342,41 +1254,31 @@ def _order_controlled_scope_parent_statement_types(
     if len(configured_types) < 2:
         return configured_types
 
-    hierarchy = list(
+    explicit_hierarchy = tuple(
         kg_config.academic_standards.sfi_has_child_statement_type_hierarchy or []
     )
+    policy_hierarchy = tuple(
+        item.statement_type
+        for item in kg_config.academic_standards.statement_type_policy
+    )
+    hierarchy = explicit_hierarchy or policy_hierarchy
     hierarchy_indexes = {
         statement_type: index for index, statement_type in enumerate(hierarchy)
     }
+    missing_types = sorted(set(configured_types) - set(hierarchy_indexes))
 
-    if all(statement_type in hierarchy_indexes for statement_type in configured_types):
-        ordered_types = tuple(
-            sorted(configured_types, key=hierarchy_indexes.__getitem__)
+    if missing_types:
+        hierarchy_source = (
+            "sfi_has_child_statement_type_hierarchy"
+            if explicit_hierarchy
+            else "statement_type_policy"
         )
-    else:
-        parent_policy = (
-            kg_config.academic_standards.sfi_has_child_parent_statement_types or {}
+        raise ValueError(
+            f"Controlled scope parent statement types are missing from "
+            f"{hierarchy_source}: {missing_types}."
         )
 
-        if not parent_policy:
-            raise ValueError(
-                "nearest_parent_values with multiple parent statement types requires "
-                "sfi_has_child_statement_type_hierarchy or "
-                "sfi_has_child_parent_statement_types so source-order scope can be "
-                "resolved safely."
-            )
-
-        depths = _build_statement_type_depths(kg_config)
-        missing_types = sorted(set(configured_types) - set(depths))
-
-        if missing_types:
-            raise ValueError(
-                f"Could not derive hierarchy depths for controlled scope parent "
-                f"statement types: {missing_types}."
-            )
-
-        ordered_types = tuple(sorted(configured_types, key=depths.__getitem__))
-
+    ordered_types = tuple(sorted(configured_types, key=hierarchy_indexes.__getitem__))
     parent_policy = (
         kg_config.academic_standards.sfi_has_child_parent_statement_types or {}
     )
@@ -1476,8 +1378,10 @@ def _resolve_source_order_scope_parent_matches(
 
     Parent types are resolved in configured broad-to-narrow order. Each selected parent
     value narrows the active source branch before the next parent type is resolved.
-    Repeated same-value parent headings remain in one branch, while different values
-    close it. Following parents are accepted only with direct shared table evidence.
+    All visible occurrences of each parent statement type participate in branch
+    boundaries, including occurrences whose values are not canonicalized. Table-derived
+    children first use an unambiguous canonical parent value from their own table
+    window; otherwise the nearest unobstructed preceding parent is used.
 
     Parameters
     ----------
@@ -1518,7 +1422,6 @@ def _resolve_source_order_scope_parent_matches(
             if lower_bound <= parent_index <= upper_bound
             and parent_index != child_index
             and parent_candidate.statement_type == parent_statement_type
-            and parent_candidate.canonical_statement_value_key
         ]
         parent_match = _select_source_order_parent_match(
             child_candidate=child_candidate,
@@ -1552,11 +1455,17 @@ def _select_source_order_parent_match(
     child_index: int,
     parent_matches: Sequence[_SourceOrderParentMatch],
 ) -> Optional[_SourceOrderParentMatch]:
-    """Select a safe parent occurrence within one active source branch.
+    """Select a conservative parent occurrence within one active source branch.
 
-    A following parent that shares a cited raw table row or header with the child is
-    preferred because that is affirmative evidence that source reading order inverted
-    the visible hierarchy. Otherwise, the nearest preceding parent is used.
+    A table-derived child first resolves against all parent occurrences in the same
+    extraction window. The window is usable only when every such occurrence is
+    canonicalized and all canonicalized occurrences represent one distinct value. This
+    supports tables whose parent and child organizers occupy different raw header or
+    body rows without relying on curriculum-specific layouts.
+
+    When the current table window has no parent occurrence, the nearest preceding parent
+    occurrence is used only if its controlled value is canonicalized. An uncanonicalized
+    nearest occurrence blocks older parents and causes source-context fallback.
 
     Parameters
     ----------
@@ -1565,35 +1474,56 @@ def _select_source_order_parent_match(
     child_index
         Source-order index of the controlled child candidate.
     parent_matches
-        Parent occurrences already restricted to one active source branch.
+        All parent-type occurrences already restricted to one active source branch.
 
     Returns
     -------
     Optional[_SourceOrderParentMatch]
-        Selected parent occurrence, or None when no safe occurrence is available.
+        Selected canonical parent occurrence, or None when the available evidence is
+        absent or ambiguous.
     """
 
-    child_headers = set(child_candidate.table_header_indexes)
-    child_rows = set(child_candidate.table_row_indexes)
+    child_is_table_derived = bool(
+        child_candidate.table_header_indexes or child_candidate.table_row_indexes
+    )
 
-    # 1. Look for the first following match with affirmative inversion evidence.
-    for match in parent_matches:
-        if (
-            match.candidate_index > child_index
-            and match.window_index == child_candidate.window_index
-        ):
-            if not child_headers.isdisjoint(
-                match.table_header_indexes
-            ) or not child_rows.isdisjoint(match.table_row_indexes):
-                return match
+    if child_is_table_derived:
+        same_window_matches = [
+            match
+            for match in parent_matches
+            if match.window_index == child_candidate.window_index
+            and (match.table_header_indexes or match.table_row_indexes)
+        ]
 
-    # 2. Fallback to the nearest preceding match. Iterating backward finds the
-    # equivalent of previous_matches[-1].
-    for match in reversed(parent_matches):
-        if match.candidate_index < child_index:
-            return match
+        if same_window_matches:
+            canonical_value_keys = {
+                match.canonical_statement_value_key for match in same_window_matches
+            }
 
-    return None
+            if None in canonical_value_keys or len(canonical_value_keys) != 1:
+                return None
+
+            return min(
+                same_window_matches,
+                key=lambda match: (
+                    abs(match.candidate_index - child_index),
+                    match.candidate_index,
+                ),
+            )
+
+    preceding_matches = [
+        match for match in parent_matches if match.candidate_index < child_index
+    ]
+
+    if not preceding_matches:
+        return None
+
+    nearest_preceding_match = preceding_matches[-1]
+
+    if nearest_preceding_match.canonical_statement_value_key is None:
+        return None
+
+    return nearest_preceding_match
 
 
 def _statement_type_is_ancestor(
