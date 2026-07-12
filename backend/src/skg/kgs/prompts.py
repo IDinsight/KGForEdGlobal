@@ -1534,8 +1534,8 @@ it passes:
   Do not repair incomplete codes or change code characters or components.
 - The cited table rows or headers visibly support this candidate's description and
   evidence quote, rather than only containing a nearby or parallel statement.
-- The candidate is an SFI under runtime policy, not an exemplar, activity, competency,
-  note, resource, repeated header, or other excluded material.
+- The candidate is an SFI under runtime policy, not an exemplar, activity, note,
+  resource, repeated header, or other excluded material.
 - Distinct same-code/different-content source items remain separate. At result level,
   group candidates by canonical statement type, normalized statement code, and complete
   normalized description. Genuine repeated continuation occurrences in one result must
