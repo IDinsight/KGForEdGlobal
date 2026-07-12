@@ -2,6 +2,7 @@
 
 # Standard Library
 import re
+import unicodedata
 
 from datetime import datetime
 from pathlib import Path
@@ -57,6 +58,38 @@ def _validate_bcp47(code: str) -> str:
         return lang.to_tag()
     except langcodes.LanguageTagError as exc:
         raise ValueError(f"Unparseable language tag: '{code}'") from exc
+
+
+def normalize_controlled_value_key(value: str) -> str:
+    """Build a Unicode-aware comparison key for controlled values and aliases.
+
+    The normalization preserves Unicode letters and numbers while collapsing
+    punctuation, symbols, and whitespace into single spaces. NFKC normalization makes
+    compatibility forms comparable without transliterating or discarding
+    source-language characters.
+
+    Parameters
+    ----------
+    value
+        Controlled value, alias, statement type, or other source-facing label.
+
+    Returns
+    -------
+    str
+        NFKC-normalized, casefolded key containing Unicode letters, numbers, and
+        combining marks.
+    """
+
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    letters_numbers_marks_or_spaces = "".join(
+        (
+            character
+            if character.isalnum() or unicodedata.category(character).startswith("M")
+            else " "
+        )
+        for character in normalized
+    )
+    return " ".join(letters_numbers_marks_or_spaces.split())
 
 
 def validate_bbox_order(bbox: list[float]) -> list[float]:
@@ -281,23 +314,6 @@ class _AcademicStandardStatementTypePolicyItem(BaseSchema):
         description="Canonical source-facing statement_type label the LLM must output."
     )
 
-    @staticmethod
-    def _controlled_value_key(value: str) -> str:
-        """Build a stable comparison key for controlled values and aliases.
-
-        Parameters
-        ----------
-        value
-            Controlled value or alias.
-
-        Returns
-        -------
-        str
-            Casefolded key with non-alphanumeric runs collapsed to one space.
-        """
-
-        return re.sub(r"[^0-9a-z]+", " ", str(value or "").casefold()).strip()
-
     @field_validator("controlled_value_scope_parent_statement_types")
     @classmethod
     def validate_controlled_value_scope_parent_statement_types(
@@ -368,7 +384,7 @@ class _AcademicStandardStatementTypePolicyItem(BaseSchema):
         alias_to_canonical: dict[str, str] = {}
 
         for item in v or []:
-            canonical_key = cls._controlled_value_key(item.canonical_value)
+            canonical_key = normalize_controlled_value_key(item.canonical_value)
 
             if not canonical_key:
                 raise ValueError(
@@ -377,7 +393,7 @@ class _AcademicStandardStatementTypePolicyItem(BaseSchema):
                 )
 
             for alias in [item.canonical_value, *item.aliases]:
-                alias_key = cls._controlled_value_key(alias)
+                alias_key = normalize_controlled_value_key(alias)
 
                 if not alias_key:
                     continue
