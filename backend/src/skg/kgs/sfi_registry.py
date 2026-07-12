@@ -1491,6 +1491,7 @@ def _select_source_order_parent_match(
 
     if child_is_table_derived:
         child_row_indexes = set(child_candidate.table_row_indexes)
+
         affirmative_table_matches = [
             match
             for match in parent_matches
