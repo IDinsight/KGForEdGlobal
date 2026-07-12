@@ -113,7 +113,7 @@ def build_kgs(
     plan_items = plan_extraction_windows(
         document_ir=kg_run_inputs.document_ir,
         kg_config=kg_run_inputs.kg_config,
-        save_fp=kg_dirs.root / "extraction_window_plan.json",
+        save_fp=kg_dirs.root / "sfi_extraction_window_plan.json",
     )
 
     # 4.
@@ -121,7 +121,7 @@ def build_kgs(
         document_ir=kg_run_inputs.document_ir,
         kg_config=kg_run_inputs.kg_config,
         plan_items=plan_items,
-        save_fp=kg_dirs.root / "extraction_windows.jsonl",
+        save_fp=kg_dirs.root / "sfi_extraction_windows.jsonl",
     )
 
     # 5.
