@@ -7,6 +7,7 @@ from typing import Any, Optional
 # Package Library
 from skg.kgs.schemas import (
     ExtractionWindow,
+    ExtractionWindowTablePayload,
     SFIDedupReviewRequest,
     SFIExtractionResult,
     SFIHasChildResolutionRequest,
@@ -734,6 +735,8 @@ def _build_compact_table_payload(
     if table is None:
         return None
 
+    _validate_compact_body_row_placement(table)
+
     grid_sources_by_row = (
         table.grid_sources
         if table.grid_sources is not None
@@ -1079,6 +1082,52 @@ def _map_raw_row_cells_to_column_ranges(
             )
 
     return mapped_cells
+
+
+def _validate_compact_body_row_placement(table: ExtractionWindowTablePayload) -> None:
+    """Validate that compact body-row column placement is source-safe.
+
+    `grid_sources` identifies which expanded grid columns originate in each raw source
+    row. Without that helper, left-to-right placement is safe only for body rows that
+    contain neither row-spanning cells nor synthetic rowspan placeholders. Reject
+    ambiguous row-spanned layouts instead of shifting visible cells into the wrong
+    columns in the compact LLM prompt.
+
+    Parameters
+    ----------
+    table
+        Extraction-window table payload to validate before compact placement.
+
+    Raises
+    ------
+    ValueError
+        If `grid_sources` is absent and any selected body row contains a cell with
+        `row_span > 1` or a `rowspan_placeholder`.
+    """
+
+    if table.grid_sources is not None:
+        return
+
+    unsafe_row_indexes: list[int] = []
+
+    for row, row_index in zip(table.rows, table.row_indexes):
+        for cell in row.get("cells") or []:
+            if not isinstance(cell, dict):
+                continue
+
+            row_span = max(1, int(cell.get("row_span") or 1))
+
+            if cell.get("rowspan_placeholder") or row_span > 1:
+                unsafe_row_indexes.append(row_index)
+                break
+
+    if unsafe_row_indexes:
+        raise ValueError(
+            f"Cannot safely build compact table body geometry without grid_sources: "
+            f"selected body rows contain row-spanning cells or rowspan placeholders "
+            f"at source row indexes {unsafe_row_indexes}. Provide grid_sources so "
+            f"visible cells can be assigned to their true expanded-grid columns."
+        )
 
 
 def extract_sfi_candidates_from_window(

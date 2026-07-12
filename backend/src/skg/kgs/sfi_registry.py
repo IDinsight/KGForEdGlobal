@@ -31,7 +31,7 @@ from skg.kgs.schemas import (
     SFIRegistryWarning,
 )
 from skg.kgs.utils import normalize_code, normalize_text
-from skg.kgs.validators import verify_sfi_extraction_quality
+from skg.kgs.validators import verify_sfi_extraction_integrity
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, write_to_json
@@ -53,6 +53,7 @@ class _StatementValuePolicy:
     alias_to_canonical: dict[str, str]
     controlled_value_scope: str
     controlled_value_scope_parent_statement_types: tuple[str, ...]
+    controlled_value_scope_resolution_statement_types: tuple[str, ...]
     root_statement_types: frozenset[str]
 
 
@@ -151,10 +152,9 @@ def _build_candidate_source_context(
 
 def _build_canonical_statement_scope_key(
     *,
-    canonical_statement_value_key: Optional[str],
     candidate: SFICandidate,
+    canonical_statement_value_key: Optional[str],
     source_context_key: str,
-    source_context_labels: Sequence[str],
     statement_value_policies: dict[str, _StatementValuePolicy],
 ) -> Optional[str]:
     """Build the configured deduplication scope for a canonical value.
@@ -167,8 +167,6 @@ def _build_canonical_statement_scope_key(
         Window-local candidate being canonicalized.
     source_context_key
         Deterministic source-derived context key already computed for the candidate.
-    source_context_labels
-        Human-readable source context labels from the extraction window.
     statement_value_policies
         Controlled value policies keyed by statement_type.
 
@@ -191,28 +189,10 @@ def _build_canonical_statement_scope_key(
     if policy.controlled_value_scope == "source_context":
         return fallback
 
-    if policy.controlled_value_scope != "nearest_parent_values":
-        return fallback
-
-    scope_parts: list[str] = []
-
-    for parent_statement_type in policy.controlled_value_scope_parent_statement_types:
-        parent_value_key = _extract_source_local_scope_value_key(
-            child_canonical_value_key=canonical_statement_value_key,
-            child_statement_type=candidate.statement_type,
-            parent_statement_type=parent_statement_type,
-            source_context_labels=source_context_labels,
-            statement_value_policies=statement_value_policies,
-        )
-
-        if not parent_value_key:
-            return fallback
-
-        scope_parts.append(
-            f"{_build_scope_part_label(parent_statement_type)}:{parent_value_key}"
-        )
-
-    return "|".join(scope_parts) if scope_parts else fallback
+    # Cumulative section-path labels can retain stale organizers across hierarchy
+    # boundaries. Nearest-parent scopes are therefore resolved only in the later
+    # source-order pass, where broader parent occurrences can bound narrower searches.
+    return fallback
 
 
 def _build_canonical_statement_value(
@@ -376,10 +356,9 @@ def _build_registry_candidate(
         candidate=candidate, statement_value_policies=statement_value_policies
     )
     canonical_statement_scope_key = _build_canonical_statement_scope_key(
-        canonical_statement_value_key=canonical_statement_value_key,
         candidate=candidate,
+        canonical_statement_value_key=canonical_statement_value_key,
         source_context_key=source_context_key,
-        source_context_labels=source_context_labels,
         statement_value_policies=statement_value_policies,
     )
 
@@ -655,6 +634,65 @@ def _build_scope_part_label(statement_type: str) -> str:
     return label or "scope"
 
 
+def _build_statement_type_depths(kg_config: CreateKGConfig) -> dict[str, int]:
+    """Build hierarchy depths from the configured direct-parent policy.
+
+    Parameters
+    ----------
+    kg_config
+        Runtime KG configuration containing statement-type parent policy.
+
+    Returns
+    -------
+    dict[str, int]
+        Statement-type depths where root-level types have depth zero.
+
+    Raises
+    ------
+    ValueError
+        If the configured parent graph contains a cycle or cannot be resolved.
+    """
+
+    parent_policy = (
+        kg_config.academic_standards.sfi_has_child_parent_statement_types or {}
+    )
+    statement_types = set(parent_policy)
+
+    for parent_statement_types in parent_policy.values():
+        statement_types.update(parent_statement_types)
+
+    depths: dict[str, int] = {}
+    unresolved = set(statement_types)
+
+    while unresolved:
+        progress = False
+
+        for statement_type in sorted(unresolved):
+            parent_statement_types = parent_policy.get(statement_type, [])
+
+            if not parent_statement_types:
+                depths[statement_type] = 0
+            elif all(parent in depths for parent in parent_statement_types):
+                depths[statement_type] = 1 + max(
+                    depths[parent] for parent in parent_statement_types
+                )
+            else:
+                continue
+
+            unresolved.remove(statement_type)
+            progress = True
+            break
+
+        if not progress:
+            raise ValueError(
+                f"Could not resolve statement-type hierarchy depths from "
+                f"sfi_has_child_parent_statement_types; the parent graph may "
+                f"contain a cycle or unresolved reference: {sorted(unresolved)}."
+            )
+
+    return depths
+
+
 def _build_statement_value_policies(
     kg_config: CreateKGConfig,
 ) -> dict[str, _StatementValuePolicy]:
@@ -687,11 +725,20 @@ def _build_statement_value_policies(
         if not alias_to_canonical:
             continue
 
+        parent_statement_types = tuple(
+            item.controlled_value_scope_parent_statement_types
+        )
         policies[item.statement_type] = _StatementValuePolicy(
             alias_to_canonical=alias_to_canonical,
             controlled_value_scope=item.controlled_value_scope,
-            controlled_value_scope_parent_statement_types=tuple(
-                item.controlled_value_scope_parent_statement_types
+            controlled_value_scope_parent_statement_types=parent_statement_types,
+            controlled_value_scope_resolution_statement_types=(
+                _order_controlled_scope_parent_statement_types(
+                    kg_config=kg_config,
+                    parent_statement_types=parent_statement_types,
+                )
+                if item.controlled_value_scope == "nearest_parent_values"
+                else parent_statement_types
             ),
             root_statement_types=frozenset(root_statement_types),
         )
@@ -789,14 +836,16 @@ def _build_table_source_context(
     row_indexes = ",".join(str(index) for index in candidate.table_row_indexes)
     header_indexes = ",".join(str(index) for index in candidate.table_header_indexes)
 
-    if columns_signature:
-        labels.append("table_columns:" + _truncate_context_label(columns_signature))
+    # Keep candidate-local source evidence before broader table metadata so generic
+    # nearest-value matching selects the most relevant controlled scope.
+    labels.extend(_build_table_row_labels(candidate=candidate, table=table))
+    labels.extend(_build_table_header_labels(candidate=candidate, table=table))
 
     if local_code:
         labels.append(f"table_local_code:{local_code}")
 
-    labels.extend(_build_table_header_labels(candidate=candidate, table=table))
-    labels.extend(_build_table_row_labels(candidate=candidate, table=table))
+    if columns_signature:
+        labels.append("table_columns:" + _truncate_context_label(columns_signature))
 
     key_parts = [
         f"table_columns:{columns_signature}",
@@ -880,96 +929,6 @@ def _deterministic_bucket_id(*, bucket_key: str, bucket_type: str) -> str:
     return f"bucket_{bucket_type}_{digest[:16]}"
 
 
-def _extract_nearest_canonical_scope_value_key(
-    *,
-    source_context_labels: Sequence[str],
-    statement_type: str,
-    statement_value_policies: dict[str, _StatementValuePolicy],
-) -> Optional[str]:
-    """Extract the nearest configured scope value from source context labels.
-
-    Parameters
-    ----------
-    source_context_labels
-        Human-readable source context labels associated with a candidate.
-    statement_type
-        Statement type whose controlled values should be searched for scope.
-    statement_value_policies
-        Controlled value policies keyed by statement_type.
-
-    Returns
-    -------
-    Optional[str]
-        Normalized canonical value key for the nearest matching scope value.
-    """
-
-    policy = statement_value_policies.get(statement_type)
-
-    if policy is None:
-        return None
-
-    matched_value: Optional[str] = None
-
-    for label in source_context_labels:
-        canonical_value = _match_controlled_value(
-            allow_contained=True, policy=policy, value=label
-        )
-
-        if canonical_value:
-            matched_value = canonical_value
-
-    return _normalize_controlled_value_key(matched_value) if matched_value else None
-
-
-def _extract_parent_value_key_near_label(
-    *,
-    child_label_index: int,
-    labels: Sequence[str],
-    parent_policy: _StatementValuePolicy,
-    prefer_following_labels_first: bool,
-) -> Optional[str]:
-    """Find the nearest parent controlled value around one child label.
-
-    Parameters
-    ----------
-    child_label_index
-        Index of the source-context label that matched the child controlled value.
-    labels
-        Source-context labels in artifact order.
-    parent_policy
-        Controlled-value policy for the desired parent statement type.
-    prefer_following_labels_first
-        Whether labels after the child should be searched before labels before the
-        child. This is driven by configured root-level parent statement types rather
-        than hard-coded source labels, and handles PDFs whose visual broad heading is
-        emitted after a narrower heading by OCR/reading order.
-
-    Returns
-    -------
-    Optional[str]
-        Normalized parent canonical value key, if found near the child label.
-    """
-
-    search_indexes = [child_label_index]
-
-    if prefer_following_labels_first:
-        search_indexes.extend(range(child_label_index + 1, len(labels)))
-        search_indexes.extend(range(child_label_index - 1, -1, -1))
-    else:
-        search_indexes.extend(range(child_label_index - 1, -1, -1))
-        search_indexes.extend(range(child_label_index + 1, len(labels)))
-
-    for label_index in search_indexes:
-        canonical_value = _match_controlled_value(
-            allow_contained=True, policy=parent_policy, value=labels[label_index]
-        )
-
-        if canonical_value:
-            return _normalize_controlled_value_key(canonical_value)
-
-    return None
-
-
 def _extract_section_texts(section_path: Sequence[Any]) -> list[str]:
     """Extract and truncate visible text labels from a block section path.
 
@@ -1000,79 +959,6 @@ def _extract_section_texts(section_path: Sequence[Any]) -> list[str]:
         section_texts.append(_truncate_context_label(section_text))
 
     return section_texts
-
-
-def _extract_source_local_scope_value_key(
-    *,
-    child_canonical_value_key: str,
-    child_statement_type: str,
-    parent_statement_type: str,
-    source_context_labels: Sequence[str],
-    statement_value_policies: dict[str, _StatementValuePolicy],
-) -> Optional[str]:
-    """Extract a source-local parent scope value for a controlled child value.
-
-    The registry should scope controlled organizers by the active local path, not by
-    the last matching label in a cumulative DocumentIR section-path bag. This function
-    first looks for labels that mention the child controlled value and then searches
-    the same or adjacent source-context labels for the requested parent controlled
-    value. That preserves paired headings such as `THEME: X SUB-THEME: Y` even when
-    older headings remain in the cumulative context. If no paired/local value is found,
-    it falls back to the nearest matching parent value in the full context.
-
-    Parameters
-    ----------
-    child_canonical_value_key
-        Normalized canonical value key for the child controlled statement.
-    child_statement_type
-        Child statement type whose controlled value anchors local search.
-    parent_statement_type
-        Parent statement type whose controlled value should be recovered.
-    source_context_labels
-        Human-readable source context labels associated with the child candidate.
-    statement_value_policies
-        Controlled value policies keyed by statement_type.
-
-    Returns
-    -------
-    Optional[str]
-        Normalized canonical value key for the source-local parent value, if found.
-    """
-
-    child_policy = statement_value_policies.get(child_statement_type)
-    parent_policy = statement_value_policies.get(parent_statement_type)
-
-    if child_policy is None or parent_policy is None:
-        return None
-
-    labels = list(source_context_labels)
-    child_label_indexes = [
-        label_index
-        for label_index, label in enumerate(labels)
-        if _label_matches_canonical_value_key(
-            canonical_value_key=child_canonical_value_key,
-            label=label,
-            policy=child_policy,
-        )
-    ]
-
-    for child_label_index in reversed(child_label_indexes):
-        local_parent_value_key = _extract_parent_value_key_near_label(
-            child_label_index=child_label_index,
-            labels=labels,
-            parent_policy=parent_policy,
-            prefer_following_labels_first=parent_statement_type
-            in parent_policy.root_statement_types,
-        )
-
-        if local_parent_value_key:
-            return local_parent_value_key
-
-    return _extract_nearest_canonical_scope_value_key(
-        source_context_labels=source_context_labels,
-        statement_type=parent_statement_type,
-        statement_value_policies=statement_value_policies,
-    )
 
 
 def _extract_table_row_text(row: dict[str, Any]) -> str:
@@ -1173,138 +1059,6 @@ def _find_configured_code_matches_in_text(
     return matches
 
 
-def _find_source_order_parent_value_key(
-    *,
-    child_index: int,
-    ordered_candidates: Sequence[SFIRegistryCandidate],
-    parent_statement_type: str,
-    root_statement_types: frozenset[str],
-) -> Optional[str]:
-    """Find a controlled parent value using candidate source order.
-
-    DocumentIR section paths can be cumulative at page or layout transitions, so the
-    last label in a section-path bag is not always the active scope. This function uses
-    extracted controlled organizer candidates in source order instead. Same-window
-    parent candidates are strongest. For configured root-level parents, an immediately
-    following root heading is allowed to scope preceding local headings, which covers
-    PDFs where visual grade headings are emitted just after theme/sub-theme headings.
-
-    Parameters
-    ----------
-    child_index
-        Index of the child candidate in source-order registry candidates.
-    ordered_candidates
-        Registry candidates in source order.
-    parent_statement_type
-        Parent statement type whose controlled value should be resolved.
-    root_statement_types
-        Statement types configured as root-level organizers.
-
-    Returns
-    -------
-    Optional[str]
-        Normalized canonical parent value key, if one can be resolved.
-    """
-
-    def _pick(
-        *, matches: Sequence[_SourceOrderParentMatch], take_first: bool
-    ) -> Optional[str]:
-        """Return the boundary match's canonical value key, or `None` if empty.
-
-        Parameters
-        ----------
-        matches
-            Candidate matches already filtered to a single resolution tier.
-        take_first
-            When `True`, select the earliest match in source order; when `False`,
-            select the latest.
-
-        Returns
-        -------
-        Optional[str]
-            The chosen match's canonical statement value key, or `None` when `matches`
-            is empty.
-        """
-
-        if not matches:
-            return None
-
-        chosen = matches[0] if take_first else matches[-1]
-        return chosen.canonical_statement_value_key
-
-    if child_index < 0 or child_index >= len(ordered_candidates):
-        return None
-
-    child_candidate = ordered_candidates[child_index]
-    parent_matches = [
-        _SourceOrderParentMatch(
-            candidate_index=parent_index,
-            canonical_statement_value_key=parent_candidate.canonical_statement_value_key,
-            window_index=parent_candidate.window_index,
-        )
-        for parent_index, parent_candidate in enumerate(ordered_candidates)
-        if parent_candidate.statement_type == parent_statement_type
-        and parent_candidate.canonical_statement_value_key
-    ]
-
-    if not parent_matches:
-        return None
-
-    # Strongest signal: a parent in the same layout window as the child. Prefer the
-    # closest preceding one, then fall back to the closest following one.
-    same_window_matches = [
-        parent_match
-        for parent_match in parent_matches
-        if parent_match.window_index == child_candidate.window_index
-    ]
-    same_window_before = [
-        parent_match
-        for parent_match in same_window_matches
-        if parent_match.candidate_index < child_index
-    ]
-    same_window_after = [
-        parent_match
-        for parent_match in same_window_matches
-        if parent_match.candidate_index > child_index
-    ]
-
-    same_window_value_key = _pick(
-        matches=same_window_before, take_first=False
-    ) or _pick(matches=same_window_after, take_first=True)
-
-    if same_window_value_key:
-        return same_window_value_key
-
-    # Root organizers may be emitted just after the local headings they scope, so a
-    # root parent within one window ahead is allowed to claim the child.
-    if parent_statement_type in root_statement_types:
-        following_root_matches = [
-            parent_match
-            for parent_match in parent_matches
-            if parent_match.candidate_index > child_index
-            and 0 <= parent_match.window_index - child_candidate.window_index <= 1
-        ]
-
-        if following_root_matches:
-            return following_root_matches[0].canonical_statement_value_key
-
-    # Cross-window fallback: nearest preceding parent, otherwise nearest following.
-    previous_matches = [
-        parent_match
-        for parent_match in parent_matches
-        if parent_match.candidate_index < child_index
-    ]
-    following_matches = [
-        parent_match
-        for parent_match in parent_matches
-        if parent_match.candidate_index > child_index
-    ]
-
-    return _pick(matches=previous_matches, take_first=False) or _pick(
-        matches=following_matches, take_first=True
-    )
-
-
 def _get_configured_code_types(
     *, code_patterns: dict[str, re.Pattern[str]], statement_code: Optional[str]
 ) -> list[str]:
@@ -1364,36 +1118,6 @@ def _join_bucket_key(*values: Optional[str]) -> str:
     return "|".join(str(value or "").strip() for value in values)
 
 
-def _label_matches_canonical_value_key(
-    *, canonical_value_key: str, label: str, policy: _StatementValuePolicy
-) -> bool:
-    """Check whether a context label expresses one canonical controlled value.
-
-    Parameters
-    ----------
-    canonical_value_key
-        Normalized canonical value key to match.
-    label
-        Source-context label to inspect.
-    policy
-        Controlled-value policy used to canonicalize the label.
-
-    Returns
-    -------
-    bool
-        True when the label canonicalizes to the requested value key.
-    """
-
-    canonical_value = _match_controlled_value(
-        allow_contained=True, policy=policy, value=label
-    )
-
-    if not canonical_value:
-        return False
-
-    return _normalize_controlled_value_key(canonical_value) == canonical_value_key
-
-
 def _match_controlled_value(
     *, allow_contained: bool, policy: _StatementValuePolicy, value: str
 ) -> Optional[str]:
@@ -1419,30 +1143,41 @@ def _match_controlled_value(
     if not value_key:
         return None
 
-    exact = policy.alias_to_canonical.get(value_key)
-
-    if exact:
-        return exact
-
-    stripped_key = _normalize_controlled_value_key(
-        _strip_controlled_label_prefixes(value)
+    candidate_keys = (
+        value_key,
+        _normalize_controlled_value_key(_strip_controlled_label_prefixes(value)),
     )
-    exact_stripped = policy.alias_to_canonical.get(stripped_key)
-
-    if exact_stripped:
-        return exact_stripped
+    for candidate_key in candidate_keys:
+        exact = policy.alias_to_canonical.get(candidate_key)
+        if exact:
+            return exact
 
     if not allow_contained:
         return None
 
     padded_value_key = f" {value_key} "
+    contained_matches = [
+        (alias_key, canonical_value)
+        for alias_key, canonical_value in policy.alias_to_canonical.items()
+        if f" {alias_key} " in padded_value_key
+    ]
 
-    for alias_key, canonical_value in policy.alias_to_canonical.items():
-        padded_alias_key = f" {alias_key} "
-        if padded_alias_key in padded_value_key:
-            return canonical_value
+    if not contained_matches:
+        return None
 
-    return None
+    highest_specificity = max(
+        (len(alias_key.split()), len(alias_key)) for alias_key, _ in contained_matches
+    )
+    most_specific_values = {
+        canonical_value
+        for alias_key, canonical_value in contained_matches
+        if (len(alias_key.split()), len(alias_key)) == highest_specificity
+    }
+
+    if len(most_specific_values) != 1:
+        return None
+
+    return next(iter(most_specific_values))
 
 
 def _maybe_append_warning(
@@ -1511,6 +1246,96 @@ def _normalize_controlled_value_key(value: str) -> str:
     return re.sub(r"[^0-9a-z]+", " ", str(value or "").casefold()).strip()
 
 
+def _order_controlled_scope_parent_statement_types(
+    *, kg_config: CreateKGConfig, parent_statement_types: Sequence[str]
+) -> tuple[str, ...]:
+    """Order controlled-scope parent types from broadest to narrowest.
+
+    The configured scope-key order is preserved separately for serialization. This
+    resolution order is used only to bound source-order searches consistently.
+
+    Parameters
+    ----------
+    kg_config
+        Runtime KG configuration containing hierarchy policies.
+    parent_statement_types
+        Configured parent statement types used in the controlled scope key.
+
+    Returns
+    -------
+    tuple[str, ...]
+        Parent statement types ordered from broadest to narrowest.
+
+    Raises
+    ------
+    ValueError
+        If a safe hierarchy order cannot be derived or the requested types do not form
+        one ancestor chain.
+    """
+
+    configured_types = tuple(parent_statement_types)
+
+    if len(configured_types) < 2:
+        return configured_types
+
+    hierarchy = list(
+        kg_config.academic_standards.sfi_has_child_statement_type_hierarchy or []
+    )
+    hierarchy_indexes = {
+        statement_type: index for index, statement_type in enumerate(hierarchy)
+    }
+
+    if all(statement_type in hierarchy_indexes for statement_type in configured_types):
+        ordered_types = tuple(
+            sorted(configured_types, key=hierarchy_indexes.__getitem__)
+        )
+    else:
+        parent_policy = (
+            kg_config.academic_standards.sfi_has_child_parent_statement_types or {}
+        )
+
+        if not parent_policy:
+            raise ValueError(
+                "nearest_parent_values with multiple parent statement types requires "
+                "sfi_has_child_statement_type_hierarchy or "
+                "sfi_has_child_parent_statement_types so source-order scope can be "
+                "resolved safely."
+            )
+
+        depths = _build_statement_type_depths(kg_config)
+        missing_types = sorted(set(configured_types) - set(depths))
+
+        if missing_types:
+            raise ValueError(
+                f"Could not derive hierarchy depths for controlled scope parent "
+                f"statement types: {missing_types}."
+            )
+
+        ordered_types = tuple(sorted(configured_types, key=depths.__getitem__))
+
+    parent_policy = (
+        kg_config.academic_standards.sfi_has_child_parent_statement_types or {}
+    )
+
+    if parent_policy:
+        for ancestor_statement_type, descendant_statement_type in zip(
+            ordered_types, ordered_types[1:]
+        ):
+            if not _statement_type_is_ancestor(
+                ancestor_statement_type=ancestor_statement_type,
+                descendant_statement_type=descendant_statement_type,
+                parent_statement_types=parent_policy,
+            ):
+                raise ValueError(
+                    f"Controlled scope parent statement types must form one "
+                    f"broad-to-narrow ancestor chain; "
+                    f"{ancestor_statement_type!r} is not an ancestor of "
+                    f"{descendant_statement_type!r}."
+                )
+
+    return ordered_types
+
+
 def _resolve_canonical_statement_scope_from_source_order(
     *,
     candidate: SFIRegistryCandidate,
@@ -1554,33 +1379,234 @@ def _resolve_canonical_statement_scope_from_source_order(
     if policy.controlled_value_scope != "nearest_parent_values":
         return fallback
 
+    resolved_parent_matches = _resolve_source_order_scope_parent_matches(
+        child_index=candidate_index,
+        ordered_candidates=ordered_candidates,
+        parent_statement_types=(
+            policy.controlled_value_scope_resolution_statement_types
+        ),
+        root_statement_types=policy.root_statement_types,
+    )
+
+    if resolved_parent_matches is None:
+        return fallback
+
+    resolved_matches_by_statement_type = dict(resolved_parent_matches)
     scope_parts: list[str] = []
 
     for parent_statement_type in policy.controlled_value_scope_parent_statement_types:
-        parent_value_key = _find_source_order_parent_value_key(
-            child_index=candidate_index,
-            ordered_candidates=ordered_candidates,
-            parent_statement_type=parent_statement_type,
-            root_statement_types=policy.root_statement_types,
-        )
-
-        if not parent_value_key:
-            parent_value_key = _extract_source_local_scope_value_key(
-                child_canonical_value_key=candidate.canonical_statement_value_key,
-                child_statement_type=candidate.statement_type,
-                parent_statement_type=parent_statement_type,
-                source_context_labels=candidate.source_context_labels,
-                statement_value_policies=statement_value_policies,
-            )
-
-        if not parent_value_key:
-            return fallback
-
+        parent_match = resolved_matches_by_statement_type[parent_statement_type]
         scope_parts.append(
-            f"{_build_scope_part_label(parent_statement_type)}:{parent_value_key}"
+            f"{_build_scope_part_label(parent_statement_type)}:"
+            f"{parent_match.canonical_statement_value_key}"
+        )
+    return "|".join(scope_parts) if scope_parts else fallback
+
+
+def _resolve_source_order_scope_parent_matches(
+    *,
+    child_index: int,
+    ordered_candidates: Sequence[SFIRegistryCandidate],
+    parent_statement_types: Sequence[str],
+    root_statement_types: frozenset[str],
+) -> Optional[list[tuple[str, _SourceOrderParentMatch]]]:
+    """Resolve one hierarchy-consistent controlled parent chain in source order.
+
+    Parent types are resolved in configured broad-to-narrow order. Each selected parent
+    occurrence narrows the active source branch before the next parent type is
+    resolved, preventing narrower organizers from being borrowed across a broader
+    grade, stage, domain, course, or equivalent boundary.
+
+    Parameters
+    ----------
+    child_index
+        Source-order index of the controlled child candidate.
+    ordered_candidates
+        Registry candidates in source order.
+    parent_statement_types
+        Configured parent statement types in broad-to-narrow scope-key order.
+    root_statement_types
+        Statement types configured as framework-root organizers.
+
+    Returns
+    -------
+    Optional[list[tuple[str, _SourceOrderParentMatch]]]
+        Complete hierarchy-consistent parent chain, or None when source order cannot
+        safely resolve every configured parent level.
+    """
+
+    if child_index < 0 or child_index >= len(ordered_candidates):
+        return None
+
+    child_window_index = ordered_candidates[child_index].window_index
+    lower_bound = 0
+    upper_bound = len(ordered_candidates) - 1
+    resolved_matches: list[tuple[str, _SourceOrderParentMatch]] = []
+
+    for parent_statement_type in parent_statement_types:
+        parent_matches = [
+            _SourceOrderParentMatch(
+                candidate_index=parent_index,
+                canonical_statement_value_key=(
+                    parent_candidate.canonical_statement_value_key
+                ),
+                window_index=parent_candidate.window_index,
+            )
+            for parent_index, parent_candidate in enumerate(ordered_candidates)
+            if lower_bound <= parent_index <= upper_bound
+            and parent_index != child_index
+            and parent_candidate.statement_type == parent_statement_type
+            and parent_candidate.canonical_statement_value_key
+        ]
+        parent_match = _select_source_order_parent_match(
+            child_index=child_index,
+            child_window_index=child_window_index,
+            parent_matches=parent_matches,
+            parent_statement_type=parent_statement_type,
+            root_statement_types=root_statement_types,
         )
 
-    return "|".join(scope_parts) if scope_parts else fallback
+        if parent_match is None:
+            return None
+
+        resolved_matches.append((parent_statement_type, parent_match))
+
+        # Locate the index of the selected match within the sorted parent_matches list.
+        parent_idx = parent_match.candidate_index
+        match_list_idx = next(
+            i for i, m in enumerate(parent_matches) if m.candidate_index == parent_idx
+        )
+
+        if parent_idx <= child_index:
+            # Parent precedes the child: start the active branch here.
+            lower_bound = parent_idx
+
+            # The next occurrence of the same statement type closes the active branch.
+            if match_list_idx + 1 < len(parent_matches):
+                upper_bound = parent_matches[match_list_idx + 1].candidate_index - 1
+        else:
+            # Parent follows the child (reading-order inversion).
+            upper_bound = parent_idx
+
+            # The prior occurrence of the same statement type closes the previous branch.
+            if match_list_idx > 0:
+                lower_bound = parent_matches[match_list_idx - 1].candidate_index + 1
+
+        if not lower_bound <= child_index <= upper_bound:
+            return None
+
+    return resolved_matches
+
+
+def _select_source_order_parent_match(
+    *,
+    child_index: int,
+    child_window_index: int,
+    parent_matches: Sequence[_SourceOrderParentMatch],
+    parent_statement_type: str,
+    root_statement_types: frozenset[str],
+) -> Optional[_SourceOrderParentMatch]:
+    """Select the strongest parent occurrence within one active source branch.
+
+    Parameters
+    ----------
+    child_index
+        Source-order index of the scoped child candidate.
+    child_window_index
+        Extraction-window index of the scoped child candidate.
+    parent_matches
+        Parent occurrences already restricted to one active source branch.
+    parent_statement_type
+        Parent statement type being resolved.
+    root_statement_types
+        Statement types configured as framework-root organizers.
+
+    Returns
+    -------
+    Optional[_SourceOrderParentMatch]
+        Selected parent occurrence, or None when the branch has no usable match.
+    """
+
+    same_window_before = [
+        match
+        for match in parent_matches
+        if match.window_index == child_window_index
+        and match.candidate_index < child_index
+    ]
+
+    if same_window_before:
+        return same_window_before[-1]
+
+    same_window_after = [
+        match
+        for match in parent_matches
+        if match.window_index == child_window_index
+        and match.candidate_index > child_index
+    ]
+
+    if same_window_after:
+        return same_window_after[0]
+
+    if parent_statement_type in root_statement_types:
+        following_root_matches = [
+            match
+            for match in parent_matches
+            if match.candidate_index > child_index
+            and 0 <= match.window_index - child_window_index <= 1
+        ]
+
+        if following_root_matches:
+            return following_root_matches[0]
+
+    previous_matches = [
+        match for match in parent_matches if match.candidate_index < child_index
+    ]
+
+    if previous_matches:
+        return previous_matches[-1]
+
+    return None
+
+
+def _statement_type_is_ancestor(
+    *,
+    ancestor_statement_type: str,
+    descendant_statement_type: str,
+    parent_statement_types: dict[str, list[str]],
+) -> bool:
+    """Check whether one configured statement type is an ancestor of another.
+
+    Parameters
+    ----------
+    ancestor_statement_type
+        Candidate ancestor statement type.
+    descendant_statement_type
+        Candidate descendant statement type.
+    parent_statement_types
+        Configured direct-parent statement types keyed by child type.
+
+    Returns
+    -------
+    bool
+        True when the ancestor is reachable through one or more parent links.
+    """
+
+    pending = list(parent_statement_types.get(descendant_statement_type, []))
+    visited: set[str] = set()
+
+    while pending:
+        statement_type = pending.pop()
+
+        if statement_type == ancestor_statement_type:
+            return True
+
+        if statement_type in visited:
+            continue
+
+        visited.add(statement_type)
+        pending.extend(parent_statement_types.get(statement_type, []))
+
+    return False
 
 
 def _strip_controlled_label_prefixes(value: str) -> str:
@@ -1713,7 +1739,7 @@ def _validate_result_window_alignment(
         )
 
     try:
-        verify_sfi_extraction_quality(
+        verify_sfi_extraction_integrity(
             extraction_result=extraction_result,
             kg_config=kg_config,
             window=extraction_window,
