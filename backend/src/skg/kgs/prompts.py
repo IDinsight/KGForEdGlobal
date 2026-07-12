@@ -827,8 +827,9 @@ def _build_dedup_review_focus_instructions(
 - Decide whether the repeated visible text names the same curriculum item repeated in multiple source locations, or whether the same label/wording is reused for distinct items in different source scopes.
 - Do not merge solely because normalized_source_text matches.
 - Apply hard compatibility constraints first, then the runtime sfi_deduplication_instructions, then general duplicate heuristics.
-- Treat source_context_key and source_context_labels as helpful but fallible evidence. They may be inherited from surrounding source structure and can be stale or noisy around divider pages, continuation pages, repeated headings, or irregular source layouts.
-- Do not let source_context_labels alone block a merge when visible source text, statement_type, normalized_statement_type, source proximity, and runtime sfi_deduplication_instructions indicate the same source-visible curriculum item.
+- Treat source_context_key, source_context_labels, scope_evidence, and scope_hypotheses as helpful but fallible retrieval evidence. They may be inherited from surrounding source structure and can be stale or noisy around divider pages, continuation pages, repeated headings, or irregular source layouts.
+- Do not treat scope_hypotheses as final hierarchy, parentage, or canonical scope. They describe possible context only; use visible source text, source references, and runtime sfi_deduplication_instructions to decide merge/keep_separate/conflict/needs_review.
+- Do not let source_context_labels or scope_hypotheses alone block a merge when visible source text, statement_type, normalized_statement_type, source proximity, and runtime sfi_deduplication_instructions indicate the same source-visible curriculum item.
 - Merge only when the candidates represent the same logical curriculum organizer or statement and the supplied source references are compatible.
 - Keep separate when the same visible text is reused under different grades, strands, domains, courses, topics, years, tables, or other local scopes.
 - Treat repeated section-divider headings and following content-section headings as potential duplicates only when they point to the same curriculum scope under the runtime deduplication instructions.
@@ -1282,7 +1283,6 @@ def resolve_sfi_has_child_parents(
 ## Parent-selection policy
 - Prefer the most direct source-grounded parent, not merely the broadest or most nearby candidate.
 - Treat code-parent hints, active outline-stack parents, matched section labels, same table context, same source context, and nearest preceding grouping evidence as retrieval evidence, not as automatic truth.
-- When `canonical_statement_scope_key`, `canonical_statement_value`, or `canonical_statement_value_key` fields are present, treat them as deterministic organizer-scope evidence from finalization. Prefer candidates with `canonical_scope_parent_match` evidence and do not select a parent whose statement type and canonical value conflict with the child's canonical scope.
 - The StandardsFramework root is a valid direct parent only when the child is a top-level framework item or no source-supported SFI parent is available.
 - Do not select the StandardsFramework root merely to guarantee reachability when one or more semantic SFI parents are selected.
 - Do not choose a parent by source code alone. Same-code/different-content audit flags mean endpoints must remain distinct.
@@ -1292,7 +1292,7 @@ def resolve_sfi_has_child_parents(
 - Page overlap alone is weak evidence and must not override stronger source hierarchy evidence.
 - DocumentIR section-path labels are evidence, not a guaranteed clean ancestor chain.
 - In each child_context, `section_path_labels` is ordered from most recent/local source context to older/broader context after bounded truncation. Earlier labels in that list are usually more useful for direct parent selection; later labels may be stale carryover and should be treated cautiously.
-- `active_outline_stack_parent`, `nearest_preceding_grouping`, `nearby_source_context_key`, and `matched_section_path_label` evidence are carry-forward retrieval signals unless they are also supported by hard local evidence such as `same_table_immediate_parent`, `same_table_context`, `source_scope_grouping`, `canonical_scope_parent_match`, or `code_parent_hint`.
+- `active_outline_stack_parent`, `nearest_preceding_grouping`, `nearby_source_context_key`, and `matched_section_path_label` evidence are carry-forward retrieval signals unless they are also supported by hard local evidence such as `same_table_immediate_parent`, `same_table_context`, `source_scope_grouping`, or `code_parent_hint`.
 - `active_outline_stack_parent` evidence means source-order scanning of finalized SFIs found the candidate as the active immediate parent type under the configured statement-type hierarchy. This is a strong candidate-preservation signal for same-page or same-window headings, but it is still not automatic truth; confirm against the child context, parent context, runtime hierarchy instructions, codes, and source locality.
 - Source-visible hierarchy outranks inferred code hierarchy when they conflict. Codes are strong evidence, but source-visible table rows/spans, continuation rows, active local outline headings, and local section-path evidence are stronger when they identify a direct parent of the correct type.
 - `source_visible_direct_parent` is a strong source-local signal, not an absolute veto. It should normally beat root fallback, same-topic fallback, page/window proximity, broad semantic similarity, and stale carry-forward evidence.
@@ -1366,7 +1366,8 @@ Use exactly one of these decisions for each decision group:
 ## Evidence signals and merge guardrails
 - Treat review_reasons, duplicate buckets, registry warnings, same source table-row/header overlap, source-segment overlap, same source-context key/labels, and same-window proximity as retrieval signals for review, not as automatic merge rules.
 - Apply decision evidence in this order: hard schema/code compatibility constraints, runtime sfi_deduplication_instructions, visible source text and source references, general dedup heuristics, then source_context_key/source_context_labels.
-- Treat source_context_key and source_context_labels as useful but fallible context signals. They can help distinguish repeated no-code labels under different hierarchy/source contexts, but they are not absolute truth when they conflict with visible source evidence or more specific runtime deduplication instructions.
+- Treat source_context_key, source_context_labels, scope_evidence, and scope_hypotheses as useful but fallible context signals. They can help distinguish repeated no-code labels under different hierarchy/source contexts, but they are not absolute truth when they conflict with visible source evidence or more specific runtime deduplication instructions.
+- Treat any supplied scope_hypotheses as possible retrieval hints, not final hierarchy, parentage, or canonical scope. Do not assume Python has already resolved a candidate's grade/strand/domain/topic scope.
 - Do not merge candidates solely because they were selected into the same bounded review set or share a table row, table header, source segment, source-context key, source-context label, or window.
 - Same statement_type + same normalized_statement_code is strong merge evidence only when the supplied text and source references are compatible.
 - Do not merge candidates with different official codes solely because their normalized text is similar.

@@ -2,9 +2,9 @@
 review.
 
 This module consumes the SFI candidate registry, constructs small review sets from
-duplicate buckets, warning groups, and source-provenance overlap, asks the dedup LLM to
-classify each bounded set, validates every response, and emits merge groups for every
-registry candidate.
+controlled-value repeats, duplicate buckets, warning groups, and source-provenance
+overlap, asks the dedup LLM to classify each bounded set, validates every response, and
+emits merge groups for every registry candidate.
 """
 
 # Standard Library
@@ -248,15 +248,20 @@ def _build_current_merge_groups(
 def _build_initial_review_edges(
     sfi_candidate_registry: SFIRegistryArtifact,
 ) -> list[tuple[set[str], set[str]]]:
-    """Build initial review edges from buckets, warnings, exact source-text repeats,
-    and source overlap. This function answers "which candidates have enough evidence
-    to be reviewed together?".
-    It does not answer "which candidates are duplicates?".
+    """Build initial review edges from controlled values, buckets, warnings, exact
+    source-text repeats, and source overlap. This function answers "which candidates
+    have enough evidence to be reviewed together?". It does not answer
+    "which candidates are duplicates?".
 
     Examples
     --------
 
-    1. A code duplicate bucket creates one review edge containing every candidate in
+    1. A configured controlled-value repeat creates one review edge containing every
+    candidate with the same statement type and canonical controlled value. This is not
+    a hard scope or merge decision; it only lets the LLM compare repeated labels and
+    alias/punctuation variants using source evidence and runtime instructions.
+
+    2. A code duplicate bucket creates one review edge containing every candidate in
     that bucket. For example, if the registry has a duplicate bucket for
     `content standard|b4.1.1.3` with two candidates, this function emits an edge
     like:
@@ -318,11 +323,8 @@ def _build_initial_review_edges(
     """
 
     edges: list[tuple[set[str], set[str]]] = []
-    edges.extend(
-        _build_same_normalized_source_text_edges(
-            sfi_candidate_registry=sfi_candidate_registry
-        )
-    )
+    edges.extend(_build_same_canonical_statement_value_edges(sfi_candidate_registry))
+    edges.extend(_build_same_normalized_source_text_edges(sfi_candidate_registry))
 
     for bucket in sfi_candidate_registry.duplicate_buckets:
         candidate_ids = set(bucket.registry_candidate_ids)
@@ -495,9 +497,6 @@ def _build_merge_group(
         candidate.registry_candidate_id for candidate in sorted_candidates
     ]
     confidence_values = [candidate.confidence for candidate in sorted_candidates]
-    canonical_statement_scope_keys = unique_nonempty(
-        candidate.canonical_statement_scope_key for candidate in sorted_candidates
-    )
     canonical_statement_value_keys = unique_nonempty(
         candidate.canonical_statement_value_key for candidate in sorted_candidates
     )
@@ -532,12 +531,14 @@ def _build_merge_group(
         ),
         candidate_source_refs=[
             {
-                "canonical_statement_scope_key": candidate.canonical_statement_scope_key,
                 "canonical_statement_value": candidate.canonical_statement_value,
                 "canonical_statement_value_key": candidate.canonical_statement_value_key,
                 "registry_candidate_id": candidate.registry_candidate_id,
                 "source_context_key": candidate.source_context_key,
                 "source_context_labels": candidate.source_context_labels,
+                "scope_evidence": candidate.scope_evidence,
+                "scope_hypotheses": candidate.scope_hypotheses,
+                "scope_resolution_status": candidate.scope_resolution_status,
                 "source_segment_ids": candidate.source_segment_ids,
                 "table_header_indexes": candidate.table_header_indexes,
                 "table_row_indexes": candidate.table_row_indexes,
@@ -549,12 +550,6 @@ def _build_merge_group(
         candidate_source_texts=unique_nonempty(
             candidate.source_text for candidate in sorted_candidates
         ),
-        canonical_statement_scope_key=(
-            canonical_statement_scope_keys[0]
-            if len(canonical_statement_scope_keys) == 1
-            else None
-        ),
-        canonical_statement_scope_keys=canonical_statement_scope_keys,
         canonical_statement_value=(
             canonical_statement_values[0]
             if len(canonical_statement_values) == 1
@@ -1010,7 +1005,6 @@ def _build_review_requests(
                 bilingual_pair_policy=kg_config.academic_standards.bilingual_pair_policy,
                 candidates=[
                     SFIDedupReviewCandidate(
-                        canonical_statement_scope_key=candidate.canonical_statement_scope_key,
                         canonical_statement_value=candidate.canonical_statement_value,
                         canonical_statement_value_key=candidate.canonical_statement_value_key,
                         code_bucket_key=candidate.code_bucket_key,
@@ -1023,6 +1017,9 @@ def _build_review_requests(
                         registry_candidate_id=candidate.registry_candidate_id,
                         source_context_key=candidate.source_context_key,
                         source_context_labels=candidate.source_context_labels,
+                        scope_evidence=candidate.scope_evidence,
+                        scope_hypotheses=candidate.scope_hypotheses,
+                        scope_resolution_status=candidate.scope_resolution_status,
                         source_segment_ids=candidate.source_segment_ids,
                         source_text=candidate.source_text,
                         source_text_bucket_key=candidate.source_text_bucket_key,
@@ -1053,6 +1050,76 @@ def _build_review_requests(
         )
 
     return review_requests, unresolved_components
+
+
+def _build_same_canonical_statement_value_edges(
+    sfi_candidate_registry: SFIRegistryArtifact,
+) -> list[tuple[set[str], set[str]]]:
+    """Build review edges for repeated configured controlled values.
+
+    Controlled-value equality is a retrieval signal only. It helps place punctuation
+    variants, alias variants, and repeated visible organizers into bounded LLM review
+    neighborhoods without first assigning them an inferred canonical hierarchy scope.
+    The LLM must still decide whether the candidates are duplicates, distinct
+    same-label organizers, conflicts, or need review using visible source evidence and
+    runtime instructions.
+
+    Parameters
+    ----------
+    sfi_candidate_registry
+        SFI candidate registry artifact.
+
+    Returns
+    -------
+    list[tuple[set[str], set[str]]]
+        Candidate-ID sets paired with deterministic controlled-value review reasons.
+    """
+
+    edges: list[tuple[set[str], set[str]]] = []
+    candidate_ids_by_value_key: dict[tuple[str, str, str], list[str]] = defaultdict(
+        list
+    )
+
+    for candidate in sfi_candidate_registry.candidates:
+        if not candidate.canonical_statement_value_key:
+            continue
+
+        candidate_ids_by_value_key[
+            (
+                candidate.normalized_statement_type,
+                candidate.statement_type,
+                candidate.canonical_statement_value_key,
+            )
+        ].append(candidate.registry_candidate_id)
+
+    for value_key, candidate_ids_raw in sorted(candidate_ids_by_value_key.items()):
+        candidate_ids = set(candidate_ids_raw)
+
+        if len(candidate_ids) < 2:
+            continue
+
+        normalized_statement_type, statement_type, canonical_value_key = value_key
+        digest = hashlib.sha256(
+            "|".join(
+                [
+                    normalized_statement_type,
+                    statement_type,
+                    canonical_value_key,
+                ]
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+
+        edges.append(
+            (
+                candidate_ids,
+                {
+                    f"same_canonical_statement_value:"
+                    f"{statement_type}:{normalized_statement_type}:{digest}"
+                },
+            )
+        )
+
+    return edges
 
 
 def _build_same_normalized_source_text_edges(
@@ -1926,16 +1993,20 @@ def _split_and_bound_components(
     null, each connected component uses its own full candidate count as the maximum, so
     size-based bounding is disabled for that component.
 
-    Oversized components are split by this conservative source-derived key:
+    Oversized components are split by this conservative retrieval key:
 
     (
         candidate.statement_type,
         candidate.normalized_statement_code
         or candidate.code_bucket_key
+        or candidate.canonical_statement_value_key
         or candidate.source_context_key,
-        tuple(candidate.source_segment_ids),
-        candidate.window_index // 3,
     )
+
+    The key intentionally avoids inferred hierarchy scope and arbitrary source-order
+    window bands. If a split group remains too large, it is marked needs-review rather
+    than chunked into independent review sets that could under-merge duplicates across
+    chunk boundaries.
 
     The split is a retrieval-safety step, not a merge decision. Each resulting split
     group is handled as follows:
@@ -1973,9 +2044,8 @@ def _split_and_bound_components(
         candidate.statement_type,
         candidate.normalized_statement_code
         or candidate.code_bucket_key
+        or candidate.canonical_statement_value_key
         or candidate.source_context_key,
-        tuple(candidate.source_segment_ids),
-        candidate.window_index // 3,
     )
 
     This can turn one broad connected component into smaller review components such as:
@@ -2057,17 +2127,8 @@ def _split_and_bound_components(
                     candidate.statement_type,
                     candidate.normalized_statement_code
                     or candidate.code_bucket_key
-                    or (
-                        candidate.canonical_statement_scope_key
-                        and candidate.canonical_statement_value_key
-                        and (
-                            candidate.canonical_statement_scope_key,
-                            candidate.canonical_statement_value_key,
-                        )
-                    )
+                    or candidate.canonical_statement_value_key
                     or candidate.source_context_key,
-                    tuple(candidate.source_segment_ids),
-                    candidate.window_index // 3,
                 )
             ].append(candidate_id)
 

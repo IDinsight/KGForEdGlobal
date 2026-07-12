@@ -1164,13 +1164,6 @@ class SFIRegistryCandidate(BaseSchema):
     candidate_payload: SFICandidate = Field(
         description="Original window-local SFI candidate payload."
     )
-    canonical_statement_scope_key: Optional[str] = Field(
-        default=None,
-        description=(
-            "Controlled-value deduplication scope key, when statement_type_policy "
-            "canonicalized this candidate's source-facing value."
-        ),
-    )
     canonical_statement_value: Optional[str] = Field(
         default=None,
         description="Canonical controlled statement value, when configured.",
@@ -1204,6 +1197,30 @@ class SFIRegistryCandidate(BaseSchema):
     )
     registry_candidate_id: str = Field(
         description="Temporary document-level candidate handle for review and merge."
+    )
+    scope_evidence: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Deterministic retrieval evidence that may help later LLM stages reason "
+            "about candidate scope. These records are not authoritative hierarchy "
+            "or merge evidence."
+        ),
+    )
+    scope_hypotheses: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Possible source-scope hypotheses derived from nearby controlled values. "
+            "They are intentionally non-canonical and must be treated as fallible "
+            "review hints."
+        ),
+    )
+    scope_resolution_status: Literal["not_applicable", "unresolved"] = Field(
+        default="not_applicable",
+        description=(
+            "Whether SFI registry found candidate-local controlled-value evidence that "
+            "may need later semantic resolution. SFI candidate registry never marks "
+            "inferred hierarchy scope as resolved."
+        ),
     )
     source_context_key: str = Field(
         description=(
@@ -1368,10 +1385,6 @@ class SFIDedupDecisionGroup(BaseSchema):
 class SFIDedupReviewCandidate(BaseSchema):
     """Compact registry-candidate view for one bounded dedup review set."""
 
-    canonical_statement_scope_key: Optional[str] = Field(
-        default=None,
-        description="Controlled-value deduplication scope key, when configured.",
-    )
     canonical_statement_value: Optional[str] = Field(
         default=None,
         description="Canonical controlled statement value, when configured.",
@@ -1398,6 +1411,24 @@ class SFIDedupReviewCandidate(BaseSchema):
         description="Candidate normalized statement type."
     )
     registry_candidate_id: str = Field(description="Temporary registry candidate ID.")
+    scope_evidence: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Fallible deterministic scope evidence copied from the registry for LLM "
+            "review. This is retrieval context, not canonical hierarchy."
+        ),
+    )
+    scope_hypotheses: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Possible scope hypotheses copied from the registry for LLM review. "
+            "These are not final parentage or merge decisions."
+        ),
+    )
+    scope_resolution_status: Literal["not_applicable", "unresolved"] = Field(
+        default="not_applicable",
+        description="Registry scope evidence status for the candidate.",
+    )
     source_context_key: str = Field(
         description="Deterministic source-derived context key from the registry.",
         min_length=1,
@@ -1543,14 +1574,6 @@ class SFIMergeGroup(BaseSchema):
     candidate_source_texts: list[str] = Field(
         default_factory=list, description="Unique source-visible evidence snippets."
     )
-    canonical_statement_scope_key: Optional[str] = Field(
-        default=None,
-        description="Shared controlled-value scope key, when unique.",
-    )
-    canonical_statement_scope_keys: list[str] = Field(
-        default_factory=list,
-        description="All controlled-value scope keys in the group.",
-    )
     canonical_statement_value: Optional[str] = Field(
         default=None,
         description="Shared canonical controlled statement value, when unique.",
@@ -1625,7 +1648,6 @@ class SFIMergeGroup(BaseSchema):
         "audit_peer_merge_group_ids",
         "candidate_descriptions",
         "candidate_source_texts",
-        "canonical_statement_scope_keys",
         "canonical_statement_value_keys",
         "canonical_statement_values",
         "normalized_statement_codes",
@@ -1706,13 +1728,6 @@ class SFIFinalContext(BaseSchema):
 
     audit_flags: list[str] = Field(default_factory=list)
     candidate_source_texts: list[str] = Field(default_factory=list)
-    canonical_statement_scope_key: Optional[str] = Field(
-        default=None,
-        description=(
-            "Controlled-value scope key inherited from final SFI finalization, when "
-            "available."
-        ),
-    )
     canonical_statement_value: Optional[str] = Field(
         default=None,
         description=(
@@ -1790,10 +1805,6 @@ class SFIFinalRecord(BaseSchema):
     candidate_source_texts: list[str] = Field(
         default_factory=list,
         description="Unique source-visible evidence quotes preserved for audit.",
-    )
-    canonical_statement_scope_key: Optional[str] = Field(
-        default=None,
-        description="Controlled-value scope key used for final identity, when configured.",
     )
     canonical_statement_value: Optional[str] = Field(
         default=None,
@@ -2107,10 +2118,6 @@ class SFIHasChildEdge(BaseSchema):
 class SFIHasChildParentCandidate(BaseSchema):
     """One bounded parent endpoint candidate for a finalized child SFI."""
 
-    canonical_statement_scope_key: Optional[str] = Field(
-        default=None,
-        description="Parent candidate controlled-value scope key, when available.",
-    )
     canonical_statement_value: Optional[str] = Field(
         default=None,
         description="Parent candidate canonical controlled statement value, when available.",

@@ -2,8 +2,9 @@
 candidates.
 
 It flattens validated window-local SFI extraction results into document-level candidate
-records, computes lightweight code/text keys, and emits possible duplicate buckets for
-later LLM-assisted merge review.
+records, computes lightweight code/text keys, emits possible duplicate buckets for
+later LLM-assisted merge review, and packages fallible scope evidence without claiming
+inferred hierarchy as canonical.
 """
 
 # Standard Library
@@ -35,17 +36,6 @@ from skg.kgs.validators import verify_sfi_extraction_integrity
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig, normalize_controlled_value_key
 from skg.utils.general import make_dir, write_to_json
-
-
-@dataclass(frozen=True)
-class _SourceOrderParentMatch:
-    """Source-order match for one controlled parent value."""
-
-    candidate_index: int
-    canonical_statement_value_key: Optional[str]
-    table_header_indexes: tuple[int, ...]
-    table_row_indexes: tuple[int, ...]
-    window_index: int
 
 
 @dataclass(frozen=True)
@@ -149,51 +139,6 @@ def _build_candidate_source_context(
     context_basis = "|".join(normalize_text(part) for part in key_parts if part)
     source_context_key = hashlib.sha256(context_basis.encode("utf-8")).hexdigest()[:32]
     return source_context_key, _unique_limited(labels, limit=12)
-
-
-def _build_canonical_statement_scope_key(
-    *,
-    candidate: SFICandidate,
-    canonical_statement_value_key: Optional[str],
-    source_context_key: str,
-    statement_value_policies: dict[str, _StatementValuePolicy],
-) -> Optional[str]:
-    """Build the configured deduplication scope for a canonical value.
-
-    Parameters
-    ----------
-    canonical_statement_value_key
-        Normalized canonical controlled value key for the candidate, if any.
-    candidate
-        Window-local candidate being canonicalized.
-    source_context_key
-        Deterministic source-derived context key already computed for the candidate.
-    statement_value_policies
-        Controlled value policies keyed by statement_type.
-
-    Returns
-    -------
-    Optional[str]
-        Controlled-value scope key, or None when the candidate has no canonical value.
-    """
-
-    policy = statement_value_policies.get(candidate.statement_type)
-
-    if not canonical_statement_value_key or policy is None:
-        return None
-
-    fallback = f"source_context:{source_context_key}"
-
-    if policy.controlled_value_scope == "document":
-        return "document"
-
-    if policy.controlled_value_scope == "source_context":
-        return fallback
-
-    # Cumulative section-path labels can retain stale organizers across hierarchy
-    # boundaries. Nearest-parent scopes are therefore resolved only in the later
-    # source-order pass, where broader parent occurrences can bound narrower searches.
-    return fallback
 
 
 def _build_canonical_statement_value(
@@ -302,6 +247,101 @@ def _build_duplicate_buckets(
     return buckets
 
 
+def _build_nearby_controlled_value_evidence(
+    *,
+    candidate: SFIRegistryCandidate,
+    candidate_index: int,
+    lookaround_window_count: int,
+    ordered_candidates: Sequence[SFIRegistryCandidate],
+    parent_statement_types: Sequence[str],
+) -> list[dict[str, Any]]:
+    """Collect fallible nearby controlled-value evidence for one candidate.
+
+    The records produced here are retrieval hints for later LLM review. They do not
+    assign parentage, hierarchy, or final canonical scope. Both preceding and following
+    nearby controlled values are included so irregular reading order, page headers,
+    continuations, and layout-specific extraction order can be reviewed without Python
+    choosing one parent as truth.
+
+    Parameters
+    ----------
+    candidate
+        Registry candidate whose nearby context is being described.
+    candidate_index
+        Source-order index for `candidate` in `ordered_candidates`.
+    lookaround_window_count
+        Maximum absolute window distance included as nearby evidence.
+    ordered_candidates
+        Registry candidates in source order.
+    parent_statement_types
+        Candidate parent statement types configured for this controlled value.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Nearby controlled-value evidence records sorted by proximity.
+    """
+
+    parent_types = set(parent_statement_types)
+
+    if not parent_types:
+        return []
+
+    evidence: list[dict[str, Any]] = []
+
+    for other_index, other_candidate in enumerate(ordered_candidates):
+        if other_index == candidate_index:
+            continue
+
+        if other_candidate.statement_type not in parent_types:
+            continue
+
+        if not other_candidate.canonical_statement_value_key:
+            continue
+
+        distance_windows = other_candidate.window_index - candidate.window_index
+
+        if abs(distance_windows) > lookaround_window_count:
+            continue
+
+        direction = "following" if other_index > candidate_index else "preceding"
+        same_source_context = (
+            other_candidate.source_context_key == candidate.source_context_key
+        )
+        shared_source_segments = sorted(
+            set(candidate.source_segment_ids).intersection(
+                other_candidate.source_segment_ids
+            )
+        )
+
+        evidence.append(
+            {
+                "candidate_index_distance": other_index - candidate_index,
+                "direction": direction,
+                "distance_windows": distance_windows,
+                "evidence_kind": "nearby_controlled_value",
+                "registry_candidate_id": other_candidate.registry_candidate_id,
+                "same_source_context": same_source_context,
+                "shared_source_segment_ids": shared_source_segments,
+                "statement_type": other_candidate.statement_type,
+                "value": other_candidate.canonical_statement_value,
+                "value_key": other_candidate.canonical_statement_value_key,
+                "window_index": other_candidate.window_index,
+            }
+        )
+
+    evidence.sort(
+        key=lambda item: (
+            abs(int(item["distance_windows"])),
+            abs(int(item["candidate_index_distance"])),
+            str(item["direction"]),
+            str(item["statement_type"]),
+            str(item["registry_candidate_id"]),
+        )
+    )
+    return evidence[:12]
+
+
 def _build_registry_candidate(
     *,
     candidate: SFICandidate,
@@ -356,11 +396,8 @@ def _build_registry_candidate(
     ) = _build_canonical_statement_value(
         candidate=candidate, statement_value_policies=statement_value_policies
     )
-    canonical_statement_scope_key = _build_canonical_statement_scope_key(
-        candidate=candidate,
-        canonical_statement_value_key=canonical_statement_value_key,
-        source_context_key=source_context_key,
-        statement_value_policies=statement_value_policies,
+    scope_resolution_status = _build_scope_resolution_status(
+        canonical_statement_value_key
     )
 
     # Generate deterministic temporary registry candidate ID.
@@ -377,16 +414,12 @@ def _build_registry_candidate(
     normalized_source_text = normalize_text(candidate.source_text)
     statement_type_key = normalize_text(candidate.statement_type)
     text_bucket_key = _build_text_bucket_key(
-        canonical_statement_scope_key=canonical_statement_scope_key,
-        canonical_statement_value_key=canonical_statement_value_key,
         normalized_statement_code=normalized_statement_code,
         normalized_text=normalized_description,
         source_context_key=source_context_key,
         statement_type_key=statement_type_key,
     )
     source_text_bucket_key = _build_text_bucket_key(
-        canonical_statement_scope_key=canonical_statement_scope_key,
-        canonical_statement_value_key=canonical_statement_value_key,
         normalized_statement_code=normalized_statement_code,
         normalized_text=normalized_source_text,
         source_context_key=source_context_key,
@@ -400,7 +433,6 @@ def _build_registry_candidate(
 
     return SFIRegistryCandidate(
         candidate_payload=candidate,
-        canonical_statement_scope_key=canonical_statement_scope_key,
         canonical_statement_value=canonical_statement_value,
         canonical_statement_value_key=canonical_statement_value_key,
         code_bucket_key=code_bucket_key,
@@ -414,6 +446,7 @@ def _build_registry_candidate(
         registry_candidate_id=registry_candidate_id,
         source_context_key=source_context_key,
         source_context_labels=source_context_labels,
+        scope_resolution_status=scope_resolution_status,
         source_segment_ids=extraction_window.source_segment_ids,
         source_text=candidate.source_text,
         source_text_bucket_key=source_text_bucket_key,
@@ -581,6 +614,101 @@ def _build_registry_warnings(
     ]
 
 
+def _build_scope_evidence_for_candidate(
+    *,
+    candidate: SFIRegistryCandidate,
+    candidate_index: int,
+    lookaround_window_count: int,
+    ordered_candidates: Sequence[SFIRegistryCandidate],
+    statement_value_policies: dict[str, _StatementValuePolicy],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build non-authoritative scope evidence and hypotheses for one candidate.
+
+    Python is intentionally not resolving canonical scope here. The returned evidence
+    records describe configured controlled-value policy and nearby controlled values;
+    the returned hypotheses are possible parent-scope hints derived from that evidence.
+    Later LLM-assisted stages may use them with runtime instructions, but they must not
+    be treated as final hierarchy, merge, or parentage decisions.
+
+    Parameters
+    ----------
+    candidate
+        Registry candidate to enrich with scope evidence.
+    candidate_index
+        Source-order index for `candidate` in `ordered_candidates`.
+    lookaround_window_count
+        Maximum absolute window distance included as nearby evidence.
+    ordered_candidates
+        Registry candidates in source order.
+    statement_value_policies
+        Controlled value policies keyed by statement type.
+
+    Returns
+    -------
+    tuple[list[dict[str, Any]], list[dict[str, Any]]]
+        Scope evidence records and possible scope hypotheses.
+    """
+
+    if not candidate.canonical_statement_value_key:
+        return [], []
+
+    policy = statement_value_policies.get(candidate.statement_type)
+
+    if policy is None:
+        return [], []
+
+    parent_statement_types = (
+        policy.controlled_value_scope_resolution_statement_types
+        or policy.controlled_value_scope_parent_statement_types
+    )
+    evidence: list[dict[str, Any]] = [
+        {
+            "controlled_value_scope": policy.controlled_value_scope,
+            "evidence_kind": "configured_controlled_value_policy",
+            "parent_statement_types": list(
+                policy.controlled_value_scope_parent_statement_types
+            ),
+            "resolution_statement_types": list(parent_statement_types),
+        }
+    ]
+    evidence.extend(
+        _build_nearby_controlled_value_evidence(
+            candidate=candidate,
+            candidate_index=candidate_index,
+            lookaround_window_count=lookaround_window_count,
+            ordered_candidates=ordered_candidates,
+            parent_statement_types=parent_statement_types,
+        )
+    )
+
+    hypotheses: list[dict[str, Any]] = []
+
+    for item in evidence:
+        if item.get("evidence_kind") != "nearby_controlled_value":
+            continue
+
+        statement_type = str(item.get("statement_type") or "")
+        value_key = str(item.get("value_key") or "")
+
+        if not statement_type or not value_key:
+            continue
+
+        hypotheses.append(
+            {
+                "distance_windows": item.get("distance_windows"),
+                "evidence_kind": item.get("evidence_kind"),
+                "hypothesis_key": (
+                    f"{_build_scope_part_label(statement_type)}:{value_key}"
+                ),
+                "hypothesis_statement_type": statement_type,
+                "hypothesis_value": item.get("value"),
+                "registry_candidate_id": item.get("registry_candidate_id"),
+            }
+        )
+
+    return _unique_scope_records(evidence), _unique_scope_records(hypotheses)
+
+
 def _build_scope_part_label(statement_type: str) -> str:
     """Build a generic controlled-scope key label from a statement type.
 
@@ -597,6 +725,30 @@ def _build_scope_part_label(statement_type: str) -> str:
 
     label = normalize_controlled_value_key(statement_type).replace(" ", "_")
     return label or "scope"
+
+
+def _build_scope_resolution_status(
+    canonical_statement_value_key: Optional[str],
+) -> str:
+    """Return the registry scope-resolution status for a candidate.
+
+    SFI candidate registry intentionally does not resolve inferred hierarchy scope. A
+    candidate with a canonical controlled value may still need semantic scope
+    resolution in a later LLM-assisted stage, while candidates without controlled
+    values have no configured controlled-value scope to resolve.
+
+    Parameters
+    ----------
+    canonical_statement_value_key
+        Normalized canonical controlled value key for the candidate, if any.
+
+    Returns
+    -------
+    str
+        "unresolved" when scope evidence may be relevant, otherwise "not_applicable".
+    """
+
+    return "unresolved" if canonical_statement_value_key else "not_applicable"
 
 
 def _build_statement_value_policies(
@@ -636,14 +788,7 @@ def _build_statement_value_policies(
             alias_to_canonical=alias_to_canonical,
             controlled_value_scope=item.controlled_value_scope,
             controlled_value_scope_parent_statement_types=parent_statement_types,
-            controlled_value_scope_resolution_statement_types=(
-                _order_controlled_scope_parent_statement_types(
-                    kg_config=kg_config,
-                    parent_statement_types=parent_statement_types,
-                )
-                if item.controlled_value_scope == "nearest_parent_values"
-                else parent_statement_types
-            ),
+            controlled_value_scope_resolution_statement_types=parent_statement_types,
         )
 
     return policies
@@ -761,8 +906,6 @@ def _build_table_source_context(
 
 def _build_text_bucket_key(
     *,
-    canonical_statement_scope_key: Optional[str],
-    canonical_statement_value_key: Optional[str],
     normalized_statement_code: Optional[str],
     normalized_text: str,
     source_context_key: str,
@@ -770,20 +913,15 @@ def _build_text_bucket_key(
 ) -> str:
     """Build a duplicate bucket key for candidate text.
 
-    Coded candidates retain the text-bucket behavior because official codes provide
-    stronger identity evidence and text buckets are only secondary review signals.
-    No-code candidates with configured controlled values use the canonical value and
-    configured scope so source-visible punctuation variants such as `PRIMARY THREE` and
-    `PRIMARY: THREE` enter the same review neighborhood. Other no-code candidates
-    remain scoped by source context so repeated labels are not treated as possible
-    duplicates solely because their visible text matches.
+    This function deliberately avoids inferred hierarchy scope. Coded candidates use
+    statement type plus visible text as a secondary review signal because official
+    code evidence is carried separately. No-code candidates are scoped by deterministic
+    source context and visible text. Controlled-value matches are exposed separately as
+    fallible scope evidence and same-canonical-value review edges, not as canonical
+    bucket identity.
 
     Parameters
     ----------
-    canonical_statement_scope_key
-        Controlled-value deduplication scope key, when configured for this candidate.
-    canonical_statement_value_key
-        Normalized canonical controlled value key, when configured for this candidate.
     normalized_statement_code
         Registry-normalized official statement code, when one was accepted.
     normalized_text
@@ -801,13 +939,6 @@ def _build_text_bucket_key(
 
     if normalized_statement_code:
         return _join_bucket_key(statement_type_key, normalized_text)
-
-    if canonical_statement_scope_key and canonical_statement_value_key:
-        return _join_bucket_key(
-            statement_type_key,
-            canonical_statement_scope_key,
-            canonical_statement_value_key,
-        )
 
     return _join_bucket_key(statement_type_key, source_context_key, normalized_text)
 
@@ -1130,408 +1261,6 @@ def _maybe_append_warning(
             warning_type=warning_type,
         )
     )
-
-
-def _narrow_source_order_scope_bounds(
-    *,
-    child_index: int,
-    lower_bound: int,
-    parent_match: _SourceOrderParentMatch,
-    parent_matches: Sequence[_SourceOrderParentMatch],
-    upper_bound: int,
-) -> Optional[tuple[int, int]]:
-    """Narrow one active branch using all visible parent occurrences.
-
-    Every occurrence of the parent statement type participates in branch boundaries,
-    including occurrences whose controlled value could not be canonicalized. Repeated
-    occurrences of the selected canonical value remain in one branch. A different or
-    uncanonicalized occurrence closes the branch so stale recognized parents cannot
-    carry across a visible but unresolved hierarchy change.
-
-    Parameters
-    ----------
-    child_index
-        Source-order index of the controlled child candidate.
-    lower_bound
-        Current inclusive lower branch bound.
-    parent_match
-        Selected canonical parent occurrence for this hierarchy level.
-    parent_matches
-        All visible occurrences of this parent statement type inside the current
-        branch, including uncanonicalized occurrences.
-    upper_bound
-        Current inclusive upper branch bound.
-
-    Returns
-    -------
-    Optional[tuple[int, int]]
-        Updated inclusive bounds, or None when the selected occurrence is inconsistent
-        with the resulting branch.
-    """
-
-    selected_value_key = parent_match.canonical_statement_value_key
-
-    if selected_value_key is None:
-        return None
-
-    previous_boundary_matches = [
-        match
-        for match in parent_matches
-        if match.candidate_index < child_index
-        and match.canonical_statement_value_key != selected_value_key
-    ]
-    next_boundary_matches = [
-        match
-        for match in parent_matches
-        if match.candidate_index > child_index
-        and match.canonical_statement_value_key != selected_value_key
-    ]
-
-    branch_lower_bound = (
-        previous_boundary_matches[-1].candidate_index + 1
-        if previous_boundary_matches
-        else lower_bound
-    )
-    branch_upper_bound = (
-        next_boundary_matches[0].candidate_index - 1
-        if next_boundary_matches
-        else upper_bound
-    )
-
-    if parent_match.candidate_index < child_index:
-        preceding_same_value_indexes = [
-            match.candidate_index
-            for match in parent_matches
-            if branch_lower_bound <= match.candidate_index < child_index
-            and match.canonical_statement_value_key == selected_value_key
-        ]
-
-        if not preceding_same_value_indexes:
-            return None
-
-        branch_lower_bound = max(branch_lower_bound, min(preceding_same_value_indexes))
-
-    if not (
-        branch_lower_bound <= parent_match.candidate_index <= branch_upper_bound
-        and branch_lower_bound <= child_index <= branch_upper_bound
-    ):
-        return None
-
-    return branch_lower_bound, branch_upper_bound
-
-
-def _order_controlled_scope_parent_statement_types(
-    *, kg_config: CreateKGConfig, parent_statement_types: Sequence[str]
-) -> tuple[str, ...]:
-    """Order controlled-scope parent types from broadest to narrowest.
-
-    An explicit statement-type hierarchy is authoritative when configured. Otherwise,
-    the order of ``statement_type_policy`` defines the hierarchy, matching the runtime
-    configuration contract. The direct-parent policy, when available, is used only to
-    validate that the requested parent types form one ancestor chain.
-
-    Parameters
-    ----------
-    kg_config
-        Runtime KG configuration containing hierarchy policies.
-    parent_statement_types
-        Configured parent statement types used in the controlled scope key.
-
-    Returns
-    -------
-    tuple[str, ...]
-        Parent statement types ordered from broadest to narrowest.
-
-    Raises
-    ------
-    ValueError
-        If a configured parent type is absent from the selected hierarchy or the
-        requested types do not form one ancestor chain under the direct-parent policy.
-    """
-
-    configured_types = tuple(parent_statement_types)
-
-    if len(configured_types) < 2:
-        return configured_types
-
-    explicit_hierarchy = tuple(
-        kg_config.academic_standards.sfi_has_child_statement_type_hierarchy or []
-    )
-    policy_hierarchy = tuple(
-        item.statement_type
-        for item in kg_config.academic_standards.statement_type_policy
-    )
-    hierarchy = explicit_hierarchy or policy_hierarchy
-    hierarchy_indexes = {
-        statement_type: index for index, statement_type in enumerate(hierarchy)
-    }
-    missing_types = sorted(set(configured_types) - set(hierarchy_indexes))
-
-    if missing_types:
-        hierarchy_source = (
-            "sfi_has_child_statement_type_hierarchy"
-            if explicit_hierarchy
-            else "statement_type_policy"
-        )
-        raise ValueError(
-            f"Controlled scope parent statement types are missing from "
-            f"{hierarchy_source}: {missing_types}."
-        )
-
-    ordered_types = tuple(sorted(configured_types, key=hierarchy_indexes.__getitem__))
-    parent_policy = (
-        kg_config.academic_standards.sfi_has_child_parent_statement_types or {}
-    )
-
-    if parent_policy:
-        for ancestor_statement_type, descendant_statement_type in zip(
-            ordered_types, ordered_types[1:]
-        ):
-            if not _statement_type_is_ancestor(
-                ancestor_statement_type=ancestor_statement_type,
-                descendant_statement_type=descendant_statement_type,
-                parent_statement_types=parent_policy,
-            ):
-                raise ValueError(
-                    f"Controlled scope parent statement types must form one "
-                    f"broad-to-narrow ancestor chain; "
-                    f"{ancestor_statement_type!r} is not an ancestor of "
-                    f"{descendant_statement_type!r}."
-                )
-
-    return ordered_types
-
-
-def _resolve_canonical_statement_scope_from_source_order(
-    *,
-    candidate: SFIRegistryCandidate,
-    candidate_index: int,
-    ordered_candidates: Sequence[SFIRegistryCandidate],
-    statement_value_policies: dict[str, _StatementValuePolicy],
-) -> Optional[str]:
-    """Resolve a controlled-value scope from extracted source-order organizers.
-
-    Parameters
-    ----------
-    candidate
-        Registry candidate whose scope should be resolved.
-    candidate_index
-        Source-order index for `candidate` in `ordered_candidates`.
-    ordered_candidates
-        Registry candidates in source order.
-    statement_value_policies
-        Controlled value policies keyed by statement type.
-
-    Returns
-    -------
-    Optional[str]
-        Corrected canonical statement scope key, or None when the candidate has no
-        controlled value.
-    """
-
-    policy = statement_value_policies.get(candidate.statement_type)
-
-    if not candidate.canonical_statement_value_key or policy is None:
-        return None
-
-    fallback = f"source_context:{candidate.source_context_key}"
-
-    if policy.controlled_value_scope == "document":
-        return "document"
-
-    if policy.controlled_value_scope == "source_context":
-        return fallback
-
-    if policy.controlled_value_scope != "nearest_parent_values":
-        return fallback
-
-    resolved_parent_matches = _resolve_source_order_scope_parent_matches(
-        child_index=candidate_index,
-        ordered_candidates=ordered_candidates,
-        parent_statement_types=(
-            policy.controlled_value_scope_resolution_statement_types
-        ),
-    )
-
-    if resolved_parent_matches is None:
-        return fallback
-
-    resolved_matches_by_statement_type = dict(resolved_parent_matches)
-    scope_parts: list[str] = []
-
-    for parent_statement_type in policy.controlled_value_scope_parent_statement_types:
-        parent_match = resolved_matches_by_statement_type[parent_statement_type]
-        scope_parts.append(
-            f"{_build_scope_part_label(parent_statement_type)}:"
-            f"{parent_match.canonical_statement_value_key}"
-        )
-    return "|".join(scope_parts) if scope_parts else fallback
-
-
-def _resolve_source_order_scope_parent_matches(
-    *,
-    child_index: int,
-    ordered_candidates: Sequence[SFIRegistryCandidate],
-    parent_statement_types: Sequence[str],
-) -> Optional[list[tuple[str, _SourceOrderParentMatch]]]:
-    """Resolve one hierarchy-consistent controlled parent chain in source order.
-
-    Parent types are resolved in configured broad-to-narrow order. Each selected parent
-    value narrows the active source branch before the next parent type is resolved.
-    All visible occurrences of each parent statement type participate in branch
-    boundaries, including occurrences whose values are not canonicalized. Table-derived
-    children first use an unambiguous canonical parent value from their own table
-    window; otherwise the nearest unobstructed preceding parent is used.
-
-    Parameters
-    ----------
-    child_index
-        Source-order index of the controlled child candidate.
-    ordered_candidates
-        Registry candidates in source order.
-    parent_statement_types
-        Configured parent statement types in broad-to-narrow resolution order.
-
-    Returns
-    -------
-    Optional[list[tuple[str, _SourceOrderParentMatch]]]
-        Complete hierarchy-consistent parent chain, or None when source order cannot
-        safely resolve every configured parent level.
-    """
-
-    if child_index < 0 or child_index >= len(ordered_candidates):
-        return None
-
-    child_candidate = ordered_candidates[child_index]
-    lower_bound = 0
-    upper_bound = len(ordered_candidates) - 1
-    resolved_matches: list[tuple[str, _SourceOrderParentMatch]] = []
-
-    for parent_statement_type in parent_statement_types:
-        parent_matches = [
-            _SourceOrderParentMatch(
-                candidate_index=parent_index,
-                canonical_statement_value_key=(
-                    parent_candidate.canonical_statement_value_key
-                ),
-                table_header_indexes=tuple(parent_candidate.table_header_indexes),
-                table_row_indexes=tuple(parent_candidate.table_row_indexes),
-                window_index=parent_candidate.window_index,
-            )
-            for parent_index, parent_candidate in enumerate(ordered_candidates)
-            if lower_bound <= parent_index <= upper_bound
-            and parent_index != child_index
-            and parent_candidate.statement_type == parent_statement_type
-        ]
-        parent_match = _select_source_order_parent_match(
-            child_candidate=child_candidate,
-            child_index=child_index,
-            parent_matches=parent_matches,
-        )
-
-        if parent_match is None:
-            return None
-
-        narrowed_bounds = _narrow_source_order_scope_bounds(
-            child_index=child_index,
-            lower_bound=lower_bound,
-            parent_match=parent_match,
-            parent_matches=parent_matches,
-            upper_bound=upper_bound,
-        )
-
-        if narrowed_bounds is None:
-            return None
-
-        lower_bound, upper_bound = narrowed_bounds
-        resolved_matches.append((parent_statement_type, parent_match))
-
-    return resolved_matches
-
-
-def _select_source_order_parent_match(
-    *,
-    child_candidate: SFIRegistryCandidate,
-    child_index: int,
-    parent_matches: Sequence[_SourceOrderParentMatch],
-) -> Optional[_SourceOrderParentMatch]:
-    """Select a conservative parent occurrence within one active source branch.
-
-    A table-derived child may use a same-window parent that has affirmative table-scope
-    evidence: either the parent is header-derived, or the parent and child cite the
-    same raw table row/header. All such applicable occurrences must be canonicalized
-    and agree on one value. This supports table-wide header organizers on a different
-    raw header row while preventing a later unrelated body-row parent from capturing an
-    earlier child merely because both occur in the same extraction window.
-
-    When no affirmative same-table parent is available, the nearest preceding parent
-    occurrence is used only if its controlled value is canonicalized. An
-    uncanonicalized nearest occurrence blocks older parents and causes source-context
-    fallback.
-
-    Parameters
-    ----------
-    child_candidate
-        Controlled child candidate whose scope is being resolved.
-    child_index
-        Source-order index of the controlled child candidate.
-    parent_matches
-        All parent-type occurrences already restricted to one active source branch.
-
-    Returns
-    -------
-    Optional[_SourceOrderParentMatch]
-        Selected canonical parent occurrence, or None when the available evidence is
-        absent or ambiguous.
-    """
-
-    child_is_table_derived = bool(
-        child_candidate.table_header_indexes or child_candidate.table_row_indexes
-    )
-
-    if child_is_table_derived:
-        child_row_indexes = set(child_candidate.table_row_indexes)
-
-        affirmative_table_matches = [
-            match
-            for match in parent_matches
-            if match.window_index == child_candidate.window_index
-            and (
-                match.table_header_indexes
-                or child_row_indexes.intersection(match.table_row_indexes)
-            )
-        ]
-
-        if affirmative_table_matches:
-            canonical_value_keys = {
-                match.canonical_statement_value_key
-                for match in affirmative_table_matches
-            }
-
-            if None in canonical_value_keys or len(canonical_value_keys) != 1:
-                return None
-
-            return min(
-                affirmative_table_matches,
-                key=lambda match: (
-                    abs(match.candidate_index - child_index),
-                    match.candidate_index,
-                ),
-            )
-
-    preceding_matches = [
-        match for match in parent_matches if match.candidate_index < child_index
-    ]
-
-    if not preceding_matches:
-        return None
-
-    nearest_preceding_match = preceding_matches[-1]
-
-    if nearest_preceding_match.canonical_statement_value_key is None:
-        return None
-
-    return nearest_preceding_match
 
 
 def _statement_type_is_ancestor(
@@ -2160,12 +1889,45 @@ def _warn_on_text_repeated_within_window(
         )
 
 
-def _with_source_order_controlled_scopes(
+def _unique_scope_records(records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Deduplicate JSON-serializable scope evidence records while preserving order.
+
+    Parameters
+    ----------
+    records
+        Scope evidence or hypothesis records.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Deduplicated records.
+    """
+
+    unique_records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for record in records:
+        key = repr(sorted(record.items()))
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        unique_records.append(record)
+
+    return unique_records
+
+
+def _with_scope_evidence(
     *,
     candidates: Sequence[SFIRegistryCandidate],
     statement_value_policies: dict[str, _StatementValuePolicy],
 ) -> list[SFIRegistryCandidate]:
-    """Return registry candidates with source-order controlled scopes applied.
+    """Return registry candidates enriched with non-authoritative scope evidence.
+
+    The enrichment packages nearby controlled values and possible hypotheses so later
+    LLM-assisted steps can reason from evidence without Python first making a fragile
+    hierarchy decision.
 
     Parameters
     ----------
@@ -2177,54 +1939,33 @@ def _with_source_order_controlled_scopes(
     Returns
     -------
     list[SFIRegistryCandidate]
-        Registry candidates with corrected canonical scope keys and recomputed text
-        duplicate bucket keys.
+        Registry candidates with scope evidence and hypotheses attached.
     """
 
     ordered_candidates = list(candidates)
-    scoped_candidates: list[SFIRegistryCandidate] = []
+    enriched_candidates: list[SFIRegistryCandidate] = []
 
     for candidate_index, candidate in enumerate(ordered_candidates):
-        canonical_statement_scope_key = (
-            _resolve_canonical_statement_scope_from_source_order(
-                candidate=candidate,
-                candidate_index=candidate_index,
-                ordered_candidates=ordered_candidates,
-                statement_value_policies=statement_value_policies,
-            )
+        scope_evidence, scope_hypotheses = _build_scope_evidence_for_candidate(
+            candidate=candidate,
+            candidate_index=candidate_index,
+            lookaround_window_count=3,
+            ordered_candidates=ordered_candidates,
+            statement_value_policies=statement_value_policies,
         )
-
-        if canonical_statement_scope_key == candidate.canonical_statement_scope_key:
-            scoped_candidates.append(candidate)
-            continue
-
-        text_bucket_key = _build_text_bucket_key(
-            canonical_statement_scope_key=canonical_statement_scope_key,
-            canonical_statement_value_key=candidate.canonical_statement_value_key,
-            normalized_statement_code=candidate.normalized_statement_code,
-            normalized_text=candidate.normalized_description,
-            source_context_key=candidate.source_context_key,
-            statement_type_key=normalize_text(candidate.statement_type),
-        )
-        source_text_bucket_key = _build_text_bucket_key(
-            canonical_statement_scope_key=canonical_statement_scope_key,
-            canonical_statement_value_key=candidate.canonical_statement_value_key,
-            normalized_statement_code=candidate.normalized_statement_code,
-            normalized_text=candidate.normalized_source_text,
-            source_context_key=candidate.source_context_key,
-            statement_type_key=normalize_text(candidate.statement_type),
-        )
-        scoped_candidates.append(
+        enriched_candidates.append(
             candidate.model_copy(
                 update={
-                    "canonical_statement_scope_key": canonical_statement_scope_key,
-                    "source_text_bucket_key": source_text_bucket_key,
-                    "text_bucket_key": text_bucket_key,
+                    "scope_evidence": scope_evidence,
+                    "scope_hypotheses": scope_hypotheses,
+                    "scope_resolution_status": _build_scope_resolution_status(
+                        candidate.canonical_statement_value_key
+                    ),
                 }
             )
         )
 
-    return scoped_candidates
+    return enriched_candidates
 
 
 def build_candidate_registry(
@@ -2306,7 +2047,7 @@ def build_candidate_registry(
                 )
             )
 
-    candidates = _with_source_order_controlled_scopes(
+    candidates = _with_scope_evidence(
         candidates=candidates, statement_value_policies=statement_value_policies
     )
     duplicate_buckets = _build_duplicate_buckets(candidates)
