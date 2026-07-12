@@ -399,34 +399,6 @@ def _get_candidate_cited_source_text(
     return "\n".join(_extract_serialized_row_text(row) for row in cited_rows)
 
 
-def _get_window_local_code(window: ExtractionWindow) -> Optional[str]:
-    """Return the stripped local code exposed by an extraction window.
-
-    Parameters
-    ----------
-    window
-        Source extraction window.
-
-    Returns
-    -------
-    Optional[str]
-        Block or table local code, or ``None`` when unavailable.
-    """
-
-    if window.block is not None:
-        local_code = window.block.get("local_code")
-    elif window.table is not None:
-        local_code = window.table.local_code
-    else:
-        local_code = None
-
-    if local_code is None:
-        return None
-
-    local_code_clean = str(local_code).strip()
-    return local_code_clean or None
-
-
 def _log_candidate_source_integrity_warnings(
     *,
     candidate: SFICandidate,
@@ -512,13 +484,13 @@ def _log_candidate_source_integrity_warnings(
     candidate_source_code_key = _normalize_code_for_parent_match(candidate.source_text)
     matching_code_values = sorted(
         {
-            code_match.value
+            code_match.normalized_value
             for code_match in window.code_matches
             if (
                 configured_code_type is None
                 or code_match.code_type == configured_code_type
             )
-            and _normalize_code_for_parent_match(code_match.value)
+            and _normalize_code_for_parent_match(code_match.raw_value)
             in candidate_source_code_key
         }
     )
@@ -528,6 +500,52 @@ def _log_candidate_source_integrity_warnings(
             f"SFI candidate has statement_code=None even though its source_text "
             f"contains configured code evidence {matching_code_values!r}; "
             f"{warning_context}."
+        )
+
+
+def _log_duplicate_sfi_candidate_warnings(
+    extraction_result: SFIExtractionResult,
+) -> None:
+    """Log non-blocking warnings for exact repeated candidates in one result.
+
+    Candidates are compared using canonical statement type, formatting-normalized code,
+    and normalized complete description. The warning is intentionally diagnostic: some
+    documents repeat legitimate items, while the checker decides whether repeated
+    source occurrences should be represented by one candidate with combined provenance.
+
+    Parameters
+    ----------
+    extraction_result
+        Structured extraction result to inspect.
+    """
+
+    candidates_by_key: dict[tuple[str, str, str], list[SFICandidate]] = {}
+
+    for candidate in extraction_result.sfi_candidates:
+        key = (
+            candidate.statement_type,
+            _normalize_code_for_parent_match(candidate.statement_code),
+            _normalize_text(candidate.description),
+        )
+        candidates_by_key.setdefault(key, []).append(candidate)
+
+    for candidates in candidates_by_key.values():
+        if len(candidates) < 2:
+            continue
+
+        candidate_context = [
+            {
+                "candidate_id": candidate.candidate_id,
+                "table_header_indexes": candidate.table_header_indexes,
+                "table_row_indexes": candidate.table_row_indexes,
+            }
+            for candidate in candidates
+        ]
+        logger.warning(
+            f"SFI extraction result contains repeated candidates with the same "
+            f"statement_type, normalized statement_code, and normalized description; "
+            f"window_id={extraction_result.window_id!r}, "
+            f"candidates={candidate_context!r}."
         )
 
 
@@ -597,8 +615,8 @@ def _validate_candidate_code(
 
     This check deliberately does not decide whether the code is semantically attached
     to the correct statement. The validation LLM handles that judgment. Python only
-    verifies that the exact code is allowed by configuration and appears in the
-    window's deterministic code evidence or local-code metadata.
+    verifies that the normalized code is allowed by configuration and appears in the
+    window's deterministic typed code evidence.
 
     Parameters
     ----------
@@ -650,21 +668,17 @@ def _validate_candidate_code(
 
         resolved_code_type = matching_code_types[0]
 
-    local_code = _get_window_local_code(window)
-    matches_local_code = (
-        local_code is not None and candidate.statement_code == local_code
-    )
     matches_code_evidence = any(
         code_match.code_type == resolved_code_type
-        and code_match.value == candidate.statement_code
+        and code_match.normalized_value == candidate.statement_code
         for code_match in window.code_matches
     )
 
-    if not matches_local_code and not matches_code_evidence:
+    if not matches_code_evidence:
         raise QualityError(
             f"Candidate {candidate.candidate_id!r} has statement_code "
-            f"{candidate.statement_code!r}, but that exact code is not exposed by "
-            f"the extraction window as local_code or typed code evidence."
+            f"{candidate.statement_code!r}, but that normalized code is not exposed "
+            f"by the extraction window as typed code evidence."
         )
 
 
@@ -1425,6 +1439,7 @@ def verify_sfi_extraction_integrity(
             window=window,
         )
 
+    _log_duplicate_sfi_candidate_warnings(extraction_result)
     window_text = _normalize_text(window.source_text)
 
     for auxiliary_candidate in extraction_result.auxiliary_candidates:

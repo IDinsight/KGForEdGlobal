@@ -233,19 +233,29 @@ class _HasDateFields:
 
 # Schemas for extraction windows.
 class CodeMatch(BaseSchema):
-    """A KG config code regex match found in an extraction window."""
+    """A configured code-pattern match found in an extraction window."""
 
     code_type: str = Field(
         description="KG config local code pattern key, such as 'content_standard'."
     )
     end_char: int = Field(
-        description="End character offset of the match within window source_text.", ge=0
-    )
-    start_char: int = Field(
-        description="Start character offset of the match within window source_text.",
+        description="End character offset of the raw match within window source_text.",
         ge=0,
     )
-    value: str = Field(description="Matched source-code surface form.")
+    normalized_value: str = Field(
+        description=(
+            "Formatting-normalized code value for structured statement_code use."
+        ),
+        min_length=1,
+    )
+    raw_value: str = Field(
+        description="Exact source-visible code surface form matched in source_text.",
+        min_length=1,
+    )
+    start_char: int = Field(
+        description="Start character offset of the raw match within window source_text.",
+        ge=0,
+    )
 
     @model_validator(mode="after")
     def validate_offsets(self) -> Self:
@@ -271,7 +281,7 @@ class CodeMatch(BaseSchema):
 class CodeParentHint(BaseSchema):
     """A deterministic parent-code suggestion derived from KG config rules."""
 
-    child_code: str = Field(description="Matched child code.")
+    child_code: str = Field(description="Formatting-normalized matched child code.")
     child_code_type: str = Field(description="KG config local child code type.")
     method: str = Field(description="KG config rule method used to derive parent_code.")
     parent_code: str = Field(description="Derived parent code.")
@@ -286,7 +296,7 @@ class ExtractionWindow(BaseSchema):
     )
     code_matches: list[CodeMatch] = Field(
         default_factory=list,
-        description="KG config code matches found in source_text.",
+        description="Typed raw and normalized KG config code matches in source_text.",
     )
     code_parent_hints: list[CodeParentHint] = Field(
         default_factory=list,
@@ -704,7 +714,10 @@ class SFICandidate(BaseSchema):
     )
     statement_code: Optional[str] = Field(
         default=None,
-        description="Official/source statement code, if visible. Optional for no-code curricula.",
+        description=(
+            "Formatting-normalized official statement code when candidate-local source "
+            "evidence exposes one; optional for no-code curricula."
+        ),
     )
     statement_type: str = Field(
         description="Source-facing statement type, e.g. grade, strand, content_standard, indicator."

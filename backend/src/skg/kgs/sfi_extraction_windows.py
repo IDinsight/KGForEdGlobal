@@ -488,8 +488,11 @@ def _collect_code_matches(
                 CodeMatch(
                     code_type=code_type,
                     end_char=match.end(),
+                    normalized_value=_normalize_code_match_value(
+                        pattern=pattern, raw_value=match.group(0)
+                    ),
+                    raw_value=match.group(0),
                     start_char=match.start(),
-                    value=match.group(0),
                 )
             )
 
@@ -515,22 +518,26 @@ def _collect_code_matches(
                 CodeMatch(
                     code_type=code_type,
                     end_char=match.end(),
+                    normalized_value=_normalize_code_match_value(
+                        pattern=pattern, raw_value=matched_value
+                    ),
+                    raw_value=matched_value,
                     start_char=match.start(),
-                    value=matched_value,
                 )
             )
 
     code_matches.sort(key=lambda item: (item.start_char, item.end_char, item.code_type))
 
-    seen: set[tuple[str, int, int, str]] = set()
+    seen: set[tuple[str, int, str, str, int]] = set()
     deduped: list[CodeMatch] = []
 
     for code_match in code_matches:
         key = (
             code_match.code_type,
-            code_match.start_char,
             code_match.end_char,
-            code_match.value,
+            code_match.normalized_value,
+            code_match.raw_value,
+            code_match.start_char,
         )
 
         if key in seen:
@@ -564,7 +571,7 @@ def _collect_code_parent_hints(
     hints: list[CodeParentHint] = []
 
     for code_match in code_matches:
-        child_code = code_match.value
+        child_code = code_match.normalized_value
 
         for rule in kg_config.academic_standards.code_parent_rules:
             if code_match.code_type != rule["child"]:
@@ -785,6 +792,36 @@ def _model_dump_list(values: Sequence[BaseModel]) -> list[dict[str, Any]]:
     """
 
     return [value.model_dump(mode="json") for value in values]
+
+
+def _normalize_code_match_value(*, pattern: str, raw_value: str) -> str:
+    """Normalize formatting around punctuation in a matched code surface.
+
+    The normalization is intentionally syntax-agnostic: it removes whitespace only when
+    that whitespace directly surrounds punctuation, while preserving spaces between
+    alphanumeric words. The compacted value is used only when it still matches the
+    configured code regex; otherwise the stripped raw value is retained.
+
+    Parameters
+    ----------
+    pattern
+        Configured regex that matched the source-visible code.
+    raw_value
+        Exact source-visible code surface form.
+
+    Returns
+    -------
+    str
+        Formatting-normalized code suitable for structured statement-code fields.
+    """
+
+    raw_value_clean = raw_value.strip()
+    compacted_value = re.sub(r"\s*([^\w\s])\s*", r"\1", raw_value_clean)
+
+    if re.fullmatch(pattern, compacted_value) is not None:
+        return compacted_value
+
+    return raw_value_clean
 
 
 def _optional_list_by_indexes(
