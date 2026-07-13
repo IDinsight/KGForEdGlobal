@@ -216,170 +216,20 @@ def _build_component_review_signals(
         for candidate in sfi_candidate_registry.candidates
         if candidate.registry_candidate_id in component_candidate_ids
     ]
-    signals: list[SFIDedupReviewSignal] = []
-    canonical_groups: dict[tuple[str, str, str], list[SFIRegistryCandidate]] = (
-        defaultdict(list)
-    )
-    normalized_source_groups: dict[tuple[str, str, str], list[SFIRegistryCandidate]] = (
-        defaultdict(list)
-    )
 
-    for candidate in candidates:
-        if candidate.canonical_statement_value_key:
-            canonical_groups[
-                (
-                    candidate.normalized_statement_type,
-                    candidate.statement_type,
-                    candidate.canonical_statement_value_key,
-                )
-            ].append(candidate)
-
-        if candidate.normalized_source_text:
-            normalized_source_groups[
-                (
-                    candidate.normalized_statement_type,
-                    candidate.statement_type,
-                    candidate.normalized_source_text,
-                )
-            ].append(candidate)
-
-    for grouped_candidates in canonical_groups.values():
-        if len(grouped_candidates) < 2:
-            continue
-
-        candidate_ids = sorted(
-            candidate.registry_candidate_id for candidate in grouped_candidates
-        )
-        canonical_values = unique_nonempty(
-            candidate.canonical_statement_value for candidate in grouped_candidates
-        )
-        statement_types = unique_nonempty(
-            candidate.statement_type for candidate in grouped_candidates
-        )
-        value = canonical_values[0] if len(canonical_values) == 1 else None
-        statement_type = statement_types[0] if len(statement_types) == 1 else "item"
-        signals.append(
-            SFIDedupReviewSignal(
-                candidate_ids=candidate_ids,
-                signal_type="same_canonical_statement_value",
-                summary=(
-                    f"These {statement_type} candidates map to the same configured "
-                    f"canonical statement value."
-                ),
-                value=value,
-            )
-        )
-
-    for grouped_candidates in normalized_source_groups.values():
-        if len(grouped_candidates) < 2:
-            continue
-
-        signals.append(
-            SFIDedupReviewSignal(
-                candidate_ids=sorted(
-                    candidate.registry_candidate_id for candidate in grouped_candidates
-                ),
-                signal_type="same_normalized_source_text",
-                summary=(
-                    "These candidates have identical internally normalized source "
-                    "text. The original source_text fields remain authoritative."
-                ),
-                value=None,
-            )
-        )
-
-    bucket_signal_types = {
-        "code": "same_code_bucket",
-        "description_text": "same_description_text_bucket",
-        "source_text": "same_source_text_bucket",
-    }
-
-    for bucket in sfi_candidate_registry.duplicate_buckets:
-        candidate_ids = sorted(
-            component_candidate_ids.intersection(bucket.registry_candidate_ids)
-        )
-
-        if len(candidate_ids) < 2:
-            continue
-
-        signals.append(
-            SFIDedupReviewSignal(
-                candidate_ids=candidate_ids,
-                signal_type=bucket_signal_types[bucket.bucket_type],
-                summary=(
-                    f"The registry placed these candidates in the same "
-                    f"{bucket.bucket_type.replace('_', ' ')} review bucket "
-                    f"({bucket.evidence_strength.replace('_', ' ')})."
-                ),
-                value=None,
-            )
-        )
-
-    for warning in sfi_candidate_registry.warnings:
-        candidate_ids = sorted(
-            component_candidate_ids.intersection(warning.registry_candidate_ids)
-        )
-
-        if len(candidate_ids) < 2:
-            continue
-
-        signals.append(
-            SFIDedupReviewSignal(
-                candidate_ids=candidate_ids,
-                signal_type="registry_warning",
-                summary=warning.message,
-                value=warning.warning_type,
-            )
-        )
-
-    provenance_groups: dict[tuple[str, str, str, int], list[str]] = defaultdict(list)
-
-    for candidate in candidates:
-        for source_segment_id in candidate.source_segment_ids:
-            for row_index in candidate.table_row_indexes:
-                provenance_groups[
-                    (
-                        "shared_table_row",
-                        candidate.statement_type,
-                        source_segment_id,
-                        row_index,
-                    )
-                ].append(candidate.registry_candidate_id)
-
-            for header_index in candidate.table_header_indexes:
-                provenance_groups[
-                    (
-                        "shared_table_header",
-                        candidate.statement_type,
-                        source_segment_id,
-                        header_index,
-                    )
-                ].append(candidate.registry_candidate_id)
-
-    for (
-        signal_type,
-        _statement_type,
-        _source_segment_id,
-        source_index,
-    ), candidate_ids_raw in sorted(provenance_groups.items()):
-        candidate_ids = sorted(set(candidate_ids_raw))
-
-        if len(candidate_ids) < 2:
-            continue
-
-        source_label = "row" if signal_type == "shared_table_row" else "header"
-        signals.append(
-            SFIDedupReviewSignal(
-                candidate_ids=candidate_ids,
-                signal_type=signal_type,
-                summary=(
-                    f"These candidates cite the same source table {source_label} "
-                    f"within one source table segment."
-                ),
-                value=f"{source_label}_index={source_index}",
-            )
-        )
-
+    signals = [
+        *_canonical_value_signals(candidates),
+        *_normalized_source_text_signals(candidates),
+        *_duplicate_bucket_signals(
+            component_candidate_ids=component_candidate_ids,
+            sfi_candidate_registry=sfi_candidate_registry,
+        ),
+        *_registry_warning_signals(
+            component_candidate_ids=component_candidate_ids,
+            sfi_candidate_registry=sfi_candidate_registry,
+        ),
+        *_shared_provenance_signals(candidates),
+    ]
     signals_by_key: dict[tuple[object, ...], SFIDedupReviewSignal] = {}
 
     for signal in signals:
@@ -1507,6 +1357,117 @@ def _build_singleton_merge_groups(
     return singleton_groups
 
 
+def _canonical_value_signals(
+    candidates: Sequence[SFIRegistryCandidate],
+) -> list[SFIDedupReviewSignal]:
+    """Build same-canonical-statement-value signals for the component candidates.
+
+    Parameters
+    ----------
+    candidates
+        Registry candidates belonging to the connected review component.
+
+    Returns
+    -------
+    list[SFIDedupReviewSignal]
+        One signal per canonical value key shared by at least two candidates.
+    """
+
+    canonical_groups: dict[tuple[str, str, str], list[SFIRegistryCandidate]] = (
+        defaultdict(list)
+    )
+
+    for candidate in candidates:
+        if candidate.canonical_statement_value_key:
+            canonical_groups[
+                (
+                    candidate.normalized_statement_type,
+                    candidate.statement_type,
+                    candidate.canonical_statement_value_key,
+                )
+            ].append(candidate)
+
+    signals: list[SFIDedupReviewSignal] = []
+
+    for grouped_candidates in canonical_groups.values():
+        if len(grouped_candidates) < 2:
+            continue
+
+        candidate_ids = sorted(
+            candidate.registry_candidate_id for candidate in grouped_candidates
+        )
+        canonical_values = unique_nonempty(
+            candidate.canonical_statement_value for candidate in grouped_candidates
+        )
+        statement_types = unique_nonempty(
+            candidate.statement_type for candidate in grouped_candidates
+        )
+        value = canonical_values[0] if len(canonical_values) == 1 else None
+        statement_type = statement_types[0] if len(statement_types) == 1 else "item"
+        signals.append(
+            SFIDedupReviewSignal(
+                candidate_ids=candidate_ids,
+                signal_type="same_canonical_statement_value",
+                summary=(
+                    f"These {statement_type} candidates map to the same configured "
+                    f"canonical statement value."
+                ),
+                value=value,
+            )
+        )
+
+    return signals
+
+
+def _duplicate_bucket_signals(
+    *, component_candidate_ids: set[str], sfi_candidate_registry: SFIRegistryArtifact
+) -> list[SFIDedupReviewSignal]:
+    """Build duplicate-bucket signals restricted to the component candidates.
+
+    Parameters
+    ----------
+    component_candidate_ids
+        Candidate IDs in the bounded connected component.
+    sfi_candidate_registry
+        Registry artifact containing the duplicate buckets.
+
+    Returns
+    -------
+    list[SFIDedupReviewSignal]
+        One signal per duplicate bucket covering at least two component candidates.
+    """
+
+    bucket_signal_types = {
+        "code": "same_code_bucket",
+        "description_text": "same_description_text_bucket",
+        "source_text": "same_source_text_bucket",
+    }
+    signals: list[SFIDedupReviewSignal] = []
+
+    for bucket in sfi_candidate_registry.duplicate_buckets:
+        candidate_ids = sorted(
+            component_candidate_ids.intersection(bucket.registry_candidate_ids)
+        )
+
+        if len(candidate_ids) < 2:
+            continue
+
+        signals.append(
+            SFIDedupReviewSignal(
+                candidate_ids=candidate_ids,
+                signal_type=bucket_signal_types[bucket.bucket_type],
+                summary=(
+                    f"The registry placed these candidates in the same "
+                    f"{bucket.bucket_type.replace('_', ' ')} review bucket "
+                    f"({bucket.evidence_strength.replace('_', ' ')})."
+                ),
+                value=None,
+            )
+        )
+
+    return signals
+
+
 def _load_complete_existing_merge_report(
     *,
     conflicts_fp: Path,
@@ -2009,6 +1970,99 @@ def _merge_edges_to_components(
     ]
 
 
+def _normalized_source_text_signals(
+    candidates: Sequence[SFIRegistryCandidate],
+) -> list[SFIDedupReviewSignal]:
+    """Build same-normalized-source-text signals for the component candidates.
+
+    Parameters
+    ----------
+    candidates
+        Registry candidates belonging to the connected review component.
+
+    Returns
+    -------
+    list[SFIDedupReviewSignal]
+        One signal per normalized source text shared by at least two candidates.
+    """
+
+    normalized_source_groups: dict[tuple[str, str, str], list[SFIRegistryCandidate]] = (
+        defaultdict(list)
+    )
+
+    for candidate in candidates:
+        if candidate.normalized_source_text:
+            normalized_source_groups[
+                (
+                    candidate.normalized_statement_type,
+                    candidate.statement_type,
+                    candidate.normalized_source_text,
+                )
+            ].append(candidate)
+
+    signals: list[SFIDedupReviewSignal] = []
+
+    for grouped_candidates in normalized_source_groups.values():
+        if len(grouped_candidates) < 2:
+            continue
+
+        signals.append(
+            SFIDedupReviewSignal(
+                candidate_ids=sorted(
+                    candidate.registry_candidate_id for candidate in grouped_candidates
+                ),
+                signal_type="same_normalized_source_text",
+                summary=(
+                    "These candidates have identical internally normalized source "
+                    "text. The original source_text fields remain authoritative."
+                ),
+                value=None,
+            )
+        )
+
+    return signals
+
+
+def _registry_warning_signals(
+    *, component_candidate_ids: set[str], sfi_candidate_registry: SFIRegistryArtifact
+) -> list[SFIDedupReviewSignal]:
+    """Build registry-warning signals restricted to the component candidates.
+
+    Parameters
+    ----------
+    component_candidate_ids
+        Candidate IDs in the bounded connected component.
+    sfi_candidate_registry
+        Registry artifact containing the warnings.
+
+    Returns
+    -------
+    list[SFIDedupReviewSignal]
+        One signal per warning covering at least two component candidates.
+    """
+
+    signals: list[SFIDedupReviewSignal] = []
+
+    for warning in sfi_candidate_registry.warnings:
+        candidate_ids = sorted(
+            component_candidate_ids.intersection(warning.registry_candidate_ids)
+        )
+
+        if len(candidate_ids) < 2:
+            continue
+
+        signals.append(
+            SFIDedupReviewSignal(
+                candidate_ids=candidate_ids,
+                signal_type="registry_warning",
+                summary=warning.message,
+                value=warning.warning_type,
+            )
+        )
+
+    return signals
+
+
 def _resolve_max_dedup_review_set_candidates(
     *, candidate_count: int, kg_config: CreateKGConfig
 ) -> int:
@@ -2209,6 +2263,76 @@ def _select_request_context_windows(
         for window_index in sorted(selected_window_indexes)
     ]
     return candidate_window_indexes, selected_context_windows
+
+
+def _shared_provenance_signals(
+    candidates: Sequence[SFIRegistryCandidate],
+) -> list[SFIDedupReviewSignal]:
+    """Build shared source-table row/header provenance signals.
+
+    Parameters
+    ----------
+    candidates
+        Registry candidates belonging to the connected review component.
+
+    Returns
+    -------
+    list[SFIDedupReviewSignal]
+        One deterministically ordered signal per shared table row or header cited by at
+        least two candidates within a single source table segment.
+    """
+
+    provenance_groups: dict[tuple[str, str, str, int], list[str]] = defaultdict(list)
+
+    for candidate in candidates:
+        for source_segment_id in candidate.source_segment_ids:
+            for row_index in candidate.table_row_indexes:
+                provenance_groups[
+                    (
+                        "shared_table_row",
+                        candidate.statement_type,
+                        source_segment_id,
+                        row_index,
+                    )
+                ].append(candidate.registry_candidate_id)
+
+            for header_index in candidate.table_header_indexes:
+                provenance_groups[
+                    (
+                        "shared_table_header",
+                        candidate.statement_type,
+                        source_segment_id,
+                        header_index,
+                    )
+                ].append(candidate.registry_candidate_id)
+
+    signals: list[SFIDedupReviewSignal] = []
+
+    for (
+        signal_type,
+        _statement_type,
+        _source_segment_id,
+        source_index,
+    ), candidate_ids_raw in sorted(provenance_groups.items()):
+        candidate_ids = sorted(set(candidate_ids_raw))
+
+        if len(candidate_ids) < 2:
+            continue
+
+        source_label = "row" if signal_type == "shared_table_row" else "header"
+        signals.append(
+            SFIDedupReviewSignal(
+                candidate_ids=candidate_ids,
+                signal_type=signal_type,
+                summary=(
+                    f"These candidates cite the same source table {source_label} "
+                    f"within one source table segment."
+                ),
+                value=f"{source_label}_index={source_index}",
+            )
+        )
+
+    return signals
 
 
 def _split_and_bound_components(
