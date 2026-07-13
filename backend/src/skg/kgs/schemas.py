@@ -30,7 +30,6 @@ _AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
 _MetadataT = dict[str, Any]
 _ProgressionSubtype = Literal["developmental_prerequisite", "recurring_practice"]
 SFIDedupDecision = Literal["conflict", "keep_separate", "merge", "needs_review"]
-SFIDedupReviewFocus = Literal["general", "textual_similarity"]
 SFIMergeDecision = Literal["conflict", "merged", "needs_review", "singleton"]
 
 
@@ -1135,11 +1134,130 @@ class SFIExtractionValidationVerdict(BaseSchema):
 
 
 # Schemas for SFI candidate registry.
+class SFIDedupContextItem(BaseSchema):
+    """One context-bearing SFI candidate visible in a compact source window."""
+
+    canonical_statement_value: Optional[str] = Field(
+        default=None,
+        description="Canonical controlled value for the context item, when configured.",
+    )
+    description: str = Field(description="Context item description.", min_length=1)
+    normalized_statement_type: NormalizedStatementType = Field(
+        description="Global normalized class for the context item."
+    )
+    source_text: str = Field(
+        description="Source-visible text supporting the context item.", min_length=1
+    )
+    statement_type: str = Field(
+        description="Canonical source-facing statement type for the context item.",
+        min_length=1,
+    )
+
+    @field_validator("description", "source_text", "statement_type", mode="before")
+    @classmethod
+    def clean_required_strings(cls, v: str) -> str:
+        """Strip and require non-empty context-item strings.
+
+        Parameters
+        ----------
+        v
+            Raw context-item string.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty string.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+
+class SFIDedupContextWindow(BaseSchema):
+    """Compact source-window context shared by dedup review candidates."""
+
+    boundary_markers: list[str] = Field(
+        default_factory=list,
+        description="Distinct source continuation or boundary markers for the window.",
+    )
+    context_items: list[SFIDedupContextItem] = Field(
+        default_factory=list,
+        description="Configured context-bearing SFI items visible in this window.",
+    )
+    page_indexes: list[int] = Field(
+        default_factory=list,
+        description="Sorted unique zero-based source page indexes represented here.",
+    )
+    section_labels: list[str] = Field(
+        default_factory=list,
+        description="Nearest visible section labels retained as fallible context.",
+    )
+    segment_kind: Literal["block", "table"] = Field(
+        description="Extraction-window segment kind."
+    )
+    source_text_excerpt: str = Field(
+        default="",
+        description="Short source-text excerpt retained for local semantic context.",
+    )
+    window_index: int = Field(description="Zero-based extraction-window index.", ge=0)
+
+    @field_validator("boundary_markers", "section_labels")
+    @classmethod
+    def clean_string_lists(cls, v: list[str]) -> list[str]:
+        """Clean and de-duplicate compact context-window string lists.
+
+        Parameters
+        ----------
+        v
+            Raw string values.
+
+        Returns
+        -------
+        list[str]
+            Cleaned unique strings in stable order.
+        """
+
+        return unique_clean_strings(v)
+
+    @field_validator("page_indexes")
+    @classmethod
+    def clean_page_indexes(cls, v: list[int]) -> list[int]:
+        """Validate compact source page indexes.
+
+        Parameters
+        ----------
+        v
+            Raw page indexes.
+
+        Returns
+        -------
+        list[int]
+            Sorted unique non-negative page indexes.
+
+        Raises
+        ------
+        ValueError
+            If any page index is negative.
+        """
+
+        cleaned = sorted(set(int(index) for index in v or []))
+
+        if any(index < 0 for index in cleaned):
+            raise ValueError("page_indexes must be non-negative")
+
+        return cleaned
+
+
 class SFIRegistryArtifact(BaseSchema):
     """Persisted global SFI candidate registry artifact."""
 
     candidates: list[SFIRegistryCandidate] = Field(default_factory=list)
     country: str = Field(description="KG config metadata country.")
+    dedup_context_windows: list[SFIDedupContextWindow] = Field(
+        description=(
+            "Compact extraction-window context pool shared by later SFI dedup review "
+            "requests. Each source window appears at most once."
+        ),
+    )
     doc_key: Optional[str] = Field(
         default=None, description="Source DocumentIR doc_key."
     )
@@ -1152,6 +1270,30 @@ class SFIRegistryArtifact(BaseSchema):
     subject: str = Field(description="KG config metadata subject.")
     summary: SFIRegistrySummary = Field(description="Registry aggregate summary.")
     warnings: list[SFIRegistryWarning] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_dedup_context_window_indexes(self) -> Self:
+        """Validate unique dedup context-window indexes.
+
+        Returns
+        -------
+        Self
+            Validated registry artifact.
+
+        Raises
+        ------
+        ValueError
+            If the shared context-window pool contains duplicate window indexes.
+        """
+
+        window_indexes = [window.window_index for window in self.dedup_context_windows]
+
+        if len(window_indexes) != len(set(window_indexes)):
+            raise ValueError(
+                "dedup_context_windows must have unique window_index values"
+            )
+
+        return self
 
 
 class SFIRegistryCandidate(BaseSchema):
@@ -1183,14 +1325,6 @@ class SFIRegistryCandidate(BaseSchema):
         description="Original candidate description.", min_length=1
     )
     language: LanguageField = Field(description="Original candidate language tag.")
-    local_source_neighborhood: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description=(
-            "Compact nearby extraction-window source evidence for LLM review. "
-            "These records are local source context, not resolved hierarchy, "
-            "parentage, or merge decisions."
-        ),
-    )
     normalized_description: str = Field(
         description="Lightweight normalized candidate description."
     )
@@ -1239,9 +1373,9 @@ class SFIRegistryCandidate(BaseSchema):
     scope_resolution_status: Literal["not_applicable", "unresolved"] = Field(
         default="not_applicable",
         description=(
-            "Whether SFI candidate registry found candidate-local controlled-value "
-            "evidence that may need later semantic resolution. SFI candidaate registry "
-            "never marks inferred hierarchy scope as resolved."
+            "Whether the registry found candidate-local controlled-value evidence "
+            "that may need later semantic resolution. The registry never marks "
+            "inferred hierarchy scope as resolved."
         ),
     )
     source_segment_ids: list[str] = Field(
@@ -1415,69 +1549,27 @@ class SFIDedupReviewCandidate(BaseSchema):
         default=None,
         description="Canonical controlled statement value, when configured.",
     )
-    canonical_statement_value_key: Optional[str] = Field(
-        default=None,
-        description="Normalized key for canonical_statement_value, when configured.",
-    )
-    code_bucket_key: Optional[str] = Field(
-        default=None, description="Candidate code duplicate bucket key, when present."
+    context_window_indexes: list[int] = Field(
+        description="Shared request-level context windows relevant to this candidate.",
+        min_length=1,
     )
     description: str = Field(description="Candidate description.", min_length=1)
     language: LanguageField = Field(description="Candidate language tag.")
-    local_source_neighborhood: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description=(
-            "Compact nearby extraction-window source evidence copied from the "
-            "registry. Use as local source context for review, not as resolved "
-            "hierarchy or parentage."
-        ),
-    )
-    normalized_description: str = Field(
-        description="Registry-normalized candidate description."
-    )
-    normalized_source_text: str = Field(
-        description="Registry-normalized candidate source_text."
-    )
     normalized_statement_code: Optional[str] = Field(
-        default=None, description="Registry-normalized statement code, when present."
+        default=None, description="Registry-normalized official code, when present."
     )
     normalized_statement_type: NormalizedStatementType = Field(
         description="Candidate normalized statement type."
     )
     registry_candidate_id: str = Field(description="Temporary registry candidate ID.")
-    source_context_key: str = Field(
-        description="Deterministic source-derived context key from the registry.",
-        min_length=1,
-    )
-    source_context_labels: list[str] = Field(
-        description="Human-readable source-derived context labels from the registry.",
-        min_length=1,
-    )
-    scope_evidence: list[dict[str, Any]] = Field(
-        default_factory=list,
+    scope_hints: dict[str, list[str]] = Field(
+        default_factory=dict,
         description=(
-            "Fallible deterministic scope evidence copied from the registry for LLM "
-            "review. This is retrieval context, not canonical hierarchy."
+            "Compact possible scope values grouped by statement type. These are "
+            "fallible retrieval hints, not resolved hierarchy."
         ),
-    )
-    scope_hypotheses: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description=(
-            "Possible scope hypotheses copied from the registry for LLM review. "
-            "These are not final parentage or merge decisions."
-        ),
-    )
-    scope_resolution_status: Literal["not_applicable", "unresolved"] = Field(
-        default="not_applicable",
-        description="Registry scope evidence status for the candidate.",
-    )
-    source_segment_ids: list[str] = Field(
-        description="Source segment IDs associated with the candidate.", min_length=1
     )
     source_text: str = Field(description="Source-visible evidence text.", min_length=1)
-    source_text_bucket_key: str = Field(
-        description="Candidate source-text duplicate bucket key."
-    )
     statement_code: Optional[str] = Field(
         default=None, description="Original statement code, when present."
     )
@@ -1488,11 +1580,68 @@ class SFIDedupReviewCandidate(BaseSchema):
     table_row_indexes: list[int] = Field(
         default_factory=list, description="Source table row indexes."
     )
-    text_bucket_key: str = Field(
-        description="Candidate description duplicate bucket key."
-    )
-    window_id: str = Field(description="Source extraction window ID.")
     window_index: int = Field(description="Source extraction window index.", ge=0)
+
+    @field_validator(
+        "context_window_indexes", "table_header_indexes", "table_row_indexes"
+    )
+    @classmethod
+    def clean_indexes(cls, v: list[int]) -> list[int]:
+        """Validate non-negative candidate index lists.
+
+        Parameters
+        ----------
+        v
+            Raw indexes.
+
+        Returns
+        -------
+        list[int]
+            Sorted unique non-negative indexes.
+
+        Raises
+        ------
+        ValueError
+            If any index is negative.
+        """
+
+        cleaned = sorted(set(int(index) for index in v or []))
+
+        if any(index < 0 for index in cleaned):
+            raise ValueError("candidate index lists must be non-negative")
+
+        return cleaned
+
+    @field_validator("scope_hints")
+    @classmethod
+    def clean_scope_hints(cls, v: dict[str, list[str]]) -> dict[str, list[str]]:
+        """Clean compact scope-hint labels and values.
+
+        Parameters
+        ----------
+        v
+            Raw scope hints grouped by statement type.
+
+        Returns
+        -------
+        dict[str, list[str]]
+            Cleaned, sorted mapping with blank keys and values removed.
+        """
+
+        cleaned: dict[str, list[str]] = {}
+
+        for statement_type, values in sorted((v or {}).items()):
+            statement_type_clean = str(statement_type or "").strip()
+
+            if not statement_type_clean:
+                continue
+
+            cleaned_values = unique_clean_strings(values)
+
+            if cleaned_values:
+                cleaned[statement_type_clean] = cleaned_values
+
+        return cleaned
 
 
 class SFIDedupReviewRequest(BaseSchema):
@@ -1504,43 +1653,27 @@ class SFIDedupReviewRequest(BaseSchema):
     candidates: list[SFIDedupReviewCandidate] = Field(
         description="Bounded candidate records to review together.", min_length=2
     )
-    review_focus: SFIDedupReviewFocus = Field(
+    context_windows: list[SFIDedupContextWindow] = Field(
         description=(
-            "Prompt focus for this review set. Use 'textual_similarity' when exact "
-            "or close-enough source wording contributed to selecting any part of the "
-            "review component; otherwise use 'general'. The focus is retrieval "
-            "context only and does not imply that every candidate is pairwise similar."
-        )
-    )
-    review_reasons: list[str] = Field(
-        description="Deterministic reasons this candidate set was selected for review.",
+            "Shared compact source-window context. Candidates reference these windows "
+            "through context_window_indexes."
+        ),
         min_length=1,
     )
     review_set_id: str = Field(description="Deterministic review-set ID.")
-    sfi_deduplication_instructions: str = Field(
+    review_signals: list[SFIDedupReviewSignal] = Field(
+        description=(
+            "Explicit candidate-subset retrieval signals that caused the review set "
+            "to be constructed. Signals are evidence only, not merge rules."
+        ),
+        min_length=1,
+    )
+    sfi_dedup_instructions: str = Field(
         description="Curriculum-specific deduplication instructions.",
         min_length=1,
     )
 
-    @field_validator("review_reasons")
-    @classmethod
-    def clean_review_reasons(cls, v: list[str]) -> list[str]:
-        """Clean and deduplicate review reasons.
-
-        Parameters
-        ----------
-        v
-            Raw review reasons.
-
-        Returns
-        -------
-        list[str]
-            Cleaned review reasons.
-        """
-
-        return unique_clean_strings(v)
-
-    @field_validator("review_set_id", "sfi_deduplication_instructions", mode="before")
+    @field_validator("review_set_id", "sfi_dedup_instructions", mode="before")
     @classmethod
     def clean_required_request_strings(cls, v: str) -> str:
         """Strip and require non-empty request strings.
@@ -1559,35 +1692,65 @@ class SFIDedupReviewRequest(BaseSchema):
         return strip_and_require_non_empty_str(v)
 
     @model_validator(mode="after")
-    def validate_candidate_ids_unique(self) -> Self:
-        """Validate that request candidate IDs are unique.
+    def validate_request_references(self) -> Self:
+        """Validate candidate, context-window, and review-signal references.
 
         Returns
         -------
         Self
-            The validated request.
+            Validated request.
 
         Raises
         ------
         ValueError
-            If duplicate candidate IDs are present.
+            If candidate IDs or context-window indexes are duplicated, or if any
+            candidate or signal references data outside the request.
         """
 
         candidate_ids = [
             candidate.registry_candidate_id for candidate in self.candidates
         ]
-        duplicate_candidate_ids = sorted(
-            {
-                candidate_id
-                for candidate_id in candidate_ids
-                if candidate_ids.count(candidate_id) > 1
-            }
-        )
 
-        if duplicate_candidate_ids:
-            raise ValueError(
-                f"Duplicate review candidate IDs: {duplicate_candidate_ids}"
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise ValueError("Dedup review candidate IDs must be unique")
+
+        context_window_indexes = [
+            window.window_index for window in self.context_windows
+        ]
+
+        if len(context_window_indexes) != len(set(context_window_indexes)):
+            raise ValueError("Dedup context-window indexes must be unique")
+
+        known_candidate_ids = set(candidate_ids)
+        known_window_indexes = set(context_window_indexes)
+
+        for candidate in self.candidates:
+            unknown_window_indexes = sorted(
+                set(candidate.context_window_indexes) - known_window_indexes
             )
+
+            if unknown_window_indexes:
+                raise ValueError(
+                    f"Candidate {candidate.registry_candidate_id!r} references unknown "
+                    f"context windows: {unknown_window_indexes}"
+                )
+
+            if candidate.window_index not in candidate.context_window_indexes:
+                raise ValueError(
+                    f"Candidate {candidate.registry_candidate_id!r} must reference its "
+                    f"own source window_index {candidate.window_index}."
+                )
+
+        for signal in self.review_signals:
+            unknown_candidate_ids = sorted(
+                set(signal.candidate_ids) - known_candidate_ids
+            )
+
+            if unknown_candidate_ids:
+                raise ValueError(
+                    f"Review signal {signal.signal_type!r} references unknown "
+                    f"candidate IDs: {unknown_candidate_ids}"
+                )
 
         return self
 
@@ -1618,6 +1781,90 @@ class SFIDedupReviewResponse(BaseSchema):
         """
 
         return strip_and_require_non_empty_str(v)
+
+
+class SFIDedupReviewSignal(BaseSchema):
+    """One candidate-subset retrieval signal for a bounded dedup review set."""
+
+    candidate_ids: list[str] = Field(
+        description="Review candidate IDs to which this signal applies.", min_length=2
+    )
+    signal_type: str = Field(description="Short general signal category.", min_length=1)
+    summary: str = Field(
+        description="Human-readable explanation of the retrieval signal.", min_length=1
+    )
+    value: Optional[str] = Field(
+        default=None,
+        description="Optional human-readable value associated with the signal.",
+    )
+
+    @field_validator("candidate_ids")
+    @classmethod
+    def clean_candidate_ids(cls, v: list[str]) -> list[str]:
+        """Clean and validate signal candidate IDs.
+
+        Parameters
+        ----------
+        v
+            Raw candidate IDs.
+
+        Returns
+        -------
+        list[str]
+            Cleaned unique candidate IDs.
+
+        Raises
+        ------
+        ValueError
+            If fewer than two unique candidate IDs remain.
+        """
+
+        cleaned = unique_clean_strings(v)
+
+        if len(cleaned) < 2:
+            raise ValueError("review signals require at least two candidate_ids")
+
+        return cleaned
+
+    @field_validator("signal_type", "summary", mode="before")
+    @classmethod
+    def clean_required_strings(cls, v: str) -> str:
+        """Strip and require non-empty review-signal strings.
+
+        Parameters
+        ----------
+        v
+            Raw review-signal string.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty string.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def clean_optional_value(cls, v: Optional[str]) -> Optional[str]:
+        """Strip an optional human-readable review-signal value.
+
+        Parameters
+        ----------
+        v
+            Raw optional value.
+
+        Returns
+        -------
+        Optional[str]
+            Cleaned value, or ``None`` when blank.
+        """
+
+        if v is None:
+            return None
+
+        value = str(v).strip()
+        return value or None
 
 
 class SFIDedupValidationIssue(BaseSchema):

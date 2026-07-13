@@ -24,6 +24,8 @@ from skg.document_ir.schemas import TableSegment
 from skg.kgs.schemas import (
     ExtractionWindow,
     SFICandidate,
+    SFIDedupContextItem,
+    SFIDedupContextWindow,
     SFIExtractionResult,
     SFIRegistryArtifact,
     SFIRegistryCandidate,
@@ -177,81 +179,104 @@ def _build_canonical_statement_value(
     return None, None
 
 
-def _build_compact_source_provenance(
-    source_provenance: Sequence[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Build compact page/source provenance records for neighborhood evidence.
+def _build_dedup_context_windows(
+    *,
+    candidates: Sequence[SFIRegistryCandidate],
+    extraction_windows: Sequence[ExtractionWindow],
+    kg_config: CreateKGConfig,
+) -> list[SFIDedupContextWindow]:
+    """Build one compact shared dedup context record per extraction window.
+
+    Context items are selected from runtime configuration. The resulting records omit
+    source UUIDs, item addresses, bounding boxes, and full provenance while retaining
+    concise page, boundary, section, and source-text evidence.
 
     Parameters
     ----------
-    source_provenance
-        Raw provenance records from an extraction window.
+    candidates
+        Registry candidates in source order.
+    extraction_windows
+        Ordered source extraction windows.
+    kg_config
+        Runtime KG configuration controlling context-bearing statement types.
 
     Returns
     -------
-    list[dict[str, Any]]
-        Compact provenance records with stable source-location keys only.
+    list[SFIDedupContextWindow]
+        Compact shared source-window context in extraction-window order.
     """
 
-    compact_records: list[dict[str, Any]] = []
-    keep_keys = (
-        "boundary",
-        "item_addr",
-        "item_index",
-        "kind",
-        "local_code",
-        "page_index",
-        "repeats_header",
+    configured_types = kg_config.academic_standards.sfi_dedup_context_statement_types
+    context_statement_types = (
+        set(configured_types)
+        if configured_types
+        else {
+            item.statement_type
+            for item in kg_config.academic_standards.statement_type_policy
+            if item.normalized_statement_type == "Standard Grouping"
+        }
+    )
+    candidates_by_window_index: dict[int, list[SFIRegistryCandidate]] = defaultdict(
+        list
     )
 
-    for record in source_provenance:
-        compact_record = {
-            key: record.get(key) for key in keep_keys if record.get(key) is not None
-        }
+    for candidate in candidates:
+        if candidate.statement_type in context_statement_types:
+            candidates_by_window_index[candidate.window_index].append(candidate)
 
-        if "bbox" in record and isinstance(record["bbox"], list):
-            compact_record["bbox"] = record["bbox"][:4]
+    context_windows: list[SFIDedupContextWindow] = []
 
-        if compact_record:
-            compact_records.append(compact_record)
-
-    return compact_records
-
-
-def _build_compact_source_section_path(
-    source_section_path: Sequence[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Build compact section-path records for neighborhood evidence.
-
-    Parameters
-    ----------
-    source_section_path
-        Raw source section-path records from an extraction window.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        Compact section-path records preserving visible labels and source positions.
-    """
-
-    compact_records: list[dict[str, Any]] = []
-
-    for record in source_section_path[-8:]:
-        text = str(record.get("text") or "").strip()
-
-        if not text:
-            continue
-
-        compact_record = {
-            "item_index": record.get("item_index"),
-            "page_index": record.get("page_index"),
-            "text": _truncate_context_label(text),
-        }
-        compact_records.append(
-            {key: value for key, value in compact_record.items() if value is not None}
+    for extraction_window in extraction_windows:
+        page_indexes = sorted(
+            {
+                int(record["page_index"])
+                for record in extraction_window.source_provenance
+                if record.get("page_index") is not None
+                and int(record["page_index"]) >= 0
+            }
         )
 
-    return compact_records
+        boundary_markers = _unique_limited(
+            [
+                str(record.get("boundary") or "").strip()
+                for record in extraction_window.source_provenance
+            ],
+            limit=8,
+        )
+
+        section_labels = _extract_section_texts(extraction_window.source_section_path)[
+            -3:
+        ]
+
+        window_candidates = sorted(
+            candidates_by_window_index.get(extraction_window.window_index, []),
+            key=lambda candidate: candidate.source_window_candidate_index,
+        )
+
+        context_windows.append(
+            SFIDedupContextWindow(
+                boundary_markers=boundary_markers,
+                context_items=[
+                    SFIDedupContextItem(
+                        canonical_statement_value=candidate.canonical_statement_value,
+                        description=candidate.description,
+                        normalized_statement_type=candidate.normalized_statement_type,
+                        source_text=candidate.source_text,
+                        statement_type=candidate.statement_type,
+                    )
+                    for candidate in window_candidates
+                ],
+                page_indexes=page_indexes,
+                section_labels=section_labels,
+                segment_kind=extraction_window.segment_kind,
+                source_text_excerpt=_truncate_source_excerpt(
+                    limit=400, value=extraction_window.source_text
+                ),
+                window_index=extraction_window.window_index,
+            )
+        )
+
+    return context_windows
 
 
 def _build_duplicate_buckets(
@@ -322,78 +347,6 @@ def _build_duplicate_buckets(
             )
 
     return buckets
-
-
-def _build_local_source_neighborhood(
-    *,
-    candidate: SFIRegistryCandidate,
-    extraction_windows: Sequence[ExtractionWindow],
-    lookaround_window_count: int,
-    sfi_extraction_results: Sequence[SFIExtractionResult],
-) -> list[dict[str, Any]]:
-    """Build local extraction-window context around one registry candidate.
-
-    The returned records are source-neighborhood evidence for later LLM review. They
-    intentionally do not resolve hierarchy, choose a parent, or imply merge identity.
-    Including both preceding and following windows helps the LLM reason about divider
-    pages, repeated headings, continuation pages, and irregular extraction order using
-    visible local source context rather than stale cumulative section labels alone.
-
-    Parameters
-    ----------
-    candidate
-        Registry candidate receiving local neighborhood context.
-    extraction_windows
-        Ordered extraction windows used by SFI extraction.
-    lookaround_window_count
-        Maximum absolute window-index distance to include.
-    sfi_extraction_results
-        Ordered extraction results aligned with `extraction_windows`.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        Compact local source-window records sorted in extraction-window order.
-    """
-
-    neighborhood: list[dict[str, Any]] = []
-
-    for extraction_result, extraction_window in zip(
-        sfi_extraction_results, extraction_windows
-    ):
-        distance = extraction_window.window_index - candidate.window_index
-
-        if abs(distance) > lookaround_window_count:
-            continue
-
-        neighborhood.append(
-            {
-                "relative_window_index": extraction_window.window_index
-                - candidate.window_index,
-                "segment_kind": extraction_window.segment_kind,
-                "sfi_candidate_count": len(extraction_result.sfi_candidates),
-                "sfi_candidate_summaries": _build_window_candidate_summaries(
-                    extraction_result
-                ),
-                "sfi_candidate_summaries_truncated": (
-                    len(extraction_result.sfi_candidates) > 24
-                ),
-                "source_provenance": _build_compact_source_provenance(
-                    extraction_window.source_provenance
-                ),
-                "source_section_path": _build_compact_source_section_path(
-                    extraction_window.source_section_path
-                ),
-                "source_segment_ids": extraction_window.source_segment_ids,
-                "source_text_excerpt": _truncate_source_excerpt(
-                    limit=900, value=extraction_window.source_text
-                ),
-                "window_id": extraction_window.window_id,
-                "window_index": extraction_window.window_index,
-            }
-        )
-
-    return neighborhood
 
 
 def _build_nearby_controlled_value_evidence(
@@ -1090,38 +1043,6 @@ def _build_text_bucket_key(
         return _join_bucket_key(statement_type_key, normalized_text)
 
     return _join_bucket_key(statement_type_key, source_context_key, normalized_text)
-
-
-def _build_window_candidate_summaries(
-    extraction_result: SFIExtractionResult,
-) -> list[dict[str, Any]]:
-    """Build compact SFI candidate summaries for one neighboring window.
-
-    Parameters
-    ----------
-    extraction_result
-        Window-local SFI extraction result to summarize.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        Compact candidate summaries that preserve visible values and roles.
-    """
-
-    summaries: list[dict[str, Any]] = []
-
-    for candidate in extraction_result.sfi_candidates[:24]:
-        summaries.append(
-            {
-                "candidate_id": candidate.candidate_id,
-                "description": _truncate_context_label(candidate.description),
-                "normalized_statement_type": candidate.normalized_statement_type,
-                "source_text": _truncate_context_label(candidate.source_text),
-                "statement_type": candidate.statement_type,
-            }
-        )
-
-    return summaries
 
 
 def _deterministic_bucket_id(*, bucket_key: str, bucket_type: str) -> str:
@@ -2123,60 +2044,10 @@ def _warn_on_text_repeated_within_window(
         )
 
 
-def _with_local_source_neighborhood(
-    *,
-    candidates: Sequence[SFIRegistryCandidate],
-    extraction_windows: Sequence[ExtractionWindow],
-    sfi_extraction_results: Sequence[SFIExtractionResult],
-) -> list[SFIRegistryCandidate]:
-    """Attach compact local source-window evidence to controlled-value candidates.
-
-    Only candidates with configured controlled values receive this heavier evidence,
-    because they are the candidates most likely to need local heading/divider context
-    during dedup review. Non-controlled candidates keep an empty neighborhood so
-    row-level standards and content items do not unnecessarily inflate review payloads.
-
-    Parameters
-    ----------
-    candidates
-        Registry candidates in source order.
-    extraction_windows
-        Ordered extraction windows used by SFI extraction.
-    sfi_extraction_results
-        Ordered extraction results aligned with `extraction_windows`.
-
-    Returns
-    -------
-    list[SFIRegistryCandidate]
-        Registry candidates with local source-neighborhood evidence attached.
-    """
-
-    enriched_candidates: list[SFIRegistryCandidate] = []
-
-    for candidate in candidates:
-        if not candidate.canonical_statement_value_key:
-            enriched_candidates.append(candidate)
-            continue
-
-        enriched_candidates.append(
-            candidate.model_copy(
-                update={
-                    "local_source_neighborhood": _build_local_source_neighborhood(
-                        candidate=candidate,
-                        extraction_windows=extraction_windows,
-                        lookaround_window_count=3,
-                        sfi_extraction_results=sfi_extraction_results,
-                    )
-                }
-            )
-        )
-
-    return enriched_candidates
-
-
 def _with_scope_evidence(
     *,
     candidates: Sequence[SFIRegistryCandidate],
+    context_window_radius: int,
     statement_value_policies: dict[str, _StatementValuePolicy],
 ) -> list[SFIRegistryCandidate]:
     """Return registry candidates enriched with non-authoritative scope evidence.
@@ -2189,6 +2060,8 @@ def _with_scope_evidence(
     ----------
     candidates
         Registry candidates in source order.
+    context_window_radius
+        Maximum absolute extraction-window distance used for nearby scope hints.
     statement_value_policies
         Controlled value policies keyed by statement type.
 
@@ -2205,7 +2078,7 @@ def _with_scope_evidence(
         scope_evidence, scope_hypotheses = _build_scope_evidence_for_candidate(
             candidate=candidate,
             candidate_index=candidate_index,
-            lookaround_window_count=3,
+            lookaround_window_count=context_window_radius,
             ordered_candidates=ordered_candidates,
             statement_value_policies=statement_value_policies,
         )
@@ -2304,12 +2177,16 @@ def build_candidate_registry(
             )
 
     candidates = _with_scope_evidence(
-        candidates=candidates, statement_value_policies=statement_value_policies
+        candidates=candidates,
+        context_window_radius=(
+            kg_config.academic_standards.sfi_dedup_context_window_radius
+        ),
+        statement_value_policies=statement_value_policies,
     )
-    candidates = _with_local_source_neighborhood(
+    dedup_context_windows = _build_dedup_context_windows(
         candidates=candidates,
         extraction_windows=extraction_windows,
-        sfi_extraction_results=sfi_extraction_results,
+        kg_config=kg_config,
     )
     duplicate_buckets = _build_duplicate_buckets(candidates)
     warnings = _build_registry_warnings(
@@ -2328,6 +2205,7 @@ def build_candidate_registry(
     sfi_registry_artifact = SFIRegistryArtifact(
         candidates=candidates,
         country=kg_config.metadata.country,
+        dedup_context_windows=dedup_context_windows,
         doc_key=extraction_windows[0].doc_key if extraction_windows else None,
         duplicate_buckets=duplicate_buckets,
         framework_title=kg_config.metadata.framework_title,

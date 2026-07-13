@@ -915,7 +915,23 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         ),
     )
     row_overlap: int = Field(default=1, ge=0)
-    sfi_deduplication_instructions: str
+    sfi_dedup_context_statement_types: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Statement types to include as context-bearing items in nearby SFI "
+            "dedup source windows. When empty, use all statement types whose "
+            "configured normalized_statement_type is 'Standard Grouping'."
+        ),
+    )
+    sfi_dedup_context_window_radius: int = Field(
+        default=1,
+        description=(
+            "Number of extraction windows before and after each reviewed candidate's "
+            "window to include in the shared SFI dedup context-window payload."
+        ),
+        ge=0,
+    )
+    sfi_dedup_instructions: str
     sfi_extraction_instructions: str
     sfi_extraction_validation_instructions: str = Field(
         description=(
@@ -1087,6 +1103,32 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
 
         return cleaned
 
+    @field_validator("sfi_dedup_context_statement_types")
+    @classmethod
+    def validate_sfi_dedup_context_statement_types(cls, v: list[str]) -> list[str]:
+        """Clean configured statement types used as SFI dedup context items.
+
+        Parameters
+        ----------
+        v
+            Optional statement-type labels to include in compact dedup context windows.
+
+        Returns
+        -------
+        list[str]
+            Cleaned labels in stable order. An empty list selects all configured
+            Standard Grouping statement types at runtime.
+
+        Raises
+        ------
+        TypeError
+            If any configured value is not a string.
+        """
+
+        return cls._clean_selection_string_list(
+            field_name="sfi_dedup_context_statement_types", values=v
+        )
+
     @field_validator("sfi_has_child_statement_type_hierarchy")
     @classmethod
     def validate_sfi_has_child_statement_type_hierarchy(cls, v: list[str]) -> list[str]:
@@ -1131,7 +1173,7 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         return cleaned
 
     @field_validator(
-        "sfi_deduplication_instructions",
+        "sfi_dedup_instructions",
         "sfi_extraction_instructions",
         "sfi_extraction_validation_instructions",
         "sfi_has_child_instructions",
@@ -1593,6 +1635,36 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
                     f"{item.statement_type!r}. Known code types: {sorted(known)}"
                 )
 
+    def _validate_dedup_context_statement_types(self) -> None:
+        """Validate explicitly configured SFI dedup context statement types.
+
+        An empty list is valid and means all configured statement types normalized as
+        `Standard Grouping` are selected when the registry is built.
+
+        Raises
+        ------
+        ValueError
+            If an explicitly configured context statement type is absent from
+            `statement_type_policy`.
+        """
+
+        if not self.sfi_dedup_context_statement_types:
+            return
+
+        known_statement_types = {
+            item.statement_type for item in self.statement_type_policy
+        }
+        unknown_statement_types = sorted(
+            set(self.sfi_dedup_context_statement_types) - known_statement_types
+        )
+
+        if unknown_statement_types:
+            raise ValueError(
+                f"CreateKGConfig.as.sfi_dedup_context_statement_types references "
+                f"unknown statement_type labels: {unknown_statement_types}. Known "
+                f"statement_type labels: {sorted(known_statement_types)}"
+            )
+
     def _validate_has_child_statement_type_policy(self) -> None:
         """Validate hasChild hierarchy and direct-parent labels.
 
@@ -1681,6 +1753,7 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         known = set(self.code_patterns.keys())
         self._validate_windowing()
         self._validate_code_parent_rules(known)
+        self._validate_dedup_context_statement_types()
         self._validate_has_child_statement_type_policy()
         self._validate_selection_overlap_policy()
         self._validate_statement_type_policy_code_types(known)

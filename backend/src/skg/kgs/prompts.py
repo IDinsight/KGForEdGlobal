@@ -289,7 +289,8 @@ def _build_compact_dedup_review_payload(
     Returns
     -------
     dict[str, Any]
-        JSON-serializable dedup review payload.
+        JSON-serializable dedup review payload with shared context windows and
+        candidate-subset review signals.
     """
 
     payload: dict[str, Any] = {
@@ -297,10 +298,16 @@ def _build_compact_dedup_review_payload(
             candidate.model_dump(exclude_none=True, mode="json")
             for candidate in review_request.candidates
         ],
-        "review_focus": review_request.review_focus,
-        "review_reasons": review_request.review_reasons,
+        "context_windows": [
+            context_window.model_dump(exclude_none=True, mode="json")
+            for context_window in review_request.context_windows
+        ],
         "review_set_id": review_request.review_set_id,
-        "sfi_deduplication_instructions": review_request.sfi_deduplication_instructions,
+        "review_signals": [
+            signal.model_dump(exclude_none=True, mode="json")
+            for signal in review_request.review_signals
+        ],
+        "sfi_dedup_instructions": review_request.sfi_dedup_instructions,
     }
 
     if review_request.bilingual_pair_policy:
@@ -804,75 +811,6 @@ def _build_compact_table_payload(
     return payload
 
 
-def _build_dedup_review_focus_instructions(
-    review_request: SFIDedupReviewRequest,
-) -> str:
-    """Build prompt instructions for the selected dedup review focus.
-
-    Parameters
-    ----------
-    review_request
-        Bounded dedup review request whose focus controls the system message.
-
-    Returns
-    -------
-    str
-        Additional source-structure-aware dedup instructions for the request focus.
-    """
-
-    if review_request.review_focus == "textual_similarity":
-        return dedent(
-            """
-## Textual-similarity review focus
-- This review component contains at least one exact or close-enough source-text
-  similarity signal. The signal may apply to only a subset of candidates because
-  overlapping retrieval edges can be combined transitively into one bounded review
-  set.
-- "Close enough" means only that the wording is similar enough to deserve semantic
-  review. It is not a merge rule, and it does not imply that every candidate is
-  pairwise similar.
-- Decide whether each candidate represents the same logical source item, a distinct
-  item with reused or expanded wording, a conflict, or an unresolved case.
-- Apply the runtime sfi_deduplication_instructions as the authoritative
-  curriculum-specific policy for deciding which wording differences preserve identity
-  and which differences create distinct source items.
-- Treat exact normalized_source_text equality, close wording, canonical controlled
-  values, duplicate buckets, and provenance overlap as retrieval evidence rather than
-  automatic decisions.
-- Treat local_source_neighborhood as nearby source-window evidence. It is especially
-  important around divider pages, repeated headings, continuation pages, and irregular
-  source layouts where cumulative source_context_labels may be stale.
-- Treat source_context_key, source_context_labels, scope_evidence, scope_hypotheses,
-  and local_source_neighborhood as helpful but fallible retrieval evidence. They may be
-  inherited from surrounding source structure and can be stale or noisy.
-- Do not treat scope_hypotheses or local_source_neighborhood as final hierarchy,
-  parentage, or canonical scope. Use visible source text, nearby source-window
-  evidence, source references, and runtime instructions to decide.
-- When local_source_neighborhood gives cleaner local boundary evidence than cumulative
-  source_context_labels, prefer the local neighborhood evidence.
-- Do not let source_context_labels or scope_hypotheses alone block a merge when visible
-  source text, source role, source proximity, canonical values, and runtime instructions
-  indicate the same source-visible curriculum item.
-- Keep separate when similar wording is reused under materially different grades,
-  strands, domains, courses, topics, years, tables, or other source scopes, unless
-  runtime instructions define those occurrences as one logical organizer.
-            """
-        ).strip()
-
-    return dedent(
-        """
-## General duplicate review focus
-- This review set was selected from general duplicate evidence such as controlled-value
-  repeats, code or text buckets, registry warnings, or source-provenance overlap.
-- Retrieval reasons may apply to only a subset of candidates in a transitively
-  connected component. Do not assume every candidate shares every listed signal.
-- Weigh all supplied evidence together and apply the runtime
-  sfi_deduplication_instructions as the authoritative curriculum-specific semantic
-  policy.
-        """
-    ).strip()
-
-
 def _build_filldown_context_rows(
     *,
     filldown_rows: list[dict[str, Any]],
@@ -1355,8 +1293,8 @@ def review_sfi_dedup_candidates(review_request: SFIDedupReviewRequest) -> Prompt
     Parameters
     ----------
     review_request
-        Bounded review set built from registry duplicate buckets, warnings, and safe
-        provenance overlap.
+        Bounded review set containing compact candidates, shared context windows, and
+        explicit candidate-subset retrieval signals.
 
     Returns
     -------
@@ -1364,21 +1302,19 @@ def review_sfi_dedup_candidates(review_request: SFIDedupReviewRequest) -> Prompt
         System and user messages for the SFI dedup review agent.
     """
 
-    focus_instructions = _build_dedup_review_focus_instructions(review_request)
     user_payload = _build_compact_dedup_review_payload(review_request)
-
     system_message = dedent(
-        f"""You are an Academic Standards SFI deduplication review agent for a Learning Commons-shaped Knowledge Graph. Inspect exactly one bounded candidate review set and decide which registry candidates represent the same logical source item.
+        """You are an Academic Standards SFI deduplication review agent for a Learning Commons-shaped Knowledge Graph. Inspect exactly one bounded candidate review set and decide which registry candidates represent the same logical source item.
 
 ## Task boundary
 - Decide only within the supplied review_set_id and supplied candidate records.
 - Do not ask for the full registry, full extraction windows, full DocumentIR, or outside source context.
 - Do not invent new candidates, candidate IDs, statement codes, hierarchy nodes, or final StandardsFrameworkItem IDs.
 - Do not infer hasChild parentage or other relationships.
-- Do not choose final canonical KG text; The next step will construct final source-backed records after deduplication.
+- Do not choose final canonical KG text. A later step constructs final source-backed records after deduplication.
 
 ## Decision labels
-Use exactly one of these decisions for each decision group:
+Use exactly one decision for each decision group:
 - merge: all candidates in the group represent the same final source item.
 - keep_separate: candidates are valid separate source items despite lexical, code, or provenance similarity.
 - conflict: candidates appear to claim the same identity but contain materially incompatible text or source context.
@@ -1390,31 +1326,28 @@ Use exactly one of these decisions for each decision group:
 - Use singleton groups when one candidate must be kept separate from the rest.
 - Give a short source-grounded reason for every group.
 
-## Evidence signals and merge guardrails
-- Treat review_reasons, duplicate buckets, registry warnings, same source table-row/header overlap, source-segment overlap, same source-context key/labels, and same-window proximity as retrieval signals for review, not as automatic merge rules.
-- Apply decision evidence in this order: hard schema/code compatibility constraints, runtime sfi_deduplication_instructions, visible source text and source references, general dedup heuristics, then source_context_key/source_context_labels.
-- Treat local_source_neighborhood as nearby source-window evidence for resolving local boundary/divider/repeated-heading context. It is evidence only, not final hierarchy or parentage.
-- Treat source_context_key, source_context_labels, scope_evidence, scope_hypotheses, and local_source_neighborhood as useful but fallible context signals. They can help distinguish repeated no-code labels under different hierarchy/source contexts, but they are not absolute truth when they conflict with visible source evidence or more specific runtime deduplication instructions.
-- Treat any supplied scope_hypotheses as possible retrieval hints, not final hierarchy, parentage, or canonical scope. Do not assume Python has already resolved a candidate's grade/strand/domain/topic scope.
-- When local_source_neighborhood conflicts with stale cumulative source_context_labels, prefer the local neighborhood evidence if it is clearer and source-visible.
-- Do not merge candidates solely because they were selected into the same bounded review set or share a table row, table header, source segment, source-context key, source-context label, or window.
-- Same statement_type + same normalized_statement_code is strong merge evidence only when the supplied text and source references are compatible.
-- Do not merge candidates with different official codes solely because their normalized text is similar.
-- Do not treat source-visible official codes as globally unique identity keys. Source documents can reuse, duplicate, or misprint official codes.
-- When same-code candidates have materially different source-visible statements and the bounded evidence indicates they are distinct source items, use keep_separate rather than conflict. State in the reason that they require same-code/different-content audit and downstream disambiguated final IDs.
-- Use conflict or needs_review for same-code candidates only when they appear to be competing or incompatible representations of the same source item, or when the bounded evidence is insufficient to decide whether they are distinct source items.
-- Do not merge candidates with different statement_type or different normalized_statement_type unless the supplied evidence clearly shows they are duplicate extractions of the same source-visible item under inconsistent labels.
-- If candidates appear to represent different source roles, levels, scopes, or structural positions in the curriculum, use keep_separate, conflict, or needs_review rather than merge unless the supplied evidence clearly shows they are duplicate extractions of the same source-visible item.
-- For no-code candidates, same statement_type + same normalized source/description text is review evidence, not an automatic merge rule.
-- Repeated labels such as grade, stage, section, strand, domain, palier, week, activity, topic, or objective headings may be distinct under different source contexts.
-- Merge no-code candidates only when the visible source text and supplied source references are compatible.
-- If safe resolution depends on context that is not visible in the bounded review payload, choose needs_review rather than guessing.
-- Follow the curriculum-specific deduplication instructions in the payload when they are more specific than these general rules, intentionally stricter than these general rules, or define how a framework uses repeated headings/organizers.
+## Compact evidence model
+- review_signals are deterministic retrieval evidence. Each signal applies only to its listed candidate_ids; never assume it applies to the entire connected review set.
+- A same_normalized_source_text signal means the listed subset has exact equality after internal normalization. It is not an automatic merge rule, and normalized text itself is intentionally omitted from the prompt.
+- A canonical-value, code-bucket, text-bucket, warning, or shared-table-location signal is also review evidence rather than a merge decision.
+- context_windows are shared nearby source windows. Each candidate's context_window_indexes identifies which windows are relevant to that candidate.
+- context_items contain only runtime-configured context-bearing statement types. Their absence does not prove that no other source content exists.
+- section_labels, boundary_markers, page_indexes, and source_text_excerpt are compact, fallible context. They are not resolved hierarchy or parentage.
+- scope_hints are compact possible scope values grouped by statement type. They are retrieval hints, not canonical scope or final hierarchy.
+- candidate description and source_text preserve the source-facing evidence. Use them rather than guessing omitted normalized forms or internal bucket keys.
 
-{focus_instructions}
+## Merge guardrails
+- Apply evidence in this order: runtime sfi_dedup_instructions, visible candidate text and source references, shared context windows, then general dedup heuristics.
+- Follow the runtime instructions whenever they are more specific, intentionally stricter, or define how the curriculum uses repeated organizers, aliases, progression, codes, or source anomalies.
+- Do not merge candidates solely because they appear in the same review set, share a review signal, cite the same table row/header, occur in nearby windows, or have the same canonical value.
+- Same statement_type plus same normalized_statement_code is strong evidence only when visible text and source context are compatible.
+- Official codes are not guaranteed globally unique. When same-code candidates are visibly distinct source items, keep them separate and explain the same-code/different-content issue.
+- Do not merge different statement types or normalized statement types unless visible evidence clearly shows duplicate extraction of one source item under inconsistent labels.
+- Repeated organizers or objectives may be distinct under different source scopes. Conversely, visible punctuation, ranges, aliases, or expanded labels may preserve one logical organizer when the runtime instructions say so.
+- Merge no-code candidates only when source-visible text and supplied context support one logical source item.
+- Choose needs_review rather than guessing when the bounded payload is genuinely insufficient.
         """
     )
-
     user_message = dedent(
         f"""Review this bounded SFI deduplication candidate set.
 
@@ -1446,83 +1379,58 @@ def validate_sfi_dedup_response(
         System and user messages for the second-stage SFI dedup validation agent.
     """
 
-    focus_instructions = _build_dedup_review_focus_instructions(review_request)
     request_payload = _build_compact_dedup_review_payload(review_request)
     system_message = dedent(
-        f"""You are a strict Academic Standards SFI deduplication validation and correction agent
-(CHECKER MODE) for a Learning Commons-shaped Knowledge Graph.
+        """You are a strict Academic Standards SFI deduplication validation and correction agent (CHECKER MODE) for a Learning Commons-shaped Knowledge Graph.
 
 You will receive:
 1. The complete bounded dedup review request.
-2. The complete draft `SFIDedupReviewResponse` produced by a first-stage agent.
+2. The complete draft SFIDedupReviewResponse produced by a first-stage agent.
 3. Generic validation rules below.
-4. Curriculum-specific `sfi_deduplication_instructions` in the request payload.
+4. Curriculum-specific sfi_dedup_instructions in the request payload.
 
 ## Task
-Independently determine the correct partition and decision for every supplied candidate.
-Do not assume the draft is correct. Return an `SFIDedupValidationVerdict`.
+Independently determine the correct partition and decision for every supplied candidate. Do not assume the draft is correct. Return an SFIDedupValidationVerdict.
 
-- Set `passed=true` only when the draft requires no material semantic correction.
-- When `passed=false`, identify every material error and return a complete corrected
-  `SFIDedupReviewResponse` in `corrected_response`.
-- The corrected response replaces the draft in the pipeline. It must be complete and
-  self-contained, not a patch or list of edits.
-- You may regroup candidates, change decisions, change reasons and confidence values,
-  or replace conflict/needs_review outcomes when the source evidence and runtime policy
-  require it.
+- Set passed=true only when the draft requires no material semantic correction.
+- When passed=false, identify every material error and return a complete corrected SFIDedupReviewResponse in corrected_response.
+- The corrected response replaces the draft. It must be complete and self-contained, not a patch.
+- You may regroup candidates, change decisions, reasons, and confidence values, or replace conflict/needs_review outcomes when the evidence and runtime policy require it.
 - Do not invent, omit, or duplicate candidate IDs.
 
-## Authority and semantic policy
-- The runtime `sfi_deduplication_instructions` are authoritative for curriculum-specific
-  identity, organizer scope, aliases, repeated headings, progression, codes, and known
-  source anomalies.
-- Apply those runtime instructions before generic duplicate heuristics.
-- Keep curriculum-specific exceptions in the runtime policy. Do not introduce a rule
-  merely because it would be convenient for this one review set.
-- Generic evidence fields are fallible retrieval context, not final semantic truth.
-- A canonical controlled value is meaningful evidence according to the runtime policy;
-  do not discard it merely because visible wording contains punctuation, qualifiers,
-  ranges, aliases, or expanded labels. Conversely, do not merge solely because a
-  canonical value matches when the runtime policy or visible scope requires separation.
+## Authority and compact evidence model
+- Runtime sfi_dedup_instructions are authoritative for curriculum-specific identity, organizer scope, aliases, progression, codes, repeated headings, and known source anomalies.
+- review_signals are candidate-subset retrieval evidence. Check the candidate_ids on every signal; a signal applying to one subset must not be generalized to the whole review set.
+- A same_normalized_source_text signal records exact internal normalized equality for its listed subset only. It is not a universal merge rule.
+- context_windows are shared nearby windows. Use each candidate's context_window_indexes to locate the context relevant to that candidate.
+- context_items contain only runtime-configured context-bearing statement types. Their absence is not proof that no other source material exists.
+- scope_hints, section_labels, boundary_markers, page indexes, and excerpts are compact and fallible. They are not final hierarchy or parentage.
+- Candidate description, source_text, code fields, statement types, table indexes, canonical values, and runtime instructions are the primary evidence.
+- A canonical controlled value is meaningful according to the runtime policy. Do not discard it solely because visible wording contains punctuation, qualifiers, ranges, aliases, or expanded labels. Do not merge solely because it matches when scope or runtime policy requires separation.
 
 ## Independent audit procedure
-1. Reconstruct the candidate set from the request and verify the source role, wording,
-   code evidence, canonical values, grade or stage evidence, parent-context evidence,
-   table references, source neighborhoods, and review reasons.
-2. Independently create the best complete candidate partition before comparing it with
-   the draft.
-3. Compare every draft group with that independent partition. Check for under-merging,
-   over-merging, incorrect singleton decisions, unsupported conflicts, and unjustified
-   needs_review outcomes.
-4. Check each reason against the visible evidence and runtime instructions. A fluent
-   explanation does not make a contradictory decision valid.
-5. Check whether a textual difference changes logical identity under the runtime policy
-   or merely preserves a source-visible variant that should remain in merged provenance.
-6. Check same-code/different-content cases carefully. Codes are evidence, not globally
-   unique identity keys. Apply the runtime policy and visible content rather than a
-   universal curriculum-specific assumption.
-7. Use `needs_review` only when the bounded evidence is genuinely insufficient after
-   applying the runtime instructions.
+1. Reconstruct the candidate set and map every review signal to exactly its listed candidate subset.
+2. For each candidate, inspect its own text, code/type fields, scope_hints, table references, and referenced context windows.
+3. Independently create the best complete candidate partition before comparing it with the draft.
+4. Check for under-merging, over-merging, incorrect singleton decisions, unsupported conflicts, and unjustified needs_review outcomes.
+5. Verify every draft reason against visible evidence and runtime instructions. A fluent explanation does not make a contradictory decision valid.
+6. Determine whether textual differences change logical identity under the runtime policy or merely preserve source-visible variants within one merged item's provenance.
+7. Check same-code/different-content cases carefully. Codes are evidence, not guaranteed globally unique identities.
+8. Use needs_review only when the bounded evidence remains genuinely insufficient after applying the runtime instructions.
 
 ## Universal response contract
-- Copy `review_set_id` exactly from the request.
+- Copy review_set_id exactly from the request.
 - Cover every input registry_candidate_id exactly once.
 - Include no candidate ID outside the request.
 - Every decision group must have a source-grounded reason.
-- Do not infer hierarchy relationships or create final StandardsFrameworkItem IDs.
-- Do not choose final canonical KG text.
-
-{focus_instructions}
+- Do not infer hierarchy relationships, create final StandardsFrameworkItem IDs, or choose final canonical KG text.
 
 ## Validation verdict contract
-- `issues` should contain only meaningful findings. Use severity `error` for anything
-  requiring a corrected response and `warning` only for non-blocking observations.
-- `passed=true`: `corrected_response` must be null and no issue may have severity
-  `error`.
-- `passed=false`: include at least one error issue and provide a complete corrected
-  response that resolves all error issues.
-- Copy `review_set_id` exactly into the verdict and any corrected response.
-- Explain the overall decision in a concise, source-grounded `rationale`.
+- issues should contain only meaningful findings. Use severity error for anything requiring a corrected response and warning only for non-blocking observations.
+- passed=true: corrected_response must be null and no issue may have severity error.
+- passed=false: include at least one error issue and provide a complete corrected response resolving all errors.
+- Copy review_set_id exactly into the verdict and any corrected response.
+- Explain the overall decision in a concise, source-grounded rationale.
 - Do not return prose outside the structured verdict.
         """
     )

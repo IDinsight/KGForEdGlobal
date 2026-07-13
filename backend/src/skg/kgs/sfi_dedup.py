@@ -23,9 +23,11 @@ from pydantic import BaseModel
 # Package Library
 from skg.kgs.llm import KGUsageTracker, review_sfi_dedup_set
 from skg.kgs.schemas import (
+    SFIDedupContextWindow,
     SFIDedupDecision,
     SFIDedupReviewCandidate,
     SFIDedupReviewRequest,
+    SFIDedupReviewSignal,
     SFIDedupReviewResponse,
     SFIMergeDecision,
     SFIMergeGroup,
@@ -185,6 +187,211 @@ def _assert_model_payload_equal(
         raise ValueError(
             f"{artifact_label} does not match the current planned artifact payload."
         )
+
+
+def _build_component_review_signals(
+    *, component_candidate_ids: set[str], sfi_candidate_registry: SFIRegistryArtifact
+) -> list[SFIDedupReviewSignal]:
+    """Build explicit candidate-subset signals for one connected review component.
+
+    Internal hashes, bucket keys, warning IDs, segment UUIDs, and source-context keys
+    remain implementation details. The prompt receives only human-readable signal
+    categories, applicable candidate subsets, and optional source-facing values.
+
+    Parameters
+    ----------
+    component_candidate_ids
+        Candidate IDs in the bounded connected component.
+    sfi_candidate_registry
+        Registry artifact containing candidates, buckets, and warnings.
+
+    Returns
+    -------
+    list[SFIDedupReviewSignal]
+        Deterministically ordered review signals applying to at least two candidates.
+    """
+
+    candidates = [
+        candidate
+        for candidate in sfi_candidate_registry.candidates
+        if candidate.registry_candidate_id in component_candidate_ids
+    ]
+    signals: list[SFIDedupReviewSignal] = []
+    canonical_groups: dict[tuple[str, str, str], list[SFIRegistryCandidate]] = (
+        defaultdict(list)
+    )
+    normalized_source_groups: dict[tuple[str, str, str], list[SFIRegistryCandidate]] = (
+        defaultdict(list)
+    )
+
+    for candidate in candidates:
+        if candidate.canonical_statement_value_key:
+            canonical_groups[
+                (
+                    candidate.normalized_statement_type,
+                    candidate.statement_type,
+                    candidate.canonical_statement_value_key,
+                )
+            ].append(candidate)
+
+        if candidate.normalized_source_text:
+            normalized_source_groups[
+                (
+                    candidate.normalized_statement_type,
+                    candidate.statement_type,
+                    candidate.normalized_source_text,
+                )
+            ].append(candidate)
+
+    for grouped_candidates in canonical_groups.values():
+        if len(grouped_candidates) < 2:
+            continue
+
+        candidate_ids = sorted(
+            candidate.registry_candidate_id for candidate in grouped_candidates
+        )
+        canonical_values = unique_nonempty(
+            candidate.canonical_statement_value for candidate in grouped_candidates
+        )
+        statement_types = unique_nonempty(
+            candidate.statement_type for candidate in grouped_candidates
+        )
+        value = canonical_values[0] if len(canonical_values) == 1 else None
+        statement_type = statement_types[0] if len(statement_types) == 1 else "item"
+        signals.append(
+            SFIDedupReviewSignal(
+                candidate_ids=candidate_ids,
+                signal_type="same_canonical_statement_value",
+                summary=(
+                    f"These {statement_type} candidates map to the same configured "
+                    f"canonical statement value."
+                ),
+                value=value,
+            )
+        )
+
+    for grouped_candidates in normalized_source_groups.values():
+        if len(grouped_candidates) < 2:
+            continue
+
+        signals.append(
+            SFIDedupReviewSignal(
+                candidate_ids=sorted(
+                    candidate.registry_candidate_id for candidate in grouped_candidates
+                ),
+                signal_type="same_normalized_source_text",
+                summary=(
+                    "These candidates have identical internally normalized source "
+                    "text. The original source_text fields remain authoritative."
+                ),
+                value=None,
+            )
+        )
+
+    bucket_signal_types = {
+        "code": "same_code_bucket",
+        "description_text": "same_description_text_bucket",
+        "source_text": "same_source_text_bucket",
+    }
+
+    for bucket in sfi_candidate_registry.duplicate_buckets:
+        candidate_ids = sorted(
+            component_candidate_ids.intersection(bucket.registry_candidate_ids)
+        )
+
+        if len(candidate_ids) < 2:
+            continue
+
+        signals.append(
+            SFIDedupReviewSignal(
+                candidate_ids=candidate_ids,
+                signal_type=bucket_signal_types[bucket.bucket_type],
+                summary=(
+                    f"The registry placed these candidates in the same "
+                    f"{bucket.bucket_type.replace('_', ' ')} review bucket "
+                    f"({bucket.evidence_strength.replace('_', ' ')})."
+                ),
+                value=None,
+            )
+        )
+
+    for warning in sfi_candidate_registry.warnings:
+        candidate_ids = sorted(
+            component_candidate_ids.intersection(warning.registry_candidate_ids)
+        )
+
+        if len(candidate_ids) < 2:
+            continue
+
+        signals.append(
+            SFIDedupReviewSignal(
+                candidate_ids=candidate_ids,
+                signal_type="registry_warning",
+                summary=warning.message,
+                value=warning.warning_type,
+            )
+        )
+
+    provenance_groups: dict[tuple[str, str, str, int], list[str]] = defaultdict(list)
+
+    for candidate in candidates:
+        for source_segment_id in candidate.source_segment_ids:
+            for row_index in candidate.table_row_indexes:
+                provenance_groups[
+                    (
+                        "shared_table_row",
+                        candidate.statement_type,
+                        source_segment_id,
+                        row_index,
+                    )
+                ].append(candidate.registry_candidate_id)
+
+            for header_index in candidate.table_header_indexes:
+                provenance_groups[
+                    (
+                        "shared_table_header",
+                        candidate.statement_type,
+                        source_segment_id,
+                        header_index,
+                    )
+                ].append(candidate.registry_candidate_id)
+
+    for (
+        signal_type,
+        _statement_type,
+        _source_segment_id,
+        source_index,
+    ), candidate_ids_raw in sorted(provenance_groups.items()):
+        candidate_ids = sorted(set(candidate_ids_raw))
+
+        if len(candidate_ids) < 2:
+            continue
+
+        source_label = "row" if signal_type == "shared_table_row" else "header"
+        signals.append(
+            SFIDedupReviewSignal(
+                candidate_ids=candidate_ids,
+                signal_type=signal_type,
+                summary=(
+                    f"These candidates cite the same source table {source_label} "
+                    f"within one source table segment."
+                ),
+                value=f"{source_label}_index={source_index}",
+            )
+        )
+
+    signals_by_key: dict[tuple[object, ...], SFIDedupReviewSignal] = {}
+
+    for signal in signals:
+        key = (
+            tuple(signal.candidate_ids),
+            signal.signal_type,
+            signal.summary,
+            signal.value,
+        )
+        signals_by_key[key] = signal
+
+    return [signals_by_key[key] for key in sorted(signals_by_key)]
 
 
 def _build_current_merge_groups(
@@ -533,7 +740,6 @@ def _build_merge_group(
             {
                 "canonical_statement_value": candidate.canonical_statement_value,
                 "canonical_statement_value_key": candidate.canonical_statement_value_key,
-                "local_source_neighborhood": candidate.local_source_neighborhood,
                 "registry_candidate_id": candidate.registry_candidate_id,
                 "source_context_key": candidate.source_context_key,
                 "source_context_labels": candidate.source_context_labels,
@@ -888,173 +1094,111 @@ def _build_review_requests(
     *,
     components: Sequence[_ReviewComponent],
     kg_config: CreateKGConfig,
+    sfi_candidate_registry: SFIRegistryArtifact,
     sfi_candidates_by_id: dict[str, SFIRegistryCandidate],
 ) -> tuple[list[SFIDedupReviewRequest], list[_ReviewComponent]]:
-    """Build LLM review requests and carry unresolved components forward.
+    """Build compact producer/checker requests and carry unresolved components forward.
 
-    This function converts bounded `_ReviewComponents` into the actual payloads that
-    will be sent to the dedup LLM. At this point, the pipeline has already decided
-    which candidates should be reviewed together and whether the set is small/safe
-    enough for LLM review. This function does not create new review evidence and does
-    not make merge decisions. It simply separates components into two groups:
-
-    1. LLM-reviewable components
-        needs_review_without_llm=False -> converted into SFIDedupReviewRequest.
-
-    2. Unresolved components
-        needs_review_without_llm=True -> carried forward unchanged in
-        unresolved_components, so later code can emit needs_review merge groups without
-        calling the LLM.
-
-    The candidate payload sent to the LLM is intentionally compact. It includes
-    registry identity, statement type, code fields, description/source text, normalized
-    text keys, source segment IDs, window references, and table row/header indexes. It
-    does not include the full registry, full extraction window, DocumentIR, final SFI
-    IDs, hierarchy, or canonical KG text.
-
-    Examples
-    --------
-
-    1. A reviewable component becomes one LLM review request. For example, an input
-    component like:
-
-    _ReviewComponent(
-        candidate_ids=("candidate_a", "candidate_b"),
-        needs_review_without_llm=False,
-        review_reasons=("duplicate_bucket:code:bucket_123:strong_signal",),
-    )
-
-    is converted into one `SFIDedupReviewRequest`. The request contains a deterministic
-    `review_set_id` derived from the sorted candidate IDs, the deduplication
-    instructions from the KG config, the bilingual pair policy, the review reasons, and
-    compact candidate records copied from the registry:
-
-    SFIDedupReviewRequest(
-        bilingual_pair_policy=kg_config.academic_standards.bilingual_pair_policy,
-        candidates=[
-            SFIDedupReviewCandidate(... registry_candidate_id="candidate_a" ...),
-            SFIDedupReviewCandidate(... registry_candidate_id="candidate_b" ...),
-        ],
-        review_focus="general",
-        review_reasons=("duplicate_bucket:code:bucket_123:strong_signal",),
-        review_set_id="dedupe_review_<stable_hash>",
-        sfi_deduplication_instructions=(
-            kg_config.academic_standards.sfi_deduplication_instructions
-        ),
-    )
-
-    The request is only a bounded review payload. It does not tell the LLM to merge the
-    candidates; it asks the LLM to classify the candidates into merge, keep-separate,
-    conflict, or needs-review groups.
-
-    2. A component marked `needs_review_without_llm=True` is not converted into an LLM
-    request. For example:
-
-    _ReviewComponent(
-        candidate_ids=("candidate_z",),
-        needs_review_without_llm=True,
-        review_reasons=(
-            "duplicate_bucket:source_text:bucket_xyz:weak_signal",
-            "oversized_component_singleton_split_residue_needs_review:"
-            "('Objectif spécifique', '', ('segment_9',), 22)",
-        ),
-    )
-
-    is appended to `unresolved_components` and returned separately. Later,
-    `_build_merge_groups_from_responses()` converts it into a `needs_review` merge
-    group without making an LLM call.
+    Each request contains compact candidate-local fields, explicit candidate-subset
+    retrieval signals, and one de-duplicated request-level pool of nearby context
+    windows. Internal normalized text, source UUIDs, opaque bucket keys, full scope
+    evidence, and repeated candidate neighborhoods are not exposed to the LLM.
 
     Parameters
     ----------
     components
         Bounded connected review components.
     kg_config
-        Runtime KG configuration carrying dedup instructions.
+        Runtime KG configuration carrying dedup instructions and context radius.
+    sfi_candidate_registry
+        Registry artifact containing shared context windows and review evidence.
     sfi_candidates_by_id
-        Lookup of registry candidates by temporary registry candidate ID.
+        Registry candidates keyed by temporary candidate ID.
 
     Returns
     -------
     tuple[list[SFIDedupReviewRequest], list[_ReviewComponent]]
-        Review requests to send to the LLM and unresolved components to mark
-        needs_review without an LLM call.
+        LLM review requests and components preserved as unresolved without an LLM call.
     """
 
     review_requests: list[SFIDedupReviewRequest] = []
-    textual_reason_prefixes = (
-        "duplicate_bucket:description_text:",
-        "duplicate_bucket:source_text:",
-        "registry_warning:same_text_",
-        "same_canonical_statement_value:",
-        "same_normalized_source_text:",
-    )
     unresolved_components: list[_ReviewComponent] = []
+    context_window_radius = kg_config.academic_standards.sfi_dedup_context_window_radius
 
     for component in components:
         if component.needs_review_without_llm:
             unresolved_components.append(component)
             continue
 
-        # Resolve candidates for this component.
         component_candidates = [
             sfi_candidates_by_id[candidate_id]
             for candidate_id in component.candidate_ids
         ]
-
-        # Generate deterministic review set ID.
         candidate_ids = sorted(
             candidate.registry_candidate_id for candidate in component_candidates
         )
         review_set_id = f"dedupe_review_{hashlib.sha256(
-            '|'.join(str(value) for value in candidate_ids).encode('utf-8')
+            '|'.join(candidate_ids).encode('utf-8')
         ).hexdigest()[:16]}"
+        candidate_context_window_indexes, context_windows = (
+            _select_request_context_windows(
+                component_candidates=component_candidates,
+                context_window_radius=context_window_radius,
+                dedup_context_windows=sfi_candidate_registry.dedup_context_windows,
+            )
+        )
+        review_signals = _build_component_review_signals(
+            component_candidate_ids=set(candidate_ids),
+            sfi_candidate_registry=sfi_candidate_registry,
+        )
+
+        if not review_signals:
+            review_signals = [
+                SFIDedupReviewSignal(
+                    candidate_ids=candidate_ids,
+                    signal_type="transitive_component_subset",
+                    summary=(
+                        "These candidates remain in one bounded subset of a connected "
+                        "review component. Their retrieval relationship may be "
+                        "transitive rather than pairwise."
+                    ),
+                    value=None,
+                )
+            ]
 
         review_requests.append(
             SFIDedupReviewRequest(
-                bilingual_pair_policy=kg_config.academic_standards.bilingual_pair_policy,
+                bilingual_pair_policy=(
+                    kg_config.academic_standards.bilingual_pair_policy
+                ),
                 candidates=[
                     SFIDedupReviewCandidate(
-                        canonical_statement_value=candidate.canonical_statement_value,
-                        canonical_statement_value_key=candidate.canonical_statement_value_key,
-                        code_bucket_key=candidate.code_bucket_key,
+                        canonical_statement_value=(candidate.canonical_statement_value),
+                        context_window_indexes=(
+                            candidate_context_window_indexes[
+                                candidate.registry_candidate_id
+                            ]
+                        ),
                         description=candidate.description,
                         language=candidate.language,
-                        local_source_neighborhood=candidate.local_source_neighborhood,
-                        normalized_description=candidate.normalized_description,
-                        normalized_source_text=candidate.normalized_source_text,
-                        normalized_statement_code=candidate.normalized_statement_code,
-                        normalized_statement_type=candidate.normalized_statement_type,
+                        normalized_statement_code=(candidate.normalized_statement_code),
+                        normalized_statement_type=(candidate.normalized_statement_type),
                         registry_candidate_id=candidate.registry_candidate_id,
-                        scope_evidence=candidate.scope_evidence,
-                        scope_hypotheses=candidate.scope_hypotheses,
-                        scope_resolution_status=candidate.scope_resolution_status,
-                        source_context_key=candidate.source_context_key,
-                        source_context_labels=candidate.source_context_labels,
-                        source_segment_ids=candidate.source_segment_ids,
+                        scope_hints=_build_scope_hints(candidate),
                         source_text=candidate.source_text,
-                        source_text_bucket_key=candidate.source_text_bucket_key,
                         statement_code=candidate.statement_code,
                         statement_type=candidate.statement_type,
                         table_header_indexes=candidate.table_header_indexes,
                         table_row_indexes=candidate.table_row_indexes,
-                        text_bucket_key=candidate.text_bucket_key,
-                        window_id=candidate.window_id,
                         window_index=candidate.window_index,
                     )
                     for candidate in component_candidates
                 ],
-                review_focus=(
-                    "textual_similarity"
-                    if any(
-                        reason.startswith(textual_reason_prefixes)
-                        for reason in component.review_reasons
-                    )
-                    else "general"
-                ),
-                review_reasons=sorted(set(component.review_reasons)),
+                context_windows=context_windows,
                 review_set_id=review_set_id,
-                sfi_deduplication_instructions=(
-                    kg_config.academic_standards.sfi_deduplication_instructions
+                review_signals=review_signals,
+                sfi_dedup_instructions=(
+                    kg_config.academic_standards.sfi_dedup_instructions
                 ),
             )
         )
@@ -1204,6 +1348,38 @@ def _build_same_normalized_source_text_edges(
         )
 
     return edges
+
+
+def _build_scope_hints(candidate: SFIRegistryCandidate) -> dict[str, list[str]]:
+    """Build compact, non-authoritative scope hints for one review candidate.
+
+    Parameters
+    ----------
+    candidate
+        Registry candidate carrying possible scope hypotheses.
+
+    Returns
+    -------
+    dict[str, list[str]]
+        Unique possible scope values grouped by source-facing statement type.
+    """
+
+    values_by_statement_type: dict[str, list[str]] = defaultdict(list)
+
+    for hypothesis in candidate.scope_hypotheses:
+        statement_type = str(hypothesis.get("hypothesis_statement_type") or "").strip()
+        value = str(hypothesis.get("hypothesis_value") or "").strip()
+
+        if not statement_type or not value:
+            continue
+
+        values_by_statement_type[statement_type].append(value)
+
+    return {
+        statement_type: unique_nonempty(values)
+        for statement_type, values in sorted(values_by_statement_type.items())
+        if unique_nonempty(values)
+    }
 
 
 def _build_singleton_merge_groups(
@@ -1984,6 +2160,57 @@ def _run_dedup_reviews(
     return review_responses
 
 
+def _select_request_context_windows(
+    *,
+    component_candidates: Sequence[SFIRegistryCandidate],
+    context_window_radius: int,
+    dedup_context_windows: Sequence[SFIDedupContextWindow],
+) -> tuple[dict[str, list[int]], list[SFIDedupContextWindow]]:
+    """Select shared compact context windows for one dedup request.
+
+    Parameters
+    ----------
+    component_candidates
+        Registry candidates included in the review request.
+    context_window_radius
+        Number of windows before and after each candidate window to include.
+    dedup_context_windows
+        Shared compact registry-level source-window pool.
+
+    Returns
+    -------
+    tuple[dict[str, list[int]], list[SFIDedupContextWindow]]
+        Candidate-to-window references and the de-duplicated request-level windows.
+    """
+
+    windows_by_index = {
+        context_window.window_index: context_window
+        for context_window in dedup_context_windows
+    }
+    candidate_window_indexes: dict[str, list[int]] = {}
+    selected_window_indexes: set[int] = set()
+
+    for candidate in component_candidates:
+        context_window_indexes = [
+            window_index
+            for window_index in range(
+                candidate.window_index - context_window_radius,
+                candidate.window_index + context_window_radius + 1,
+            )
+            if window_index in windows_by_index
+        ]
+        candidate_window_indexes[candidate.registry_candidate_id] = (
+            context_window_indexes
+        )
+        selected_window_indexes.update(context_window_indexes)
+
+    selected_context_windows = [
+        windows_by_index[window_index]
+        for window_index in sorted(selected_window_indexes)
+    ]
+    return candidate_window_indexes, selected_context_windows
+
+
 def _split_and_bound_components(
     *,
     components: Sequence[_ReviewComponent],
@@ -2560,6 +2787,7 @@ def merge_sfi_candidates(
     review_requests, unresolved_components = _build_review_requests(
         components=bounded_components,
         kg_config=kg_config,
+        sfi_candidate_registry=sfi_candidate_registry,
         sfi_candidates_by_id=sfi_candidates_by_id,
     )
 
