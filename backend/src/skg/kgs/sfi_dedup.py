@@ -593,9 +593,6 @@ def _build_merge_group(
                 "registry_candidate_id": candidate.registry_candidate_id,
                 "source_context_key": candidate.source_context_key,
                 "source_context_labels": candidate.source_context_labels,
-                "scope_evidence": candidate.scope_evidence,
-                "scope_hypotheses": candidate.scope_hypotheses,
-                "scope_resolution_status": candidate.scope_resolution_status,
                 "source_segment_ids": candidate.source_segment_ids,
                 "table_header_indexes": candidate.table_header_indexes,
                 "table_row_indexes": candidate.table_row_indexes,
@@ -951,8 +948,8 @@ def _build_review_requests(
 
     Each request contains compact candidate-local fields, explicit candidate-subset
     retrieval signals, and one de-duplicated request-level pool of nearby context
-    windows. Internal normalized text, source UUIDs, opaque bucket keys, full scope
-    evidence, and repeated candidate neighborhoods are not exposed to the LLM.
+    windows. Internal normalized text, source UUIDs, opaque bucket keys, full
+    provenance, and repeated candidate neighborhoods are not exposed to the LLM.
 
     Parameters
     ----------
@@ -1034,7 +1031,6 @@ def _build_review_requests(
                         normalized_statement_code=(candidate.normalized_statement_code),
                         normalized_statement_type=(candidate.normalized_statement_type),
                         registry_candidate_id=candidate.registry_candidate_id,
-                        scope_hints=_build_scope_hints(candidate),
                         source_text=candidate.source_text,
                         statement_code=candidate.statement_code,
                         statement_type=candidate.statement_type,
@@ -1198,38 +1194,6 @@ def _build_same_normalized_source_text_edges(
         )
 
     return edges
-
-
-def _build_scope_hints(candidate: SFIRegistryCandidate) -> dict[str, list[str]]:
-    """Build compact nearby controlled-value hints for one review candidate.
-
-    Parameters
-    ----------
-    candidate
-        Registry candidate carrying fallible nearby controlled-value hypotheses.
-
-    Returns
-    -------
-    dict[str, list[str]]
-        Unique nearby controlled values grouped by source-facing statement type.
-    """
-
-    values_by_statement_type: dict[str, list[str]] = defaultdict(list)
-
-    for hypothesis in candidate.scope_hypotheses:
-        statement_type = str(hypothesis.get("hypothesis_statement_type") or "").strip()
-        value = str(hypothesis.get("hypothesis_value") or "").strip()
-
-        if not statement_type or not value:
-            continue
-
-        values_by_statement_type[statement_type].append(value)
-
-    return {
-        statement_type: unique_nonempty(values)
-        for statement_type, values in sorted(values_by_statement_type.items())
-        if unique_nonempty(values)
-    }
 
 
 def _build_singleton_merge_groups(

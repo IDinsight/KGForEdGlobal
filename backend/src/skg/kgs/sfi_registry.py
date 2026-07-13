@@ -3,7 +3,7 @@ candidates.
 
 It flattens validated window-local SFI extraction results into document-level candidate
 records, computes lightweight code/text keys, emits possible duplicate buckets for
-later LLM-assisted merge review, and packages fallible nearby controlled-value context
+later LLM-assisted merge review, and packages compact shared source-window context
 without claiming inferred hierarchy as canonical.
 """
 
@@ -346,94 +346,6 @@ def _build_duplicate_buckets(
     return buckets
 
 
-def _build_nearby_controlled_value_evidence(
-    *,
-    candidate: SFIRegistryCandidate,
-    candidate_index: int,
-    context_window_radius: int,
-    ordered_candidates: Sequence[SFIRegistryCandidate],
-) -> list[dict[str, Any]]:
-    """Collect fallible nearby controlled-value context for one candidate.
-
-    The records produced here are prompt-context hints for later LLM review. They do
-    not assign parentage, hierarchy, scope policy, or final canonical identity. Both
-    preceding and following controlled values of other statement types are included so
-    irregular reading order, page headers, continuations, and layout-specific
-    extraction order remain visible without Python choosing one relationship as truth.
-
-    Parameters
-    ----------
-    candidate
-        Registry candidate whose nearby controlled-value context is being described.
-    candidate_index
-        Source-order index for `candidate` in `ordered_candidates`.
-    context_window_radius
-        Maximum absolute extraction-window distance used for generic nearby
-        controlled-value prompt hints.
-    ordered_candidates
-        Registry candidates in source order.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        Nearby controlled-value evidence records sorted by proximity.
-    """
-
-    evidence: list[dict[str, Any]] = []
-
-    for other_index, other_candidate in enumerate(ordered_candidates):
-        if other_index == candidate_index:
-            continue
-
-        if other_candidate.statement_type == candidate.statement_type:
-            continue
-
-        if not other_candidate.canonical_statement_value_key:
-            continue
-
-        distance_windows = other_candidate.window_index - candidate.window_index
-
-        if abs(distance_windows) > context_window_radius:
-            continue
-
-        direction = "following" if other_index > candidate_index else "preceding"
-        same_source_context = (
-            other_candidate.source_context_key == candidate.source_context_key
-        )
-        shared_source_segments = sorted(
-            set(candidate.source_segment_ids).intersection(
-                other_candidate.source_segment_ids
-            )
-        )
-
-        evidence.append(
-            {
-                "candidate_index_distance": other_index - candidate_index,
-                "direction": direction,
-                "distance_windows": distance_windows,
-                "evidence_kind": "nearby_controlled_value",
-                "registry_candidate_id": other_candidate.registry_candidate_id,
-                "same_source_context": same_source_context,
-                "shared_source_segment_ids": shared_source_segments,
-                "statement_type": other_candidate.statement_type,
-                "value": other_candidate.canonical_statement_value,
-                "value_key": other_candidate.canonical_statement_value_key,
-                "window_index": other_candidate.window_index,
-            }
-        )
-
-    evidence.sort(
-        key=lambda item: (
-            abs(int(item["distance_windows"])),
-            abs(int(item["candidate_index_distance"])),
-            str(item["direction"]),
-            str(item["statement_type"]),
-            str(item["registry_candidate_id"]),
-        )
-    )
-    return evidence[:12]
-
-
 def _build_registry_candidate(
     *,
     candidate: SFICandidate,
@@ -699,113 +611,6 @@ def _build_registry_warnings(
     ]
 
 
-def _build_scope_evidence_for_candidate(
-    *,
-    candidate: SFIRegistryCandidate,
-    candidate_index: int,
-    context_window_radius: int,
-    ordered_candidates: Sequence[SFIRegistryCandidate],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Build generic nearby controlled-value evidence and hints for one candidate.
-
-    Python intentionally does not resolve hierarchy or merge identity here. The
-    returned evidence records describe nearby canonical controlled values of other
-    statement types, and the returned hypotheses are compact prompt hints derived from
-    those records. Later LLM-assisted stages must treat both as fallible context.
-
-    Parameters
-    ----------
-    candidate
-        Registry candidate to enrich with nearby controlled-value context.
-    candidate_index
-        Source-order index for `candidate` in `ordered_candidates`.
-    context_window_radius
-        Maximum absolute extraction-window distance used for generic nearby
-        controlled-value prompt hints.
-    ordered_candidates
-        Registry candidates in source order.
-
-    Returns
-    -------
-    tuple[list[dict[str, Any]], list[dict[str, Any]]]
-        Nearby controlled-value evidence records and compact hypotheses.
-    """
-
-    if not candidate.canonical_statement_value_key:
-        return [], []
-
-    evidence = _build_nearby_controlled_value_evidence(
-        candidate=candidate,
-        candidate_index=candidate_index,
-        context_window_radius=context_window_radius,
-        ordered_candidates=ordered_candidates,
-    )
-    hypotheses: list[dict[str, Any]] = []
-
-    for item in evidence:
-        statement_type = str(item.get("statement_type") or "")
-        value_key = str(item.get("value_key") or "")
-
-        if not statement_type or not value_key:
-            continue
-
-        hypotheses.append(
-            {
-                "distance_windows": item.get("distance_windows"),
-                "evidence_kind": item.get("evidence_kind"),
-                "hypothesis_key": (
-                    f"{_build_scope_part_label(statement_type)}:{value_key}"
-                ),
-                "hypothesis_statement_type": statement_type,
-                "hypothesis_value": item.get("value"),
-                "registry_candidate_id": item.get("registry_candidate_id"),
-            }
-        )
-
-    return _unique_scope_records(evidence), _unique_scope_records(hypotheses)
-
-
-def _build_scope_part_label(statement_type: str) -> str:
-    """Build a generic controlled-value context key from a statement type.
-
-    Parameters
-    ----------
-    statement_type
-        Source-facing statement type label.
-
-    Returns
-    -------
-    str
-        Lowercase, underscore-separated context key label.
-    """
-
-    label = normalize_controlled_value_key(statement_type).replace(" ", "_")
-    return label or "scope"
-
-
-def _build_scope_resolution_status(
-    scope_hypotheses: Sequence[dict[str, Any]],
-) -> str:
-    """Return whether generic nearby controlled-value hints are present.
-
-    The registry does not resolve hierarchy or canonical identity. The status only
-    marks whether a controlled-value candidate has nearby contextual hypotheses that
-    later LLM review may inspect.
-
-    Parameters
-    ----------
-    scope_hypotheses
-        Fallible nearby controlled-value hypotheses for one candidate.
-
-    Returns
-    -------
-    str
-        "unresolved" when contextual hypotheses are present, otherwise "not_applicable".
-    """
-
-    return "unresolved" if scope_hypotheses else "not_applicable"
-
-
 def _build_statement_value_policies(
     kg_config: CreateKGConfig,
 ) -> dict[str, _StatementValuePolicy]:
@@ -966,8 +771,7 @@ def _build_text_bucket_key(
     statement type plus visible text as a secondary review signal because official
     code evidence is carried separately. No-code candidates are scoped by deterministic
     source context and visible text. Controlled-value matches are exposed separately as
-    fallible scope evidence and same-canonical-value review edges, not as canonical
-    bucket identity.
+    same-canonical-value review edges, not as canonical bucket identity.
 
     Parameters
     ----------
@@ -1453,35 +1257,6 @@ def _unique_limited(values: Sequence[str], *, limit: int) -> list[str]:
             break
 
     return output
-
-
-def _unique_scope_records(records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Deduplicate JSON-serializable scope evidence records while preserving order.
-
-    Parameters
-    ----------
-    records
-        Scope evidence or hypothesis records.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        Deduplicated records.
-    """
-
-    unique_records: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    for record in records:
-        key = repr(sorted(record.items()))
-
-        if key in seen:
-            continue
-
-        seen.add(key)
-        unique_records.append(record)
-
-    return unique_records
 
 
 def _validate_result_window_alignment(
@@ -1989,58 +1764,6 @@ def _warn_on_text_repeated_within_window(
         )
 
 
-def _with_scope_evidence(
-    *,
-    candidates: Sequence[SFIRegistryCandidate],
-    context_window_radius: int,
-) -> list[SFIRegistryCandidate]:
-    """Return candidates enriched with generic nearby controlled-value context.
-
-    The enrichment packages nearby canonical controlled values and compact hypotheses
-    so later LLM-assisted steps can reason from source-order context without Python
-    making a hierarchy or merge decision. The same radius used for shared dedup context
-    windows is used here because these records are prompt context rather than semantic
-    identity policy.
-
-    Parameters
-    ----------
-    candidates
-        Registry candidates in source order.
-    context_window_radius
-        Maximum absolute extraction-window distance used for generic nearby
-        controlled-value prompt hints.
-
-    Returns
-    -------
-    list[SFIRegistryCandidate]
-        Registry candidates with fallible context evidence and hypotheses attached.
-    """
-
-    ordered_candidates = list(candidates)
-    enriched_candidates: list[SFIRegistryCandidate] = []
-
-    for candidate_index, candidate in enumerate(ordered_candidates):
-        scope_evidence, scope_hypotheses = _build_scope_evidence_for_candidate(
-            candidate=candidate,
-            candidate_index=candidate_index,
-            context_window_radius=context_window_radius,
-            ordered_candidates=ordered_candidates,
-        )
-        enriched_candidates.append(
-            candidate.model_copy(
-                update={
-                    "scope_evidence": scope_evidence,
-                    "scope_hypotheses": scope_hypotheses,
-                    "scope_resolution_status": _build_scope_resolution_status(
-                        scope_hypotheses
-                    ),
-                }
-            )
-        )
-
-    return enriched_candidates
-
-
 def build_candidate_registry(
     *,
     extraction_windows: Sequence[ExtractionWindow],
@@ -2120,12 +1843,6 @@ def build_candidate_registry(
                 )
             )
 
-    candidates = _with_scope_evidence(
-        candidates=candidates,
-        context_window_radius=(
-            kg_config.academic_standards.sfi_dedup_context_window_radius
-        ),
-    )
     dedup_context_windows = _build_dedup_context_windows(
         candidates=candidates,
         extraction_windows=extraction_windows,

@@ -827,10 +827,10 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         default=1,
         description=(
             "Number of extraction windows before and after each reviewed candidate's "
-            "window to use for shared SFI dedup context windows and generic nearby "
-            "controlled-value scope hints. This setting controls prompt context only "
-            "and must not affect candidate identity, review edges, hierarchy, or merge "
-            "identity."
+            "window to include as shared source context for the SFI dedup producer "
+            "and checker. This setting does not change candidate identity, duplicate "
+            "buckets, review signals, or review-component membership, but changing "
+            "the available context may change an LLM dedup decision."
         ),
         ge=0,
     )

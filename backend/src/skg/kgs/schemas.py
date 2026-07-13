@@ -1354,30 +1354,6 @@ class SFIRegistryCandidate(BaseSchema):
         ),
         min_length=1,
     )
-    scope_evidence: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description=(
-            "Deterministic nearby controlled-value context that may help later LLM "
-            "stages interpret a candidate. These records are prompt hints, not "
-            "authoritative hierarchy or merge evidence."
-        ),
-    )
-    scope_hypotheses: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description=(
-            "Possible contextual hypotheses derived from nearby controlled values of "
-            "other statement types. They are intentionally non-canonical and must be "
-            "treated as fallible review hints."
-        ),
-    )
-    scope_resolution_status: Literal["not_applicable", "unresolved"] = Field(
-        default="not_applicable",
-        description=(
-            "Whether the registry found nearby controlled-value hypotheses for the "
-            "candidate. The registry never treats these prompt hints as resolved "
-            "hierarchy or identity."
-        ),
-    )
     source_segment_ids: list[str] = Field(
         description="ExtractionWindow.source_segment_ids for source recovery.",
         min_length=1,
@@ -1562,13 +1538,6 @@ class SFIDedupReviewCandidate(BaseSchema):
         description="Candidate normalized statement type."
     )
     registry_candidate_id: str = Field(description="Temporary registry candidate ID.")
-    scope_hints: dict[str, list[str]] = Field(
-        default_factory=dict,
-        description=(
-            "Compact nearby controlled-value context grouped by statement type. "
-            "These are fallible prompt hints, not resolved hierarchy or identity."
-        ),
-    )
     source_text: str = Field(description="Source-visible evidence text.", min_length=1)
     statement_code: Optional[str] = Field(
         default=None, description="Original statement code, when present."
@@ -1609,37 +1578,6 @@ class SFIDedupReviewCandidate(BaseSchema):
 
         if any(index < 0 for index in cleaned):
             raise ValueError("candidate index lists must be non-negative")
-
-        return cleaned
-
-    @field_validator("scope_hints")
-    @classmethod
-    def clean_scope_hints(cls, v: dict[str, list[str]]) -> dict[str, list[str]]:
-        """Clean compact nearby controlled-value hint labels and values.
-
-        Parameters
-        ----------
-        v
-            Raw scope hints grouped by statement type.
-
-        Returns
-        -------
-        dict[str, list[str]]
-            Cleaned, sorted mapping with blank keys and values removed.
-        """
-
-        cleaned: dict[str, list[str]] = {}
-
-        for statement_type, values in sorted((v or {}).items()):
-            statement_type_clean = str(statement_type or "").strip()
-
-            if not statement_type_clean:
-                continue
-
-            cleaned_values = unique_clean_strings(values)
-
-            if cleaned_values:
-                cleaned[statement_type_clean] = cleaned_values
 
         return cleaned
 
