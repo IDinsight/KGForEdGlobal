@@ -286,6 +286,7 @@ def extract_sfi_candidates_from_windows(
                 logger.info(f"Removed existing SFI extraction artifact: {fp}")
 
         sfi_extraction_results: list[SFIExtractionResult] = []
+
         logger.info(
             f"Starting SFI extraction from scratch because overwrite=True; "
             f"completed_windows=0/{total_windows}."
