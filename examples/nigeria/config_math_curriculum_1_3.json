@@ -58,7 +58,6 @@
 			"max_has_child_section_path_labels": 14,
 			"max_rows_per_table_window": 4,
 			"row_overlap": 1,
-			"sfi_controlled_value_scope_evidence_window_radius": 3,
 			"sfi_dedup_context_statement_types": [],
 			"sfi_dedup_context_window_radius": 3,
 			"sfi_dedup_instructions": "Deduplicate Nigeria Primary 1-3 Mathematics SFI candidates conservatively. Merge candidates only when they represent the same source-visible curriculum item in the same grade/theme/sub-theme/topic scope. This curriculum does not use stable official alphanumeric statement codes for the SFI hierarchy. Do not treat visible topic row numbers, list numbers, roman numerals, bullet numbers, page numbers, examples, or table row ordinals as globally meaningful statement codes or as merge keys. Repeated Grade headings such as PRIMARY ONE, PRIMARY TWO, PRIMARY THREE, and source/OCR punctuation variants such as PRIMARY: THREE should be merged by grade when the visible text and source references indicate the same grade organizer. Repeated Theme and Sub-Theme headings should be merged only within the same grade and curriculum scope; do not merge a repeated Theme/Sub-Theme label across different grades unless the bounded evidence clearly shows duplicate extraction of the same source-visible organizer rather than distinct grade-scoped organizers. Topic labels such as Whole Numbers, Addition, Subtraction, Multiplication, Division, Open Sentences, Money, Length, Time, Weight, Capacity, Area, Data Collection, Fractions, Symmetry, Pictograms, or Shapes recur across grades and sometimes within the same grade; keep them separate unless the source references, grade, theme, sub-theme, and row/table context identify the same topic instance. Performance Objective and Content candidates are often repeated or similar across topics and grades; merge them only when they are duplicate extractions of the same row/cell/list item, adjacent window overlap, or a clear continuation duplicate. Do not merge a Performance Objective with a Content item solely because their wording is similar; statement_type and source role matter. Activities, Teacher/Pupils activities, teaching and learning resources/materials, and evaluation guide text are not SFIs and should not drive merges except as source-context evidence. Same source row/header overlap, same source segment, same window proximity, duplicate buckets, and same normalized text buckets are review signals only, not automatic merge rules. When evidence is insufficient to distinguish repeated no-code labels or similar learning statements, choose keep_separate or needs_review rather than over-merging. For Nigeria heading scope, paired visual headers such as 'THEME: X SUB-THEME: Y' should be interpreted as the active local Theme/Sub-Theme pair for that page or table section; older cumulative section labels from previous pages must not be treated as the active scope. Normalize singular/plural header variants such as Primary Measure/Primary Measures and Secondary Measure/Secondary Measures.",
@@ -106,7 +105,6 @@
 						"Primary: Three",
 						"PRIMARY: THREE"
 					],
-					"controlled_value_scope": "document",
 					"controlled_values": [
 						{
 							"canonical_value": "PRIMARY ONE",
@@ -151,10 +149,6 @@
 						"THEME",
 						"Theme",
 						"theme"
-					],
-					"controlled_value_scope": "nearest_parent_values",
-					"controlled_value_scope_parent_statement_types": [
-						"Grade"
 					],
 					"controlled_values": [
 						{
@@ -223,11 +217,6 @@
 						"SUB THEME",
 						"Sub Theme",
 						"sub theme"
-					],
-					"controlled_value_scope": "nearest_parent_values",
-					"controlled_value_scope_parent_statement_types": [
-						"Grade",
-						"Theme"
 					],
 					"controlled_values": [
 						{

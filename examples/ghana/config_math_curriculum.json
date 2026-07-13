@@ -62,7 +62,6 @@
 			"max_has_child_section_path_labels": 12,
 			"max_rows_per_table_window": 10,
 			"row_overlap": 1,
-			"sfi_controlled_value_scope_evidence_window_radius": 3,
 			"sfi_dedup_context_statement_types": [],
 			"sfi_dedup_context_window_radius": 3,
 			"sfi_dedup_instructions": "Deduplicate Ghana Mathematics Basic 4–6 SFI candidates conservatively. Merge candidates only when they represent the same source-visible curriculum item. Same statement_type plus same normalized official code is strong merge evidence only when the descriptions/source_text are compatible and the source references are the same item, adjacent table-window overlap, or a clear continuation duplicate. Do not treat Ghana official codes as globally unique identity keys: the source contains apparent code reuse, duplication, and numbering anomalies where the same Content Standard or Indicator code is attached to different mathematical statements. Same official code with materially different descriptions, different source rows/segments, or different mathematical content should not be merged. When the bounded evidence shows they are distinct source-visible curriculum items, keep them separate as individual SFIs and preserve same-code/different-content audit evidence for manual review and disambiguated final IDs. Use conflict or needs_review for same-code candidates only when they appear to be competing or incompatible extractions of the same source-visible item, or when the bounded evidence is insufficient to decide whether they are distinct source items. Similar or identical text with different official codes usually represents distinct Ghana curriculum items and should be keep_separate unless the bounded evidence clearly shows duplicate extraction of the same source item. Treat malformed visible codes with spaces, punctuation, or OCR/source numbering issues cautiously: merge only when the intended official code and source item are clear; otherwise choose needs_review. For no-code Grade, Strand, and Sub-Strand groupings, do not merge by label alone. BASIC 4, BASIC 5, and BASIC 6 are grade-scoped organizers; merge case/format variants of the same grade when statement_type=Grade and there is no direct visible evidence that they refer to different grade scopes, but keep different grades separate. Inherited source_context_labels alone should not block same-grade merges because they may be stale or noisy around divider pages, repeated heading blocks, or layout transitions. Strand and Sub-Strand labels such as Number Operations, Fractions, Measurement, Position/Transformation, Data, or repeated local numbers like Strand 1 and Sub-Strand 1 may recur under different grades or hierarchy contexts; merge only when the label, statement_type, and visible source context indicate the same organizer, otherwise keep_separate. Source-row/header overlap, same source segment, same window proximity, duplicate buckets, and same-code buckets are review signals only, not automatic merge rules.",
@@ -99,7 +98,6 @@
 						"basic",
 						"grade"
 					],
-					"controlled_value_scope": "document",
 					"controlled_values": [
 						{
 							"canonical_value": "BASIC 4",
@@ -140,10 +138,6 @@
 					"aliases": [
 						"STRAND",
 						"strand"
-					],
-					"controlled_value_scope": "nearest_parent_values",
-					"controlled_value_scope_parent_statement_types": [
-						"Grade"
 					],
 					"controlled_values": [
 						{
@@ -200,11 +194,6 @@
 						"Substrand",
 						"sub-strand",
 						"substrand"
-					],
-					"controlled_value_scope": "nearest_parent_values",
-					"controlled_value_scope_parent_statement_types": [
-						"Grade",
-						"Strand"
 					],
 					"controlled_values": [
 						{
@@ -383,7 +372,6 @@
 						"content_standard"
 					],
 					"code_type": "content_standard",
-					"controlled_value_scope": "source_context",
 					"controlled_values": [],
 					"description": "Official coded Ghana content standard for Basic 4–6.",
 					"normalized_statement_type": "Standard",
@@ -395,7 +383,6 @@
 						"indicator"
 					],
 					"code_type": "indicator",
-					"controlled_value_scope": "source_context",
 					"controlled_values": [],
 					"description": "Official coded Ghana indicator for Basic 4–6.",
 					"normalized_statement_type": "Standard",
