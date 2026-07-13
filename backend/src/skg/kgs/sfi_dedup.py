@@ -533,6 +533,7 @@ def _build_merge_group(
             {
                 "canonical_statement_value": candidate.canonical_statement_value,
                 "canonical_statement_value_key": candidate.canonical_statement_value_key,
+                "local_source_neighborhood": candidate.local_source_neighborhood,
                 "registry_candidate_id": candidate.registry_candidate_id,
                 "source_context_key": candidate.source_context_key,
                 "source_context_labels": candidate.source_context_labels,
@@ -1010,6 +1011,7 @@ def _build_review_requests(
                         code_bucket_key=candidate.code_bucket_key,
                         description=candidate.description,
                         language=candidate.language,
+                        local_source_neighborhood=candidate.local_source_neighborhood,
                         normalized_description=candidate.normalized_description,
                         normalized_source_text=candidate.normalized_source_text,
                         normalized_statement_code=candidate.normalized_statement_code,
@@ -1113,7 +1115,7 @@ def _build_same_canonical_statement_value_edges(
             (
                 candidate_ids,
                 {
-                    f"same_canonical_statement_value:"
+                    "same_canonical_statement_value:"
                     f"{statement_type}:{normalized_statement_type}:{digest}"
                 },
             )

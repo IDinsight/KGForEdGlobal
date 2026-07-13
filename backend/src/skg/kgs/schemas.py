@@ -1183,6 +1183,14 @@ class SFIRegistryCandidate(BaseSchema):
         description="Original candidate description.", min_length=1
     )
     language: LanguageField = Field(description="Original candidate language tag.")
+    local_source_neighborhood: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Compact nearby extraction-window source evidence for LLM review. "
+            "These records are local source context, not resolved hierarchy, "
+            "parentage, or merge decisions."
+        ),
+    )
     normalized_description: str = Field(
         description="Lightweight normalized candidate description."
     )
@@ -1197,6 +1205,20 @@ class SFIRegistryCandidate(BaseSchema):
     )
     registry_candidate_id: str = Field(
         description="Temporary document-level candidate handle for review and merge."
+    )
+    source_context_key: str = Field(
+        description=(
+            "Deterministic source-derived context key used to scope no-code "
+            "duplicate bucketing and later review."
+        ),
+        min_length=1,
+    )
+    source_context_labels: list[str] = Field(
+        description=(
+            "Human-readable source-derived context labels, such as section path, "
+            "source segment, table header, or table row context."
+        ),
+        min_length=1,
     )
     scope_evidence: list[dict[str, Any]] = Field(
         default_factory=list,
@@ -1217,24 +1239,10 @@ class SFIRegistryCandidate(BaseSchema):
     scope_resolution_status: Literal["not_applicable", "unresolved"] = Field(
         default="not_applicable",
         description=(
-            "Whether SFI registry found candidate-local controlled-value evidence that "
-            "may need later semantic resolution. SFI candidate registry never marks "
-            "inferred hierarchy scope as resolved."
+            "Whether SFI candidate registry found candidate-local controlled-value "
+            "evidence that may need later semantic resolution. SFI candidaate registry "
+            "never marks inferred hierarchy scope as resolved."
         ),
-    )
-    source_context_key: str = Field(
-        description=(
-            "Deterministic source-derived context key used to scope no-code "
-            "duplicate bucketing and later review."
-        ),
-        min_length=1,
-    )
-    source_context_labels: list[str] = Field(
-        description=(
-            "Human-readable source-derived context labels, such as section path, "
-            "source segment, table header, or table row context."
-        ),
-        min_length=1,
     )
     source_segment_ids: list[str] = Field(
         description="ExtractionWindow.source_segment_ids for source recovery.",
@@ -1398,6 +1406,14 @@ class SFIDedupReviewCandidate(BaseSchema):
     )
     description: str = Field(description="Candidate description.", min_length=1)
     language: LanguageField = Field(description="Candidate language tag.")
+    local_source_neighborhood: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Compact nearby extraction-window source evidence copied from the "
+            "registry. Use as local source context for review, not as resolved "
+            "hierarchy or parentage."
+        ),
+    )
     normalized_description: str = Field(
         description="Registry-normalized candidate description."
     )
@@ -1411,6 +1427,14 @@ class SFIDedupReviewCandidate(BaseSchema):
         description="Candidate normalized statement type."
     )
     registry_candidate_id: str = Field(description="Temporary registry candidate ID.")
+    source_context_key: str = Field(
+        description="Deterministic source-derived context key from the registry.",
+        min_length=1,
+    )
+    source_context_labels: list[str] = Field(
+        description="Human-readable source-derived context labels from the registry.",
+        min_length=1,
+    )
     scope_evidence: list[dict[str, Any]] = Field(
         default_factory=list,
         description=(
@@ -1428,14 +1452,6 @@ class SFIDedupReviewCandidate(BaseSchema):
     scope_resolution_status: Literal["not_applicable", "unresolved"] = Field(
         default="not_applicable",
         description="Registry scope evidence status for the candidate.",
-    )
-    source_context_key: str = Field(
-        description="Deterministic source-derived context key from the registry.",
-        min_length=1,
-    )
-    source_context_labels: list[str] = Field(
-        description="Human-readable source-derived context labels from the registry.",
-        min_length=1,
     )
     source_segment_ids: list[str] = Field(
         description="Source segment IDs associated with the candidate.", min_length=1

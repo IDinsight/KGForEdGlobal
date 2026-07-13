@@ -177,6 +177,83 @@ def _build_canonical_statement_value(
     return None, None
 
 
+def _build_compact_source_provenance(
+    source_provenance: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build compact page/source provenance records for neighborhood evidence.
+
+    Parameters
+    ----------
+    source_provenance
+        Raw provenance records from an extraction window.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Compact provenance records with stable source-location keys only.
+    """
+
+    compact_records: list[dict[str, Any]] = []
+    keep_keys = (
+        "boundary",
+        "item_addr",
+        "item_index",
+        "kind",
+        "local_code",
+        "page_index",
+        "repeats_header",
+    )
+
+    for record in source_provenance:
+        compact_record = {
+            key: record.get(key) for key in keep_keys if record.get(key) is not None
+        }
+
+        if "bbox" in record and isinstance(record["bbox"], list):
+            compact_record["bbox"] = record["bbox"][:4]
+
+        if compact_record:
+            compact_records.append(compact_record)
+
+    return compact_records
+
+
+def _build_compact_source_section_path(
+    source_section_path: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build compact section-path records for neighborhood evidence.
+
+    Parameters
+    ----------
+    source_section_path
+        Raw source section-path records from an extraction window.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Compact section-path records preserving visible labels and source positions.
+    """
+
+    compact_records: list[dict[str, Any]] = []
+
+    for record in source_section_path[-8:]:
+        text = str(record.get("text") or "").strip()
+
+        if not text:
+            continue
+
+        compact_record = {
+            "item_index": record.get("item_index"),
+            "page_index": record.get("page_index"),
+            "text": _truncate_context_label(text),
+        }
+        compact_records.append(
+            {key: value for key, value in compact_record.items() if value is not None}
+        )
+
+    return compact_records
+
+
 def _build_duplicate_buckets(
     candidates: Sequence[SFIRegistryCandidate],
 ) -> list[SFIRegistryDuplicateBucket]:
@@ -247,6 +324,78 @@ def _build_duplicate_buckets(
     return buckets
 
 
+def _build_local_source_neighborhood(
+    *,
+    candidate: SFIRegistryCandidate,
+    extraction_windows: Sequence[ExtractionWindow],
+    lookaround_window_count: int,
+    sfi_extraction_results: Sequence[SFIExtractionResult],
+) -> list[dict[str, Any]]:
+    """Build local extraction-window context around one registry candidate.
+
+    The returned records are source-neighborhood evidence for later LLM review. They
+    intentionally do not resolve hierarchy, choose a parent, or imply merge identity.
+    Including both preceding and following windows helps the LLM reason about divider
+    pages, repeated headings, continuation pages, and irregular extraction order using
+    visible local source context rather than stale cumulative section labels alone.
+
+    Parameters
+    ----------
+    candidate
+        Registry candidate receiving local neighborhood context.
+    extraction_windows
+        Ordered extraction windows used by SFI extraction.
+    lookaround_window_count
+        Maximum absolute window-index distance to include.
+    sfi_extraction_results
+        Ordered extraction results aligned with `extraction_windows`.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Compact local source-window records sorted in extraction-window order.
+    """
+
+    neighborhood: list[dict[str, Any]] = []
+
+    for extraction_result, extraction_window in zip(
+        sfi_extraction_results, extraction_windows
+    ):
+        distance = extraction_window.window_index - candidate.window_index
+
+        if abs(distance) > lookaround_window_count:
+            continue
+
+        neighborhood.append(
+            {
+                "relative_window_index": extraction_window.window_index
+                - candidate.window_index,
+                "segment_kind": extraction_window.segment_kind,
+                "sfi_candidate_count": len(extraction_result.sfi_candidates),
+                "sfi_candidate_summaries": _build_window_candidate_summaries(
+                    extraction_result
+                ),
+                "sfi_candidate_summaries_truncated": (
+                    len(extraction_result.sfi_candidates) > 24
+                ),
+                "source_provenance": _build_compact_source_provenance(
+                    extraction_window.source_provenance
+                ),
+                "source_section_path": _build_compact_source_section_path(
+                    extraction_window.source_section_path
+                ),
+                "source_segment_ids": extraction_window.source_segment_ids,
+                "source_text_excerpt": _truncate_source_excerpt(
+                    limit=900, value=extraction_window.source_text
+                ),
+                "window_id": extraction_window.window_id,
+                "window_index": extraction_window.window_index,
+            }
+        )
+
+    return neighborhood
+
+
 def _build_nearby_controlled_value_evidence(
     *,
     candidate: SFIRegistryCandidate,
@@ -258,10 +407,10 @@ def _build_nearby_controlled_value_evidence(
     """Collect fallible nearby controlled-value evidence for one candidate.
 
     The records produced here are retrieval hints for later LLM review. They do not
-    assign parentage, hierarchy, or final canonical scope. Both preceding and following
-    nearby controlled values are included so irregular reading order, page headers,
-    continuations, and layout-specific extraction order can be reviewed without Python
-    choosing one parent as truth.
+    assign parentage, hierarchy, or final canonical scope. Both preceding and
+    following nearby controlled values are included so irregular reading order, page
+    headers, continuations, and layout-specific extraction order can be reviewed
+    without Python choosing one parent as truth.
 
     Parameters
     ----------
@@ -943,6 +1092,38 @@ def _build_text_bucket_key(
     return _join_bucket_key(statement_type_key, source_context_key, normalized_text)
 
 
+def _build_window_candidate_summaries(
+    extraction_result: SFIExtractionResult,
+) -> list[dict[str, Any]]:
+    """Build compact SFI candidate summaries for one neighboring window.
+
+    Parameters
+    ----------
+    extraction_result
+        Window-local SFI extraction result to summarize.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Compact candidate summaries that preserve visible values and roles.
+    """
+
+    summaries: list[dict[str, Any]] = []
+
+    for candidate in extraction_result.sfi_candidates[:24]:
+        summaries.append(
+            {
+                "candidate_id": candidate.candidate_id,
+                "description": _truncate_context_label(candidate.description),
+                "normalized_statement_type": candidate.normalized_statement_type,
+                "source_text": _truncate_context_label(candidate.source_text),
+                "statement_type": candidate.statement_type,
+            }
+        )
+
+    return summaries
+
+
 def _deterministic_bucket_id(*, bucket_key: str, bucket_type: str) -> str:
     """Create a deterministic possible-duplicate bucket ID.
 
@@ -1348,6 +1529,30 @@ def _truncate_context_label(value: str) -> str:
     return value_clean[:177].rstrip() + "..."
 
 
+def _truncate_source_excerpt(*, limit: int, value: str) -> str:
+    """Normalize and truncate source text for local-neighborhood evidence.
+
+    Parameters
+    ----------
+    limit
+        Maximum returned character length.
+    value
+        Raw extraction-window source text.
+
+    Returns
+    -------
+    str
+        Single-line source excerpt with a deterministic length cap.
+    """
+
+    value_clean = re.sub(r"\s+", " ", str(value or "")).strip()
+
+    if len(value_clean) <= limit:
+        return value_clean
+
+    return value_clean[: limit - 3].rstrip() + "..."
+
+
 def _unique_limited(values: Sequence[str], *, limit: int) -> list[str]:
     """Return unique non-empty strings, preserving order and applying a limit.
 
@@ -1380,6 +1585,35 @@ def _unique_limited(values: Sequence[str], *, limit: int) -> list[str]:
             break
 
     return output
+
+
+def _unique_scope_records(records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Deduplicate JSON-serializable scope evidence records while preserving order.
+
+    Parameters
+    ----------
+    records
+        Scope evidence or hypothesis records.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Deduplicated records.
+    """
+
+    unique_records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for record in records:
+        key = repr(sorted(record.items()))
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        unique_records.append(record)
+
+    return unique_records
 
 
 def _validate_result_window_alignment(
@@ -1889,33 +2123,55 @@ def _warn_on_text_repeated_within_window(
         )
 
 
-def _unique_scope_records(records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Deduplicate JSON-serializable scope evidence records while preserving order.
+def _with_local_source_neighborhood(
+    *,
+    candidates: Sequence[SFIRegistryCandidate],
+    extraction_windows: Sequence[ExtractionWindow],
+    sfi_extraction_results: Sequence[SFIExtractionResult],
+) -> list[SFIRegistryCandidate]:
+    """Attach compact local source-window evidence to controlled-value candidates.
+
+    Only candidates with configured controlled values receive this heavier evidence,
+    because they are the candidates most likely to need local heading/divider context
+    during dedup review. Non-controlled candidates keep an empty neighborhood so
+    row-level standards and content items do not unnecessarily inflate review payloads.
 
     Parameters
     ----------
-    records
-        Scope evidence or hypothesis records.
+    candidates
+        Registry candidates in source order.
+    extraction_windows
+        Ordered extraction windows used by SFI extraction.
+    sfi_extraction_results
+        Ordered extraction results aligned with `extraction_windows`.
 
     Returns
     -------
-    list[dict[str, Any]]
-        Deduplicated records.
+    list[SFIRegistryCandidate]
+        Registry candidates with local source-neighborhood evidence attached.
     """
 
-    unique_records: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    enriched_candidates: list[SFIRegistryCandidate] = []
 
-    for record in records:
-        key = repr(sorted(record.items()))
-
-        if key in seen:
+    for candidate in candidates:
+        if not candidate.canonical_statement_value_key:
+            enriched_candidates.append(candidate)
             continue
 
-        seen.add(key)
-        unique_records.append(record)
+        enriched_candidates.append(
+            candidate.model_copy(
+                update={
+                    "local_source_neighborhood": _build_local_source_neighborhood(
+                        candidate=candidate,
+                        extraction_windows=extraction_windows,
+                        lookaround_window_count=3,
+                        sfi_extraction_results=sfi_extraction_results,
+                    )
+                }
+            )
+        )
 
-    return unique_records
+    return enriched_candidates
 
 
 def _with_scope_evidence(
@@ -2049,6 +2305,11 @@ def build_candidate_registry(
 
     candidates = _with_scope_evidence(
         candidates=candidates, statement_value_policies=statement_value_policies
+    )
+    candidates = _with_local_source_neighborhood(
+        candidates=candidates,
+        extraction_windows=extraction_windows,
+        sfi_extraction_results=sfi_extraction_results,
     )
     duplicate_buckets = _build_duplicate_buckets(candidates)
     warnings = _build_registry_warnings(
