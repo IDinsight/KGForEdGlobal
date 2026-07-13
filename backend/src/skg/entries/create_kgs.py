@@ -150,7 +150,7 @@ def build_kgs(
         sfi_candidate_registry=sfi_candidate_registry,
         usage_tracker=usage_tracker,
     )
-    exit()
+
     # 8.
     sfi_final_records = mint_final_sfi_ids(
         document_ir=kg_run_inputs.document_ir,
