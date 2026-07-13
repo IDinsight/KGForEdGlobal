@@ -1333,7 +1333,7 @@ Use exactly one decision for each decision group:
 - context_windows are shared nearby source windows. Each candidate's context_window_indexes identifies which windows are relevant to that candidate.
 - context_items contain only runtime-configured context-bearing statement types. Their absence does not prove that no other source content exists.
 - section_labels, boundary_markers, page_indexes, and source_text_excerpt are compact, fallible context. They are not resolved hierarchy or parentage.
-- scope_hints are compact possible scope values grouped by statement type. They are retrieval hints, not canonical scope or final hierarchy.
+- scope_hints are compact nearby controlled-value context grouped by statement type. They are fallible prompt hints, not canonical hierarchy, parentage, or identity.
 - candidate description and source_text preserve the source-facing evidence. Use them rather than guessing omitted normalized forms or internal bucket keys.
 
 ## Merge guardrails
@@ -1404,9 +1404,9 @@ Independently determine the correct partition and decision for every supplied ca
 - A same_normalized_source_text signal records exact internal normalized equality for its listed subset only. It is not a universal merge rule.
 - context_windows are shared nearby windows. Use each candidate's context_window_indexes to locate the context relevant to that candidate.
 - context_items contain only runtime-configured context-bearing statement types. Their absence is not proof that no other source material exists.
-- scope_hints, section_labels, boundary_markers, page indexes, and excerpts are compact and fallible. They are not final hierarchy or parentage.
+- scope_hints, section_labels, boundary_markers, page indexes, and excerpts are compact and fallible. They are not final hierarchy, parentage, or merge identity.
 - Candidate description, source_text, code fields, statement types, table indexes, canonical values, and runtime instructions are the primary evidence.
-- A canonical controlled value is meaningful according to the runtime policy. Do not discard it solely because visible wording contains punctuation, qualifiers, ranges, aliases, or expanded labels. Do not merge solely because it matches when scope or runtime policy requires separation.
+- A canonical controlled value is meaningful according to the runtime policy. Do not discard it solely because visible wording contains punctuation, qualifiers, ranges, aliases, or expanded labels. Do not merge solely because it matches when source context or runtime instructions require separation.
 
 ## Independent audit procedure
 1. Reconstruct the candidate set and map every review signal to exactly its listed candidate subset.

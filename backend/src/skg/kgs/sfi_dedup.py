@@ -27,8 +27,8 @@ from skg.kgs.schemas import (
     SFIDedupDecision,
     SFIDedupReviewCandidate,
     SFIDedupReviewRequest,
-    SFIDedupReviewSignal,
     SFIDedupReviewResponse,
+    SFIDedupReviewSignal,
     SFIMergeDecision,
     SFIMergeGroup,
     SFIMergeReport,
@@ -1201,17 +1201,17 @@ def _build_same_normalized_source_text_edges(
 
 
 def _build_scope_hints(candidate: SFIRegistryCandidate) -> dict[str, list[str]]:
-    """Build compact, non-authoritative scope hints for one review candidate.
+    """Build compact nearby controlled-value hints for one review candidate.
 
     Parameters
     ----------
     candidate
-        Registry candidate carrying possible scope hypotheses.
+        Registry candidate carrying fallible nearby controlled-value hypotheses.
 
     Returns
     -------
     dict[str, list[str]]
-        Unique possible scope values grouped by source-facing statement type.
+        Unique nearby controlled values grouped by source-facing statement type.
     """
 
     values_by_statement_type: dict[str, list[str]] = defaultdict(list)

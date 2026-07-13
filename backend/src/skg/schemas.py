@@ -135,9 +135,6 @@ def validate_bbox_order(bbox: list[float]) -> list[float]:
 
 # Common fields with descriptions.
 _BCP47Str = Annotated[str, AfterValidator(_validate_bcp47)]
-_ControlledStatementValueDedupScope = Literal[
-    "document", "nearest_parent_values", "source_context"
-]
 BBox = Annotated[
     list[float],
     AfterValidator(validate_bbox_order),
@@ -278,23 +275,6 @@ class _AcademicStandardStatementTypePolicyItem(BaseSchema):
             "type, such as 'indicator' or 'content_standard'."
         ),
     )
-    controlled_value_scope: _ControlledStatementValueDedupScope = Field(
-        default="source_context",
-        description=(
-            "Scope used when controlled_values canonicalize organizer text for "
-            "deduplication. Use 'document' for document-wide values, "
-            "'nearest_parent_values' for values scoped by configured parent "
-            "statement types, and 'source_context' for source-local values."
-        ),
-    )
-    controlled_value_scope_parent_statement_types: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Ordered parent statement_type labels used when controlled_value_scope is "
-            "'nearest_parent_values'. The resulting scope key is built from these "
-            "parent values in configured order."
-        ),
-    )
     controlled_values: list[_AcademicStandardControlledValueItem] = Field(
         default_factory=list,
         description=(
@@ -313,50 +293,6 @@ class _AcademicStandardStatementTypePolicyItem(BaseSchema):
     statement_type: str = Field(
         description="Canonical source-facing statement_type label the LLM must output."
     )
-
-    @field_validator("controlled_value_scope_parent_statement_types")
-    @classmethod
-    def validate_controlled_value_scope_parent_statement_types(
-        cls, v: list[str]
-    ) -> list[str]:
-        """Clean controlled-value parent scope statement types.
-
-        Parameters
-        ----------
-        v
-            Parent statement_type labels used to build a controlled-value scope key.
-
-        Returns
-        -------
-        list[str]
-            Cleaned parent statement_type labels in stable order.
-
-        Raises
-        ------
-        TypeError
-            If any parent statement_type label is not a string.
-        """
-
-        cleaned: list[str] = []
-        seen: set[str] = set()
-
-        for statement_type in v or []:
-            if not isinstance(statement_type, str):
-                raise TypeError(
-                    "_AcademicStandardStatementTypePolicyItem."
-                    "controlled_value_scope_parent_statement_types must contain "
-                    "only strings."
-                )
-
-            statement_type_clean = statement_type.strip()
-
-            if not statement_type_clean or statement_type_clean in seen:
-                continue
-
-            cleaned.append(statement_type_clean)
-            seen.add(statement_type_clean)
-
-        return cleaned
 
     @field_validator("controlled_values")
     @classmethod
@@ -500,42 +436,6 @@ class _AcademicStandardStatementTypePolicyItem(BaseSchema):
         """
 
         return strip_and_require_non_empty_str(v)
-
-    @model_validator(mode="after")
-    def validate_controlled_value_scope_config(self) -> Self:
-        """Validate controlled-value scope fields for this statement type.
-
-        Returns
-        -------
-        Self
-            Validated statement-type policy item.
-
-        Raises
-        ------
-        ValueError
-            If nearest_parent_values is selected without configured parent statement
-            types, or if parent statement types are configured for another scope.
-        """
-
-        if (
-            self.controlled_value_scope == "nearest_parent_values"
-            and not self.controlled_value_scope_parent_statement_types
-        ):
-            raise ValueError(
-                "controlled_value_scope='nearest_parent_values' requires "
-                "controlled_value_scope_parent_statement_types."
-            )
-
-        if (
-            self.controlled_value_scope != "nearest_parent_values"
-            and self.controlled_value_scope_parent_statement_types
-        ):
-            raise ValueError(
-                "controlled_value_scope_parent_statement_types may only be set when "
-                "controlled_value_scope='nearest_parent_values'."
-            )
-
-        return self
 
 
 class _ContextHeadingRule(BaseSchema):
@@ -915,15 +815,6 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         ),
     )
     row_overlap: int = Field(default=1, ge=0)
-    sfi_controlled_value_scope_evidence_window_radius: int = Field(
-        description=(
-            "Maximum absolute extraction-window distance used to collect possible "
-            "controlled-value parent scope evidence for registry candidates. This "
-            "semantic evidence policy is independent of dedup prompt-context "
-            "packaging and does not itself resolve hierarchy or merge identity."
-        ),
-        ge=0,
-    )
     sfi_dedup_context_statement_types: list[str] = Field(
         default_factory=list,
         description=(
@@ -936,9 +827,10 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         default=1,
         description=(
             "Number of extraction windows before and after each reviewed candidate's "
-            "window to include in the shared SFI dedup context-window payload. This "
-            "setting controls prompt packaging only and must not affect registry "
-            "scope evidence, hierarchy, or merge identity."
+            "window to use for shared SFI dedup context windows and generic nearby "
+            "controlled-value scope hints. This setting controls prompt context only "
+            "and must not affect candidate identity, review edges, hierarchy, or merge "
+            "identity."
         ),
         ge=0,
     )

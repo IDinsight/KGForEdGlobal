@@ -1357,25 +1357,25 @@ class SFIRegistryCandidate(BaseSchema):
     scope_evidence: list[dict[str, Any]] = Field(
         default_factory=list,
         description=(
-            "Deterministic retrieval evidence that may help later LLM stages reason "
-            "about candidate scope. These records are not authoritative hierarchy "
-            "or merge evidence."
+            "Deterministic nearby controlled-value context that may help later LLM "
+            "stages interpret a candidate. These records are prompt hints, not "
+            "authoritative hierarchy or merge evidence."
         ),
     )
     scope_hypotheses: list[dict[str, Any]] = Field(
         default_factory=list,
         description=(
-            "Possible source-scope hypotheses derived from nearby controlled values. "
-            "They are intentionally non-canonical and must be treated as fallible "
-            "review hints."
+            "Possible contextual hypotheses derived from nearby controlled values of "
+            "other statement types. They are intentionally non-canonical and must be "
+            "treated as fallible review hints."
         ),
     )
     scope_resolution_status: Literal["not_applicable", "unresolved"] = Field(
         default="not_applicable",
         description=(
-            "Whether the registry found candidate-local controlled-value evidence "
-            "that may need later semantic resolution. The registry never marks "
-            "inferred hierarchy scope as resolved."
+            "Whether the registry found nearby controlled-value hypotheses for the "
+            "candidate. The registry never treats these prompt hints as resolved "
+            "hierarchy or identity."
         ),
     )
     source_segment_ids: list[str] = Field(
@@ -1565,8 +1565,8 @@ class SFIDedupReviewCandidate(BaseSchema):
     scope_hints: dict[str, list[str]] = Field(
         default_factory=dict,
         description=(
-            "Compact possible scope values grouped by statement type. These are "
-            "fallible retrieval hints, not resolved hierarchy."
+            "Compact nearby controlled-value context grouped by statement type. "
+            "These are fallible prompt hints, not resolved hierarchy or identity."
         ),
     )
     source_text: str = Field(description="Source-visible evidence text.", min_length=1)
@@ -1615,7 +1615,7 @@ class SFIDedupReviewCandidate(BaseSchema):
     @field_validator("scope_hints")
     @classmethod
     def clean_scope_hints(cls, v: dict[str, list[str]]) -> dict[str, list[str]]:
-        """Clean compact scope-hint labels and values.
+        """Clean compact nearby controlled-value hint labels and values.
 
         Parameters
         ----------
