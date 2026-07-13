@@ -353,9 +353,9 @@ def _build_nearby_controlled_value_evidence(
     *,
     candidate: SFIRegistryCandidate,
     candidate_index: int,
-    lookaround_window_count: int,
     ordered_candidates: Sequence[SFIRegistryCandidate],
     parent_statement_types: Sequence[str],
+    scope_evidence_window_radius: int,
 ) -> list[dict[str, Any]]:
     """Collect fallible nearby controlled-value evidence for one candidate.
 
@@ -371,12 +371,14 @@ def _build_nearby_controlled_value_evidence(
         Registry candidate whose nearby context is being described.
     candidate_index
         Source-order index for `candidate` in `ordered_candidates`.
-    lookaround_window_count
-        Maximum absolute window distance included as nearby evidence.
     ordered_candidates
         Registry candidates in source order.
     parent_statement_types
         Candidate parent statement types configured for this controlled value.
+    scope_evidence_window_radius
+        Maximum absolute extraction-window distance used to collect possible
+        controlled-value parent scope evidence. This semantic radius is independent of
+        dedup prompt-context packaging.
 
     Returns
     -------
@@ -403,7 +405,7 @@ def _build_nearby_controlled_value_evidence(
 
         distance_windows = other_candidate.window_index - candidate.window_index
 
-        if abs(distance_windows) > lookaround_window_count:
+        if abs(distance_windows) > scope_evidence_window_radius:
             continue
 
         direction = "following" if other_index > candidate_index else "preceding"
@@ -720,8 +722,8 @@ def _build_scope_evidence_for_candidate(
     *,
     candidate: SFIRegistryCandidate,
     candidate_index: int,
-    lookaround_window_count: int,
     ordered_candidates: Sequence[SFIRegistryCandidate],
+    scope_evidence_window_radius: int,
     statement_value_policies: dict[str, _StatementValuePolicy],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Build non-authoritative scope evidence and hypotheses for one candidate.
@@ -738,10 +740,12 @@ def _build_scope_evidence_for_candidate(
         Registry candidate to enrich with scope evidence.
     candidate_index
         Source-order index for `candidate` in `ordered_candidates`.
-    lookaround_window_count
-        Maximum absolute window distance included as nearby evidence.
     ordered_candidates
         Registry candidates in source order.
+    scope_evidence_window_radius
+        Maximum absolute extraction-window distance used to collect possible
+        controlled-value parent scope evidence. This semantic radius is independent
+        of dedup prompt-context packaging.
     statement_value_policies
         Controlled value policies keyed by statement type.
 
@@ -777,9 +781,9 @@ def _build_scope_evidence_for_candidate(
         _build_nearby_controlled_value_evidence(
             candidate=candidate,
             candidate_index=candidate_index,
-            lookaround_window_count=lookaround_window_count,
             ordered_candidates=ordered_candidates,
             parent_statement_types=parent_statement_types,
+            scope_evidence_window_radius=scope_evidence_window_radius,
         )
     )
 
@@ -2047,7 +2051,7 @@ def _warn_on_text_repeated_within_window(
 def _with_scope_evidence(
     *,
     candidates: Sequence[SFIRegistryCandidate],
-    context_window_radius: int,
+    scope_evidence_window_radius: int,
     statement_value_policies: dict[str, _StatementValuePolicy],
 ) -> list[SFIRegistryCandidate]:
     """Return registry candidates enriched with non-authoritative scope evidence.
@@ -2060,8 +2064,10 @@ def _with_scope_evidence(
     ----------
     candidates
         Registry candidates in source order.
-    context_window_radius
-        Maximum absolute extraction-window distance used for nearby scope hints.
+    scope_evidence_window_radius
+        Maximum absolute extraction-window distance used to collect possible
+        controlled-value parent scope evidence. This semantic radius is independent of
+        dedup prompt-context packaging.
     statement_value_policies
         Controlled value policies keyed by statement type.
 
@@ -2078,8 +2084,8 @@ def _with_scope_evidence(
         scope_evidence, scope_hypotheses = _build_scope_evidence_for_candidate(
             candidate=candidate,
             candidate_index=candidate_index,
-            lookaround_window_count=context_window_radius,
             ordered_candidates=ordered_candidates,
+            scope_evidence_window_radius=scope_evidence_window_radius,
             statement_value_policies=statement_value_policies,
         )
         enriched_candidates.append(
@@ -2178,8 +2184,8 @@ def build_candidate_registry(
 
     candidates = _with_scope_evidence(
         candidates=candidates,
-        context_window_radius=(
-            kg_config.academic_standards.sfi_dedup_context_window_radius
+        scope_evidence_window_radius=(
+            kg_config.academic_standards.sfi_controlled_value_scope_evidence_window_radius
         ),
         statement_value_policies=statement_value_policies,
     )

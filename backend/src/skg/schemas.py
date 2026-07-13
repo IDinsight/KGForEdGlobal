@@ -915,6 +915,15 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         ),
     )
     row_overlap: int = Field(default=1, ge=0)
+    sfi_controlled_value_scope_evidence_window_radius: int = Field(
+        description=(
+            "Maximum absolute extraction-window distance used to collect possible "
+            "controlled-value parent scope evidence for registry candidates. This "
+            "semantic evidence policy is independent of dedup prompt-context "
+            "packaging and does not itself resolve hierarchy or merge identity."
+        ),
+        ge=0,
+    )
     sfi_dedup_context_statement_types: list[str] = Field(
         default_factory=list,
         description=(
@@ -927,7 +936,9 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         default=1,
         description=(
             "Number of extraction windows before and after each reviewed candidate's "
-            "window to include in the shared SFI dedup context-window payload."
+            "window to include in the shared SFI dedup context-window payload. This "
+            "setting controls prompt packaging only and must not affect registry "
+            "scope evidence, hierarchy, or merge identity."
         ),
         ge=0,
     )
