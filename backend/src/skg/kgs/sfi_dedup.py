@@ -3,7 +3,7 @@ review.
 
 This module consumes the SFI candidate registry, constructs small review sets from
 controlled-value repeats, duplicate buckets, warning groups, and source-provenance
-overlap, asks the dedup LLM to classify each bounded set, validates every response, and
+overlap, runs an SFI dedup producer and independent checker for each bounded set, and
 emits merge groups for every registry candidate.
 """
 
@@ -42,7 +42,7 @@ from skg.kgs.utils import (
     reset_output_files,
     unique_nonempty,
 )
-from skg.kgs.validators import verify_sfi_dedup_review_quality
+from skg.kgs.validators import verify_sfi_dedup_review_integrity
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, open_json_type, write_to_json
@@ -935,6 +935,7 @@ def _build_review_requests(
             SFIDedupReviewCandidate(... registry_candidate_id="candidate_a" ...),
             SFIDedupReviewCandidate(... registry_candidate_id="candidate_b" ...),
         ],
+        review_focus="general",
         review_reasons=("duplicate_bucket:code:bucket_123:strong_signal",),
         review_set_id="dedupe_review_<stable_hash>",
         sfi_deduplication_instructions=(
@@ -980,6 +981,13 @@ def _build_review_requests(
     """
 
     review_requests: list[SFIDedupReviewRequest] = []
+    textual_reason_prefixes = (
+        "duplicate_bucket:description_text:",
+        "duplicate_bucket:source_text:",
+        "registry_warning:same_text_",
+        "same_canonical_statement_value:",
+        "same_normalized_source_text:",
+    )
     unresolved_components: list[_ReviewComponent] = []
 
     for component in components:
@@ -998,7 +1006,7 @@ def _build_review_requests(
             candidate.registry_candidate_id for candidate in component_candidates
         )
         review_set_id = f"dedupe_review_{hashlib.sha256(
-            "|".join(str(value) for value in candidate_ids).encode("utf-8")
+            '|'.join(str(value) for value in candidate_ids).encode('utf-8')
         ).hexdigest()[:16]}"
 
         review_requests.append(
@@ -1017,11 +1025,11 @@ def _build_review_requests(
                         normalized_statement_code=candidate.normalized_statement_code,
                         normalized_statement_type=candidate.normalized_statement_type,
                         registry_candidate_id=candidate.registry_candidate_id,
-                        source_context_key=candidate.source_context_key,
-                        source_context_labels=candidate.source_context_labels,
                         scope_evidence=candidate.scope_evidence,
                         scope_hypotheses=candidate.scope_hypotheses,
                         scope_resolution_status=candidate.scope_resolution_status,
+                        source_context_key=candidate.source_context_key,
+                        source_context_labels=candidate.source_context_labels,
                         source_segment_ids=candidate.source_segment_ids,
                         source_text=candidate.source_text,
                         source_text_bucket_key=candidate.source_text_bucket_key,
@@ -1036,9 +1044,9 @@ def _build_review_requests(
                     for candidate in component_candidates
                 ],
                 review_focus=(
-                    "same_normalized_source_text"
+                    "textual_similarity"
                     if any(
-                        reason.startswith("same_normalized_source_text:")
+                        reason.startswith(textual_reason_prefixes)
                         for reason in component.review_reasons
                     )
                     else "general"
@@ -2460,7 +2468,7 @@ def _validate_review_response_prefix(
         review_request = planned_review_requests[response_index]
 
         try:
-            verify_sfi_dedup_review_quality(
+            verify_sfi_dedup_review_integrity(
                 review_request=review_request, review_response=review_response
             )
         except QualityError as e:

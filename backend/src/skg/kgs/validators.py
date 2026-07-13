@@ -19,6 +19,7 @@ from skg.kgs.schemas import (
     SFICandidate,
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
+    SFIDedupValidationVerdict,
     SFIExtractionResult,
     SFIExtractionValidationVerdict,
     SFIHasChildParentCandidate,
@@ -848,55 +849,39 @@ def _validate_candidate_table_indexes(
         )
 
 
-def _validate_dedup_merge_group_code_guardrails(
-    *, review_request: SFIDedupReviewRequest, review_response: SFIDedupReviewResponse
+def _validate_dedup_issue_candidate_ids(
+    *,
+    review_request: SFIDedupReviewRequest,
+    validation_verdict: SFIDedupValidationVerdict,
 ) -> None:
-    """Validate hard code-related guardrails for dedup merge groups.
+    """Validate checker issue references against the bounded review request.
 
     Parameters
     ----------
     review_request
-        Bounded review request supplied to the LLM.
-    review_response
-        Structured LLM dedup response to validate.
+        Bounded review request supplied to both LLM stages.
+    validation_verdict
+        Parsed checker verdict whose issue references should be validated.
 
     Raises
     ------
     QualityError
-        If a merge group combines incompatible statement types or official codes.
+        If an issue references a candidate outside the review request.
     """
 
-    candidates_by_id = {
-        candidate.registry_candidate_id: candidate
-        for candidate in review_request.candidates
+    expected_candidate_ids = {
+        candidate.registry_candidate_id for candidate in review_request.candidates
     }
 
-    for decision_group in review_response.decision_groups:
-        if decision_group.decision != "merge" or len(decision_group.candidate_ids) < 2:
-            continue
+    for issue_index, issue in enumerate(validation_verdict.issues, start=1):
+        unknown_candidate_ids = sorted(
+            set(issue.candidate_ids) - expected_candidate_ids
+        )
 
-        group_candidates = [
-            candidates_by_id[candidate_id]
-            for candidate_id in decision_group.candidate_ids
-        ]
-        normalized_codes = {
-            candidate.normalized_statement_code
-            for candidate in group_candidates
-            if candidate.normalized_statement_code is not None
-        }
-        statement_types = {candidate.statement_type for candidate in group_candidates}
-
-        if len(statement_types) > 1:
+        if unknown_candidate_ids:
             raise QualityError(
-                f"Dedup merge groups must not merge different statement_type values: "
-                f"{sorted(statement_types)}. Use conflict or needs_review instead."
-            )
-
-        if len(normalized_codes) > 1:
-            raise QualityError(
-                f"Dedup merge groups must not merge different official normalized "
-                f"statement codes: {sorted(normalized_codes)}. Use keep_separate, "
-                f"conflict, or needs_review instead."
+                f"SFI dedup validation issue {issue_index} references candidate IDs "
+                f"outside the review request: {unknown_candidate_ids}."
             )
 
 
@@ -953,38 +938,6 @@ def _validate_dedup_response_candidate_coverage(
             f"Dedup response assigned candidate IDs to more than one group: "
             f"{duplicate_candidate_ids}."
         )
-
-
-def _validate_dedup_response_reasons(review_response: SFIDedupReviewResponse) -> None:
-    """Validate non-empty reasons for dedup decision groups.
-
-    Parameters
-    ----------
-    review_response
-        Structured LLM dedup response to validate.
-
-    Raises
-    ------
-    QualityError
-        If a decision group has an empty reason.
-    """
-
-    for group_index, decision_group in enumerate(
-        review_response.decision_groups, start=1
-    ):
-        if not decision_group.reason.strip():
-            raise QualityError(
-                f"Dedup decision group {group_index} has an empty reason."
-            )
-
-        if (
-            len(decision_group.candidate_ids) > 1
-            and len(decision_group.reason.strip()) < 8
-        ):
-            raise QualityError(
-                f"Dedup decision group {group_index} has a non-singleton decision "
-                f"with an insufficiently specific reason."
-            )
 
 
 def _validate_has_child_parent_selection_policy(
@@ -1345,22 +1298,27 @@ def _validate_result_identity(
         )
 
 
-def verify_sfi_dedup_review_quality(
+def verify_sfi_dedup_review_integrity(
     *, review_request: SFIDedupReviewRequest, review_response: SFIDedupReviewResponse
 ) -> None:
-    """Run quality checks on one structured SFI dedup review response.
+    """Validate universal integrity of one structured SFI dedup response.
+
+    This function intentionally avoids curriculum semantics, duplicate-identity
+    judgments, code-compatibility rules, hierarchy inference, and wording heuristics.
+    Those decisions belong to the producer/checker LLM flow under the runtime
+    curriculum instructions.
 
     Parameters
     ----------
     review_request
         Bounded review request supplied to the LLM.
     review_response
-        Parsed LLM dedup review response.
+        Parsed producer or final dedup review response.
 
     Raises
     ------
     QualityError
-        If the response fails coverage or hard-guardrail checks.
+        If review-set identity or exact candidate coverage is invalid.
     """
 
     if review_response.review_set_id != review_request.review_set_id:
@@ -1372,9 +1330,64 @@ def verify_sfi_dedup_review_quality(
     _validate_dedup_response_candidate_coverage(
         review_request=review_request, review_response=review_response
     )
-    _validate_dedup_response_reasons(review_response)
-    _validate_dedup_merge_group_code_guardrails(
-        review_request=review_request, review_response=review_response
+
+
+def verify_sfi_dedup_validation_integrity(
+    *,
+    draft_response: SFIDedupReviewResponse,
+    review_request: SFIDedupReviewRequest,
+    validation_verdict: SFIDedupValidationVerdict,
+) -> None:
+    """Validate universal integrity of an SFI dedup checker verdict.
+
+    Python verifies only stable cross-object contracts. It does not judge whether the
+    checker made the correct semantic merge decision; curriculum-specific semantic
+    review remains the checker's responsibility under the runtime instructions.
+
+    Parameters
+    ----------
+    draft_response
+        First-stage dedup response reviewed by the checker.
+    review_request
+        Original bounded dedup request.
+    validation_verdict
+        Parsed second-stage checker verdict.
+
+    Raises
+    ------
+    QualityError
+        If verdict identity, issue references, or selected response integrity is
+        invalid.
+    """
+
+    if validation_verdict.review_set_id != review_request.review_set_id:
+        raise QualityError(
+            f"Dedup validation review_set_id "
+            f"{validation_verdict.review_set_id!r} does not match request "
+            f"review_set_id {review_request.review_set_id!r}."
+        )
+
+    verify_sfi_dedup_review_integrity(
+        review_request=review_request, review_response=draft_response
+    )
+    _validate_dedup_issue_candidate_ids(
+        review_request=review_request, validation_verdict=validation_verdict
+    )
+
+    selected_response = (
+        draft_response
+        if validation_verdict.passed
+        else validation_verdict.corrected_response
+    )
+
+    if selected_response is None:
+        raise QualityError(
+            "A failing SFI dedup validation verdict must provide a complete corrected "
+            "response."
+        )
+
+    verify_sfi_dedup_review_integrity(
+        review_request=review_request, review_response=selected_response
     )
 
 

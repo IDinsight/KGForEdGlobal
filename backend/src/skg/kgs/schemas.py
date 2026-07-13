@@ -29,8 +29,8 @@ _AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo
 _AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
 _MetadataT = dict[str, Any]
 _ProgressionSubtype = Literal["developmental_prerequisite", "recurring_practice"]
-_SFIDedupReviewFocus = Literal["general", "same_normalized_source_text"]
 SFIDedupDecision = Literal["conflict", "keep_separate", "merge", "needs_review"]
+SFIDedupReviewFocus = Literal["general", "textual_similarity"]
 SFIMergeDecision = Literal["conflict", "merged", "needs_review", "singleton"]
 
 
@@ -1389,6 +1389,24 @@ class SFIDedupDecisionGroup(BaseSchema):
 
         return cleaned
 
+    @field_validator("reason", mode="before")
+    @classmethod
+    def clean_reason(cls, v: str) -> str:
+        """Strip and require a non-empty source-grounded reason.
+
+        Parameters
+        ----------
+        v
+            Raw decision reason.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty reason.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
 
 class SFIDedupReviewCandidate(BaseSchema):
     """Compact registry-candidate view for one bounded dedup review set."""
@@ -1486,11 +1504,12 @@ class SFIDedupReviewRequest(BaseSchema):
     candidates: list[SFIDedupReviewCandidate] = Field(
         description="Bounded candidate records to review together.", min_length=2
     )
-    review_focus: _SFIDedupReviewFocus = Field(
+    review_focus: SFIDedupReviewFocus = Field(
         description=(
-            "Prompt focus for this review set. Use 'same_normalized_source_text' "
-            "when the set was selected because candidates share exact registry-"
-            "normalized source text; otherwise use 'general'."
+            "Prompt focus for this review set. Use 'textual_similarity' when exact "
+            "or close-enough source wording contributed to selecting any part of the "
+            "review component; otherwise use 'general'. The focus is retrieval "
+            "context only and does not imply that every candidate is pairwise similar."
         )
     )
     review_reasons: list[str] = Field(
@@ -1520,6 +1539,24 @@ class SFIDedupReviewRequest(BaseSchema):
         """
 
         return unique_clean_strings(v)
+
+    @field_validator("review_set_id", "sfi_deduplication_instructions", mode="before")
+    @classmethod
+    def clean_required_request_strings(cls, v: str) -> str:
+        """Strip and require non-empty request strings.
+
+        Parameters
+        ----------
+        v
+            Raw required request string.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty request string.
+        """
+
+        return strip_and_require_non_empty_str(v)
 
     @model_validator(mode="after")
     def validate_candidate_ids_unique(self) -> Self:
@@ -1563,6 +1600,193 @@ class SFIDedupReviewResponse(BaseSchema):
         min_length=1,
     )
     review_set_id: str = Field(description="Review-set ID copied from the request.")
+
+    @field_validator("review_set_id", mode="before")
+    @classmethod
+    def clean_review_set_id(cls, v: str) -> str:
+        """Strip and require the response review-set ID.
+
+        Parameters
+        ----------
+        v
+            Raw review-set ID.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty review-set ID.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+
+class SFIDedupValidationIssue(BaseSchema):
+    """One issue found by the second-stage SFI dedup validation LLM."""
+
+    candidate_ids: list[str] = Field(
+        default_factory=list,
+        description="Registry candidate IDs associated with the validation issue.",
+    )
+    issue_type: str = Field(
+        description="Short general issue category, such as over_merge or scope_error.",
+        min_length=1,
+    )
+    message: str = Field(
+        description="Specific source-grounded description of the issue.", min_length=1
+    )
+    severity: Literal["error", "warning"] = Field(
+        description="Whether the issue requires correction or is advisory only."
+    )
+
+    @field_validator("candidate_ids")
+    @classmethod
+    def clean_candidate_ids(cls, v: list[str]) -> list[str]:
+        """Clean and validate issue candidate IDs.
+
+        Parameters
+        ----------
+        v
+            Raw registry candidate IDs.
+
+        Returns
+        -------
+        list[str]
+            Cleaned unique candidate IDs.
+
+        Raises
+        ------
+        ValueError
+            If candidate IDs are blank or duplicated.
+        """
+
+        cleaned = unique_clean_strings(v)
+
+        if len(cleaned) != len(v):
+            raise ValueError("candidate_ids must be unique and non-empty")
+
+        return cleaned
+
+    @field_validator("issue_type", "message", mode="before")
+    @classmethod
+    def clean_required_issue_strings(cls, v: str) -> str:
+        """Strip and require non-empty issue text fields.
+
+        Parameters
+        ----------
+        v
+            Raw issue string.
+
+        Returns
+        -------
+        str
+            Stripped issue string.
+
+        Raises
+        ------
+        ValueError
+            If the issue string is blank.
+        """
+
+        value = str(v or "").strip()
+
+        if not value:
+            raise ValueError("SFI dedup validation issue text is required.")
+
+        return value
+
+
+class SFIDedupValidationVerdict(BaseSchema):
+    """Second-stage LLM verdict for one draft SFI dedup review response."""
+
+    corrected_response: Optional[SFIDedupReviewResponse] = Field(
+        default=None,
+        description=(
+            "Complete corrected dedup response when passed is false; null when the "
+            "draft is accepted unchanged."
+        ),
+    )
+    issues: list[SFIDedupValidationIssue] = Field(
+        default_factory=list,
+        description="Source-grounded validation issues found in the draft response.",
+    )
+    passed: bool = Field(
+        description="True when the draft response requires no material correction."
+    )
+    rationale: str = Field(
+        description="Concise overall assessment of the draft dedup response.",
+        min_length=20,
+    )
+    review_set_id: str = Field(
+        description="Review-set ID copied from the request.", min_length=1
+    )
+
+    @field_validator("rationale", "review_set_id", mode="before")
+    @classmethod
+    def clean_required_verdict_strings(cls, v: str) -> str:
+        """Strip and require non-empty verdict text fields.
+
+        Parameters
+        ----------
+        v
+            Raw verdict string.
+
+        Returns
+        -------
+        str
+            Stripped verdict string.
+
+        Raises
+        ------
+        ValueError
+            If the verdict string is blank.
+        """
+
+        value = str(v or "").strip()
+
+        if not value:
+            raise ValueError("SFI dedup validation verdict text is required.")
+
+        return value
+
+    @model_validator(mode="after")
+    def validate_verdict_contract(self) -> Self:
+        """Validate pass/fail agreement with issues and corrected output.
+
+        Returns
+        -------
+        Self
+            Validated verdict.
+
+        Raises
+        ------
+        ValueError
+            If pass/fail state disagrees with corrected_response or error issues.
+        """
+
+        error_issues = [issue for issue in self.issues if issue.severity == "error"]
+
+        if self.passed:
+            if self.corrected_response is not None:
+                raise ValueError(
+                    "corrected_response must be null when validation passed is true."
+                )
+
+            if error_issues:
+                raise ValueError(
+                    "A passing validation verdict must not contain error issues."
+                )
+        else:
+            if self.corrected_response is None:
+                raise ValueError(
+                    "corrected_response is required when validation passed is false."
+                )
+
+            if not error_issues:
+                raise ValueError(
+                    "A failing validation verdict must include at least one error issue."
+                )
+
+        return self
 
 
 class SFIMergeGroup(BaseSchema):

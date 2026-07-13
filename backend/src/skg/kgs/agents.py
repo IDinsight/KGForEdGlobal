@@ -12,6 +12,7 @@ from skg.kgs.schemas import (
     ExtractionWindow,
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
+    SFIDedupValidationVerdict,
     SFIExtractionResult,
     SFIExtractionValidationVerdict,
     SFIHasChildResolutionRequest,
@@ -28,32 +29,33 @@ def create_sfi_dedup_agent(
     max_retries: int = 3,
     model_config: ModelConfig,
     review_request: SFIDedupReviewRequest,
-    verify_quality_fn: Callable[..., None],
+    verify_integrity_fn: Callable[..., None],
 ) -> Agent:
     """Create an Agent configured for bounded SFI deduplication review.
 
-    The returned agent validates parsed output against the supplied review request.
-    Quality failures raise `ModelRetry` so pydantic-ai can ask the model to repair
-    the structured response before converting decisions into merge groups.
+    The producer agent returns a complete draft dedup response. Python validates only
+    universal response integrity, such as review-set identity and exact candidate
+    coverage. Curriculum-specific semantic review is delegated to a separate checker
+    LLM.
 
     Parameters
     ----------
     instructions
         System-level SFI deduplication instructions.
     max_retries
-        Maximum number of quality-error retries.
+        Maximum number of universal-integrity retries.
     model_config
         Model configuration containing the model name and model settings helpers.
     review_request
         Bounded review set being processed.
-    verify_quality_fn
+    verify_integrity_fn
         Callable with signature `(*, review_request, review_response)` that raises
-        `QualityError` on failure.
+        `QualityError` when a universal integrity constraint fails.
 
     Returns
     -------
     Agent
-        Configured SFI dedup review agent.
+        Configured SFI dedup producer agent.
     """
 
     attempt_counter: dict[str, int] = {"value": 0}
@@ -66,47 +68,152 @@ def create_sfi_dedup_agent(
     )
 
     @agent.output_validator
-    def validate_sfi_dedup_quality(
+    def validate_sfi_dedup_integrity(
         output: SFIDedupReviewResponse,
     ) -> SFIDedupReviewResponse:
-        """Validate parsed SFI dedup review output.
+        """Validate universal integrity of a draft SFI dedup response.
 
         Parameters
         ----------
         output
-            Parsed SFI dedup review response from the model.
+            Parsed SFI dedup review response from the producer LLM.
 
         Returns
         -------
         SFIDedupReviewResponse
-            Validated dedup review response.
+            Integrity-validated draft dedup response.
 
         Raises
         ------
         ModelRetry
-            If output fails quality checks and should be corrected by the model.
+            If the draft violates a universal response-integrity rule.
         """
 
         attempt = attempt_counter["value"]
 
         try:
-            verify_quality_fn(review_request=review_request, review_response=output)
+            verify_integrity_fn(review_request=review_request, review_response=output)
         except QualityError as e:
             truncated_msg = str(e)[:500]
 
             logger.error(
-                f"SFI dedup quality check failed for review set "
+                f"SFI dedup integrity check failed for review set "
                 f"{review_request.review_set_id} attempt {attempt + 1}: "
                 f"{truncated_msg}"
             )
 
             attempt_counter["value"] += 1
             raise ModelRetry(
-                f"Your structured SFI dedup output has quality issues and must be "
-                f"corrected.\n"
+                f"Your structured SFI dedup output violates a universal integrity "
+                f"rule and must be corrected.\n"
                 f"ERROR: {str(e)}\n\n"
-                f"Return a complete SFIDedupReviewResponse that covers every input "
-                f"candidate exactly once and fixes the issue."
+                f"Return a complete SFIDedupReviewResponse that uses the exact "
+                f"review_set_id and covers every input candidate exactly once."
+            ) from e
+
+        attempt_counter["value"] += 1
+        return output
+
+    return agent
+
+
+def create_sfi_dedup_validation_agent(
+    *,
+    draft_response: SFIDedupReviewResponse,
+    instructions: str,
+    max_retries: int = 3,
+    model_config: ModelConfig,
+    review_request: SFIDedupReviewRequest,
+    verify_integrity_fn: Callable[..., None],
+) -> Agent:
+    """Create an Agent that reviews and corrects a draft SFI dedup response.
+
+    The checker receives the original bounded review request and the producer's
+    complete draft response. It independently applies generic semantic review guidance
+    and the curriculum-specific runtime instructions, then either accepts the draft or
+    returns a complete corrected response. Python validates only universal integrity of
+    the verdict and selected response.
+
+    Parameters
+    ----------
+    draft_response
+        First-stage SFI dedup response to review.
+    instructions
+        System-level SFI dedup checker instructions.
+    max_retries
+        Maximum number of universal-integrity retries.
+    model_config
+        Model configuration containing the model name and settings helpers.
+    review_request
+        Original bounded review request reviewed by both LLM stages.
+    verify_integrity_fn
+        Callable with signature
+        `(*, draft_response, review_request, validation_verdict)` that raises
+        `QualityError` when a universal integrity constraint fails.
+
+    Returns
+    -------
+    Agent
+        Configured SFI dedup validation agent.
+    """
+
+    attempt_counter: dict[str, int] = {"value": 0}
+    agent = Agent(
+        model_config.model,
+        instructions=instructions,
+        model_settings=model_config.kgs_settings("sfi_dedup"),
+        output_retries=max_retries,
+        output_type=model_config.wrap_output_type(SFIDedupValidationVerdict),
+    )
+
+    @agent.output_validator
+    def validate_sfi_dedup_validation_integrity(
+        output: SFIDedupValidationVerdict,
+    ) -> SFIDedupValidationVerdict:
+        """Validate universal integrity of a dedup checker verdict.
+
+        Parameters
+        ----------
+        output
+            Parsed validation verdict from the checker LLM.
+
+        Returns
+        -------
+        SFIDedupValidationVerdict
+            Integrity-validated checker verdict.
+
+        Raises
+        ------
+        ModelRetry
+            If the verdict or corrected response violates a universal integrity rule.
+        """
+
+        attempt = attempt_counter["value"]
+
+        try:
+            verify_integrity_fn(
+                draft_response=draft_response,
+                review_request=review_request,
+                validation_verdict=output,
+            )
+        except QualityError as e:
+            truncated_msg = str(e)[:500]
+
+            logger.error(
+                f"SFI dedup validation integrity check failed for review set "
+                f"{review_request.review_set_id} attempt {attempt + 1}: "
+                f"{truncated_msg}"
+            )
+
+            attempt_counter["value"] += 1
+            raise ModelRetry(
+                f"Your SFI dedup validation output violates a universal integrity "
+                f"rule and must be corrected.\n"
+                f"ERROR: {str(e)}\n\n"
+                f"Return a complete SFIDedupValidationVerdict. When passed=false, "
+                f"corrected_response must be a complete SFIDedupReviewResponse that "
+                f"uses the exact review_set_id and covers every candidate exactly "
+                f"once."
             ) from e
 
         attempt_counter["value"] += 1

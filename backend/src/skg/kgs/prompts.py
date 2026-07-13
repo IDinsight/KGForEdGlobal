@@ -9,6 +9,7 @@ from skg.kgs.schemas import (
     ExtractionWindow,
     ExtractionWindowTablePayload,
     SFIDedupReviewRequest,
+    SFIDedupReviewResponse,
     SFIExtractionResult,
     SFIHasChildResolutionRequest,
 )
@@ -293,7 +294,7 @@ def _build_compact_dedup_review_payload(
 
     payload: dict[str, Any] = {
         "candidates": [
-            candidate.model_dump(mode="json", exclude_none=True)
+            candidate.model_dump(exclude_none=True, mode="json")
             for candidate in review_request.candidates
         ],
         "review_focus": review_request.review_focus,
@@ -819,31 +820,55 @@ def _build_dedup_review_focus_instructions(
         Additional source-structure-aware dedup instructions for the request focus.
     """
 
-    if review_request.review_focus == "same_normalized_source_text":
+    if review_request.review_focus == "textual_similarity":
         return dedent(
             """
-## Same-normalized-source-text review focus
-- This review set was selected because candidates share exact registry-normalized source text.
-- Decide whether the repeated visible text names the same curriculum item repeated in multiple source locations, or whether the same label/wording is reused for distinct items in different source scopes.
-- Do not merge solely because normalized_source_text matches.
-- Apply hard compatibility constraints first, then the runtime sfi_deduplication_instructions, then general duplicate heuristics.
-- Treat local_source_neighborhood as nearby source-window evidence. It is especially important around divider pages, repeated headings, continuation pages, and irregular source layouts where cumulative source_context_labels may be stale.
-- Treat source_context_key, source_context_labels, scope_evidence, scope_hypotheses, and local_source_neighborhood as helpful but fallible retrieval evidence. They may be inherited from surrounding source structure and can be stale or noisy around divider pages, continuation pages, repeated headings, or irregular source layouts.
-- Do not treat scope_hypotheses or local_source_neighborhood as final hierarchy, parentage, or canonical scope. They describe possible context only; use visible source text, nearby source-window evidence, source references, and runtime sfi_deduplication_instructions to decide merge/keep_separate/conflict/needs_review.
-- When local_source_neighborhood gives cleaner local boundary evidence than cumulative source_context_labels, prefer the local neighborhood evidence.
-- Do not let source_context_labels or scope_hypotheses alone block a merge when visible source text, statement_type, normalized_statement_type, source proximity, local_source_neighborhood, and runtime sfi_deduplication_instructions indicate the same source-visible curriculum item.
-- Merge only when the candidates represent the same logical curriculum organizer or statement and the supplied source references are compatible.
-- Keep separate when the same visible text is reused under different grades, strands, domains, courses, topics, years, tables, or other local scopes.
-- Treat repeated section-divider headings and following content-section headings as potential duplicates only when they point to the same curriculum scope under the runtime deduplication instructions.
-- Use statement_type, normalized_statement_type, statement_code, source_context_labels, source_segment_ids, window_index, and table row/header references to decide whether the shared text has the same source role and scope.
+## Textual-similarity review focus
+- This review component contains at least one exact or close-enough source-text
+  similarity signal. The signal may apply to only a subset of candidates because
+  overlapping retrieval edges can be combined transitively into one bounded review
+  set.
+- "Close enough" means only that the wording is similar enough to deserve semantic
+  review. It is not a merge rule, and it does not imply that every candidate is
+  pairwise similar.
+- Decide whether each candidate represents the same logical source item, a distinct
+  item with reused or expanded wording, a conflict, or an unresolved case.
+- Apply the runtime sfi_deduplication_instructions as the authoritative
+  curriculum-specific policy for deciding which wording differences preserve identity
+  and which differences create distinct source items.
+- Treat exact normalized_source_text equality, close wording, canonical controlled
+  values, duplicate buckets, and provenance overlap as retrieval evidence rather than
+  automatic decisions.
+- Treat local_source_neighborhood as nearby source-window evidence. It is especially
+  important around divider pages, repeated headings, continuation pages, and irregular
+  source layouts where cumulative source_context_labels may be stale.
+- Treat source_context_key, source_context_labels, scope_evidence, scope_hypotheses,
+  and local_source_neighborhood as helpful but fallible retrieval evidence. They may be
+  inherited from surrounding source structure and can be stale or noisy.
+- Do not treat scope_hypotheses or local_source_neighborhood as final hierarchy,
+  parentage, or canonical scope. Use visible source text, nearby source-window
+  evidence, source references, and runtime instructions to decide.
+- When local_source_neighborhood gives cleaner local boundary evidence than cumulative
+  source_context_labels, prefer the local neighborhood evidence.
+- Do not let source_context_labels or scope_hypotheses alone block a merge when visible
+  source text, source role, source proximity, canonical values, and runtime instructions
+  indicate the same source-visible curriculum item.
+- Keep separate when similar wording is reused under materially different grades,
+  strands, domains, courses, topics, years, tables, or other source scopes, unless
+  runtime instructions define those occurrences as one logical organizer.
             """
         ).strip()
 
     return dedent(
         """
 ## General duplicate review focus
-- This review set was selected from general duplicate evidence such as code buckets, text buckets, registry warnings, or source-provenance overlap.
-- Weigh all supplied evidence signals together and follow the general merge guardrails.
+- This review set was selected from general duplicate evidence such as controlled-value
+  repeats, code or text buckets, registry warnings, or source-provenance overlap.
+- Retrieval reasons may apply to only a subset of candidates in a transitively
+  connected component. Do not assume every candidate shares every listed signal.
+- Weigh all supplied evidence together and apply the runtime
+  sfi_deduplication_instructions as the authoritative curriculum-specific semantic
+  policy.
         """
     ).strip()
 
@@ -1395,6 +1420,120 @@ Use exactly one of these decisions for each decision group:
 
 ## Bounded dedup review payload JSON
 {json_dumps(user_payload)}
+        """
+    )
+
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
+    )
+
+
+def validate_sfi_dedup_response(
+    *, draft_response: SFIDedupReviewResponse, review_request: SFIDedupReviewRequest
+) -> PromptPair:
+    """Generate prompts for reviewing and correcting one draft SFI dedup response.
+
+    Parameters
+    ----------
+    draft_response
+        First-stage structured SFI dedup response.
+    review_request
+        Original bounded review request supplied to the producer.
+
+    Returns
+    -------
+    PromptPair
+        System and user messages for the second-stage SFI dedup validation agent.
+    """
+
+    focus_instructions = _build_dedup_review_focus_instructions(review_request)
+    request_payload = _build_compact_dedup_review_payload(review_request)
+    system_message = dedent(
+        f"""You are a strict Academic Standards SFI deduplication validation and correction agent
+(CHECKER MODE) for a Learning Commons-shaped Knowledge Graph.
+
+You will receive:
+1. The complete bounded dedup review request.
+2. The complete draft `SFIDedupReviewResponse` produced by a first-stage agent.
+3. Generic validation rules below.
+4. Curriculum-specific `sfi_deduplication_instructions` in the request payload.
+
+## Task
+Independently determine the correct partition and decision for every supplied candidate.
+Do not assume the draft is correct. Return an `SFIDedupValidationVerdict`.
+
+- Set `passed=true` only when the draft requires no material semantic correction.
+- When `passed=false`, identify every material error and return a complete corrected
+  `SFIDedupReviewResponse` in `corrected_response`.
+- The corrected response replaces the draft in the pipeline. It must be complete and
+  self-contained, not a patch or list of edits.
+- You may regroup candidates, change decisions, change reasons and confidence values,
+  or replace conflict/needs_review outcomes when the source evidence and runtime policy
+  require it.
+- Do not invent, omit, or duplicate candidate IDs.
+
+## Authority and semantic policy
+- The runtime `sfi_deduplication_instructions` are authoritative for curriculum-specific
+  identity, organizer scope, aliases, repeated headings, progression, codes, and known
+  source anomalies.
+- Apply those runtime instructions before generic duplicate heuristics.
+- Keep curriculum-specific exceptions in the runtime policy. Do not introduce a rule
+  merely because it would be convenient for this one review set.
+- Generic evidence fields are fallible retrieval context, not final semantic truth.
+- A canonical controlled value is meaningful evidence according to the runtime policy;
+  do not discard it merely because visible wording contains punctuation, qualifiers,
+  ranges, aliases, or expanded labels. Conversely, do not merge solely because a
+  canonical value matches when the runtime policy or visible scope requires separation.
+
+## Independent audit procedure
+1. Reconstruct the candidate set from the request and verify the source role, wording,
+   code evidence, canonical values, grade or stage evidence, parent-context evidence,
+   table references, source neighborhoods, and review reasons.
+2. Independently create the best complete candidate partition before comparing it with
+   the draft.
+3. Compare every draft group with that independent partition. Check for under-merging,
+   over-merging, incorrect singleton decisions, unsupported conflicts, and unjustified
+   needs_review outcomes.
+4. Check each reason against the visible evidence and runtime instructions. A fluent
+   explanation does not make a contradictory decision valid.
+5. Check whether a textual difference changes logical identity under the runtime policy
+   or merely preserves a source-visible variant that should remain in merged provenance.
+6. Check same-code/different-content cases carefully. Codes are evidence, not globally
+   unique identity keys. Apply the runtime policy and visible content rather than a
+   universal curriculum-specific assumption.
+7. Use `needs_review` only when the bounded evidence is genuinely insufficient after
+   applying the runtime instructions.
+
+## Universal response contract
+- Copy `review_set_id` exactly from the request.
+- Cover every input registry_candidate_id exactly once.
+- Include no candidate ID outside the request.
+- Every decision group must have a source-grounded reason.
+- Do not infer hierarchy relationships or create final StandardsFrameworkItem IDs.
+- Do not choose final canonical KG text.
+
+{focus_instructions}
+
+## Validation verdict contract
+- `issues` should contain only meaningful findings. Use severity `error` for anything
+  requiring a corrected response and `warning` only for non-blocking observations.
+- `passed=true`: `corrected_response` must be null and no issue may have severity
+  `error`.
+- `passed=false`: include at least one error issue and provide a complete corrected
+  response that resolves all error issues.
+- Copy `review_set_id` exactly into the verdict and any corrected response.
+- Explain the overall decision in a concise, source-grounded `rationale`.
+- Do not return prose outside the structured verdict.
+        """
+    )
+    user_message = dedent(
+        f"""Validate this draft SFI dedup response against the complete bounded request.
+
+## Bounded dedup review request JSON
+{json_dumps(request_payload)}
+
+## Draft SFIDedupReviewResponse JSON
+{draft_response.model_dump_json(exclude_none=True)}
         """
     )
 
