@@ -36,7 +36,6 @@ from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, write_to_json
 
 _SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG = "same_code_different_content"
-_SUSPICIOUS_CONTROLLED_SCOPE_SPLIT_AUDIT_FLAG = "suspicious_controlled_scope_split"
 
 
 @dataclass(frozen=True)
@@ -163,7 +162,6 @@ def _build_final_sfi_collision_details(
                 key_name: duplicate_value,
                 "records": [
                     {
-                        "canonical_statement_scope_key": record.canonical_statement_scope_key,
                         "canonical_statement_value_key": record.canonical_statement_value_key,
                         "description": record.description,
                         "identity_key": record.identity_key,
@@ -191,10 +189,10 @@ def _build_identity_key(
     Coded statements use their statement code as the primary identity component and add
     a deterministic source/text/provenance disambiguator only when the same-code family
     is not unique or has already been flagged as same-code/different-content. No-code
-    statements use their existing canonicalized source/scope and text/value components
-    as the primary identity base, then add the same kind of source/text/provenance
-    disambiguator only when multiple eligible merge groups share that no-code identity
-    family.
+    statements use their existing source-context and canonicalized text/value
+    components as the primary identity base, then add the same kind of
+    source/text/provenance disambiguator only when multiple eligible merge groups share
+    that no-code identity family.
 
     Parameters
     ----------
@@ -302,8 +300,9 @@ def _build_no_code_group_counts(
     Returns
     -------
     dict[tuple[str, str, str, str], int]
-        Counts keyed by statement type, normalized statement type, no-code source/scope
-        identity component, and no-code statement text/value identity component.
+        Counts keyed by statement type, normalized statement type, no-code
+        source-context identity component, and no-code statement text/value identity
+        component.
     """
 
     counts: Counter[tuple[str, str, str, str]] = Counter()
@@ -329,7 +328,7 @@ def _build_no_code_group_key(merge_group: SFIMergeGroup) -> tuple[str, str, str,
     Returns
     -------
     tuple[str, str, str, str]
-        Statement type, normalized statement type, no-code source/scope key, and
+        Statement type, normalized statement type, no-code source-context key, and
         no-code statement text/value key.
 
     Raises
@@ -353,30 +352,23 @@ def _build_no_code_group_key(merge_group: SFIMergeGroup) -> tuple[str, str, str,
 
 
 def _build_no_code_source_context_key(merge_group: SFIMergeGroup) -> str:
-    """Build the source/scope identity component for a no-code SFI group.
+    """Build the source-context identity component for a no-code SFI group.
 
-    Controlled organizer values use their configured scope key so source-visible
-    punctuation variants in the same curriculum scope mint the same final identity.
-    Uncontrolled no-code statements keep the previous source-context-derived key so
-    recurring visible text in different source locations remains distinct.
+    The identity component prefers registry-derived source-context keys. It falls back
+    to source segment IDs and then the merge-group ID so every eligible no-code group
+    has a deterministic source-context component without depending on inferred
+    hierarchy.
 
     Parameters
     ----------
     merge_group
-        Merge group whose no-code source/scope should become an identity component.
+        Merge group whose source context should become an identity component.
 
     Returns
     -------
     str
-        Compact deterministic hash or configured canonical scope key for final no-code
-        identity construction.
+        Compact deterministic hash for final no-code identity construction.
     """
-
-    if (
-        merge_group.canonical_statement_scope_key
-        and merge_group.canonical_statement_value_key
-    ):
-        return _hash_text(n_hex=20, value=merge_group.canonical_statement_scope_key)
 
     return _hash_text(
         n_hex=20,
@@ -522,7 +514,6 @@ def _build_sfi_final_contexts(
             SFIFinalContext(
                 audit_flags=record.audit_flags,
                 candidate_source_texts=record.candidate_source_texts,
-                canonical_statement_scope_key=record.canonical_statement_scope_key,
                 canonical_statement_value=record.canonical_statement_value,
                 canonical_statement_value_key=record.canonical_statement_value_key,
                 description=record.description,
@@ -575,7 +566,7 @@ def _build_sfi_final_record(
         Eligible SFI merge group to mint as a final SFI.
     no_code_group_counts
         Counts for no-code merge groups keyed by statement type, normalized statement
-        type, source/scope identity component, and statement text/value component.
+        type, source-context identity component, and statement text/value component.
     segment_page_indexes_by_id
         Page-index lookup keyed by DocumentIR segment ID.
     sfi_candidates_by_id
@@ -619,7 +610,6 @@ def _build_sfi_final_record(
         candidate_descriptions=merge_group.candidate_descriptions,
         candidate_source_refs=merge_group.candidate_source_refs,
         candidate_source_texts=merge_group.candidate_source_texts,
-        canonical_statement_scope_key=merge_group.canonical_statement_scope_key,
         canonical_statement_value=merge_group.canonical_statement_value,
         canonical_statement_value_key=merge_group.canonical_statement_value_key,
         case_identifier_uri=f"urn:uuid:{final_sfi_uuid}",
@@ -660,7 +650,6 @@ def _build_sfi_final_record(
                 _SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG in merge_group.audit_flags
             ),
             "statement_value_canonicalization": {
-                "canonical_statement_scope_key": merge_group.canonical_statement_scope_key,
                 "canonical_statement_value": merge_group.canonical_statement_value,
                 "canonical_statement_value_key": merge_group.canonical_statement_value_key,
             },
@@ -814,23 +803,6 @@ def _choose_language(
     return languages[0] if languages else kg_config.metadata.languages[0]
 
 
-def _format_controlled_scope_parts(scope_parts: Sequence[tuple[str, str]]) -> str:
-    """Format ordered controlled-scope parts into a stable string.
-
-    Parameters
-    ----------
-    scope_parts
-        Ordered `(scope_label, scope_value)` pairs parsed from a scope key.
-
-    Returns
-    -------
-    str
-        Stable pipe-delimited scope string.
-    """
-
-    return "|".join(f"{label}:{value}" for label, value in scope_parts)
-
-
 def _format_identity_family_key(key: Sequence[str]) -> str:
     """Format an identity-family key into a stable metadata string.
 
@@ -866,36 +838,6 @@ def _hash_text(*, n_hex: int, value: str) -> str:
 
     normalized = normalize_text(value)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:n_hex]
-
-
-def _parse_controlled_scope_parts(scope_key: str | None) -> list[tuple[str, str]]:
-    """Parse a controlled-value scope key into ordered scope parts.
-
-    Parameters
-    ----------
-    scope_key
-        Scope key such as `level:grade 4|strand:number`.
-
-    Returns
-    -------
-    list[tuple[str, str]]
-        Parsed non-empty scope parts in source-key order.
-    """
-
-    parts: list[tuple[str, str]] = []
-
-    for raw_part in str(scope_key or "").split("|"):
-        if ":" not in raw_part:
-            continue
-
-        key, value = raw_part.split(":", 1)
-        key_clean = key.strip()
-        value_clean = value.strip()
-
-        if key_clean and value_clean:
-            parts.append((key_clean, value_clean))
-
-    return parts
 
 
 def _preferred_surface_form(values: Sequence[str]) -> str:
@@ -1298,120 +1240,6 @@ def _validate_merge_group_coverage(
         )
 
 
-def _with_controlled_scope_split_audits(
-    sfi_final_records: Sequence[SFIFinalRecord],
-) -> list[SFIFinalRecord]:
-    """Annotate suspicious controlled-organizer scope splits.
-
-    Controlled organizer values should not silently split into multiple final SFIs
-    solely because an upstream source-context path was noisy. This audit flags cases
-    where the same canonical controlled value and statement type appears under the same
-    ancestor scope but across multiple immediate parent scope values. It does not merge
-    or block records; it preserves deterministic finalization while making suspicious
-    scope fragmentation visible before relationship resolution.
-
-    Parameters
-    ----------
-    sfi_final_records
-        Final SFI records minted from eligible merge groups.
-
-    Returns
-    -------
-    list[SFIFinalRecord]
-        Final records with added audit flags/notes where suspicious scope splits are
-        detected.
-    """
-
-    records_by_scope_family: dict[tuple[str, str, str], list[SFIFinalRecord]] = {}
-
-    for record in sfi_final_records:
-        if not (
-            record.canonical_statement_scope_key
-            and record.canonical_statement_value_key
-        ):
-            continue
-
-        scope_parts = _parse_controlled_scope_parts(
-            record.canonical_statement_scope_key
-        )
-
-        if len(scope_parts) < 2:
-            continue
-
-        ancestor_scope_key = _format_controlled_scope_parts(scope_parts[:-1])
-        family_key = (
-            record.statement_type,
-            record.canonical_statement_value_key,
-            ancestor_scope_key,
-        )
-        records_by_scope_family.setdefault(family_key, []).append(record)
-
-    flagged_record_ids: set[uuid.UUID] = set()
-    notes_by_record_id: dict[uuid.UUID, str] = {}
-
-    for family_records in records_by_scope_family.values():
-        full_scope_keys = {
-            _format_controlled_scope_parts(
-                _parse_controlled_scope_parts(record.canonical_statement_scope_key)
-            )
-            for record in family_records
-        }
-        immediate_parent_scope_keys = {
-            _format_controlled_scope_parts(
-                [
-                    _parse_controlled_scope_parts(record.canonical_statement_scope_key)[
-                        -1
-                    ]
-                ]
-            )
-            for record in family_records
-        }
-
-        if len(full_scope_keys) <= 1 or len(immediate_parent_scope_keys) <= 1:
-            continue
-
-        family_record_ids = sorted(
-            str(record.final_sfi_uuid) for record in family_records
-        )
-        audit_note = (
-            f"Same controlled statement value and ancestor scope appears across "
-            f"multiple immediate parent scope keys; review upstream source-context "
-            f"recovery before accepting these as distinct organizer SFIs. Peer "
-            f"final_sfi_uuid values: {family_record_ids}."
-        )
-
-        for record in family_records:
-            flagged_record_ids.add(record.final_sfi_uuid)
-            notes_by_record_id[record.final_sfi_uuid] = audit_note
-
-    audited_records: list[SFIFinalRecord] = []
-
-    for record in sfi_final_records:
-        if record.final_sfi_uuid not in flagged_record_ids:
-            audited_records.append(record)
-            continue
-
-        audit_flags = unique_nonempty(
-            [*record.audit_flags, _SUSPICIOUS_CONTROLLED_SCOPE_SPLIT_AUDIT_FLAG]
-        )
-        audit_notes = unique_nonempty(
-            [*record.audit_notes, notes_by_record_id[record.final_sfi_uuid]]
-        )
-        metadata = dict(record.metadata)
-        metadata["suspicious_controlled_scope_split"] = True
-        audited_records.append(
-            record.model_copy(
-                update={
-                    "audit_flags": audit_flags,
-                    "audit_notes": audit_notes,
-                    "metadata": metadata,
-                }
-            )
-        )
-
-    return audited_records
-
-
 def mint_final_sfi_ids(
     *,
     document_ir: DocumentIR,
@@ -1483,8 +1311,6 @@ def mint_final_sfi_ids(
 
     if not sfi_final_records:
         raise ValueError("Produced zero final SFI records.")
-
-    sfi_final_records = _with_controlled_scope_split_audits(sfi_final_records)
 
     _validate_final_sfi_records(sfi_final_records)
 
