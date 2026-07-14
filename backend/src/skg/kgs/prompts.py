@@ -1312,6 +1312,7 @@ def review_sfi_dedup_candidates(review_request: SFIDedupReviewRequest) -> Prompt
 - Do not invent new candidates, candidate IDs, statement codes, hierarchy nodes, or final StandardsFrameworkItem IDs.
 - Do not infer hasChild parentage or other relationships.
 - Do not choose final canonical KG text. A later step constructs final source-backed records after deduplication.
+- For a mixed-code merge, select only which existing source candidate supplies the canonical statement code. Do not rewrite, normalize beyond the supplied fields, or invent a code.
 
 ## Decision labels
 Use exactly one decision for each decision group:
@@ -1325,6 +1326,15 @@ Use exactly one decision for each decision group:
 - Do not include candidate IDs outside the supplied review set.
 - Use singleton groups when one candidate must be kept separate from the rest.
 - Give a short source-grounded reason for every group.
+
+## Canonical code-selection contract
+- Count distinct non-null normalized_statement_code values within each proposed decision group.
+- canonical_code_source_candidate_id and canonical_code_selection_reason must be null unless decision=merge and the group contains more than one distinct non-null normalized statement code.
+- For a merge with zero or one distinct non-null normalized statement code, leave both canonical-code selection fields null; deterministic pipeline logic resolves that case.
+- For a merge with multiple distinct non-null normalized statement codes, set canonical_code_source_candidate_id to exactly one coded candidate inside that decision group and explain the source-grounded selection in canonical_code_selection_reason.
+- The selected candidate's existing statement_code and normalized_statement_code become the canonical code of the logical merged SFI. Preserve all other printed codes as source provenance.
+- If the bounded evidence and runtime instructions do not justify selecting one coded source candidate, do not return merge. Use needs_review or conflict.
+- Never select a candidate outside the decision group, a candidate with no code, or a code value that is not already present on the selected candidate.
 
 ## Compact evidence model
 - review_signals are deterministic retrieval evidence. Each signal applies only to its listed candidate_ids; never assume it applies to the entire connected review set.
@@ -1394,7 +1404,7 @@ Independently determine the correct partition and decision for every supplied ca
 - Set passed=true only when the draft requires no material semantic correction.
 - When passed=false, identify every material error and return a complete corrected SFIDedupReviewResponse in corrected_response.
 - The corrected response replaces the draft. It must be complete and self-contained, not a patch.
-- You may regroup candidates, change decisions, reasons, and confidence values, or replace conflict/needs_review outcomes when the evidence and runtime policy require it.
+- You may regroup candidates, change decisions, reasons, confidence values, and canonical-code source selections, or replace conflict/needs_review outcomes when the evidence and runtime policy require it.
 - Do not invent, omit, or duplicate candidate IDs.
 
 ## Authority and compact evidence model
@@ -1415,14 +1425,18 @@ Independently determine the correct partition and decision for every supplied ca
 5. Verify every draft reason against visible evidence and runtime instructions. A fluent explanation does not make a contradictory decision valid.
 6. Determine whether textual differences change logical identity under the runtime policy or merely preserve source-visible variants within one merged item's provenance.
 7. Check same-code/different-content cases carefully. Codes are evidence, not guaranteed globally unique identities.
-8. Use needs_review only when the bounded evidence remains genuinely insufficient after applying the runtime instructions.
+8. For every proposed merge, count distinct non-null normalized codes. When there are multiple, independently verify that canonical_code_source_candidate_id identifies one coded candidate inside that merge group and that canonical_code_selection_reason justifies that exact source-backed choice.
+9. Reject a mixed-code merge that lacks a defensible source-candidate selection, selects an uncoded or out-of-group candidate, or invents a code. Use needs_review or conflict when no canonical source candidate can be justified.
+10. Use needs_review only when the bounded evidence remains genuinely insufficient after applying the runtime instructions.
 
 ## Universal response contract
 - Copy review_set_id exactly from the request.
 - Cover every input registry_candidate_id exactly once.
 - Include no candidate ID outside the request.
 - Every decision group must have a source-grounded reason.
-- Do not infer hierarchy relationships, create final StandardsFrameworkItem IDs, or choose final canonical KG text.
+- canonical_code_source_candidate_id and canonical_code_selection_reason must be null except for merge groups with multiple distinct non-null normalized source codes.
+- A mixed-code merge must select one coded candidate inside the group and provide a source-grounded canonical_code_selection_reason.
+- Do not infer hierarchy relationships, create final StandardsFrameworkItem IDs, or choose final canonical KG text beyond selecting an existing source candidate's code for a mixed-code merge.
 
 ## Validation verdict contract
 - issues should contain only meaningful findings. Use severity error for anything requiring a corrected response and warning only for non-blocking observations.

@@ -849,6 +849,108 @@ def _validate_candidate_table_indexes(
         )
 
 
+def _validate_dedup_canonical_code_selections(
+    *, review_request: SFIDedupReviewRequest, review_response: SFIDedupReviewResponse
+) -> None:
+    """Validate canonical-code source selections for dedup decision groups.
+
+    Python validates only stable cross-object contracts. It does not decide which of
+    multiple source-visible codes is semantically authoritative; the producer/checker
+    LLM must make that source-grounded choice under the runtime instructions.
+
+    Parameters
+    ----------
+    review_request
+        Bounded review request containing candidate code evidence.
+    review_response
+        Structured dedup response whose code selections should be checked.
+
+    Raises
+    ------
+    QualityError
+        If canonical-code selection fields are missing, unexpected, out of group,
+        uncoded, or inconsistent with the selected request candidate.
+    """
+
+    candidates_by_id = {
+        candidate.registry_candidate_id: candidate
+        for candidate in review_request.candidates
+    }
+
+    for group_index, decision_group in enumerate(review_response.decision_groups):
+        group_candidates = [
+            candidates_by_id[candidate_id]
+            for candidate_id in decision_group.candidate_ids
+        ]
+        distinct_normalized_codes = sorted(
+            {
+                candidate.normalized_statement_code
+                for candidate in group_candidates
+                if candidate.normalized_statement_code
+            }
+        )
+        selection_candidate_id = decision_group.canonical_code_source_candidate_id
+        selection_reason = decision_group.canonical_code_selection_reason
+        requires_selection = (
+            decision_group.decision == "merge" and len(distinct_normalized_codes) > 1
+        )
+
+        if not requires_selection:
+            if selection_candidate_id is not None or selection_reason is not None:
+                raise QualityError(
+                    f"Dedup decision group {group_index} must leave canonical-code "
+                    f"selection fields null unless decision='merge' and multiple "
+                    f"distinct normalized source codes are present."
+                )
+
+            continue
+
+        if selection_candidate_id is None:
+            raise QualityError(
+                f"Dedup mixed-code merge group {group_index} must provide "
+                f"canonical_code_source_candidate_id."
+            )
+
+        if selection_reason is None:
+            raise QualityError(
+                f"Dedup mixed-code merge group {group_index} must provide "
+                f"canonical_code_selection_reason."
+            )
+
+        if selection_candidate_id not in decision_group.candidate_ids:
+            raise QualityError(
+                f"Dedup mixed-code merge group {group_index} selected candidate "
+                f"{selection_candidate_id!r}, which is outside that decision group."
+            )
+
+        selected_candidate = candidates_by_id.get(selection_candidate_id)
+
+        if selected_candidate is None:
+            raise QualityError(
+                f"Dedup mixed-code merge group {group_index} selected unknown "
+                f"candidate {selection_candidate_id!r}."
+            )
+
+        if (
+            selected_candidate.statement_code is None
+            or selected_candidate.normalized_statement_code is None
+        ):
+            raise QualityError(
+                f"Dedup mixed-code merge group {group_index} selected uncoded "
+                f"candidate {selection_candidate_id!r}."
+            )
+
+        if (
+            selected_candidate.normalized_statement_code
+            not in distinct_normalized_codes
+        ):
+            raise QualityError(
+                f"Dedup mixed-code merge group {group_index} selected candidate "
+                f"{selection_candidate_id!r} whose normalized code is not among the "
+                f"group's preserved source codes."
+            )
+
+
 def _validate_dedup_issue_candidate_ids(
     *,
     review_request: SFIDedupReviewRequest,
@@ -1318,7 +1420,8 @@ def verify_sfi_dedup_review_integrity(
     Raises
     ------
     QualityError
-        If review-set identity or exact candidate coverage is invalid.
+        If review-set identity, exact candidate coverage, or canonical-code selection
+        integrity is invalid.
     """
 
     if review_response.review_set_id != review_request.review_set_id:
@@ -1328,6 +1431,9 @@ def verify_sfi_dedup_review_integrity(
         )
 
     _validate_dedup_response_candidate_coverage(
+        review_request=review_request, review_response=review_response
+    )
+    _validate_dedup_canonical_code_selections(
         review_request=review_request, review_response=review_response
     )
 

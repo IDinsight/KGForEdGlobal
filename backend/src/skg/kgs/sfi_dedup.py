@@ -23,6 +23,7 @@ from pydantic import BaseModel
 # Package Library
 from skg.kgs.llm import KGUsageTracker, review_sfi_dedup_set
 from skg.kgs.schemas import (
+    SFICodeResolutionMethod,
     SFIDedupContextWindow,
     SFIDedupDecision,
     SFIDedupReviewCandidate,
@@ -50,6 +51,31 @@ from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, open_json_type, write_to_json
 
 _SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG = "same_code_different_content"
+
+
+@dataclass(frozen=True)
+class _CodeResolution:
+    """Resolved canonical-code details for one SFI merge group.
+
+    Attributes
+    ----------
+    canonical_code_source_candidate_id
+        Registry candidate selected by review when multiple distinct source codes merge.
+    canonical_normalized_statement_code
+        Resolved normalized code for the logical merged item, when coded.
+    canonical_statement_code
+        Resolved source-backed code surface for the logical merged item, when coded.
+    code_resolution_method
+        Deterministic method describing how the canonical code was resolved.
+    code_resolution_reason
+        Source-grounded or deterministic explanation for the resolution.
+    """
+
+    canonical_code_source_candidate_id: str | None
+    canonical_normalized_statement_code: str | None
+    canonical_statement_code: str | None
+    code_resolution_method: SFICodeResolutionMethod
+    code_resolution_reason: str
 
 
 @dataclass(frozen=True)
@@ -89,7 +115,7 @@ def _annotate_same_code_different_content_audit_flags(
         # If these are truthy, they are non-empty strings.
         if not (
             merge_group.merge_decision in {"merged", "singleton"}
-            and merge_group.normalized_statement_code
+            and merge_group.canonical_normalized_statement_code
             and merge_group.normalized_statement_type
             and merge_group.statement_type
         ):
@@ -99,7 +125,7 @@ def _annotate_same_code_different_content_audit_flags(
             (
                 merge_group.statement_type,
                 merge_group.normalized_statement_type,
-                merge_group.normalized_statement_code,
+                merge_group.canonical_normalized_statement_code,
             )
         ].append(merge_group)
 
@@ -451,6 +477,8 @@ def _build_initial_review_edges(
 def _build_merge_group(
     *,
     candidates: Sequence[SFIRegistryCandidate],
+    canonical_code_selection_reason: str | None = None,
+    canonical_code_source_candidate_id: str | None = None,
     llm_decision: SFIDedupDecision | None,
     llm_review_set_id: str | None,
     merge_decision: SFIMergeDecision,
@@ -532,6 +560,11 @@ def _build_merge_group(
     ----------
     candidates
         Registry candidates included in this merge group.
+    canonical_code_selection_reason
+        Source-grounded reason for selecting a canonical code source in a mixed-code
+        merge group.
+    canonical_code_source_candidate_id
+        Candidate selected as the canonical code source in a mixed-code merge group.
     llm_decision
         Original LLM decision for reviewed groups, if any.
     llm_review_set_id
@@ -572,12 +605,19 @@ def _build_merge_group(
     statement_types = unique_nonempty(
         candidate.statement_type for candidate in sorted_candidates
     )
+    code_resolution = _resolve_code_resolution(
+        candidates=sorted_candidates,
+        canonical_code_selection_reason=canonical_code_selection_reason,
+        canonical_code_source_candidate_id=canonical_code_source_candidate_id,
+        merge_decision=merge_decision,
+    )
     digest = hashlib.sha256(
         "|".join(
             str(value)
             for value in [
                 merge_decision,
                 llm_review_set_id or "",
+                code_resolution.canonical_code_source_candidate_id or "",
                 *registry_candidate_ids,
             ]
         ).encode("utf-8")
@@ -604,6 +644,13 @@ def _build_merge_group(
         candidate_source_texts=unique_nonempty(
             candidate.source_text for candidate in sorted_candidates
         ),
+        canonical_code_source_candidate_id=(
+            code_resolution.canonical_code_source_candidate_id
+        ),
+        canonical_normalized_statement_code=(
+            code_resolution.canonical_normalized_statement_code
+        ),
+        canonical_statement_code=code_resolution.canonical_statement_code,
         canonical_statement_value=(
             canonical_statement_values[0]
             if len(canonical_statement_values) == 1
@@ -616,6 +663,8 @@ def _build_merge_group(
         ),
         canonical_statement_value_keys=canonical_statement_value_keys,
         canonical_statement_values=canonical_statement_values,
+        code_resolution_method=code_resolution.code_resolution_method,
+        code_resolution_reason=code_resolution.code_resolution_reason,
         confidence_max=max(confidence_values),
         confidence_min=min(confidence_values),
         llm_decision=llm_decision,
@@ -812,6 +861,12 @@ def _build_merge_groups_from_responses(
                 merge_groups.append(
                     _build_merge_group(
                         candidates=group_candidates,
+                        canonical_code_selection_reason=(
+                            decision_group.canonical_code_selection_reason
+                        ),
+                        canonical_code_source_candidate_id=(
+                            decision_group.canonical_code_source_candidate_id
+                        ),
                         llm_decision=decision_group.decision,
                         llm_review_set_id=review_response.review_set_id,
                         merge_decision="merged",
@@ -2025,6 +2080,186 @@ def _registry_warning_signals(
         )
 
     return signals
+
+
+def _resolve_code_resolution(
+    *,
+    candidates: Sequence[SFIRegistryCandidate],
+    canonical_code_selection_reason: str | None,
+    canonical_code_source_candidate_id: str | None,
+    merge_decision: SFIMergeDecision,
+) -> _CodeResolution:
+    """Resolve one merge group's canonical statement code deterministically.
+
+    Zero-code and single-code groups resolve without LLM selection. A merged group with
+    multiple distinct normalized source codes must identify one coded source candidate
+    selected by the reviewed dedup decision. Conflict and needs-review groups preserve
+    multiple codes without selecting a canonical one.
+
+    Parameters
+    ----------
+    candidates
+        Registry candidates included in the merge group.
+    canonical_code_selection_reason
+        Source-grounded LLM reason for a mixed-code merge selection, when required.
+    canonical_code_source_candidate_id
+        Candidate selected by the LLM as the canonical code source, when required.
+    merge_decision
+        Final merge decision for the group.
+
+    Returns
+    -------
+    _CodeResolution
+        Canonical-code resolution details for the merge group.
+
+    Raises
+    ------
+    ValueError
+        If source code fields are internally inconsistent or a mixed-code merged group
+        lacks a valid coded source-candidate selection.
+    """
+
+    sorted_candidates = sorted(
+        candidates, key=lambda candidate: candidate.registry_candidate_id
+    )
+    normalized_codes = unique_nonempty(
+        candidate.normalized_statement_code for candidate in sorted_candidates
+    )
+    statement_codes = unique_nonempty(
+        candidate.statement_code for candidate in sorted_candidates
+    )
+
+    if not normalized_codes:
+        if statement_codes:
+            raise ValueError(
+                "SFI candidates expose statement_code values without corresponding "
+                "normalized_statement_code values."
+            )
+
+        if (
+            canonical_code_selection_reason is not None
+            or canonical_code_source_candidate_id is not None
+        ):
+            raise ValueError(
+                "No-code merge groups must not define canonical-code selection fields."
+            )
+
+        return _CodeResolution(
+            canonical_code_source_candidate_id=None,
+            canonical_normalized_statement_code=None,
+            canonical_statement_code=None,
+            code_resolution_method="no_source_code",
+            code_resolution_reason=(
+                "No source candidate in the merge group has a normalized statement code."
+            ),
+        )
+
+    if len(normalized_codes) == 1:
+        if (
+            canonical_code_selection_reason is not None
+            or canonical_code_source_candidate_id is not None
+        ):
+            raise ValueError(
+                "Single-code merge groups must not define canonical-code selection fields."
+            )
+
+        canonical_candidate = next(
+            (
+                candidate
+                for candidate in sorted_candidates
+                if candidate.normalized_statement_code == normalized_codes[0]
+                and candidate.statement_code
+            ),
+            None,
+        )
+
+        if canonical_candidate is None:
+            raise ValueError(
+                "A normalized source code exists without a source-backed statement "
+                "code candidate."
+            )
+
+        return _CodeResolution(
+            canonical_code_source_candidate_id=None,
+            canonical_normalized_statement_code=(
+                canonical_candidate.normalized_statement_code
+            ),
+            canonical_statement_code=canonical_candidate.statement_code,
+            code_resolution_method="single_source_code",
+            code_resolution_reason=(
+                "All coded source candidates in the merge group resolve to one "
+                "normalized statement code."
+            ),
+        )
+
+    if merge_decision != "merged":
+        if (
+            canonical_code_selection_reason is not None
+            or canonical_code_source_candidate_id is not None
+        ):
+            raise ValueError(
+                "Conflict and needs-review groups must not select a canonical code "
+                "source candidate."
+            )
+
+        return _CodeResolution(
+            canonical_code_source_candidate_id=None,
+            canonical_normalized_statement_code=None,
+            canonical_statement_code=None,
+            code_resolution_method="unresolved_multiple_source_codes",
+            code_resolution_reason=(
+                "The group preserves multiple distinct normalized source codes and is "
+                "not eligible for canonical-code selection."
+            ),
+        )
+
+    if canonical_code_source_candidate_id is None:
+        raise ValueError(
+            "A merged group with multiple distinct normalized source codes requires "
+            "canonical_code_source_candidate_id."
+        )
+
+    if canonical_code_selection_reason is None:
+        raise ValueError(
+            "A merged group with multiple distinct normalized source codes requires "
+            "canonical_code_selection_reason."
+        )
+
+    candidates_by_id = {
+        candidate.registry_candidate_id: candidate for candidate in sorted_candidates
+    }
+    canonical_candidate = candidates_by_id.get(canonical_code_source_candidate_id)
+
+    if canonical_candidate is None:
+        raise ValueError(
+            f"Canonical code source candidate "
+            f"{canonical_code_source_candidate_id!r} is not in the merge group."
+        )
+
+    if (
+        canonical_candidate.statement_code is None
+        or canonical_candidate.normalized_statement_code is None
+    ):
+        raise ValueError(
+            f"Canonical code source candidate "
+            f"{canonical_code_source_candidate_id!r} has no source-backed code."
+        )
+
+    if canonical_candidate.normalized_statement_code not in normalized_codes:
+        raise ValueError(
+            "Selected canonical normalized statement code is not preserved among the "
+            "merge group's source codes."
+        )
+
+    return _CodeResolution(
+        canonical_code_source_candidate_id=canonical_code_source_candidate_id,
+        canonical_normalized_statement_code=(
+            canonical_candidate.normalized_statement_code
+        ),
+        canonical_statement_code=canonical_candidate.statement_code,
+        code_resolution_method="review_selected_source_code",
+        code_resolution_reason=canonical_code_selection_reason,
+    )
 
 
 def _resolve_max_dedup_review_set_candidates(

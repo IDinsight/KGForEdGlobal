@@ -88,7 +88,7 @@ def _build_code_group_counts(
     counts: Counter[tuple[str, str, str]] = Counter()
 
     for merge_group in eligible_merge_groups:
-        normalized_statement_code = merge_group.normalized_statement_code
+        normalized_statement_code = merge_group.canonical_normalized_statement_code
 
         if not normalized_statement_code:
             continue
@@ -118,7 +118,7 @@ def _build_code_group_key(merge_group: SFIMergeGroup) -> tuple[str, str, str]:
         If the merge group does not have the fields required for coded identity.
     """
 
-    if not merge_group.normalized_statement_code:
+    if not merge_group.canonical_normalized_statement_code:
         raise ValueError(
             f"Merge group {merge_group.merge_group_id!r} has no normalized code."
         )
@@ -126,7 +126,7 @@ def _build_code_group_key(merge_group: SFIMergeGroup) -> tuple[str, str, str]:
     return (
         _shared_statement_type(merge_group),
         _shared_normalized_statement_type(merge_group),
-        merge_group.normalized_statement_code,
+        merge_group.canonical_normalized_statement_code,
     )
 
 
@@ -220,10 +220,10 @@ def _build_identity_key(
         f"{normalized_statement_type_key}:{statement_type_key}"
     )
 
-    if merge_group.normalized_statement_code:
+    if merge_group.canonical_normalized_statement_code:
         code_group_key = _build_code_group_key(merge_group)
         code_identity_family_key = _format_identity_family_key(code_group_key)
-        identity_key = f"{base_key}:{merge_group.normalized_statement_code}"
+        identity_key = f"{base_key}:{merge_group.canonical_normalized_statement_code}"
         needs_disambiguator = (
             _SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG in merge_group.audit_flags
             or code_group_counts.get(code_group_key, 0) > 1
@@ -308,7 +308,7 @@ def _build_no_code_group_counts(
     counts: Counter[tuple[str, str, str, str]] = Counter()
 
     for merge_group in eligible_merge_groups:
-        if merge_group.normalized_statement_code:
+        if merge_group.canonical_normalized_statement_code:
             continue
 
         key = _build_no_code_group_key(merge_group)
@@ -337,7 +337,7 @@ def _build_no_code_group_key(merge_group: SFIMergeGroup) -> tuple[str, str, str,
         If the merge group has a normalized code and should use coded identity instead.
     """
 
-    if merge_group.normalized_statement_code:
+    if merge_group.canonical_normalized_statement_code:
         raise ValueError(
             f"Merge group {merge_group.merge_group_id!r} has a normalized code and "
             f"cannot use no-code identity."
@@ -610,10 +610,19 @@ def _build_sfi_final_record(
         candidate_descriptions=merge_group.candidate_descriptions,
         candidate_source_refs=merge_group.candidate_source_refs,
         candidate_source_texts=merge_group.candidate_source_texts,
+        canonical_code_source_candidate_id=(
+            merge_group.canonical_code_source_candidate_id
+        ),
+        canonical_normalized_statement_code=(
+            merge_group.canonical_normalized_statement_code
+        ),
+        canonical_statement_code=merge_group.canonical_statement_code,
         canonical_statement_value=merge_group.canonical_statement_value,
         canonical_statement_value_key=merge_group.canonical_statement_value_key,
         case_identifier_uri=f"urn:uuid:{final_sfi_uuid}",
         case_identifier_uuid=final_sfi_uuid,
+        code_resolution_method=merge_group.code_resolution_method,
+        code_resolution_reason=merge_group.code_resolution_reason,
         confidence_max=merge_group.confidence_max,
         confidence_min=merge_group.confidence_min,
         description=_choose_final_description(merge_group),
@@ -632,6 +641,21 @@ def _build_sfi_final_record(
         merge_group_id=merge_group.merge_group_id,
         merge_reason=merge_group.merge_reason,
         metadata={
+            "code_resolution": {
+                "canonical_code_source_candidate_id": (
+                    merge_group.canonical_code_source_candidate_id
+                ),
+                "canonical_normalized_statement_code": (
+                    merge_group.canonical_normalized_statement_code
+                ),
+                "canonical_statement_code": merge_group.canonical_statement_code,
+                "method": merge_group.code_resolution_method,
+                "reason": merge_group.code_resolution_reason,
+                "source_normalized_statement_codes": (
+                    merge_group.normalized_statement_codes
+                ),
+                "source_statement_codes": merge_group.statement_codes,
+            },
             "country": kg_config.metadata.country,
             "doc_key": document_ir.doc_key,
             "framework_title": kg_config.metadata.framework_title,
@@ -654,16 +678,18 @@ def _build_sfi_final_record(
                 "canonical_statement_value_key": merge_group.canonical_statement_value_key,
             },
         },
-        normalized_statement_code=merge_group.normalized_statement_code,
+        normalized_statement_code=merge_group.canonical_normalized_statement_code,
         normalized_statement_type=_shared_normalized_statement_type(merge_group),
         provider=kg_config.metadata.provider,
         source_context_keys=source_context_keys,
+        source_normalized_statement_codes=merge_group.normalized_statement_codes,
         source_page_indexes=source_page_indexes,
         source_registry_candidate_ids=merge_group.registry_candidate_ids,
         source_segment_ids=merge_group.source_segment_ids,
+        source_statement_codes=merge_group.statement_codes,
         source_window_ids=merge_group.source_window_ids,
         source_window_indexes=merge_group.source_window_indexes,
-        statement_code=merge_group.statement_code,
+        statement_code=merge_group.canonical_statement_code,
         statement_type=statement_type,
     )
 
@@ -1184,6 +1210,130 @@ def _validate_final_sfi_records(final_sfi_records: Sequence[SFIFinalRecord]) -> 
         )
 
 
+def _validate_merge_group_code_resolutions(
+    *,
+    eligible_merge_groups: Sequence[SFIMergeGroup],
+    sfi_candidates_by_id: dict[str, SFIRegistryCandidate],
+) -> None:
+    """Validate canonical-code resolution for finalizable merge groups.
+
+    This is a defensive finalization check. Deduplication owns the semantic choice of
+    the canonical source candidate for a mixed-code merge; finalization verifies that
+    the persisted choice is complete, source-backed, and internally consistent.
+
+    Parameters
+    ----------
+    eligible_merge_groups
+        Merge groups eligible for final SFI minting.
+    sfi_candidates_by_id
+        Registry candidates keyed by registry candidate ID.
+
+    Raises
+    ------
+    ValueError
+        If a coded group lacks a canonical code, a canonical code is absent from source
+        evidence, or a review-selected source candidate does not support the persisted
+        canonical code.
+    """
+
+    for merge_group in eligible_merge_groups:
+        source_normalized_codes = unique_nonempty(
+            merge_group.normalized_statement_codes
+        )
+        source_statement_codes = unique_nonempty(merge_group.statement_codes)
+        canonical_normalized_code = merge_group.canonical_normalized_statement_code
+        canonical_statement_code = merge_group.canonical_statement_code
+
+        if source_normalized_codes and canonical_normalized_code is None:
+            raise ValueError(
+                f"Eligible merge group {merge_group.merge_group_id!r} contains "
+                f"source-visible normalized codes but has no resolved canonical "
+                f"normalized statement code."
+            )
+
+        if not source_normalized_codes and canonical_normalized_code is not None:
+            raise ValueError(
+                f"Eligible merge group {merge_group.merge_group_id!r} defines a "
+                f"canonical normalized statement code without preserved normalized "
+                f"source-code evidence."
+            )
+
+        if source_statement_codes and canonical_statement_code is None:
+            raise ValueError(
+                f"Eligible merge group {merge_group.merge_group_id!r} contains "
+                f"source-visible statement codes but has no resolved canonical "
+                f"statement code."
+            )
+
+        if not source_statement_codes and canonical_statement_code is not None:
+            raise ValueError(
+                f"Eligible merge group {merge_group.merge_group_id!r} defines a "
+                f"canonical statement code without preserved source-code evidence."
+            )
+
+        if (
+            canonical_normalized_code is not None
+            and canonical_normalized_code not in source_normalized_codes
+        ):
+            raise ValueError(
+                f"Eligible merge group {merge_group.merge_group_id!r} has canonical "
+                f"normalized code {canonical_normalized_code!r}, which is not present "
+                f"in normalized_statement_codes."
+            )
+
+        if (
+            canonical_statement_code is not None
+            and canonical_statement_code not in source_statement_codes
+        ):
+            raise ValueError(
+                f"Eligible merge group {merge_group.merge_group_id!r} has canonical "
+                f"statement code {canonical_statement_code!r}, which is not present "
+                f"in statement_codes."
+            )
+
+        if merge_group.code_resolution_method != "review_selected_source_code":
+            if merge_group.canonical_code_source_candidate_id is not None:
+                raise ValueError(
+                    f"Eligible merge group {merge_group.merge_group_id!r} defines "
+                    f"canonical_code_source_candidate_id without a review-selected "
+                    f"code-resolution method."
+                )
+
+            continue
+
+        selected_candidate_id = merge_group.canonical_code_source_candidate_id
+
+        if selected_candidate_id is None:
+            raise ValueError(
+                f"Eligible merge group {merge_group.merge_group_id!r} uses "
+                f"review_selected_source_code without a selected source candidate."
+            )
+
+        if selected_candidate_id not in merge_group.registry_candidate_ids:
+            raise ValueError(
+                f"Eligible merge group {merge_group.merge_group_id!r} selected "
+                f"candidate {selected_candidate_id!r}, which is outside the group."
+            )
+
+        selected_candidate = sfi_candidates_by_id.get(selected_candidate_id)
+
+        if selected_candidate is None:
+            raise ValueError(
+                f"Eligible merge group {merge_group.merge_group_id!r} selected "
+                f"unknown registry candidate {selected_candidate_id!r}."
+            )
+
+        if (
+            selected_candidate.normalized_statement_code != canonical_normalized_code
+            or selected_candidate.statement_code != canonical_statement_code
+        ):
+            raise ValueError(
+                f"Eligible merge group {merge_group.merge_group_id!r} canonical code "
+                f"does not match selected source candidate "
+                f"{selected_candidate_id!r}."
+            )
+
+
 def _validate_merge_group_coverage(
     *, sfi_candidate_registry: SFIRegistryArtifact, sfi_merge_report: SFIMergeReport
 ) -> None:
@@ -1288,13 +1438,17 @@ def mint_final_sfi_ids(
         for merge_group in sfi_merge_report.merge_groups
         if merge_group.merge_decision in {"merged", "singleton"}
     ]
-    code_group_counts = _build_code_group_counts(eligible_merge_groups)
-    no_code_group_counts = _build_no_code_group_counts(eligible_merge_groups)
-    segment_page_indexes_by_id = _build_segment_page_index_lookup(document_ir)
     sfi_candidates_by_id = {
         candidate.registry_candidate_id: candidate
         for candidate in sfi_candidate_registry.candidates
     }
+    _validate_merge_group_code_resolutions(
+        eligible_merge_groups=eligible_merge_groups,
+        sfi_candidates_by_id=sfi_candidates_by_id,
+    )
+    code_group_counts = _build_code_group_counts(eligible_merge_groups)
+    no_code_group_counts = _build_no_code_group_counts(eligible_merge_groups)
+    segment_page_indexes_by_id = _build_segment_page_index_lookup(document_ir)
 
     sfi_final_records = [
         _build_sfi_final_record(

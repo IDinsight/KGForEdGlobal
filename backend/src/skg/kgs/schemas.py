@@ -29,6 +29,12 @@ _AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo
 _AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
 _MetadataT = dict[str, Any]
 _ProgressionSubtype = Literal["developmental_prerequisite", "recurring_practice"]
+SFICodeResolutionMethod = Literal[
+    "no_source_code",
+    "review_selected_source_code",
+    "single_source_code",
+    "unresolved_multiple_source_codes",
+]
 SFIDedupDecision = Literal["conflict", "keep_separate", "merge", "needs_review"]
 SFIMergeDecision = Literal["conflict", "merged", "needs_review", "singleton"]
 
@@ -1463,6 +1469,20 @@ class SFIDedupDecisionGroup(BaseSchema):
         description="Registry candidate IDs assigned to this decision group.",
         min_length=1,
     )
+    canonical_code_selection_reason: Optional[str] = Field(
+        default=None,
+        description=(
+            "Source-grounded reason for choosing canonical_code_source_candidate_id "
+            "when a merge group contains multiple distinct normalized source codes."
+        ),
+    )
+    canonical_code_source_candidate_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Candidate whose existing source-backed code should become canonical when "
+            "a merge decision combines multiple distinct normalized source codes."
+        ),
+    )
     confidence: float = Field(
         default=0.5, description="LLM confidence in the decision.", ge=0.0, le=1.0
     )
@@ -1470,6 +1490,32 @@ class SFIDedupDecisionGroup(BaseSchema):
     reason: str = Field(
         description="Short source-grounded decision reason.", min_length=1
     )
+
+    @field_validator(
+        "canonical_code_selection_reason",
+        "canonical_code_source_candidate_id",
+        mode="before",
+    )
+    @classmethod
+    def clean_optional_code_selection_strings(cls, v: Optional[str]) -> Optional[str]:
+        """Strip optional canonical-code selection fields.
+
+        Parameters
+        ----------
+        v
+            Raw optional selection value.
+
+        Returns
+        -------
+        Optional[str]
+            Stripped value, or `None` when blank.
+        """
+
+        if v is None:
+            return None
+
+        value = str(v).strip()
+        return value or None
 
     @field_validator("candidate_ids")
     @classmethod
@@ -1999,6 +2045,21 @@ class SFIMergeGroup(BaseSchema):
     candidate_source_texts: list[str] = Field(
         default_factory=list, description="Unique source-visible evidence snippets."
     )
+    canonical_code_source_candidate_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Registry candidate whose source-backed code was selected as canonical "
+            "for a mixed-code merge group."
+        ),
+    )
+    canonical_normalized_statement_code: Optional[str] = Field(
+        default=None,
+        description="Resolved normalized code for the logical merged SFI, when coded.",
+    )
+    canonical_statement_code: Optional[str] = Field(
+        default=None,
+        description="Resolved source-backed code for the logical merged SFI, when coded.",
+    )
     canonical_statement_value: Optional[str] = Field(
         default=None,
         description="Shared canonical controlled statement value, when unique.",
@@ -2014,6 +2075,13 @@ class SFIMergeGroup(BaseSchema):
     canonical_statement_values: list[str] = Field(
         default_factory=list,
         description="All canonical controlled statement values in the group.",
+    )
+    code_resolution_method: SFICodeResolutionMethod = Field(
+        description="Deterministic method used to resolve the group's canonical code."
+    )
+    code_resolution_reason: str = Field(
+        description="Source-grounded or deterministic canonical-code resolution reason.",
+        min_length=1,
     )
     confidence_max: float = Field(
         description="Maximum candidate confidence in this group.", ge=0.0, le=1.0
@@ -2068,6 +2136,53 @@ class SFIMergeGroup(BaseSchema):
     )
 
     @field_validator(
+        "canonical_code_source_candidate_id",
+        "canonical_normalized_statement_code",
+        "canonical_statement_code",
+        "normalized_statement_code",
+        "statement_code",
+        mode="before",
+    )
+    @classmethod
+    def clean_optional_code_strings(cls, v: Optional[str]) -> Optional[str]:
+        """Strip optional code-resolution strings and normalize blanks to `None`.
+
+        Parameters
+        ----------
+        v
+            Raw optional string.
+
+        Returns
+        -------
+        Optional[str]
+            Stripped string, or `None` when blank.
+        """
+
+        if v is None:
+            return None
+
+        value = str(v).strip()
+        return value or None
+
+    @field_validator("code_resolution_reason", mode="before")
+    @classmethod
+    def clean_code_resolution_reason(cls, v: str) -> str:
+        """Strip and require a non-empty code-resolution reason.
+
+        Parameters
+        ----------
+        v
+            Raw resolution reason.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty reason.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+    @field_validator(
         "audit_flags",
         "audit_notes",
         "audit_peer_merge_group_ids",
@@ -2117,6 +2232,144 @@ class SFIMergeGroup(BaseSchema):
         """
 
         return sorted(set(int(index) for index in v or []))
+
+    @model_validator(mode="after")
+    def validate_code_resolution_contract(self) -> Self:
+        """Validate canonical-code resolution against preserved source codes.
+
+        Returns
+        -------
+        Self
+            Validated merge group.
+
+        Raises
+        ------
+        ValueError
+            If the resolution method, canonical fields, source-code evidence, or merge
+            decision are inconsistent.
+        """
+
+        source_normalized_codes = unique_clean_strings(self.normalized_statement_codes)
+        source_statement_codes = unique_clean_strings(self.statement_codes)
+
+        if self.code_resolution_method == "no_source_code":
+            if source_normalized_codes or source_statement_codes:
+                raise ValueError(
+                    "no_source_code requires empty source statement-code lists."
+                )
+
+            if any(
+                [
+                    self.canonical_code_source_candidate_id,
+                    self.canonical_normalized_statement_code,
+                    self.canonical_statement_code,
+                ]
+            ):
+                raise ValueError(
+                    "no_source_code must not define canonical code fields."
+                )
+
+            return self
+
+        if self.code_resolution_method == "single_source_code":
+            if len(source_normalized_codes) != 1:
+                raise ValueError(
+                    "single_source_code requires exactly one distinct normalized "
+                    "source statement code."
+                )
+
+            if self.canonical_normalized_statement_code != source_normalized_codes[0]:
+                raise ValueError(
+                    "single_source_code canonical normalized code must equal the "
+                    "single preserved normalized source code."
+                )
+
+            if (
+                not self.canonical_statement_code
+                or self.canonical_statement_code not in source_statement_codes
+            ):
+                raise ValueError(
+                    "single_source_code canonical statement code must be preserved in "
+                    "statement_codes."
+                )
+
+            if self.canonical_code_source_candidate_id is not None:
+                raise ValueError(
+                    "single_source_code must not require an LLM-selected source "
+                    "candidate."
+                )
+
+            return self
+
+        if self.code_resolution_method == "review_selected_source_code":
+            if len(source_normalized_codes) < 2:
+                raise ValueError(
+                    "review_selected_source_code requires multiple distinct normalized "
+                    "source codes."
+                )
+
+            if self.merge_decision != "merged":
+                raise ValueError(
+                    "review_selected_source_code is valid only for a merged group."
+                )
+
+            if not self.canonical_code_source_candidate_id:
+                raise ValueError(
+                    "review_selected_source_code requires "
+                    "canonical_code_source_candidate_id."
+                )
+
+            if (
+                not self.canonical_normalized_statement_code
+                or self.canonical_normalized_statement_code
+                not in source_normalized_codes
+            ):
+                raise ValueError(
+                    "Selected canonical normalized code must be preserved in "
+                    "normalized_statement_codes."
+                )
+
+            if (
+                not self.canonical_statement_code
+                or self.canonical_statement_code not in source_statement_codes
+            ):
+                raise ValueError(
+                    "Selected canonical statement code must be preserved in "
+                    "statement_codes."
+                )
+
+            return self
+
+        if self.code_resolution_method == "unresolved_multiple_source_codes":
+            if len(source_normalized_codes) < 2:
+                raise ValueError(
+                    "unresolved_multiple_source_codes requires multiple distinct "
+                    "normalized source codes."
+                )
+
+            if self.merge_decision not in {"conflict", "needs_review"}:
+                raise ValueError(
+                    "Unresolved multiple source codes are allowed only for conflict "
+                    "or needs_review groups."
+                )
+
+            if any(
+                [
+                    self.canonical_code_source_candidate_id,
+                    self.canonical_normalized_statement_code,
+                    self.canonical_statement_code,
+                ]
+            ):
+                raise ValueError(
+                    "Unresolved multiple source codes must not define canonical code "
+                    "fields."
+                )
+
+            return self
+
+        raise ValueError(
+            f"Unsupported code_resolution_method {self.code_resolution_method!r}."
+        )
 
 
 class SFIMergeReport(BaseSchema):
@@ -2231,6 +2484,21 @@ class SFIFinalRecord(BaseSchema):
         default_factory=list,
         description="Unique source-visible evidence quotes preserved for audit.",
     )
+    canonical_code_source_candidate_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Registry candidate whose source-backed code was selected as canonical "
+            "for a mixed-code merge."
+        ),
+    )
+    canonical_normalized_statement_code: Optional[str] = Field(
+        default=None,
+        description="Resolved normalized statement code for the final logical SFI.",
+    )
+    canonical_statement_code: Optional[str] = Field(
+        default=None,
+        description="Resolved source-backed statement code for the final logical SFI.",
+    )
     canonical_statement_value: Optional[str] = Field(
         default=None,
         description="Canonical controlled statement value, when configured.",
@@ -2244,6 +2512,13 @@ class SFIFinalRecord(BaseSchema):
     )
     case_identifier_uuid: UUID = Field(
         description="CASE-compatible deterministic final SFI UUID."
+    )
+    code_resolution_method: SFICodeResolutionMethod = Field(
+        description="Method used to resolve the final SFI's canonical code."
+    )
+    code_resolution_reason: str = Field(
+        description="Source-grounded or deterministic canonical-code resolution reason.",
+        min_length=1,
     )
     confidence_max: float = Field(
         description="Maximum candidate confidence in this final SFI.", ge=0.0, le=1.0
@@ -2269,7 +2544,8 @@ class SFIFinalRecord(BaseSchema):
         description="Free-form deterministic metadata for downstream KG stages.",
     )
     normalized_statement_code: Optional[str] = Field(
-        default=None, description="Shared normalized source statement code, if any."
+        default=None,
+        description="Resolved canonical normalized statement code, if any.",
     )
     normalized_statement_type: NormalizedStatementType = Field(
         description="Normalized SFI statement type."
@@ -2278,6 +2554,9 @@ class SFIFinalRecord(BaseSchema):
     source_context_keys: list[str] = Field(
         default_factory=list,
         description="Source-context keys from registry candidate source refs.",
+    )
+    source_normalized_statement_codes: list[str] = Field(
+        description="All normalized source-visible statement codes preserved for audit."
     )
     source_page_indexes: list[int] = Field(
         default_factory=list,
@@ -2290,6 +2569,9 @@ class SFIFinalRecord(BaseSchema):
     source_segment_ids: list[str] = Field(
         default_factory=list, description="Merged source DocumentIR segment IDs."
     )
+    source_statement_codes: list[str] = Field(
+        description="All source-visible statement codes preserved for audit."
+    )
     source_window_ids: list[str] = Field(
         default_factory=list, description="Merged extraction-window IDs."
     )
@@ -2297,7 +2579,8 @@ class SFIFinalRecord(BaseSchema):
         default_factory=list, description="Merged extraction-window indexes."
     )
     statement_code: Optional[str] = Field(
-        default=None, description="Source statement code, if shared by the final SFI."
+        default=None,
+        description="Resolved canonical source-backed statement code, if any.",
     )
     statement_type: str = Field(description="Source-facing SFI statement type.")
 
@@ -2306,6 +2589,7 @@ class SFIFinalRecord(BaseSchema):
         "attribution_statement",
         "author",
         "case_identifier_uri",
+        "code_resolution_reason",
         "description",
         "identity_key",
         "in_language",
@@ -2336,7 +2620,14 @@ class SFIFinalRecord(BaseSchema):
 
         return strip_and_require_non_empty_str(v)
 
-    @field_validator("normalized_statement_code", "statement_code", mode="before")
+    @field_validator(
+        "canonical_code_source_candidate_id",
+        "canonical_normalized_statement_code",
+        "canonical_statement_code",
+        "normalized_statement_code",
+        "statement_code",
+        mode="before",
+    )
     @classmethod
     def _strip_optional_strings(cls, v: Optional[str]) -> Optional[str]:
         """Strip optional strings and normalize blanks to None.
@@ -2365,8 +2656,10 @@ class SFIFinalRecord(BaseSchema):
         "candidate_descriptions",
         "candidate_source_texts",
         "source_context_keys",
+        "source_normalized_statement_codes",
         "source_registry_candidate_ids",
         "source_segment_ids",
+        "source_statement_codes",
         "source_window_ids",
     )
     @classmethod
@@ -2427,6 +2720,164 @@ class SFIFinalRecord(BaseSchema):
 
         if not self.case_identifier_uri.endswith(str(self.final_sfi_uuid)):
             raise ValueError("case_identifier_uri must end with final_sfi_uuid.")
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_final_code_resolution_contract(self) -> Self:
+        """Validate final-record canonical-code resolution semantics.
+
+        Returns
+        -------
+        Self
+            Validated final SFI record.
+
+        Raises
+        ------
+        ValueError
+            If the resolution method conflicts with preserved source codes, canonical
+            fields, merge eligibility, or source-candidate selection metadata.
+        """
+
+        source_normalized_codes = unique_clean_strings(
+            self.source_normalized_statement_codes
+        )
+        source_statement_codes = unique_clean_strings(self.source_statement_codes)
+
+        if self.code_resolution_method == "no_source_code":
+            if source_normalized_codes or source_statement_codes:
+                raise ValueError(
+                    "no_source_code final records require empty source-code lists."
+                )
+
+            if any(
+                [
+                    self.canonical_code_source_candidate_id,
+                    self.canonical_normalized_statement_code,
+                    self.canonical_statement_code,
+                ]
+            ):
+                raise ValueError(
+                    "no_source_code final records must not define canonical code fields."
+                )
+
+            return self
+
+        if self.code_resolution_method == "single_source_code":
+            if len(source_normalized_codes) != 1:
+                raise ValueError(
+                    "single_source_code final records require exactly one distinct "
+                    "normalized source code."
+                )
+
+            if self.canonical_normalized_statement_code != source_normalized_codes[0]:
+                raise ValueError(
+                    "single_source_code canonical normalized code must equal the "
+                    "single preserved normalized source code."
+                )
+
+            if (
+                not self.canonical_statement_code
+                or self.canonical_statement_code not in source_statement_codes
+            ):
+                raise ValueError(
+                    "single_source_code canonical statement code must be preserved in "
+                    "source_statement_codes."
+                )
+
+            if self.canonical_code_source_candidate_id is not None:
+                raise ValueError(
+                    "single_source_code final records must not define a reviewed "
+                    "canonical code source candidate."
+                )
+
+            return self
+
+        if self.code_resolution_method == "review_selected_source_code":
+            if len(source_normalized_codes) < 2:
+                raise ValueError(
+                    "review_selected_source_code final records require multiple "
+                    "distinct normalized source codes."
+                )
+
+            if self.merge_decision != "merged":
+                raise ValueError(
+                    "review_selected_source_code final records require merge_decision "
+                    "'merged'."
+                )
+
+            if not self.canonical_code_source_candidate_id:
+                raise ValueError(
+                    "review_selected_source_code final records require "
+                    "canonical_code_source_candidate_id."
+                )
+
+            if (
+                not self.canonical_normalized_statement_code
+                or self.canonical_normalized_statement_code
+                not in source_normalized_codes
+            ):
+                raise ValueError(
+                    "Selected canonical normalized code must be preserved in "
+                    "source_normalized_statement_codes."
+                )
+
+            if (
+                not self.canonical_statement_code
+                or self.canonical_statement_code not in source_statement_codes
+            ):
+                raise ValueError(
+                    "Selected canonical statement code must be preserved in "
+                    "source_statement_codes."
+                )
+
+            return self
+
+        raise ValueError(
+            "Final SFI records cannot use unresolved_multiple_source_codes."
+        )
+
+    @model_validator(mode="after")
+    def validate_canonical_code_aliases(self) -> Self:
+        """Validate canonical-code fields and downstream code aliases agree.
+
+        Returns
+        -------
+        Self
+            Validated final SFI record.
+
+        Raises
+        ------
+        ValueError
+            If canonical code fields disagree with the public statement-code fields or
+            are absent from preserved source-code evidence.
+        """
+
+        if self.normalized_statement_code != self.canonical_normalized_statement_code:
+            raise ValueError(
+                "normalized_statement_code must equal canonical_normalized_statement_code."
+            )
+
+        if self.statement_code != self.canonical_statement_code:
+            raise ValueError("statement_code must equal canonical_statement_code.")
+
+        if (
+            self.canonical_normalized_statement_code is not None
+            and self.canonical_normalized_statement_code
+            not in self.source_normalized_statement_codes
+        ):
+            raise ValueError(
+                "Canonical normalized statement code must be preserved in "
+                "source_normalized_statement_codes."
+            )
+
+        if (
+            self.canonical_statement_code is not None
+            and self.canonical_statement_code not in self.source_statement_codes
+        ):
+            raise ValueError(
+                "Canonical statement code must be preserved in source_statement_codes."
+            )
 
         return self
 
