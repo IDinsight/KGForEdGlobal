@@ -50,6 +50,48 @@ class ConfiguredCodeMatch:
 
 
 @dataclass(frozen=True)
+class ConfiguredCodeMatchSourceUnit:
+    """Atomic source-text unit eligible for configured code matching.
+
+    Regex matching is confined to one unit, so a configured code cannot be manufactured
+    across unrelated source boundaries such as table cells or rows. `start_char`
+    locates the unit within a caller-defined coordinate space. This lets extraction
+    windows preserve offsets into their full rendered source text while preflight
+    counting can retain deterministic source order without concatenating units for
+    matching.
+
+    Attributes
+    ----------
+    start_char
+        Inclusive character offset of `text` in the caller-defined coordinate space.
+    text
+        Source-visible text to scan as one atomic matching unit.
+    """
+
+    start_char: int
+    text: str
+
+    def __post_init__(self) -> None:
+        """Validate the source unit offset and text value.
+
+        Raises
+        ------
+        TypeError
+            If `text` is not a string.
+        ValueError
+            If `start_char` is negative.
+        """
+
+        if self.start_char < 0:
+            raise ValueError(
+                "Configured code match source-unit offsets must be non-negative."
+            )
+
+        if not isinstance(self.text, str):
+            raise TypeError("Configured code match source-unit text must be a string.")
+
+
+@dataclass(frozen=True)
 class KGDirs:
     """Dataclass for KG creation run directories.
 
@@ -216,19 +258,30 @@ def _count_code_pattern_matches(
         If a segment kind is unrecognized.
     """
 
-    source_text_units: list[str] = []
+    source_offset = 0
+    source_units: list[ConfiguredCodeMatchSourceUnit] = []
 
     for segment in document_ir.segments:
         if segment.kind == "block":
             block_payload = segment.model_dump(mode="json")
 
             if block_text := extract_block_source_text(block_payload):
-                source_text_units.append(block_text)
+                source_units.append(
+                    ConfiguredCodeMatchSourceUnit(
+                        start_char=source_offset, text=block_text
+                    )
+                )
+                source_offset += len(block_text) + 1
         elif segment.kind == "table":
             for row in segment.rows:
                 for cell in row.cells:
                     if cell_text := _extract_cell_text(cell):
-                        source_text_units.append(cell_text)
+                        source_units.append(
+                            ConfiguredCodeMatchSourceUnit(
+                                start_char=source_offset, text=cell_text
+                            )
+                        )
+                        source_offset += len(cell_text) + 1
         else:
             raise ValueError(f"Unrecognized segment kind: {segment.kind}")
 
@@ -239,13 +292,12 @@ def _count_code_pattern_matches(
         code_type: set() for code_type in kg_config.academic_standards.code_patterns
     }
 
-    for source_text in source_text_units:
-        for match in find_configured_code_matches(
-            code_patterns=kg_config.academic_standards.code_patterns,
-            source_text=source_text,
-        ):
-            total_counts[match.code_type] += 1
-            unique_values[match.code_type].add(match.normalized_value)
+    for match in find_configured_code_matches_in_source_units(
+        code_patterns=kg_config.academic_standards.code_patterns,
+        source_units=source_units,
+    ):
+        total_counts[match.code_type] += 1
+        unique_values[match.code_type].add(match.normalized_value)
 
     return {
         code_type: {
@@ -1049,7 +1101,7 @@ def extract_block_source_text(block_payload: dict[str, Any]) -> str:
 def find_configured_code_matches(
     *, code_patterns: Mapping[str, str], source_text: str
 ) -> list[ConfiguredCodeMatch]:
-    """Find strict and conservatively glued configured codes in source text.
+    """Find strict and conservatively glued configured codes in one source unit.
 
     Each configured regex is applied unchanged first. Patterns ending in a literal
     terminal word boundary also receive a conservative fallback that removes only that
@@ -1062,7 +1114,7 @@ def find_configured_code_matches(
     code_patterns
         Configured source-visible regexes keyed by code type.
     source_text
-        Source-visible text unit or extraction-window source text to scan.
+        One atomic source-visible text unit to scan.
 
     Returns
     -------
@@ -1136,6 +1188,53 @@ def find_configured_code_matches(
         deduplicated_matches.append(code_match)
 
     return deduplicated_matches
+
+
+def find_configured_code_matches_in_source_units(
+    *,
+    code_patterns: Mapping[str, str],
+    source_units: Sequence[ConfiguredCodeMatchSourceUnit],
+) -> list[ConfiguredCodeMatch]:
+    """Find configured code matches without crossing source-unit boundaries.
+
+    Each source unit is scanned independently with `find_configured_code_matches`.
+    Unit-local offsets are translated into the caller-defined coordinate space. Matches
+    from separate units are intentionally not deduplicated because equal codes in
+    different cells or source units represent distinct occurrences.
+
+    Parameters
+    ----------
+    code_patterns
+        Configured source-visible regexes keyed by code type.
+    source_units
+        Ordered atomic source-text units with offsets in a caller-defined coordinate
+        space.
+
+    Returns
+    -------
+    list[ConfiguredCodeMatch]
+        Ordered configured code matches whose offsets use the caller-defined coordinate
+        space and whose spans never cross a source-unit boundary.
+    """
+
+    matches: list[ConfiguredCodeMatch] = []
+
+    for source_unit in source_units:
+        for match in find_configured_code_matches(
+            code_patterns=code_patterns, source_text=source_unit.text
+        ):
+            matches.append(
+                ConfiguredCodeMatch(
+                    code_type=match.code_type,
+                    end_char=source_unit.start_char + match.end_char,
+                    normalized_value=match.normalized_value,
+                    raw_value=match.raw_value,
+                    start_char=source_unit.start_char + match.start_char,
+                )
+            )
+
+    matches.sort(key=lambda item: (item.start_char, item.end_char, item.code_type))
+    return matches
 
 
 def get_table_selection_reasons(

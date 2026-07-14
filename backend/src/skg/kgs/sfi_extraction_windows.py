@@ -37,8 +37,9 @@ from skg.kgs.schemas import (
     ExtractionWindowTablePayload,
 )
 from skg.kgs.utils import (
+    ConfiguredCodeMatchSourceUnit,
     extract_block_source_text,
-    find_configured_code_matches,
+    find_configured_code_matches_in_source_units,
     get_table_selection_reasons,
 )
 from skg.schemas import CreateKGConfig
@@ -82,6 +83,9 @@ def _build_block_windows(
         else [
             _build_extraction_window(
                 block=block_payload,
+                code_match_source_units=[
+                    ConfiguredCodeMatchSourceUnit(start_char=0, text=source_text)
+                ],
                 document_ir=document_ir,
                 kg_config=kg_config,
                 plan_item=plan_item,
@@ -105,6 +109,7 @@ def _build_block_windows(
 def _build_extraction_window(
     *,
     block: Optional[dict[str, Any]],
+    code_match_source_units: Sequence[ConfiguredCodeMatchSourceUnit],
     document_ir: DocumentIR,
     kg_config: CreateKGConfig,
     plan_item: ExtractionWindowPlanItem,
@@ -125,6 +130,9 @@ def _build_extraction_window(
     ----------
     block
         Optional block payload for block windows.
+    code_match_source_units
+        Atomic source-text units whose offsets reference `source_text`. Configured code
+        matching is confined to each unit independently.
     document_ir
         Validated stitched DocumentIR.
     kg_config
@@ -142,7 +150,7 @@ def _build_extraction_window(
     source_segment_ids
         Source DocumentIR segment IDs included in the window.
     source_text
-        Human-readable source text for prompt review and code matching.
+        Human-readable source text for prompt review.
     table
         Optional table payload for table windows.
     window_id
@@ -166,9 +174,9 @@ def _build_extraction_window(
             raw_value=match.raw_value,
             start_char=match.start_char,
         )
-        for match in find_configured_code_matches(
+        for match in find_configured_code_matches_in_source_units(
             code_patterns=kg_config.academic_standards.code_patterns,
-            source_text=source_text,
+            source_units=code_match_source_units,
         )
     ]
     code_parent_hints = _collect_code_parent_hints(
@@ -253,15 +261,16 @@ def _build_source_section_path_key(
     return ">".join(key_parts)
 
 
-def _build_table_source_text(
+def _build_table_source_text_and_code_match_units(
     *, rows: list[dict[str, Any]], table_payload: ExtractionWindowTablePayload
-) -> str:
-    """Build source-faithful text from raw table headers and selected body rows.
+) -> tuple[str, list[ConfiguredCodeMatchSourceUnit]]:
+    """Build table source text and cell-bounded configured-code matching units.
 
-    The rendered text intentionally excludes canonicalized headers, synthetic row
-    labels, and source row numbers. Code matching therefore operates only on text
-    visible in the raw stitched table cells. Tabs separate cells and newlines separate
-    rows without adding matchable alphanumeric content.
+    Raw header and selected body cells are rendered exactly as before: tabs separate
+    cells, newlines separate nonempty rows, and outer whitespace is stripped. Each
+    nonempty raw cell is also recorded as one atomic matching unit with an offset into
+    the rendered source text. Configured regexes can therefore match flexible
+    whitespace inside a cell but cannot manufacture a code across cells or rows.
 
     Parameters
     ----------
@@ -272,20 +281,69 @@ def _build_table_source_text(
 
     Returns
     -------
-    str
-        Raw source-visible table cell text suitable for prompting and code matching.
+    tuple[str, list[ConfiguredCodeMatchSourceUnit]]
+        Rendered source-visible table text and ordered cell-level matching units whose
+        offsets reference that text.
+
+    Raises
+    ------
+    ValueError
+        If a calculated cell offset does not map back to the exact rendered cell text.
     """
 
     source_rows = [*table_payload.header_rows, *rows]
-    row_lines: list[str] = []
+    raw_source_parts: list[str] = []
+    raw_source_units: list[ConfiguredCodeMatchSourceUnit] = []
+    raw_source_length = 0
+    rendered_row_count = 0
 
     for row in source_rows:
         cell_texts = _extract_table_row_cell_texts(row)
 
-        if any(cell_texts):
-            row_lines.append("\t".join(cell_texts))
+        if not any(cell_texts):
+            continue
 
-    return "\n".join(row_lines).strip()
+        if rendered_row_count:
+            raw_source_parts.append("\n")
+            raw_source_length += 1
+
+        for cell_index, cell_text in enumerate(cell_texts):
+            if cell_index:
+                raw_source_parts.append("\t")
+                raw_source_length += 1
+
+            if cell_text:
+                raw_source_units.append(
+                    ConfiguredCodeMatchSourceUnit(
+                        start_char=raw_source_length, text=cell_text
+                    )
+                )
+
+            raw_source_parts.append(cell_text)
+            raw_source_length += len(cell_text)
+
+        rendered_row_count += 1
+
+    raw_source_text = "".join(raw_source_parts)
+    leading_trim_length = len(raw_source_text) - len(raw_source_text.lstrip())
+    source_text = raw_source_text.strip()
+    source_units = [
+        ConfiguredCodeMatchSourceUnit(
+            start_char=source_unit.start_char - leading_trim_length,
+            text=source_unit.text,
+        )
+        for source_unit in raw_source_units
+    ]
+
+    for source_unit in source_units:
+        unit_end_char = source_unit.start_char + len(source_unit.text)
+
+        if source_text[source_unit.start_char : unit_end_char] != source_unit.text:
+            raise ValueError(
+                "Table cell code-match unit does not align with rendered source_text."
+            )
+
+    return source_text, source_units
 
 
 def _build_table_window_for_row_indexes(
@@ -370,8 +428,14 @@ def _build_table_window_for_row_indexes(
         rows_grid=rows_grid,
         source_table_row_count=len(segment.rows),
     )
+    source_text, code_match_source_units = (
+        _build_table_source_text_and_code_match_units(
+            rows=rows, table_payload=table_payload
+        )
+    )
     return _build_extraction_window(
         block=None,
+        code_match_source_units=code_match_source_units,
         document_ir=document_ir,
         kg_config=kg_config,
         plan_item=plan_item,
@@ -380,7 +444,7 @@ def _build_table_window_for_row_indexes(
         source_provenance=_model_dump_list(segment.segment_provenance),
         source_section_path=_model_dump_list(segment.section_path),
         source_segment_ids=[segment.segment_id],
-        source_text=_build_table_source_text(rows=rows, table_payload=table_payload),
+        source_text=source_text,
         table=table_payload,
         window_id=_deterministic_uuid(
             f"lc:curriculum:{document_ir.doc_key}:extraction_window:table:{segment.segment_id}:{row_range_label}"
