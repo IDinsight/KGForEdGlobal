@@ -178,32 +178,34 @@ class ResolvedCandidateCode:
             )
 
 
-def _build_glued_code_pattern(pattern: str) -> str | None:
+def _build_glued_code_pattern(pattern: re.Pattern[str]) -> re.Pattern[str] | None:
     """Build a conservative fallback regex for a code glued to statement text.
 
     The configured regex remains authoritative. This function removes one terminal word
     boundary only when the pattern ends with a literal `\\b` token. The shared matcher
     then accepts a fallback match only when alphabetic statement text follows
-    immediately and the isolated code still fully matches the original regex.
+    immediately and the isolated code still fully matches the original regex. The
+    fallback preserves the original compiled flags, including the universal
+    case-insensitive code-matching policy.
 
     Parameters
     ----------
     pattern
-        Configured source-visible code regex.
+        Compiled configured source-visible code regex.
 
     Returns
     -------
-    str | None
-        Regex without one terminal word-boundary token, or `None` when no supported
-        fallback can be built.
+    re.Pattern[str] | None
+        Compiled regex without one terminal word-boundary token, or `None` when no
+        supported fallback can be built.
     """
 
-    pattern_clean = pattern.rstrip()
+    pattern_clean = pattern.pattern.rstrip()
 
     if not pattern_clean.endswith(r"\b"):
         return None
 
-    return pattern_clean[:-2]
+    return re.compile(flags=pattern.flags | re.IGNORECASE, pattern=pattern_clean[:-2])
 
 
 def _build_table_section_selection_text(
@@ -261,75 +263,6 @@ def _build_table_section_selection_text(
         parts.append(str(segment.columns_signature))
 
     return "\n".join(part for part in parts if part)
-
-
-def _compile_code_patterns(
-    code_patterns: Mapping[str, str | re.Pattern[str]],
-) -> dict[str, re.Pattern[str]]:
-    """Compile and validate configured code patterns keyed by code type.
-
-    Code type keys are stripped of surrounding whitespace, required to be non-empty,
-    and required to remain unique after stripping. Pattern values that are already
-    compiled regular expressions are used unchanged; string values are stripped,
-    required to be non-empty, and compiled case-insensitively. Keys are processed in
-    sorted order so validation is deterministic.
-
-    Parameters
-    ----------
-    code_patterns
-        Configured source-facing code regexes keyed by code type. Values may be raw
-        pattern strings or compiled regular expressions.
-
-    Returns
-    -------
-    dict[str, re.Pattern[str]]
-        Compiled regular expressions keyed by cleaned code type.
-
-    Raises
-    ------
-    ValueError
-        If a code type key is empty or duplicated after stripping, or if a configured
-        pattern is empty or is not a valid regular expression.
-    """
-
-    compiled_patterns: dict[str, re.Pattern[str]] = {}
-
-    for code_type, pattern in sorted(code_patterns.items()):
-        code_type_clean = str(code_type or "").strip()
-
-        if not code_type_clean:
-            raise ValueError(
-                "Configured code patterns must use non-empty code type keys."
-            )
-
-        if code_type_clean in compiled_patterns:
-            raise ValueError(
-                f"Configured code type {code_type_clean!r} is duplicated after "
-                f"stripping whitespace."
-            )
-
-        if isinstance(pattern, re.Pattern):
-            compiled_pattern = pattern
-        else:
-            pattern_clean = str(pattern or "").strip()
-
-            if not pattern_clean:
-                raise ValueError(
-                    f"Configured code pattern for code type {code_type_clean!r} "
-                    f"must be non-empty."
-                )
-
-            try:
-                compiled_pattern = re.compile(pattern_clean, flags=re.IGNORECASE)
-            except re.error as exc:
-                raise ValueError(
-                    f"Configured code pattern for code type {code_type_clean!r} is "
-                    f"invalid: {pattern_clean!r}."
-                ) from exc
-
-        compiled_patterns[code_type_clean] = compiled_pattern
-
-    return compiled_patterns
 
 
 def _count_code_pattern_matches(
@@ -722,6 +655,98 @@ def _extract_text_unit_language(text_unit: TextUnit | None) -> Optional[str]:
     return language
 
 
+def _find_configured_code_matches(
+    *, compiled_patterns: Mapping[str, re.Pattern[str]], source_text: str
+) -> list[ConfiguredCodeMatch]:
+    """Find configured codes using precompiled case-insensitive patterns.
+
+    Strict matching is attempted first. Patterns ending in a literal terminal word
+    boundary also receive a conservative glued-code fallback that removes only that
+    boundary while preserving the compiled flags. A fallback match is accepted only
+    when alphabetic source text follows immediately and the isolated matched value
+    still fully matches the original configured pattern.
+
+    Parameters
+    ----------
+    compiled_patterns
+        Precompiled source-visible code regexes keyed by configured code type.
+    source_text
+        One atomic source-visible text unit to scan.
+
+    Returns
+    -------
+    list[ConfiguredCodeMatch]
+        Ordered, deduplicated configured code matches with source offsets.
+    """
+
+    matches: list[ConfiguredCodeMatch] = []
+
+    for code_type, pattern in compiled_patterns.items():
+        for match in pattern.finditer(source_text):
+            raw_value = match.group(0)
+            matches.append(
+                ConfiguredCodeMatch(
+                    code_type=code_type,
+                    end_char=match.end(),
+                    normalized_value=_normalize_code_match_value(
+                        pattern=pattern, raw_value=raw_value
+                    ),
+                    raw_value=raw_value,
+                    start_char=match.start(),
+                )
+            )
+
+        glued_pattern = _build_glued_code_pattern(pattern)
+
+        if glued_pattern is None:
+            continue
+
+        for match in glued_pattern.finditer(source_text):
+            if match.end() >= len(source_text):
+                continue
+
+            raw_value = match.group(0)
+
+            if not source_text[match.end()].isalpha():
+                continue
+
+            if pattern.fullmatch(raw_value) is None:
+                continue
+
+            matches.append(
+                ConfiguredCodeMatch(
+                    code_type=code_type,
+                    end_char=match.end(),
+                    normalized_value=_normalize_code_match_value(
+                        pattern=pattern, raw_value=raw_value
+                    ),
+                    raw_value=raw_value,
+                    start_char=match.start(),
+                )
+            )
+
+    matches.sort(key=lambda item: (item.start_char, item.end_char, item.code_type))
+    deduplicated_matches: list[ConfiguredCodeMatch] = []
+    seen: set[tuple[str, int, str, str, int]] = set()
+
+    for code_match in matches:
+        match_key = (
+            code_match.code_type,
+            code_match.end_char,
+            code_match.normalized_value,
+            code_match.raw_value,
+            code_match.start_char,
+        )
+
+        if match_key in seen:
+            continue
+
+        seen.add(match_key)
+        deduplicated_matches.append(code_match)
+
+    return deduplicated_matches
+
+
 def _language_base(language: str) -> str:
     """Return the base language subtag for loose language-overlap checks.
 
@@ -758,7 +783,7 @@ def _matches_any_pattern(*, patterns: Sequence[str], text: str) -> bool:
     return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
 
 
-def _normalize_code_match_value(*, pattern: str, raw_value: str) -> str:
+def _normalize_code_match_value(*, pattern: re.Pattern[str], raw_value: str) -> str:
     """Normalize punctuation-adjacent whitespace in a matched code surface.
 
     The compacted value is used only when it still fully matches the configured regex;
@@ -767,7 +792,7 @@ def _normalize_code_match_value(*, pattern: str, raw_value: str) -> str:
     Parameters
     ----------
     pattern
-        Configured regex that matched the source-visible code.
+        Compiled configured regex that matched the source-visible code.
     raw_value
         Exact source-visible matched code surface.
 
@@ -780,7 +805,7 @@ def _normalize_code_match_value(*, pattern: str, raw_value: str) -> str:
     raw_value_clean = raw_value.strip()
     compacted_value = re.sub(r"\s*([^\w\s])\s*", r"\1", raw_value_clean)
 
-    if re.fullmatch(pattern, compacted_value) is not None:
+    if pattern.fullmatch(compacted_value) is not None:
         return compacted_value
 
     return raw_value_clean
@@ -1152,6 +1177,89 @@ def build_standards_framework_uuid(doc_key: str) -> uuid.UUID:
     return uuid.uuid5(Settings.LC_CANONICAL_NAMESPACE_UUID, identity_key)
 
 
+def compile_code_patterns(
+    code_patterns: Mapping[str, str | re.Pattern[str]],
+) -> dict[str, re.Pattern[str]]:
+    """Compile and validate configured code patterns keyed by code type.
+
+    Code type keys are required to be non-empty and to remain unique after surrounding
+    whitespace is ignored for validation. Returned mappings preserve the configured
+    code type keys exactly. All patterns are compiled with case-insensitive matching as
+    the universal runtime contract. Existing compiled flags are preserved for compiled
+    patterns. String values are stripped and required to be non-empty. Keys are
+    processed in sorted order so validation is deterministic.
+
+    Parameters
+    ----------
+    code_patterns
+        Configured source-facing code regexes keyed by code type. Values may be raw
+        pattern strings or compiled regular expressions.
+
+    Returns
+    -------
+    dict[str, re.Pattern[str]]
+        Compiled regular expressions keyed by the configured code type.
+
+    Raises
+    ------
+    ValueError
+        If a code type key is empty or duplicated after stripping, or if a configured
+        pattern is empty, is byte-based, or is not a valid regular expression.
+    """
+
+    compiled_patterns: dict[str, re.Pattern[str]] = {}
+    validated_code_type_keys: set[str] = set()
+
+    for code_type, pattern in sorted(code_patterns.items()):
+        code_type_clean = str(code_type or "").strip()
+
+        if not code_type_clean:
+            raise ValueError(
+                "Configured code patterns must use non-empty code type keys."
+            )
+
+        if code_type_clean in validated_code_type_keys:
+            raise ValueError(
+                f"Configured code type {code_type_clean!r} is duplicated after "
+                f"stripping whitespace."
+            )
+
+        validated_code_type_keys.add(code_type_clean)
+
+        if isinstance(pattern, re.Pattern):
+            if not isinstance(pattern.pattern, str):
+                raise ValueError(
+                    f"Configured code pattern for code type {code_type_clean!r} must "
+                    f"be a string regular expression."
+                )
+
+            compiled_pattern = re.compile(
+                flags=pattern.flags | re.IGNORECASE, pattern=pattern.pattern
+            )
+        else:
+            pattern_clean = str(pattern or "").strip()
+
+            if not pattern_clean:
+                raise ValueError(
+                    f"Configured code pattern for code type {code_type_clean!r} "
+                    f"must be non-empty."
+                )
+
+            try:
+                compiled_pattern = re.compile(
+                    flags=re.IGNORECASE, pattern=pattern_clean
+                )
+            except re.error as exc:
+                raise ValueError(
+                    f"Configured code pattern for code type {code_type_clean!r} is "
+                    f"invalid: {pattern_clean!r}."
+                ) from exc
+
+        compiled_patterns[code_type] = compiled_pattern
+
+    return compiled_patterns
+
+
 def cross_check_stitching_run(
     *, computed_doc_key: str, extraction_config: ExtractionConfig
 ) -> Path:
@@ -1266,114 +1374,24 @@ def extract_block_source_text(block_payload: dict[str, Any]) -> str:
     ) or _extract_figure_source_text(block_payload)
 
 
-def find_configured_code_matches(
-    *, code_patterns: Mapping[str, str], source_text: str
-) -> list[ConfiguredCodeMatch]:
-    """Find strict and conservatively glued configured codes in one source unit.
-
-    Each configured regex is applied unchanged first. Patterns ending in a literal
-    terminal word boundary also receive a conservative fallback that removes only that
-    boundary. A fallback match is accepted only when an alphabetic character follows
-    immediately and the isolated matched value fully satisfies the original configured
-    regex. Strict and fallback results are then sorted and deduplicated.
-
-    Parameters
-    ----------
-    code_patterns
-        Configured source-visible regexes keyed by code type.
-    source_text
-        One atomic source-visible text unit to scan.
-
-    Returns
-    -------
-    list[ConfiguredCodeMatch]
-        Ordered, deduplicated configured code matches with source offsets.
-    """
-
-    matches: list[ConfiguredCodeMatch] = []
-
-    for code_type, pattern in code_patterns.items():
-        for match in re.finditer(pattern, source_text):
-            raw_value = match.group(0)
-            matches.append(
-                ConfiguredCodeMatch(
-                    code_type=code_type,
-                    end_char=match.end(),
-                    normalized_value=_normalize_code_match_value(
-                        pattern=pattern, raw_value=raw_value
-                    ),
-                    raw_value=raw_value,
-                    start_char=match.start(),
-                )
-            )
-
-        glued_pattern = _build_glued_code_pattern(pattern)
-
-        if glued_pattern is None:
-            continue
-
-        for match in re.finditer(glued_pattern, source_text):
-            if match.end() >= len(source_text):
-                continue
-
-            raw_value = match.group(0)
-
-            if not source_text[match.end()].isalpha():
-                continue
-
-            if re.fullmatch(pattern, raw_value) is None:
-                continue
-
-            matches.append(
-                ConfiguredCodeMatch(
-                    code_type=code_type,
-                    end_char=match.end(),
-                    normalized_value=_normalize_code_match_value(
-                        pattern=pattern, raw_value=raw_value
-                    ),
-                    raw_value=raw_value,
-                    start_char=match.start(),
-                )
-            )
-
-    matches.sort(key=lambda item: (item.start_char, item.end_char, item.code_type))
-    deduplicated_matches: list[ConfiguredCodeMatch] = []
-    seen: set[tuple[str, int, str, str, int]] = set()
-
-    for code_match in matches:
-        match_key = (
-            code_match.code_type,
-            code_match.end_char,
-            code_match.normalized_value,
-            code_match.raw_value,
-            code_match.start_char,
-        )
-
-        if match_key in seen:
-            continue
-
-        seen.add(match_key)
-        deduplicated_matches.append(code_match)
-
-    return deduplicated_matches
-
-
 def find_configured_code_matches_in_source_units(
     *,
-    code_patterns: Mapping[str, str],
+    code_patterns: Mapping[str, str | re.Pattern[str]],
     source_units: Sequence[ConfiguredCodeMatchSourceUnit],
 ) -> list[ConfiguredCodeMatch]:
     """Find configured code matches without crossing source-unit boundaries.
 
-    Each source unit is scanned independently with `find_configured_code_matches`.
-    Unit-local offsets are translated into the caller-defined coordinate space. Matches
-    from separate units are intentionally not deduplicated because equal codes in
-    different cells or source units represent distinct occurrences.
+    Configured patterns are compiled once, then each source unit is scanned
+    independently with the shared precompiled matcher. Unit-local offsets are
+    translated into the caller-defined coordinate space. Matches from separate units
+    are intentionally not deduplicated because equal codes in different cells or source
+    units represent distinct occurrences.
 
     Parameters
     ----------
     code_patterns
-        Configured source-visible regexes keyed by code type.
+        Configured source-visible regexes keyed by code type. Values may be raw strings
+        or compiled regular expressions.
     source_units
         Ordered atomic source-text units with offsets in a caller-defined coordinate
         space.
@@ -1385,11 +1403,12 @@ def find_configured_code_matches_in_source_units(
         space and whose spans never cross a source-unit boundary.
     """
 
+    compiled_patterns = compile_code_patterns(code_patterns)
     matches: list[ConfiguredCodeMatch] = []
 
     for source_unit in source_units:
-        for match in find_configured_code_matches(
-            code_patterns=code_patterns, source_text=source_unit.text
+        for match in _find_configured_code_matches(
+            compiled_patterns=compiled_patterns, source_text=source_unit.text
         ):
             matches.append(
                 ConfiguredCodeMatch(
@@ -1705,7 +1724,7 @@ def resolve_candidate_code(
             normalized_statement_code=None, resolved_code_type=None
         )
 
-    compiled_patterns = _compile_code_patterns(code_patterns)
+    compiled_patterns = compile_code_patterns(code_patterns)
 
     matching_code_types: list[str] = []
 

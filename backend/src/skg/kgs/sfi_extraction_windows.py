@@ -38,6 +38,7 @@ from skg.kgs.schemas import (
 )
 from skg.kgs.utils import (
     ConfiguredCodeMatchSourceUnit,
+    compile_code_patterns,
     extract_block_source_text,
     find_configured_code_matches_in_source_units,
     get_table_selection_reasons,
@@ -516,7 +517,12 @@ def _build_table_windows(
 def _collect_code_parent_hints(
     *, code_matches: Sequence[CodeMatch], kg_config: CreateKGConfig
 ) -> list[CodeParentHint]:
-    """Collect code-parent hints from regex-substitution rules.
+    """Collect case-insensitive code-parent hints from substitution rules.
+
+    Code patterns and parent-rule regexes follow the universal case-insensitive code
+    interpretation used throughout KG preflight, extraction-window construction, and
+    candidate-code resolution. Derived parent codes are retained only when they fully
+    match the configured parent code pattern.
 
     Parameters
     ----------
@@ -532,6 +538,9 @@ def _collect_code_parent_hints(
         the configured parent code pattern.
     """
 
+    compiled_patterns = compile_code_patterns(
+        kg_config.academic_standards.code_patterns
+    )
     hints: list[CodeParentHint] = []
 
     for code_match in code_matches:
@@ -542,19 +551,22 @@ def _collect_code_parent_hints(
                 continue
 
             # Derive parent code via regex substitution.
-            parent_code = re.sub(rule["regex"], rule["replacement"], child_code).strip()
+            parent_code = re.sub(
+                flags=re.IGNORECASE,
+                pattern=rule["regex"],
+                repl=rule["replacement"],
+                string=child_code,
+            ).strip()
 
             # Ensure the substitution produced a distinct, non-empty code.
             if not parent_code or parent_code == child_code:
                 continue
 
             parent_code_type = rule["parent"]
-            parent_pattern = kg_config.academic_standards.code_patterns[
-                parent_code_type
-            ]
+            parent_pattern = compiled_patterns[parent_code_type]
 
             # Ensure the derived parent code matches the configured pattern.
-            if not re.fullmatch(parent_pattern, parent_code):
+            if parent_pattern.fullmatch(parent_code) is None:
                 continue
 
             hints.append(
