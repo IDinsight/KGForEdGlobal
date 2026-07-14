@@ -14,7 +14,7 @@ from __future__ import annotations
 
 # Standard Library
 from datetime import datetime
-from typing import Any, Literal, Optional, Self, Sequence
+from typing import Any, Callable, Literal, Optional, Self, Sequence
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -2252,124 +2252,212 @@ class SFIMergeGroup(BaseSchema):
         source_normalized_codes = unique_clean_strings(self.normalized_statement_codes)
         source_statement_codes = unique_clean_strings(self.statement_codes)
 
-        if self.code_resolution_method == "no_source_code":
-            if source_normalized_codes or source_statement_codes:
-                raise ValueError(
-                    "no_source_code requires empty source statement-code lists."
-                )
+        method_checks: dict[str, Callable[..., None]] = {
+            "no_source_code": self._check_no_source_code_contract,
+            "single_source_code": self._check_single_source_code_contract,
+            "review_selected_source_code": (
+                self._check_review_selected_source_code_contract
+            ),
+            "unresolved_multiple_source_codes": (
+                self._check_unresolved_multiple_source_codes_contract
+            ),
+        }
+        check = method_checks.get(self.code_resolution_method)
 
-            if any(
-                [
-                    self.canonical_code_source_candidate_id,
-                    self.canonical_normalized_statement_code,
-                    self.canonical_statement_code,
-                ]
-            ):
-                raise ValueError(
-                    "no_source_code must not define canonical code fields."
-                )
+        if check is None:
+            raise ValueError(
+                f"Unsupported code_resolution_method {self.code_resolution_method!r}."
+            )
 
-            return self
-
-        if self.code_resolution_method == "single_source_code":
-            if len(source_normalized_codes) != 1:
-                raise ValueError(
-                    "single_source_code requires exactly one distinct normalized "
-                    "source statement code."
-                )
-
-            if self.canonical_normalized_statement_code != source_normalized_codes[0]:
-                raise ValueError(
-                    "single_source_code canonical normalized code must equal the "
-                    "single preserved normalized source code."
-                )
-
-            if (
-                not self.canonical_statement_code
-                or self.canonical_statement_code not in source_statement_codes
-            ):
-                raise ValueError(
-                    "single_source_code canonical statement code must be preserved in "
-                    "statement_codes."
-                )
-
-            if self.canonical_code_source_candidate_id is not None:
-                raise ValueError(
-                    "single_source_code must not require an LLM-selected source "
-                    "candidate."
-                )
-
-            return self
-
-        if self.code_resolution_method == "review_selected_source_code":
-            if len(source_normalized_codes) < 2:
-                raise ValueError(
-                    "review_selected_source_code requires multiple distinct normalized "
-                    "source codes."
-                )
-
-            if self.merge_decision != "merged":
-                raise ValueError(
-                    "review_selected_source_code is valid only for a merged group."
-                )
-
-            if not self.canonical_code_source_candidate_id:
-                raise ValueError(
-                    "review_selected_source_code requires "
-                    "canonical_code_source_candidate_id."
-                )
-
-            if (
-                not self.canonical_normalized_statement_code
-                or self.canonical_normalized_statement_code
-                not in source_normalized_codes
-            ):
-                raise ValueError(
-                    "Selected canonical normalized code must be preserved in "
-                    "normalized_statement_codes."
-                )
-
-            if (
-                not self.canonical_statement_code
-                or self.canonical_statement_code not in source_statement_codes
-            ):
-                raise ValueError(
-                    "Selected canonical statement code must be preserved in "
-                    "statement_codes."
-                )
-
-            return self
-
-        if self.code_resolution_method == "unresolved_multiple_source_codes":
-            if len(source_normalized_codes) < 2:
-                raise ValueError(
-                    "unresolved_multiple_source_codes requires multiple distinct "
-                    "normalized source codes."
-                )
-
-            if self.merge_decision not in {"conflict", "needs_review"}:
-                raise ValueError(
-                    "Unresolved multiple source codes are allowed only for conflict "
-                    "or needs_review groups."
-                )
-
-            if any(
-                [
-                    self.canonical_code_source_candidate_id,
-                    self.canonical_normalized_statement_code,
-                    self.canonical_statement_code,
-                ]
-            ):
-                raise ValueError(
-                    "Unresolved multiple source codes must not define canonical code "
-                    "fields."
-                )
-
-            return self
-
-        raise ValueError(
-            f"Unsupported code_resolution_method {self.code_resolution_method!r}."
+        check(
+            source_normalized_codes=source_normalized_codes,
+            source_statement_codes=source_statement_codes,
         )
+
+        return self
+
+    def _check_no_source_code_contract(
+        self,
+        *,
+        source_normalized_codes: Sequence[str],
+        source_statement_codes: Sequence[str],
+    ) -> None:
+        """Validate the `no_source_code` resolution contract.
+
+        Parameters
+        ----------
+        source_normalized_codes
+            Distinct, cleaned normalized source statement codes.
+        source_statement_codes
+            Distinct, cleaned source statement codes.
+
+        Raises
+        ------
+        ValueError
+            If source-code lists are non-empty or any canonical code field is set.
+        """
+
+        if source_normalized_codes or source_statement_codes:
+            raise ValueError(
+                "no_source_code requires empty source statement-code lists."
+            )
+
+        if any(
+            [
+                self.canonical_code_source_candidate_id,
+                self.canonical_normalized_statement_code,
+                self.canonical_statement_code,
+            ]
+        ):
+            raise ValueError("no_source_code must not define canonical code fields.")
+
+    def _check_single_source_code_contract(
+        self,
+        *,
+        source_normalized_codes: Sequence[str],
+        source_statement_codes: Sequence[str],
+    ) -> None:
+        """Validate the `single_source_code` resolution contract.
+
+        Parameters
+        ----------
+        source_normalized_codes
+            Distinct, cleaned normalized source statement codes.
+        source_statement_codes
+            Distinct, cleaned source statement codes.
+
+        Raises
+        ------
+        ValueError
+            If there is not exactly one normalized source code, the canonical codes do
+            not match the preserved source codes, or an LLM-selected source candidate
+            is defined.
+        """
+
+        if len(source_normalized_codes) != 1:
+            raise ValueError(
+                "single_source_code requires exactly one distinct normalized "
+                "source statement code."
+            )
+
+        if self.canonical_normalized_statement_code != source_normalized_codes[0]:
+            raise ValueError(
+                "single_source_code canonical normalized code must equal the "
+                "single preserved normalized source code."
+            )
+
+        if (
+            not self.canonical_statement_code
+            or self.canonical_statement_code not in source_statement_codes
+        ):
+            raise ValueError(
+                "single_source_code canonical statement code must be preserved in "
+                "statement_codes."
+            )
+
+        if self.canonical_code_source_candidate_id is not None:
+            raise ValueError(
+                "single_source_code must not require an LLM-selected source "
+                "candidate."
+            )
+
+    def _check_review_selected_source_code_contract(
+        self,
+        *,
+        source_normalized_codes: Sequence[str],
+        source_statement_codes: Sequence[str],
+    ) -> None:
+        """Validate the `review_selected_source_code` resolution contract.
+
+        Parameters
+        ----------
+        source_normalized_codes
+            Distinct, cleaned normalized source statement codes.
+        source_statement_codes
+            Distinct, cleaned source statement codes.
+
+        Raises
+        ------
+        ValueError
+            If there are fewer than two normalized source codes, the group is not
+            merged, no source candidate is selected, or the canonical codes are not
+            preserved among the source codes.
+        """
+
+        if len(source_normalized_codes) < 2:
+            raise ValueError(
+                "review_selected_source_code requires multiple distinct normalized "
+                "source codes."
+            )
+
+        if self.merge_decision != "merged":
+            raise ValueError(
+                "review_selected_source_code is valid only for a merged group."
+            )
+
+        if not self.canonical_code_source_candidate_id:
+            raise ValueError(
+                "review_selected_source_code requires "
+                "canonical_code_source_candidate_id."
+            )
+
+        if (
+            not self.canonical_normalized_statement_code
+            or self.canonical_normalized_statement_code not in source_normalized_codes
+        ):
+            raise ValueError(
+                "Selected canonical normalized code must be preserved in "
+                "normalized_statement_codes."
+            )
+
+        if (
+            not self.canonical_statement_code
+            or self.canonical_statement_code not in source_statement_codes
+        ):
+            raise ValueError(
+                "Selected canonical statement code must be preserved in "
+                "statement_codes."
+            )
+
+    def _check_unresolved_multiple_source_codes_contract(
+        self, source_normalized_codes: Sequence[str]
+    ) -> None:
+        """Validate the `unresolved_multiple_source_codes` resolution contract.
+
+        Parameters
+        ----------
+        source_normalized_codes
+            Distinct, cleaned normalized source statement codes.
+        Raises
+        ------
+        ValueError
+            If there are fewer than two normalized source codes, the merge decision is
+            not `conflict` or `needs_review`, or any canonical code field is set.
+        """
+
+        if len(source_normalized_codes) < 2:
+            raise ValueError(
+                "unresolved_multiple_source_codes requires multiple distinct "
+                "normalized source codes."
+            )
+
+        if self.merge_decision not in {"conflict", "needs_review"}:
+            raise ValueError(
+                "Unresolved multiple source codes are allowed only for conflict "
+                "or needs_review groups."
+            )
+
+        if any(
+            [
+                self.canonical_code_source_candidate_id,
+                self.canonical_normalized_statement_code,
+                self.canonical_statement_code,
+            ]
+        ):
+            raise ValueError(
+                "Unresolved multiple source codes must not define canonical code "
+                "fields."
+            )
 
 
 class SFIMergeReport(BaseSchema):
@@ -2744,98 +2832,172 @@ class SFIFinalRecord(BaseSchema):
         )
         source_statement_codes = unique_clean_strings(self.source_statement_codes)
 
-        if self.code_resolution_method == "no_source_code":
-            if source_normalized_codes or source_statement_codes:
-                raise ValueError(
-                    "no_source_code final records require empty source-code lists."
-                )
+        method_checks = {
+            "no_source_code": self._check_final_no_source_code_contract,
+            "single_source_code": self._check_final_single_source_code_contract,
+            "review_selected_source_code": (
+                self._check_final_review_selected_source_code_contract
+            ),
+        }
+        check = method_checks.get(self.code_resolution_method)
 
-            if any(
-                [
-                    self.canonical_code_source_candidate_id,
-                    self.canonical_normalized_statement_code,
-                    self.canonical_statement_code,
-                ]
-            ):
-                raise ValueError(
-                    "no_source_code final records must not define canonical code fields."
-                )
+        if check is None:
+            raise ValueError(
+                "Final SFI records cannot use unresolved_multiple_source_codes."
+            )
 
-            return self
-
-        if self.code_resolution_method == "single_source_code":
-            if len(source_normalized_codes) != 1:
-                raise ValueError(
-                    "single_source_code final records require exactly one distinct "
-                    "normalized source code."
-                )
-
-            if self.canonical_normalized_statement_code != source_normalized_codes[0]:
-                raise ValueError(
-                    "single_source_code canonical normalized code must equal the "
-                    "single preserved normalized source code."
-                )
-
-            if (
-                not self.canonical_statement_code
-                or self.canonical_statement_code not in source_statement_codes
-            ):
-                raise ValueError(
-                    "single_source_code canonical statement code must be preserved in "
-                    "source_statement_codes."
-                )
-
-            if self.canonical_code_source_candidate_id is not None:
-                raise ValueError(
-                    "single_source_code final records must not define a reviewed "
-                    "canonical code source candidate."
-                )
-
-            return self
-
-        if self.code_resolution_method == "review_selected_source_code":
-            if len(source_normalized_codes) < 2:
-                raise ValueError(
-                    "review_selected_source_code final records require multiple "
-                    "distinct normalized source codes."
-                )
-
-            if self.merge_decision != "merged":
-                raise ValueError(
-                    "review_selected_source_code final records require merge_decision "
-                    "'merged'."
-                )
-
-            if not self.canonical_code_source_candidate_id:
-                raise ValueError(
-                    "review_selected_source_code final records require "
-                    "canonical_code_source_candidate_id."
-                )
-
-            if (
-                not self.canonical_normalized_statement_code
-                or self.canonical_normalized_statement_code
-                not in source_normalized_codes
-            ):
-                raise ValueError(
-                    "Selected canonical normalized code must be preserved in "
-                    "source_normalized_statement_codes."
-                )
-
-            if (
-                not self.canonical_statement_code
-                or self.canonical_statement_code not in source_statement_codes
-            ):
-                raise ValueError(
-                    "Selected canonical statement code must be preserved in "
-                    "source_statement_codes."
-                )
-
-            return self
-
-        raise ValueError(
-            "Final SFI records cannot use unresolved_multiple_source_codes."
+        check(
+            source_normalized_codes=source_normalized_codes,
+            source_statement_codes=source_statement_codes,
         )
+
+        return self
+
+    def _check_final_no_source_code_contract(
+        self,
+        *,
+        source_normalized_codes: Sequence[str],
+        source_statement_codes: Sequence[str],
+    ) -> None:
+        """Validate the `no_source_code` contract for a final record.
+
+        Parameters
+        ----------
+        source_normalized_codes
+            Distinct, cleaned normalized source statement codes.
+        source_statement_codes
+            Distinct, cleaned source statement codes.
+
+        Raises
+        ------
+        ValueError
+            If source-code lists are non-empty or any canonical code field is set.
+        """
+
+        if source_normalized_codes or source_statement_codes:
+            raise ValueError(
+                "no_source_code final records require empty source-code lists."
+            )
+
+        if any(
+            [
+                self.canonical_code_source_candidate_id,
+                self.canonical_normalized_statement_code,
+                self.canonical_statement_code,
+            ]
+        ):
+            raise ValueError(
+                "no_source_code final records must not define canonical code fields."
+            )
+
+    def _check_final_single_source_code_contract(
+        self,
+        *,
+        source_normalized_codes: Sequence[str],
+        source_statement_codes: Sequence[str],
+    ) -> None:
+        """Validate the `single_source_code` contract for a final record.
+
+        Parameters
+        ----------
+        source_normalized_codes
+            Distinct, cleaned normalized source statement codes.
+        source_statement_codes
+            Distinct, cleaned source statement codes.
+
+        Raises
+        ------
+        ValueError
+            If there is not exactly one normalized source code, the canonical codes do
+            not match the preserved source codes, or a reviewed source candidate is
+            defined.
+        """
+
+        if len(source_normalized_codes) != 1:
+            raise ValueError(
+                "single_source_code final records require exactly one distinct "
+                "normalized source code."
+            )
+
+        if self.canonical_normalized_statement_code != source_normalized_codes[0]:
+            raise ValueError(
+                "single_source_code canonical normalized code must equal the "
+                "single preserved normalized source code."
+            )
+
+        if (
+            not self.canonical_statement_code
+            or self.canonical_statement_code not in source_statement_codes
+        ):
+            raise ValueError(
+                "single_source_code canonical statement code must be preserved in "
+                "source_statement_codes."
+            )
+
+        if self.canonical_code_source_candidate_id is not None:
+            raise ValueError(
+                "single_source_code final records must not define a reviewed "
+                "canonical code source candidate."
+            )
+
+    def _check_final_review_selected_source_code_contract(
+        self,
+        *,
+        source_normalized_codes: Sequence[str],
+        source_statement_codes: Sequence[str],
+    ) -> None:
+        """Validate the `review_selected_source_code` contract for a final record.
+
+        Parameters
+        ----------
+        source_normalized_codes
+            Distinct, cleaned normalized source statement codes.
+        source_statement_codes
+            Distinct, cleaned source statement codes.
+
+        Raises
+        ------
+        ValueError
+            If there are fewer than two normalized source codes, the record is not
+            merged, no source candidate is selected, or the canonical codes are not
+            preserved among the source codes.
+        """
+
+        if len(source_normalized_codes) < 2:
+            raise ValueError(
+                "review_selected_source_code final records require multiple "
+                "distinct normalized source codes."
+            )
+
+        if self.merge_decision != "merged":
+            raise ValueError(
+                "review_selected_source_code final records require merge_decision "
+                "'merged'."
+            )
+
+        if not self.canonical_code_source_candidate_id:
+            raise ValueError(
+                "review_selected_source_code final records require "
+                "canonical_code_source_candidate_id."
+            )
+
+        if (
+            not self.canonical_normalized_statement_code
+            or self.canonical_normalized_statement_code not in source_normalized_codes
+        ):
+            raise ValueError(
+                "Selected canonical normalized code must be preserved in "
+                "source_normalized_statement_codes."
+            )
+
+        if (
+            not self.canonical_statement_code
+            or self.canonical_statement_code not in source_statement_codes
+        ):
+            raise ValueError(
+                "Selected canonical statement code must be preserved in "
+                "source_statement_codes."
+            )
 
     @model_validator(mode="after")
     def validate_canonical_code_aliases(self) -> Self:

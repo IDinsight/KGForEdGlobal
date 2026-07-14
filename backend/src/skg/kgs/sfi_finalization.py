@@ -1210,6 +1210,78 @@ def _validate_final_sfi_records(final_sfi_records: Sequence[SFIFinalRecord]) -> 
         )
 
 
+def _validate_merge_group_canonical_code_presence(merge_group: SFIMergeGroup) -> None:
+    """Validate canonical-code presence and source-backing for one merge group.
+
+    Checks that a merge group carrying source-visible codes has a resolved canonical
+    code, that a canonical code is never asserted without preserved source evidence,
+    and that any canonical code is drawn from that source evidence.
+
+    Parameters
+    ----------
+    merge_group
+        Merge group eligible for final SFI minting.
+
+    Raises
+    ------
+    ValueError
+        If a coded group lacks a canonical code, a canonical code is absent from source
+        evidence, or a canonical code is not present in its source-code collection.
+    """
+
+    source_normalized_codes = unique_nonempty(merge_group.normalized_statement_codes)
+    source_statement_codes = unique_nonempty(merge_group.statement_codes)
+    canonical_normalized_code = merge_group.canonical_normalized_statement_code
+    canonical_statement_code = merge_group.canonical_statement_code
+
+    if source_normalized_codes and canonical_normalized_code is None:
+        raise ValueError(
+            f"Eligible merge group {merge_group.merge_group_id!r} contains "
+            f"source-visible normalized codes but has no resolved canonical "
+            f"normalized statement code."
+        )
+
+    if not source_normalized_codes and canonical_normalized_code is not None:
+        raise ValueError(
+            f"Eligible merge group {merge_group.merge_group_id!r} defines a "
+            f"canonical normalized statement code without preserved normalized "
+            f"source-code evidence."
+        )
+
+    if source_statement_codes and canonical_statement_code is None:
+        raise ValueError(
+            f"Eligible merge group {merge_group.merge_group_id!r} contains "
+            f"source-visible statement codes but has no resolved canonical "
+            f"statement code."
+        )
+
+    if not source_statement_codes and canonical_statement_code is not None:
+        raise ValueError(
+            f"Eligible merge group {merge_group.merge_group_id!r} defines a "
+            f"canonical statement code without preserved source-code evidence."
+        )
+
+    if (
+        canonical_normalized_code is not None
+        and canonical_normalized_code not in source_normalized_codes
+    ):
+        raise ValueError(
+            f"Eligible merge group {merge_group.merge_group_id!r} has canonical "
+            f"normalized code {canonical_normalized_code!r}, which is not present "
+            f"in normalized_statement_codes."
+        )
+
+    if (
+        canonical_statement_code is not None
+        and canonical_statement_code not in source_statement_codes
+    ):
+        raise ValueError(
+            f"Eligible merge group {merge_group.merge_group_id!r} has canonical "
+            f"statement code {canonical_statement_code!r}, which is not present "
+            f"in statement_codes."
+        )
+
+
 def _validate_merge_group_code_resolutions(
     *,
     eligible_merge_groups: Sequence[SFIMergeGroup],
@@ -1237,101 +1309,10 @@ def _validate_merge_group_code_resolutions(
     """
 
     for merge_group in eligible_merge_groups:
-        source_normalized_codes = unique_nonempty(
-            merge_group.normalized_statement_codes
+        _validate_merge_group_canonical_code_presence(merge_group)
+        _validate_merge_group_selected_source_candidate(
+            merge_group, sfi_candidates_by_id
         )
-        source_statement_codes = unique_nonempty(merge_group.statement_codes)
-        canonical_normalized_code = merge_group.canonical_normalized_statement_code
-        canonical_statement_code = merge_group.canonical_statement_code
-
-        if source_normalized_codes and canonical_normalized_code is None:
-            raise ValueError(
-                f"Eligible merge group {merge_group.merge_group_id!r} contains "
-                f"source-visible normalized codes but has no resolved canonical "
-                f"normalized statement code."
-            )
-
-        if not source_normalized_codes and canonical_normalized_code is not None:
-            raise ValueError(
-                f"Eligible merge group {merge_group.merge_group_id!r} defines a "
-                f"canonical normalized statement code without preserved normalized "
-                f"source-code evidence."
-            )
-
-        if source_statement_codes and canonical_statement_code is None:
-            raise ValueError(
-                f"Eligible merge group {merge_group.merge_group_id!r} contains "
-                f"source-visible statement codes but has no resolved canonical "
-                f"statement code."
-            )
-
-        if not source_statement_codes and canonical_statement_code is not None:
-            raise ValueError(
-                f"Eligible merge group {merge_group.merge_group_id!r} defines a "
-                f"canonical statement code without preserved source-code evidence."
-            )
-
-        if (
-            canonical_normalized_code is not None
-            and canonical_normalized_code not in source_normalized_codes
-        ):
-            raise ValueError(
-                f"Eligible merge group {merge_group.merge_group_id!r} has canonical "
-                f"normalized code {canonical_normalized_code!r}, which is not present "
-                f"in normalized_statement_codes."
-            )
-
-        if (
-            canonical_statement_code is not None
-            and canonical_statement_code not in source_statement_codes
-        ):
-            raise ValueError(
-                f"Eligible merge group {merge_group.merge_group_id!r} has canonical "
-                f"statement code {canonical_statement_code!r}, which is not present "
-                f"in statement_codes."
-            )
-
-        if merge_group.code_resolution_method != "review_selected_source_code":
-            if merge_group.canonical_code_source_candidate_id is not None:
-                raise ValueError(
-                    f"Eligible merge group {merge_group.merge_group_id!r} defines "
-                    f"canonical_code_source_candidate_id without a review-selected "
-                    f"code-resolution method."
-                )
-
-            continue
-
-        selected_candidate_id = merge_group.canonical_code_source_candidate_id
-
-        if selected_candidate_id is None:
-            raise ValueError(
-                f"Eligible merge group {merge_group.merge_group_id!r} uses "
-                f"review_selected_source_code without a selected source candidate."
-            )
-
-        if selected_candidate_id not in merge_group.registry_candidate_ids:
-            raise ValueError(
-                f"Eligible merge group {merge_group.merge_group_id!r} selected "
-                f"candidate {selected_candidate_id!r}, which is outside the group."
-            )
-
-        selected_candidate = sfi_candidates_by_id.get(selected_candidate_id)
-
-        if selected_candidate is None:
-            raise ValueError(
-                f"Eligible merge group {merge_group.merge_group_id!r} selected "
-                f"unknown registry candidate {selected_candidate_id!r}."
-            )
-
-        if (
-            selected_candidate.normalized_statement_code != canonical_normalized_code
-            or selected_candidate.statement_code != canonical_statement_code
-        ):
-            raise ValueError(
-                f"Eligible merge group {merge_group.merge_group_id!r} canonical code "
-                f"does not match selected source candidate "
-                f"{selected_candidate_id!r}."
-            )
 
 
 def _validate_merge_group_coverage(
@@ -1387,6 +1368,75 @@ def _validate_merge_group_coverage(
         raise ValueError(
             f"SFI merge report references unknown registry candidates: "
             f"{unknown_candidate_ids}."
+        )
+
+
+def _validate_merge_group_selected_source_candidate(
+    merge_group: SFIMergeGroup, sfi_candidates_by_id: dict[str, SFIRegistryCandidate]
+) -> None:
+    """Validate the review-selected source candidate for one merge group.
+
+    For groups resolved via `review_selected_source_code`, verifies that a selected
+    source candidate exists, belongs to the group, is a known registry candidate, and
+    supports the persisted canonical code. For all other resolution methods, verifies
+    that no source-candidate id is asserted.
+
+    Parameters
+    ----------
+    merge_group
+        Merge group eligible for final SFI minting.
+    sfi_candidates_by_id
+        Registry candidates keyed by registry candidate ID.
+
+    Raises
+    ------
+    ValueError
+        If a review-selected source candidate is missing, out of group, unknown, or
+        does not support the persisted canonical code, or if a non-review method
+        asserts a source-candidate id.
+    """
+
+    selected_candidate_id = merge_group.canonical_code_source_candidate_id
+
+    if merge_group.code_resolution_method != "review_selected_source_code":
+        if selected_candidate_id is not None:
+            raise ValueError(
+                f"Eligible merge group {merge_group.merge_group_id!r} defines "
+                f"canonical_code_source_candidate_id without a review-selected "
+                f"code-resolution method."
+            )
+
+        return
+
+    if selected_candidate_id is None:
+        raise ValueError(
+            f"Eligible merge group {merge_group.merge_group_id!r} uses "
+            f"review_selected_source_code without a selected source candidate."
+        )
+
+    if selected_candidate_id not in merge_group.registry_candidate_ids:
+        raise ValueError(
+            f"Eligible merge group {merge_group.merge_group_id!r} selected "
+            f"candidate {selected_candidate_id!r}, which is outside the group."
+        )
+
+    selected_candidate = sfi_candidates_by_id.get(selected_candidate_id)
+
+    if selected_candidate is None:
+        raise ValueError(
+            f"Eligible merge group {merge_group.merge_group_id!r} selected "
+            f"unknown registry candidate {selected_candidate_id!r}."
+        )
+
+    if (
+        selected_candidate.normalized_statement_code
+        != merge_group.canonical_normalized_statement_code
+        or selected_candidate.statement_code != merge_group.canonical_statement_code
+    ):
+        raise ValueError(
+            f"Eligible merge group {merge_group.merge_group_id!r} canonical code "
+            f"does not match selected source candidate "
+            f"{selected_candidate_id!r}."
         )
 
 
