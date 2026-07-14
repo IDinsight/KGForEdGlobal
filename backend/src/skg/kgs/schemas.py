@@ -1404,6 +1404,12 @@ class SFIRegistryCandidate(BaseSchema):
     registry_candidate_id: str = Field(
         description="Temporary document-level candidate handle for review and merge."
     )
+    resolved_code_type: Optional[str] = Field(
+        description=(
+            "Configured code-pattern key authoritatively resolved for this candidate, "
+            "or null when the candidate is uncoded."
+        )
+    )
     source_context_key: str = Field(
         description=(
             "Deterministic source-derived context key used to scope no-code "
@@ -1478,6 +1484,28 @@ class SFIRegistryCandidate(BaseSchema):
         value = str(v).strip()
         return value or None
 
+    @field_validator("resolved_code_type", mode="before")
+    @classmethod
+    def clean_resolved_code_type(cls, v: Optional[str]) -> Optional[str]:
+        """Strip an optional resolved code type and normalize blanks to null.
+
+        Parameters
+        ----------
+        v
+            Raw optional resolved code type.
+
+        Returns
+        -------
+        Optional[str]
+            Stripped configured code type, or `None` when blank.
+        """
+
+        if v is None:
+            return None
+
+        value = str(v).strip()
+        return value or None
+
     @field_validator("code_scope_values")
     @classmethod
     def validate_code_scope_values(cls, v: dict[str, str]) -> dict[str, str]:
@@ -1497,8 +1525,8 @@ class SFIRegistryCandidate(BaseSchema):
         return clean_code_scope_values(v)
 
     @model_validator(mode="after")
-    def validate_code_scope_contract(self) -> Self:
-        """Require code-scope keys and values to be present together.
+    def validate_code_contract(self) -> Self:
+        """Validate candidate code resolution and configured scope consistency.
 
         Returns
         -------
@@ -1508,8 +1536,21 @@ class SFIRegistryCandidate(BaseSchema):
         Raises
         ------
         ValueError
-            If exactly one of code_scope_key and code_scope_values is present.
+            If source, normalized, and resolved code fields are not present together,
+            or if exactly one of code_scope_key and code_scope_values is present.
         """
+
+        code_field_presence = {
+            self.statement_code is not None,
+            self.normalized_statement_code is not None,
+            self.resolved_code_type is not None,
+        }
+
+        if len(code_field_presence) != 1:
+            raise ValueError(
+                "statement_code, normalized_statement_code, and resolved_code_type "
+                "must either all be present or all be null."
+            )
 
         if bool(self.code_scope_key) != bool(self.code_scope_values):
             raise ValueError(

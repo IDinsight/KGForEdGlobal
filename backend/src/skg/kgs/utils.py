@@ -145,6 +145,39 @@ class KGInputs:
     warnings: list[str]
 
 
+@dataclass(frozen=True)
+class ResolvedCandidateCode:
+    """Resolved code identity for one extracted SFI candidate.
+
+    Attributes
+    ----------
+    normalized_statement_code
+        Formatting-insensitive normalized code used for registry bucketing and
+        downstream identity logic, or `None` when the candidate is uncoded.
+    resolved_code_type
+        Configured code-pattern key that authoritatively matched the candidate code,
+        or `None` when the candidate is uncoded.
+    """
+
+    normalized_statement_code: str | None
+    resolved_code_type: str | None
+
+    def __post_init__(self) -> None:
+        """Validate that normalized code and resolved type are present together.
+
+        Raises
+        ------
+        ValueError
+            If exactly one of the two resolved-code fields is present.
+        """
+
+        if bool(self.normalized_statement_code) != bool(self.resolved_code_type):
+            raise ValueError(
+                "normalized_statement_code and resolved_code_type must either both "
+                "be present or both be null."
+            )
+
+
 def _build_glued_code_pattern(pattern: str) -> str | None:
     """Build a conservative fallback regex for a code glued to statement text.
 
@@ -1485,6 +1518,134 @@ def reset_output_files(output_fps: Sequence[Path]) -> None:
 
         if output_fp.suffix == ".jsonl":
             output_fp.write_text("", encoding="utf-8")
+
+
+def resolve_candidate_code(
+    *,
+    code_patterns: Mapping[str, str | re.Pattern[str]],
+    expected_code_type: str | None,
+    statement_code: str | None,
+) -> ResolvedCandidateCode:
+    """Resolve one candidate code to exactly one configured code family.
+
+    A statement type's configured `code_type` acts as an explicit constraint. When no
+    code type is configured for the statement type, a non-null candidate code must
+    match exactly one configured pattern. The returned resolved code type is the
+    authoritative input for code-scope construction.
+
+    Configured patterns are source-facing regexes. Each pattern is searched against the
+    candidate code, and a match counts only when its normalized text equals the
+    normalized complete candidate code. This supports source formatting variants
+    without allowing a partial code match to determine the code family.
+
+    Parameters
+    ----------
+    code_patterns
+        Configured source-facing code regexes keyed by code type. Values may be raw
+        pattern strings or compiled regular expressions.
+    expected_code_type
+        Optional code type declared for the candidate's canonical statement type.
+    statement_code
+        Candidate statement code, or `None` for an uncoded candidate.
+
+    Returns
+    -------
+    ResolvedCandidateCode
+        Normalized statement code and uniquely resolved configured code type. Both
+        fields are `None` for an uncoded candidate.
+
+    Raises
+    ------
+    ValueError
+        If a configured pattern is invalid, the expected code type is unavailable or
+        does not match, or an untyped statement code matches zero or multiple code
+        types.
+    """
+
+    statement_code_clean = str(statement_code or "").strip()
+    normalized_statement_code = normalize_code(statement_code_clean)
+
+    if normalized_statement_code is None:
+        return ResolvedCandidateCode(
+            normalized_statement_code=None, resolved_code_type=None
+        )
+
+    compiled_patterns: dict[str, re.Pattern[str]] = {}
+
+    for code_type, pattern in sorted(code_patterns.items()):
+        code_type_clean = str(code_type or "").strip()
+
+        if not code_type_clean:
+            raise ValueError(
+                "Configured code patterns must use non-empty code type keys."
+            )
+
+        if code_type_clean in compiled_patterns:
+            raise ValueError(
+                f"Configured code type {code_type_clean!r} is duplicated after "
+                f"stripping whitespace."
+            )
+
+        if isinstance(pattern, re.Pattern):
+            compiled_pattern = pattern
+        else:
+            pattern_clean = str(pattern or "").strip()
+
+            if not pattern_clean:
+                raise ValueError(
+                    f"Configured code pattern for code type {code_type_clean!r} "
+                    f"must be non-empty."
+                )
+
+            try:
+                compiled_pattern = re.compile(pattern_clean, flags=re.IGNORECASE)
+            except re.error as exc:
+                raise ValueError(
+                    f"Configured code pattern for code type {code_type_clean!r} is "
+                    f"invalid: {pattern_clean!r}."
+                ) from exc
+
+        compiled_patterns[code_type_clean] = compiled_pattern
+
+    matching_code_types: list[str] = []
+
+    for code_type, pattern in compiled_patterns.items():
+        for match in pattern.finditer(statement_code_clean):
+            if normalize_code(match.group(0)) == normalized_statement_code:
+                matching_code_types.append(code_type)
+                break
+
+    expected_code_type_clean = str(expected_code_type or "").strip() or None
+
+    if expected_code_type_clean is not None:
+        if expected_code_type_clean not in compiled_patterns:
+            raise ValueError(
+                f"Expected code type {expected_code_type_clean!r} is not present in "
+                f"the configured code patterns."
+            )
+
+        if expected_code_type_clean not in matching_code_types:
+            raise ValueError(
+                f"Statement code {statement_code!r} does not match expected code "
+                f"type {expected_code_type_clean!r}; matched code types "
+                f"{matching_code_types}."
+            )
+
+        resolved_code_type = expected_code_type_clean
+    else:
+        if len(matching_code_types) != 1:
+            raise ValueError(
+                f"Statement code {statement_code!r} must match exactly one configured "
+                f"code type when its statement type has no declared code_type; "
+                f"matched {matching_code_types}."
+            )
+
+        resolved_code_type = matching_code_types[0]
+
+    return ResolvedCandidateCode(
+        normalized_statement_code=normalized_statement_code,
+        resolved_code_type=resolved_code_type,
+    )
 
 
 def text_starts_with_complete_marker(*, marker: str, text: str) -> bool:

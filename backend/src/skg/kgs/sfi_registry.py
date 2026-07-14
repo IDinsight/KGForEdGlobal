@@ -33,7 +33,7 @@ from skg.kgs.schemas import (
     SFIRegistrySummary,
     SFIRegistryWarning,
 )
-from skg.kgs.utils import normalize_code, normalize_text
+from skg.kgs.utils import normalize_code, normalize_text, resolve_candidate_code
 from skg.kgs.validators import verify_sfi_extraction_integrity
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig, normalize_controlled_value_key
@@ -540,20 +540,28 @@ def _build_registry_candidate(
     -------
     SFIRegistryCandidate
         Registry candidate with normalized code and literal text bucket keys.
+
+    Raises
+    ------
+    ValueError
+        If a statement code cannot be resolved.
     """
 
-    raw_normalized_statement_code = normalize_code(candidate.statement_code)
-    matching_code_types = _get_configured_code_types(
-        code_patterns=code_patterns,
-        statement_code=candidate.statement_code,
-    )
-    expected_code_type = statement_type_code_types.get(candidate.statement_type)
-    normalized_statement_code = (
-        raw_normalized_statement_code
-        if matching_code_types
-        and (expected_code_type is None or expected_code_type in matching_code_types)
-        else None
-    )
+    try:
+        code_resolution = resolve_candidate_code(
+            code_patterns=code_patterns,
+            expected_code_type=statement_type_code_types.get(candidate.statement_type),
+            statement_code=candidate.statement_code,
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"Could not resolve statement code for candidate "
+            f"{candidate.candidate_id!r} in extraction window "
+            f"{extraction_window.window_id!r}: {exc}"
+        ) from exc
+
+    normalized_statement_code = code_resolution.normalized_statement_code
+    resolved_code_type = code_resolution.resolved_code_type
 
     source_context_key, source_context_labels = _build_candidate_source_context(
         candidate=candidate, extraction_window=extraction_window
@@ -567,7 +575,7 @@ def _build_registry_candidate(
     code_scope_key, code_scope_values = _build_code_scope(
         candidate=candidate,
         code_scope_statement_types=code_scope_statement_types,
-        code_type=(expected_code_type if normalized_statement_code else None),
+        code_type=resolved_code_type,
         extraction_window=extraction_window,
         statement_value_policies=statement_value_policies,
     )
@@ -622,6 +630,7 @@ def _build_registry_candidate(
         normalized_statement_code=normalized_statement_code,
         normalized_statement_type=candidate.normalized_statement_type,
         registry_candidate_id=registry_candidate_id,
+        resolved_code_type=resolved_code_type,
         source_context_key=source_context_key,
         source_context_labels=source_context_labels,
         source_segment_ids=extraction_window.source_segment_ids,
@@ -1128,48 +1137,6 @@ def _find_configured_code_matches_in_text(
             seen.add(match_key)
 
     return matches
-
-
-def _get_configured_code_types(
-    *, code_patterns: dict[str, re.Pattern[str]], statement_code: Optional[str]
-) -> list[str]:
-    """Return configured code types matching a candidate statement code.
-
-    Configured code patterns are authored for source-visible code text and are used
-    elsewhere as raw-text regexes. This function therefore applies each pattern to the
-    raw candidate `statement_code`, normalizes the matched substring, and compares it
-    with the normalized full candidate code. This accepts source-visible formatting
-    variants without requiring config authors to maintain separate normalized-code
-    regexes.
-
-    Parameters
-    ----------
-    code_patterns
-        Compiled curriculum-specific source-text code patterns keyed by code type.
-    statement_code
-        Candidate statement_code copied from visible source text, or None when absent.
-
-    Returns
-    -------
-    list[str]
-        Configured code type keys whose source-text patterns match the candidate code.
-    """
-
-    statement_code_clean = str(statement_code or "").strip()
-    normalized_statement_code = normalize_code(statement_code_clean)
-
-    if normalized_statement_code is None:
-        return []
-
-    matching_code_types: list[str] = []
-
-    for code_type, pattern in sorted(code_patterns.items()):
-        for match in pattern.finditer(statement_code_clean):
-            if normalize_code(match.group(0)) == normalized_statement_code:
-                matching_code_types.append(code_type)
-                break
-
-    return matching_code_types
 
 
 def _join_bucket_key(*values: Optional[str]) -> str:
@@ -1733,7 +1700,12 @@ def _warn_on_per_candidate_issues(
     warning_signatures: set[tuple[Any, ...]],
     warnings: list[SFIRegistryWarning],
 ) -> None:
-    """Warn on candidate-level statement_code anomalies.
+    """Warn on candidate-level statement-code anomalies.
+
+    Registry candidates have already passed shared deterministic code resolution. The
+    remaining warnings therefore focus on source text that appears coded but was
+    extracted without a code, and on valid opportunistic codes assigned to statement
+    types that do not declare a preferred code family.
 
     Parameters
     ----------
@@ -1742,7 +1714,7 @@ def _warn_on_per_candidate_issues(
     code_patterns
         Compiled curriculum-specific code patterns keyed by code type.
     statement_type_code_types
-        Mapping from canonical statement_type labels to expected code types.
+        Mapping from canonical statement-type labels to expected code types.
     warning_signatures
         Mutable set of warning signatures already emitted.
     warnings
@@ -1750,13 +1722,6 @@ def _warn_on_per_candidate_issues(
     """
 
     for candidate in candidates:
-        raw_normalized_statement_code = normalize_code(candidate.statement_code)
-        matching_code_types = _get_configured_code_types(
-            code_patterns=code_patterns,
-            statement_code=candidate.statement_code,
-        )
-        expected_code_type = statement_type_code_types.get(candidate.statement_type)
-
         if candidate.statement_code is None and _find_configured_code_matches_in_text(
             code_patterns=code_patterns, value=candidate.source_text
         ):
@@ -1773,76 +1738,18 @@ def _warn_on_per_candidate_issues(
                 warnings=warnings,
             )
 
-        if raw_normalized_statement_code is not None and not code_patterns:
-            _maybe_append_warning(
-                bucket_id=None,
-                message=(
-                    f"Candidate {candidate.registry_candidate_id} has statement_code "
-                    f"{candidate.statement_code!r}, but kg_config.academic_standards."
-                    f"code_patterns is empty. The code is preserved on the "
-                    f"candidate payload but excluded from code buckets."
-                ),
-                registry_candidate_ids=[candidate.registry_candidate_id],
-                severity="warning",
-                warning_signatures=warning_signatures,
-                warning_type="statement_code_without_configured_code_patterns",
-                warnings=warnings,
-            )
-            continue
-
-        if raw_normalized_statement_code is not None and not matching_code_types:
-            _maybe_append_warning(
-                bucket_id=None,
-                message=(
-                    f"Candidate {candidate.registry_candidate_id} has statement_code "
-                    f"{candidate.statement_code!r}, normalized as "
-                    f"{raw_normalized_statement_code!r}, but it does not match any "
-                    f"configured code_patterns: {sorted(code_patterns)}. The code is "
-                    f"preserved on the candidate payload but excluded from code "
-                    f"buckets."
-                ),
-                registry_candidate_ids=[candidate.registry_candidate_id],
-                severity="warning",
-                warning_signatures=warning_signatures,
-                warning_type="statement_code_does_not_match_configured_code_patterns",
-                warnings=warnings,
-            )
-            continue
-
         if (
-            raw_normalized_statement_code is not None
-            and expected_code_type is not None
-            and expected_code_type not in matching_code_types
-        ):
-            _maybe_append_warning(
-                bucket_id=None,
-                message=(
-                    f"Candidate {candidate.registry_candidate_id} has statement_type "
-                    f"{candidate.statement_type!r}, which expects code_type "
-                    f"{expected_code_type!r}, but statement_code "
-                    f"{candidate.statement_code!r} matches configured code types "
-                    f"{matching_code_types}. The code is preserved on the "
-                    f"candidate payload but excluded from code buckets."
-                ),
-                registry_candidate_ids=[candidate.registry_candidate_id],
-                severity="warning",
-                warning_signatures=warning_signatures,
-                warning_type="statement_code_mismatched_expected_code_type",
-                warnings=warnings,
-            )
-            continue
-
-        if (
-            candidate.normalized_statement_code is not None
+            candidate.resolved_code_type is not None
             and candidate.statement_type not in statement_type_code_types
         ):
             _maybe_append_warning(
                 bucket_id=None,
                 message=(
                     f"Candidate {candidate.registry_candidate_id} has statement_code "
-                    f"{candidate.statement_code!r}, but statement_type "
-                    f"{candidate.statement_type!r} does not define a code_type in "
-                    f"statement_type_policy."
+                    f"{candidate.statement_code!r} unambiguously resolved as "
+                    f"code_type {candidate.resolved_code_type!r}, while statement_type "
+                    f"{candidate.statement_type!r} does not declare a preferred "
+                    f"code_type in statement_type_policy."
                 ),
                 registry_candidate_ids=[candidate.registry_candidate_id],
                 severity="warning",

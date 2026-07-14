@@ -26,6 +26,7 @@ from skg.kgs.schemas import (
     SFIHasChildResolutionRequest,
     SFIHasChildResolutionResponse,
 )
+from skg.kgs.utils import resolve_candidate_code
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 
@@ -614,10 +615,13 @@ def _validate_candidate_code(
 ) -> None:
     """Validate that an optional candidate code is configured and source-exposed.
 
+    The shared deterministic resolver identifies the candidate's authoritative code
+    type. A statement type's declared code type is enforced when present; otherwise,
+    the candidate code must match exactly one configured pattern. Python then verifies
+    that the same typed code is exposed by the extraction window.
+
     This check deliberately does not decide whether the code is semantically attached
-    to the correct statement. The validation LLM handles that judgment. Python only
-    verifies that the normalized code is allowed by configuration and appears in the
-    window's deterministic typed code evidence.
+    to the correct statement. The validation LLM handles that judgment.
 
     Parameters
     ----------
@@ -633,41 +637,34 @@ def _validate_candidate_code(
     Raises
     ------
     QualityError
-        If the code is not allowed by configuration or is not exposed by the window.
+        If the code cannot be resolved to an allowed configured type or the resolved
+        typed code is not exposed by the extraction window.
     """
 
     if candidate.statement_code is None:
         return
 
-    matching_code_types = sorted(
-        code_type
-        for code_type, pattern in code_patterns_by_type.items()
-        if re.fullmatch(pattern, candidate.statement_code) is not None
-    )
-    configured_code_type = statement_type_code_type_by_label.get(
-        candidate.statement_type
-    )
+    try:
+        code_resolution = resolve_candidate_code(
+            code_patterns=code_patterns_by_type,
+            expected_code_type=statement_type_code_type_by_label.get(
+                candidate.statement_type
+            ),
+            statement_code=candidate.statement_code,
+        )
+    except ValueError as exc:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} has invalid statement_code "
+            f"{candidate.statement_code!r}: {exc}"
+        ) from exc
 
-    if configured_code_type is not None:
-        if configured_code_type not in matching_code_types:
-            raise QualityError(
-                f"Candidate {candidate.candidate_id!r} has statement_code "
-                f"{candidate.statement_code!r}, which does not match configured "
-                f"code type {configured_code_type!r} for statement_type "
-                f"{candidate.statement_type!r}."
-            )
+    resolved_code_type = code_resolution.resolved_code_type
 
-        resolved_code_type = configured_code_type
-    else:
-        if len(matching_code_types) != 1:
-            raise QualityError(
-                f"Candidate {candidate.candidate_id!r} has statement_code "
-                f"{candidate.statement_code!r}, which must match exactly one "
-                f"configured code pattern when its statement type has no code_type; "
-                f"matched {matching_code_types}."
-            )
-
-        resolved_code_type = matching_code_types[0]
+    if resolved_code_type is None:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} has statement_code "
+            f"{candidate.statement_code!r}, but no configured code type was resolved."
+        )
 
     matches_code_evidence = any(
         code_match.code_type == resolved_code_type
@@ -678,8 +675,9 @@ def _validate_candidate_code(
     if not matches_code_evidence:
         raise QualityError(
             f"Candidate {candidate.candidate_id!r} has statement_code "
-            f"{candidate.statement_code!r}, but that normalized code is not exposed "
-            f"by the extraction window as typed code evidence."
+            f"{candidate.statement_code!r} resolved as code_type "
+            f"{resolved_code_type!r}, but that exact typed normalized code is not "
+            f"exposed by the extraction window."
         )
 
 
