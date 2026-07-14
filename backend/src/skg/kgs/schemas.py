@@ -1490,15 +1490,23 @@ class SFIDedupDecisionGroup(BaseSchema):
     reason: str = Field(
         description="Short source-grounded decision reason.", min_length=1
     )
+    representative_candidate_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Existing candidate selected as the representative source-facing form "
+            "for a merge decision."
+        ),
+    )
 
     @field_validator(
         "canonical_code_selection_reason",
         "canonical_code_source_candidate_id",
+        "representative_candidate_id",
         mode="before",
     )
     @classmethod
-    def clean_optional_code_selection_strings(cls, v: Optional[str]) -> Optional[str]:
-        """Strip optional canonical-code selection fields.
+    def clean_optional_selection_strings(cls, v: Optional[str]) -> Optional[str]:
+        """Strip optional candidate-selection fields.
 
         Parameters
         ----------
@@ -2113,6 +2121,13 @@ class SFIMergeGroup(BaseSchema):
     registry_candidate_ids: list[str] = Field(
         description="Registry candidates included in this merge group.", min_length=1
     )
+    representative_candidate_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Registry candidate selected as the representative source-facing form "
+            "for a mintable merge group."
+        ),
+    )
     source_segment_ids: list[str] = Field(
         default_factory=list, description="Merged source segment IDs."
     )
@@ -2140,12 +2155,13 @@ class SFIMergeGroup(BaseSchema):
         "canonical_normalized_statement_code",
         "canonical_statement_code",
         "normalized_statement_code",
+        "representative_candidate_id",
         "statement_code",
         mode="before",
     )
     @classmethod
-    def clean_optional_code_strings(cls, v: Optional[str]) -> Optional[str]:
-        """Strip optional code-resolution strings and normalize blanks to `None`.
+    def clean_optional_resolution_strings(cls, v: Optional[str]) -> Optional[str]:
+        """Strip optional code-resolution and representative-selection strings.
 
         Parameters
         ----------
@@ -2232,6 +2248,57 @@ class SFIMergeGroup(BaseSchema):
         """
 
         return sorted(set(int(index) for index in v or []))
+
+    @model_validator(mode="after")
+    def validate_representative_candidate_contract(self) -> Self:
+        """Validate representative-candidate semantics for this merge group.
+
+        Returns
+        -------
+        Self
+            Validated merge group.
+
+        Raises
+        ------
+        ValueError
+            If a mintable group lacks a valid representative candidate or a
+            non-mintable group asserts one.
+        """
+
+        representative_candidate_id = self.representative_candidate_id
+
+        if self.merge_decision == "merged":
+            if representative_candidate_id is None:
+                raise ValueError("Merged groups require representative_candidate_id.")
+
+            if representative_candidate_id not in self.registry_candidate_ids:
+                raise ValueError(
+                    "Merged-group representative_candidate_id must belong to "
+                    "registry_candidate_ids."
+                )
+
+            return self
+
+        if self.merge_decision == "singleton":
+            if len(self.registry_candidate_ids) != 1:
+                raise ValueError(
+                    "Singleton groups require exactly one registry candidate."
+                )
+
+            if representative_candidate_id != self.registry_candidate_ids[0]:
+                raise ValueError(
+                    "Singleton representative_candidate_id must equal the sole "
+                    "registry candidate ID."
+                )
+
+            return self
+
+        if representative_candidate_id is not None:
+            raise ValueError(
+                "Conflict and needs_review groups must not define representative_candidate_id."
+            )
+
+        return self
 
     @model_validator(mode="after")
     def validate_code_resolution_contract(self) -> Self:
@@ -2420,7 +2487,10 @@ class SFIMergeGroup(BaseSchema):
             )
 
     def _check_unresolved_multiple_source_codes_contract(
-        self, source_normalized_codes: Sequence[str]
+        self,
+        *,
+        source_normalized_codes: Sequence[str],
+        source_statement_codes: Sequence[str],
     ) -> None:
         """Validate the `unresolved_multiple_source_codes` resolution contract.
 
@@ -2428,17 +2498,27 @@ class SFIMergeGroup(BaseSchema):
         ----------
         source_normalized_codes
             Distinct, cleaned normalized source statement codes.
+        source_statement_codes
+            Distinct, cleaned source statement codes.
+
         Raises
         ------
         ValueError
-            If there are fewer than two normalized source codes, the merge decision is
-            not `conflict` or `needs_review`, or any canonical code field is set.
+            If there are fewer than two normalized or source statement codes, the merge
+            decision is not `conflict` or `needs_review`, or any canonical code field
+            is set.
         """
 
         if len(source_normalized_codes) < 2:
             raise ValueError(
                 "unresolved_multiple_source_codes requires multiple distinct "
                 "normalized source codes."
+            )
+
+        if len(source_statement_codes) < 2:
+            raise ValueError(
+                "unresolved_multiple_source_codes requires multiple distinct "
+                "source statement codes."
             )
 
         if self.merge_decision not in {"conflict", "needs_review"}:
@@ -2639,6 +2719,13 @@ class SFIFinalRecord(BaseSchema):
         description="Normalized SFI statement type."
     )
     provider: str = Field(description="Provider from KG metadata.")
+    representative_candidate_id: str = Field(
+        description=(
+            "Registry candidate whose existing description and language supply the "
+            "final source-facing surface form."
+        ),
+        min_length=1,
+    )
     source_context_keys: list[str] = Field(
         default_factory=list,
         description="Source-context keys from registry candidate source refs.",
@@ -2688,6 +2775,7 @@ class SFIFinalRecord(BaseSchema):
         "merge_reason",
         "normalized_statement_type",
         "provider",
+        "representative_candidate_id",
         "statement_type",
         mode="before",
     )
@@ -2808,6 +2896,29 @@ class SFIFinalRecord(BaseSchema):
 
         if not self.case_identifier_uri.endswith(str(self.final_sfi_uuid)):
             raise ValueError("case_identifier_uri must end with final_sfi_uuid.")
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_representative_candidate_contract(self) -> Self:
+        """Validate the final record's representative-candidate reference.
+
+        Returns
+        -------
+        Self
+            Validated final SFI record.
+
+        Raises
+        ------
+        ValueError
+            If the representative candidate is not preserved among the source registry
+            candidate IDs.
+        """
+
+        if self.representative_candidate_id not in self.source_registry_candidate_ids:
+            raise ValueError(
+                "representative_candidate_id must be preserved in source_registry_candidate_ids."
+            )
 
         return self
 

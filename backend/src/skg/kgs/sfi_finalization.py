@@ -578,10 +578,9 @@ def _build_sfi_final_record(
         Deterministic final SFI record.
     """
 
-    group_candidates = [
-        sfi_candidates_by_id[candidate_id]
-        for candidate_id in merge_group.registry_candidate_ids
-    ]
+    representative_candidate = _get_representative_candidate(
+        merge_group=merge_group, sfi_candidates_by_id=sfi_candidates_by_id
+    )
     identity_result = _build_identity_key(
         code_group_counts=code_group_counts,
         document_ir=document_ir,
@@ -625,17 +624,13 @@ def _build_sfi_final_record(
         code_resolution_reason=merge_group.code_resolution_reason,
         confidence_max=merge_group.confidence_max,
         confidence_min=merge_group.confidence_min,
-        description=_choose_final_description(merge_group),
+        description=representative_candidate.description,
         final_sfi_uuid=final_sfi_uuid,
         identifier=final_sfi_uuid,
         identity_key=identity_result.identity_key,
-        in_language=_choose_language(
-            group_candidates=group_candidates, kg_config=kg_config
-        ),
+        in_language=representative_candidate.language,
         jurisdiction=kg_config.metadata.jurisdiction,
-        language=_choose_language(
-            group_candidates=group_candidates, kg_config=kg_config
-        ),
+        language=representative_candidate.language,
         license=kg_config.metadata.license,
         merge_decision=merge_group.merge_decision,
         merge_group_id=merge_group.merge_group_id,
@@ -681,6 +676,7 @@ def _build_sfi_final_record(
         normalized_statement_code=merge_group.canonical_normalized_statement_code,
         normalized_statement_type=_shared_normalized_statement_type(merge_group),
         provider=kg_config.metadata.provider,
+        representative_candidate_id=(representative_candidate.registry_candidate_id),
         source_context_keys=source_context_keys,
         source_normalized_statement_codes=merge_group.normalized_statement_codes,
         source_page_indexes=source_page_indexes,
@@ -759,74 +755,55 @@ def _build_sfi_final_summary(
     )
 
 
-def _choose_final_description(merge_group: SFIMergeGroup) -> str:
-    """Choose deterministic final source-backed text for one merge group.
+def _get_representative_candidate(
+    *, merge_group: SFIMergeGroup, sfi_candidates_by_id: dict[str, SFIRegistryCandidate]
+) -> SFIRegistryCandidate:
+    """Return the validated representative candidate for a mintable merge group.
 
     Parameters
     ----------
     merge_group
-        Merge group whose candidate descriptions and evidence quotes should be used.
+        Merge group whose representative source-facing candidate should be resolved.
+    sfi_candidates_by_id
+        Registry candidates keyed by registry candidate ID.
 
     Returns
     -------
-    str
-        Chosen final description.
+    SFIRegistryCandidate
+        Existing registry candidate whose description and language should be copied to
+        the final SFI record.
 
     Raises
     ------
     ValueError
-        If no description or source text is available.
+        If the representative ID is missing, outside the merge group, or unknown to
+        the current candidate registry.
     """
 
-    candidates = unique_nonempty(merge_group.candidate_descriptions)
+    representative_candidate_id = merge_group.representative_candidate_id
 
-    if not candidates:
-        candidates = unique_nonempty(merge_group.candidate_source_texts)
-
-    if not candidates:
+    if representative_candidate_id is None:
         raise ValueError(
-            f"Merge group {merge_group.merge_group_id!r} has no final description "
-            f"or source text to use for SFI finalization."
+            f"Eligible merge group {merge_group.merge_group_id!r} has no "
+            f"representative_candidate_id."
         )
 
-    normalized_to_values: dict[str, list[str]] = {}
+    if representative_candidate_id not in merge_group.registry_candidate_ids:
+        raise ValueError(
+            f"Eligible merge group {merge_group.merge_group_id!r} selected "
+            f"representative candidate {representative_candidate_id!r}, which is "
+            f"outside the group."
+        )
 
-    for value in candidates:
-        normalized_to_values.setdefault(normalize_text(value), []).append(value)
+    representative_candidate = sfi_candidates_by_id.get(representative_candidate_id)
 
-    if len(normalized_to_values) == 1:
-        return _preferred_surface_form(candidates)
+    if representative_candidate is None:
+        raise ValueError(
+            f"Eligible merge group {merge_group.merge_group_id!r} selected unknown "
+            f"representative candidate {representative_candidate_id!r}."
+        )
 
-    return _preferred_surface_form(candidates)
-
-
-def _choose_language(
-    *, group_candidates: Sequence[SFIRegistryCandidate], kg_config: CreateKGConfig
-) -> str:
-    """Choose a deterministic language tag for a final SFI.
-
-    Parameters
-    ----------
-    group_candidates
-        Registry candidates represented by the final SFI.
-    kg_config
-        Runtime KG config carrying framework language metadata.
-
-    Returns
-    -------
-    str
-        Final language tag.
-    """
-
-    languages = unique_nonempty(candidate.language for candidate in group_candidates)
-
-    if len(languages) == 1:
-        return languages[0]
-
-    if kg_config.metadata.primary_language:
-        return kg_config.metadata.primary_language
-
-    return languages[0] if languages else kg_config.metadata.languages[0]
+    return representative_candidate
 
 
 def _format_identity_family_key(key: Sequence[str]) -> str:
@@ -864,36 +841,6 @@ def _hash_text(*, n_hex: int, value: str) -> str:
 
     normalized = normalize_text(value)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:n_hex]
-
-
-def _preferred_surface_form(values: Sequence[str]) -> str:
-    """Choose a stable human-readable representative from equivalent strings.
-
-    Parameters
-    ----------
-    values
-        Candidate surface forms.
-
-    Returns
-    -------
-    str
-        Preferred surface form.
-    """
-
-    cleaned = unique_nonempty(values)
-
-    if not cleaned:
-        raise ValueError("Cannot choose a surface form from an empty sequence.")
-
-    return sorted(
-        cleaned,
-        key=lambda value: (
-            str(value).isupper(),
-            -len(str(value).strip()),
-            str(value).casefold(),
-            str(value),
-        ),
-    )[0]
 
 
 def _recover_section_path_labels(

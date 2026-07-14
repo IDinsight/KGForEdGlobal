@@ -987,6 +987,63 @@ def _validate_dedup_issue_candidate_ids(
             )
 
 
+def _validate_dedup_representative_selections(
+    *, review_request: SFIDedupReviewRequest, review_response: SFIDedupReviewResponse
+) -> None:
+    """Validate representative-candidate selections for dedup decision groups.
+
+    Python validates only stable cross-object contracts. The producer/checker LLM
+    decides which existing candidate has the cleanest faithful source-facing form.
+
+    Parameters
+    ----------
+    review_request
+        Bounded review request containing the available candidates.
+    review_response
+        Structured dedup response whose representative selections should be checked.
+
+    Raises
+    ------
+    QualityError
+        If a merge omits its representative, a non-merge asserts one, or the selected
+        candidate is unknown or outside the decision group.
+    """
+
+    candidates_by_id = {
+        candidate.registry_candidate_id: candidate
+        for candidate in review_request.candidates
+    }
+
+    for group_index, decision_group in enumerate(review_response.decision_groups):
+        representative_candidate_id = decision_group.representative_candidate_id
+
+        if decision_group.decision != "merge":
+            if representative_candidate_id is not None:
+                raise QualityError(
+                    f"Dedup decision group {group_index} must leave "
+                    f"representative_candidate_id null unless decision='merge'."
+                )
+
+            continue
+
+        if representative_candidate_id is None:
+            raise QualityError(
+                f"Dedup merge group {group_index} must provide representative_candidate_id."
+            )
+
+        if representative_candidate_id not in decision_group.candidate_ids:
+            raise QualityError(
+                f"Dedup merge group {group_index} selected representative candidate "
+                f"{representative_candidate_id!r}, which is outside that decision group."
+            )
+
+        if representative_candidate_id not in candidates_by_id:
+            raise QualityError(
+                f"Dedup merge group {group_index} selected unknown representative "
+                f"candidate {representative_candidate_id!r}."
+            )
+
+
 def _validate_dedup_response_candidate_coverage(
     *, review_request: SFIDedupReviewRequest, review_response: SFIDedupReviewResponse
 ) -> None:
@@ -1434,6 +1491,9 @@ def verify_sfi_dedup_review_integrity(
         review_request=review_request, review_response=review_response
     )
     _validate_dedup_canonical_code_selections(
+        review_request=review_request, review_response=review_response
+    )
+    _validate_dedup_representative_selections(
         review_request=review_request, review_response=review_response
     )
 

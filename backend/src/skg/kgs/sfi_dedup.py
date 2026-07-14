@@ -483,6 +483,7 @@ def _build_merge_group(
     llm_review_set_id: str | None,
     merge_decision: SFIMergeDecision,
     merge_reason: str,
+    representative_candidate_id: str | None,
 ) -> SFIMergeGroup:
     """Build one SFI merge-group record from registry candidates.
 
@@ -513,6 +514,7 @@ def _build_merge_group(
         llm_review_set_id="dedupe_review_abc123",
         merge_decision="merged",
         merge_reason="Same statement type, same official code, and compatible text.",
+        representative_candidate_id=candidate_a.registry_candidate_id,
     )
 
     The resulting `SFIMergeGroup` has one stable group ID, both registry candidate IDs,
@@ -531,6 +533,7 @@ def _build_merge_group(
         llm_review_set_id="dedupe_review_abc123",
         merge_decision="singleton",
         merge_reason="Same text, but different visible curriculum contexts.",
+        representative_candidate_id=candidate_a.registry_candidate_id,
     )
     _build_merge_group(
         candidates=[candidate_b],
@@ -538,6 +541,7 @@ def _build_merge_group(
         llm_review_set_id="dedupe_review_abc123",
         merge_decision="singleton",
         merge_reason="Same text, but different visible curriculum contexts.",
+        representative_candidate_id=candidate_b.registry_candidate_id,
     )
 
     3. A deterministic singleton outside all review sets is also built with one
@@ -549,6 +553,7 @@ def _build_merge_group(
         llm_review_set_id=None,
         merge_decision="singleton",
         merge_reason="Candidate was not included in any SFI merge review set.",
+        representative_candidate_id=candidate_c.registry_candidate_id,
     )
 
     4. A conflict or needs-review group can contain multiple candidates. In those
@@ -573,6 +578,9 @@ def _build_merge_group(
         SFI merge decision carried forward to later stages.
     merge_reason
         Short deterministic or LLM-sourced reason.
+    representative_candidate_id
+        Existing registry candidate selected as the representative source-facing form
+        for a mintable group, or `None` for conflict and needs-review groups.
 
     Returns
     -------
@@ -618,6 +626,7 @@ def _build_merge_group(
                 merge_decision,
                 llm_review_set_id or "",
                 code_resolution.canonical_code_source_candidate_id or "",
+                representative_candidate_id or "",
                 *registry_candidate_ids,
             ]
         ).encode("utf-8")
@@ -685,6 +694,7 @@ def _build_merge_group(
         ),
         normalized_statement_types=normalized_statement_types,
         registry_candidate_ids=registry_candidate_ids,
+        representative_candidate_id=representative_candidate_id,
         source_segment_ids=unique_nonempty(
             source_segment_id
             for candidate in sorted_candidates
@@ -871,6 +881,9 @@ def _build_merge_groups_from_responses(
                         llm_review_set_id=review_response.review_set_id,
                         merge_decision="merged",
                         merge_reason=decision_group.reason,
+                        representative_candidate_id=(
+                            decision_group.representative_candidate_id
+                        ),
                     )
                 )
                 continue
@@ -884,6 +897,9 @@ def _build_merge_groups_from_responses(
                             llm_review_set_id=review_response.review_set_id,
                             merge_decision="singleton",
                             merge_reason=decision_group.reason,
+                            representative_candidate_id=(
+                                group_candidate.registry_candidate_id
+                            ),
                         )
                     )
                 continue
@@ -895,6 +911,7 @@ def _build_merge_groups_from_responses(
                     llm_review_set_id=review_response.review_set_id,
                     merge_decision=decision_group.decision,
                     merge_reason=decision_group.reason,
+                    representative_candidate_id=None,
                 )
             )
 
@@ -912,6 +929,7 @@ def _build_merge_groups_from_responses(
                     "Review component was too large or unsafe for bounded LLM "
                     "dedup review: " + "; ".join(component.review_reasons[:5])
                 ),
+                representative_candidate_id=None,
             )
         )
 
@@ -1370,6 +1388,7 @@ def _build_singleton_merge_groups(
                 llm_review_set_id=None,
                 merge_decision="singleton",
                 merge_reason="Candidate was not included in any SFI merge review set.",
+                representative_candidate_id=candidate_id,
             )
         )
 
