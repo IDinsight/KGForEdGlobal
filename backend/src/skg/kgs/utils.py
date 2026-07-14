@@ -263,6 +263,75 @@ def _build_table_section_selection_text(
     return "\n".join(part for part in parts if part)
 
 
+def _compile_code_patterns(
+    code_patterns: Mapping[str, str | re.Pattern[str]],
+) -> dict[str, re.Pattern[str]]:
+    """Compile and validate configured code patterns keyed by code type.
+
+    Code type keys are stripped of surrounding whitespace, required to be non-empty,
+    and required to remain unique after stripping. Pattern values that are already
+    compiled regular expressions are used unchanged; string values are stripped,
+    required to be non-empty, and compiled case-insensitively. Keys are processed in
+    sorted order so validation is deterministic.
+
+    Parameters
+    ----------
+    code_patterns
+        Configured source-facing code regexes keyed by code type. Values may be raw
+        pattern strings or compiled regular expressions.
+
+    Returns
+    -------
+    dict[str, re.Pattern[str]]
+        Compiled regular expressions keyed by cleaned code type.
+
+    Raises
+    ------
+    ValueError
+        If a code type key is empty or duplicated after stripping, or if a configured
+        pattern is empty or is not a valid regular expression.
+    """
+
+    compiled_patterns: dict[str, re.Pattern[str]] = {}
+
+    for code_type, pattern in sorted(code_patterns.items()):
+        code_type_clean = str(code_type or "").strip()
+
+        if not code_type_clean:
+            raise ValueError(
+                "Configured code patterns must use non-empty code type keys."
+            )
+
+        if code_type_clean in compiled_patterns:
+            raise ValueError(
+                f"Configured code type {code_type_clean!r} is duplicated after "
+                f"stripping whitespace."
+            )
+
+        if isinstance(pattern, re.Pattern):
+            compiled_pattern = pattern
+        else:
+            pattern_clean = str(pattern or "").strip()
+
+            if not pattern_clean:
+                raise ValueError(
+                    f"Configured code pattern for code type {code_type_clean!r} "
+                    f"must be non-empty."
+                )
+
+            try:
+                compiled_pattern = re.compile(pattern_clean, flags=re.IGNORECASE)
+            except re.error as exc:
+                raise ValueError(
+                    f"Configured code pattern for code type {code_type_clean!r} is "
+                    f"invalid: {pattern_clean!r}."
+                ) from exc
+
+        compiled_patterns[code_type_clean] = compiled_pattern
+
+    return compiled_patterns
+
+
 def _count_code_pattern_matches(
     *, document_ir: DocumentIR, kg_config: CreateKGConfig
 ) -> dict[str, dict[str, int]]:
@@ -715,6 +784,72 @@ def _normalize_code_match_value(*, pattern: str, raw_value: str) -> str:
         return compacted_value
 
     return raw_value_clean
+
+
+def _resolve_code_type(
+    *,
+    compiled_patterns: Mapping[str, re.Pattern[str]],
+    expected_code_type: str | None,
+    matching_code_types: Sequence[str],
+    statement_code: str | None,
+) -> str:
+    """Resolve the authoritative configured code type for a coded candidate.
+
+    A declared expected code type acts as an explicit constraint: it must be a
+    configured code type and must appear among the candidate's matching code types.
+    When no code type is declared, the candidate code must match exactly one configured
+    code type.
+
+    Parameters
+    ----------
+    compiled_patterns
+        Compiled code patterns keyed by cleaned code type, used to validate that a
+        declared expected code type is configured.
+    expected_code_type
+        Optional code type declared for the candidate's canonical statement type.
+    matching_code_types
+        Configured code types whose pattern matched the candidate code exactly.
+    statement_code
+        Candidate statement code, used only for error messages.
+
+    Returns
+    -------
+    str
+        The uniquely resolved configured code type.
+
+    Raises
+    ------
+    ValueError
+        If the expected code type is not configured or does not match, or if an untyped
+        statement code matches zero or multiple code types.
+    """
+
+    expected_code_type_clean = str(expected_code_type or "").strip() or None
+
+    if expected_code_type_clean is not None:
+        if expected_code_type_clean not in compiled_patterns:
+            raise ValueError(
+                f"Expected code type {expected_code_type_clean!r} is not present in "
+                f"the configured code patterns."
+            )
+
+        if expected_code_type_clean not in matching_code_types:
+            raise ValueError(
+                f"Statement code {statement_code!r} does not match expected code "
+                f"type {expected_code_type_clean!r}; matched code types "
+                f"{list(matching_code_types)}."
+            )
+
+        return expected_code_type_clean
+
+    if len(matching_code_types) != 1:
+        raise ValueError(
+            f"Statement code {statement_code!r} must match exactly one configured "
+            f"code type when its statement type has no declared code_type; "
+            f"matched {list(matching_code_types)}."
+        )
+
+    return matching_code_types[0]
 
 
 def _validate_document_ir(*, document_ir_fp: Path, expected_doc_key: str) -> DocumentIR:
@@ -1570,42 +1705,7 @@ def resolve_candidate_code(
             normalized_statement_code=None, resolved_code_type=None
         )
 
-    compiled_patterns: dict[str, re.Pattern[str]] = {}
-
-    for code_type, pattern in sorted(code_patterns.items()):
-        code_type_clean = str(code_type or "").strip()
-
-        if not code_type_clean:
-            raise ValueError(
-                "Configured code patterns must use non-empty code type keys."
-            )
-
-        if code_type_clean in compiled_patterns:
-            raise ValueError(
-                f"Configured code type {code_type_clean!r} is duplicated after "
-                f"stripping whitespace."
-            )
-
-        if isinstance(pattern, re.Pattern):
-            compiled_pattern = pattern
-        else:
-            pattern_clean = str(pattern or "").strip()
-
-            if not pattern_clean:
-                raise ValueError(
-                    f"Configured code pattern for code type {code_type_clean!r} "
-                    f"must be non-empty."
-                )
-
-            try:
-                compiled_pattern = re.compile(pattern_clean, flags=re.IGNORECASE)
-            except re.error as exc:
-                raise ValueError(
-                    f"Configured code pattern for code type {code_type_clean!r} is "
-                    f"invalid: {pattern_clean!r}."
-                ) from exc
-
-        compiled_patterns[code_type_clean] = compiled_pattern
+    compiled_patterns = _compile_code_patterns(code_patterns)
 
     matching_code_types: list[str] = []
 
@@ -1615,32 +1715,12 @@ def resolve_candidate_code(
                 matching_code_types.append(code_type)
                 break
 
-    expected_code_type_clean = str(expected_code_type or "").strip() or None
-
-    if expected_code_type_clean is not None:
-        if expected_code_type_clean not in compiled_patterns:
-            raise ValueError(
-                f"Expected code type {expected_code_type_clean!r} is not present in "
-                f"the configured code patterns."
-            )
-
-        if expected_code_type_clean not in matching_code_types:
-            raise ValueError(
-                f"Statement code {statement_code!r} does not match expected code "
-                f"type {expected_code_type_clean!r}; matched code types "
-                f"{matching_code_types}."
-            )
-
-        resolved_code_type = expected_code_type_clean
-    else:
-        if len(matching_code_types) != 1:
-            raise ValueError(
-                f"Statement code {statement_code!r} must match exactly one configured "
-                f"code type when its statement type has no declared code_type; "
-                f"matched {matching_code_types}."
-            )
-
-        resolved_code_type = matching_code_types[0]
+    resolved_code_type = _resolve_code_type(
+        compiled_patterns=compiled_patterns,
+        expected_code_type=expected_code_type,
+        matching_code_types=matching_code_types,
+        statement_code=statement_code,
+    )
 
     return ResolvedCandidateCode(
         normalized_statement_code=normalized_statement_code,
