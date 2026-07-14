@@ -176,6 +176,167 @@ def _build_canonical_statement_value(
     return None, None
 
 
+def _build_code_scope(
+    *,
+    candidate: SFICandidate,
+    code_scope_statement_types: dict[str, list[str]],
+    code_type: Optional[str],
+    extraction_window: ExtractionWindow,
+    statement_value_policies: dict[str, _StatementValuePolicy],
+) -> tuple[Optional[str], dict[str, str]]:
+    """Resolve configured canonical scope values for one accepted candidate code.
+
+    Parameters
+    ----------
+    candidate
+        Window-local candidate whose accepted code may require configured scope.
+    code_scope_statement_types
+        Ordered scope statement-type labels keyed by configured code type.
+    code_type
+        Configured code type accepted for the candidate, or `None`.
+    extraction_window
+        Source extraction window containing candidate-local and section context.
+    statement_value_policies
+        Controlled-value policies keyed by canonical statement type.
+
+    Returns
+    -------
+    tuple[Optional[str], dict[str, str]]
+        Deterministic scope key and ordered canonical scope values. Both are empty when
+        the code type is document-global or unavailable.
+
+    Raises
+    ------
+    ValueError
+        If a configured scope value cannot be resolved from source-derived context.
+    """
+
+    if code_type is None:
+        return None, {}
+
+    scope_statement_types = code_scope_statement_types.get(code_type, [])
+
+    if not scope_statement_types:
+        return None, {}
+
+    evidence_values = _build_code_scope_evidence_values(
+        candidate=candidate, extraction_window=extraction_window
+    )
+    code_scope_values: dict[str, str] = {}
+
+    for scope_statement_type in scope_statement_types:
+        policy = statement_value_policies.get(scope_statement_type)
+
+        if policy is None:
+            raise ValueError(
+                f"Code type {code_type!r} requires scope statement_type "
+                f"{scope_statement_type!r}, but no controlled-value policy is "
+                f"available."
+            )
+
+        canonical_value = next(
+            (
+                matched_value
+                for evidence_value in evidence_values
+                if (
+                    matched_value := _match_controlled_value(
+                        allow_contained=True, policy=policy, value=evidence_value
+                    )
+                )
+            ),
+            None,
+        )
+
+        if canonical_value is None:
+            raise ValueError(
+                f"Could not resolve configured code scope {scope_statement_type!r} "
+                f"for candidate {candidate.candidate_id!r} in extraction window "
+                f"{extraction_window.window_id!r}."
+            )
+
+        code_scope_values[scope_statement_type] = canonical_value
+
+    code_scope_key = _join_bucket_key(
+        *(
+            f"{normalize_controlled_value_key(statement_type)}="
+            f"{normalize_controlled_value_key(canonical_value)}"
+            for statement_type, canonical_value in code_scope_values.items()
+        )
+    )
+    return code_scope_key, code_scope_values
+
+
+def _build_code_scope_evidence_values(
+    *, candidate: SFICandidate, extraction_window: ExtractionWindow
+) -> list[str]:
+    """Build ordered source-derived evidence values for code-scope resolution.
+
+    Candidate-local table helper rows are considered before raw rows, headers, and
+    nearest-first section labels. This lets configured scopes resolve from row-span or
+    filldown context while ensuring a current section label outranks stale cumulative
+    path entries. Candidate text is retained only as a final fallback.
+
+    Parameters
+    ----------
+    candidate
+        Window-local candidate with table row/header references.
+    extraction_window
+        Source extraction window containing structural and section context.
+
+    Returns
+    -------
+    list[str]
+        Unique non-empty source-derived evidence values in resolution priority order.
+    """
+
+    evidence_values: list[str] = []
+    table = extraction_window.table
+
+    if table is not None:
+        row_position_by_index = {
+            row_index: position for position, row_index in enumerate(table.row_indexes)
+        }
+
+        for row_index in candidate.table_row_indexes:
+            row_position = row_position_by_index.get(row_index)
+
+            if row_position is None:
+                continue
+
+            for rows in (table.rows_filldown, table.rows_grid, table.rows):
+                row_text = (
+                    _extract_table_row_text(rows[row_position])
+                    if rows is not None and row_position < len(rows)
+                    else ""
+                )
+
+                if row_text:
+                    evidence_values.append(row_text)
+
+        for header_index in candidate.table_header_indexes:
+            if 0 <= header_index < len(table.header_rows):
+                header_text = _extract_table_row_text(table.header_rows[header_index])
+
+                if header_text:
+                    evidence_values.append(header_text)
+
+    evidence_values.extend(
+        reversed(_extract_section_texts(extraction_window.source_section_path))
+    )
+
+    if extraction_window.block is not None:
+        evidence_values.extend(
+            reversed(
+                _extract_section_texts(
+                    extraction_window.block.get("section_path") or []
+                )
+            )
+        )
+
+    evidence_values.extend([candidate.source_text, candidate.description])
+    return _unique_limited(evidence_values, limit=64)
+
+
 def _build_dedup_context_windows(
     *,
     candidates: Sequence[SFIRegistryCandidate],
@@ -350,6 +511,7 @@ def _build_registry_candidate(
     *,
     candidate: SFICandidate,
     code_patterns: dict[str, re.Pattern[str]],
+    code_scope_statement_types: dict[str, list[str]],
     extraction_window: ExtractionWindow,
     source_window_candidate_index: int,
     statement_type_code_types: dict[str, str],
@@ -363,6 +525,8 @@ def _build_registry_candidate(
         Window-local candidate from an SFI extraction result.
     code_patterns
         Compiled curriculum-specific code patterns keyed by code type.
+    code_scope_statement_types
+        Ordered code-scope statement types keyed by configured code type.
     extraction_window
         Source extraction window that produced the candidate.
     source_window_candidate_index
@@ -400,6 +564,13 @@ def _build_registry_candidate(
     ) = _build_canonical_statement_value(
         candidate=candidate, statement_value_policies=statement_value_policies
     )
+    code_scope_key, code_scope_values = _build_code_scope(
+        candidate=candidate,
+        code_scope_statement_types=code_scope_statement_types,
+        code_type=(expected_code_type if normalized_statement_code else None),
+        extraction_window=extraction_window,
+        statement_value_policies=statement_value_policies,
+    )
     # Generate deterministic temporary registry candidate ID.
     candidate_slug = re.sub(
         r"[^0-9A-Za-z_\-]+", "_", candidate.candidate_id.strip()
@@ -414,19 +585,24 @@ def _build_registry_candidate(
     normalized_source_text = normalize_text(candidate.source_text)
     statement_type_key = normalize_text(candidate.statement_type)
     text_bucket_key = _build_text_bucket_key(
+        code_scope_key=code_scope_key,
         normalized_statement_code=normalized_statement_code,
         normalized_text=normalized_description,
         source_context_key=source_context_key,
         statement_type_key=statement_type_key,
     )
     source_text_bucket_key = _build_text_bucket_key(
+        code_scope_key=code_scope_key,
         normalized_statement_code=normalized_statement_code,
         normalized_text=normalized_source_text,
         source_context_key=source_context_key,
         statement_type_key=statement_type_key,
     )
+    code_bucket_key_parts = [code_scope_key] if code_scope_key is not None else []
     code_bucket_key = (
-        _join_bucket_key(statement_type_key, normalized_statement_code)
+        _join_bucket_key(
+            *code_bucket_key_parts, statement_type_key, normalized_statement_code
+        )
         if normalized_statement_code
         else None
     )
@@ -436,6 +612,8 @@ def _build_registry_candidate(
         canonical_statement_value=canonical_statement_value,
         canonical_statement_value_key=canonical_statement_value_key,
         code_bucket_key=code_bucket_key,
+        code_scope_key=code_scope_key,
+        code_scope_values=code_scope_values,
         confidence=candidate.confidence,
         description=candidate.description,
         language=candidate.language,
@@ -760,6 +938,7 @@ def _build_table_source_context(
 
 def _build_text_bucket_key(
     *,
+    code_scope_key: Optional[str],
     normalized_statement_code: Optional[str],
     normalized_text: str,
     source_context_key: str,
@@ -767,14 +946,16 @@ def _build_text_bucket_key(
 ) -> str:
     """Build a duplicate bucket key for candidate text.
 
-    This function deliberately avoids inferred hierarchy scope. Coded candidates use
-    statement type plus visible text as a secondary review signal because official
-    code evidence is carried separately. No-code candidates are scoped by deterministic
-    source context and visible text. Controlled-value matches are exposed separately as
+    Coded candidates use configured deterministic code scope, statement type, and
+    visible text as a secondary review signal because official code evidence is carried
+    separately. No-code candidates are scoped by deterministic source context and
+    visible text. Controlled-value matches are exposed separately as
     same-canonical-value review edges, not as canonical bucket identity.
 
     Parameters
     ----------
+    code_scope_key
+        Deterministic configured code scope for accepted coded candidates.
     normalized_statement_code
         Registry-normalized official statement code, when one was accepted.
     normalized_text
@@ -791,7 +972,10 @@ def _build_text_bucket_key(
     """
 
     if normalized_statement_code:
-        return _join_bucket_key(statement_type_key, normalized_text)
+        code_scope_key_parts = [code_scope_key] if code_scope_key is not None else []
+        return _join_bucket_key(
+            *code_scope_key_parts, statement_type_key, normalized_text
+        )
 
     return _join_bucket_key(statement_type_key, source_context_key, normalized_text)
 
@@ -1445,13 +1629,17 @@ def _warn_on_code_across_statement_types(
         Mutable warning accumulator.
     """
 
-    candidates_by_code: dict[str, list[SFIRegistryCandidate]] = defaultdict(list)
+    candidates_by_code: dict[tuple[str, str], list[SFIRegistryCandidate]] = defaultdict(
+        list
+    )
 
     for candidate in candidates:
         if candidate.normalized_statement_code:
-            candidates_by_code[candidate.normalized_statement_code].append(candidate)
+            candidates_by_code[
+                (candidate.code_scope_key or "", candidate.normalized_statement_code)
+            ].append(candidate)
 
-    for normalized_statement_code, code_candidates in sorted(
+    for (code_scope_key, normalized_statement_code), code_candidates in sorted(
         candidates_by_code.items()
     ):
         statement_types = {candidate.statement_type for candidate in code_candidates}
@@ -1460,8 +1648,9 @@ def _warn_on_code_across_statement_types(
             _maybe_append_warning(
                 bucket_id=None,
                 message=(
-                    f"Statement code {normalized_statement_code!r} appears across "
-                    f"multiple statement types: {sorted(statement_types)}."
+                    f"Statement code {normalized_statement_code!r} within configured "
+                    f"scope {code_scope_key or None!r} appears across multiple "
+                    f"statement types: {sorted(statement_types)}."
                 ),
                 registry_candidate_ids=[
                     candidate.registry_candidate_id for candidate in code_candidates
@@ -1814,6 +2003,7 @@ def build_candidate_registry(
     code_patterns, statement_type_code_types = _validate_statement_type_code_types(
         kg_config
     )
+    code_scope_statement_types = kg_config.academic_standards.code_scope_statement_types
     statement_value_policies = _build_statement_value_policies(kg_config)
 
     for result_index, extraction_result in enumerate(sfi_extraction_results):
@@ -1836,6 +2026,7 @@ def build_candidate_registry(
                 _build_registry_candidate(
                     candidate=candidate,
                     code_patterns=code_patterns,
+                    code_scope_statement_types=code_scope_statement_types,
                     extraction_window=extraction_window,
                     source_window_candidate_index=source_window_candidate_index,
                     statement_type_code_types=statement_type_code_types,

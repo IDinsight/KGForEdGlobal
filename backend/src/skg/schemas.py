@@ -753,6 +753,15 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
     bilingual_pair_policy: str | None = None
     code_parent_rules: list[dict[str, str]] = Field(default_factory=list)
     code_patterns: dict[str, str] = Field(default_factory=dict)
+    code_scope_statement_types: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Ordered source-facing Standard Grouping statement types that scope each "
+            "configured code type. A candidate code is unique only within the resolved "
+            "combination of these controlled grouping values. Omit a code type from "
+            "this mapping when its codes are document-global."
+        ),
+    )
     excluded_table_columns_signatures: list[str] = Field(
         default_factory=list,
         description=(
@@ -1271,6 +1280,103 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
             field_name="selection pattern list", values=v
         )
 
+    @field_validator("code_scope_statement_types")
+    @classmethod
+    def validate_code_scope_statement_types(
+        cls, v: dict[str, list[str]]
+    ) -> dict[str, list[str]]:
+        """Validate and clean configured code-scope statement-type lists.
+
+        Parameters
+        ----------
+        v
+            Mapping from code-pattern keys to ordered scope statement-type labels.
+
+        Returns
+        -------
+        dict[str, list[str]]
+            Cleaned mapping preserving configured key and scope order.
+
+        Raises
+        ------
+        TypeError
+            If keys, values, or scope labels have invalid types.
+        ValueError
+            If a code type or scope label is blank, or if a scope list contains
+            duplicate labels.
+        """
+
+        cleaned: dict[str, list[str]] = {}
+
+        for code_type, scope_statement_types in v.items():
+            if not isinstance(code_type, str):
+                raise TypeError(
+                    "CreateKGConfig.as.code_scope_statement_types keys must be strings."
+                )
+
+            code_type_clean = code_type.strip()
+
+            if not code_type_clean:
+                raise ValueError(
+                    "CreateKGConfig.as.code_scope_statement_types cannot contain a "
+                    "blank code type."
+                )
+
+            if code_type_clean in cleaned:
+                raise ValueError(
+                    f"CreateKGConfig.as.code_scope_statement_types contains duplicate "
+                    f"code type {code_type_clean!r} after stripping whitespace."
+                )
+
+            if not isinstance(scope_statement_types, list):
+                raise TypeError(
+                    "CreateKGConfig.as.code_scope_statement_types values must be "
+                    "lists of statement_type labels."
+                )
+
+            cleaned_scope_statement_types: list[str] = []
+            seen_scope_statement_types: set[str] = set()
+
+            for scope_statement_type in scope_statement_types:
+                if not isinstance(scope_statement_type, str):
+                    raise TypeError(
+                        "CreateKGConfig.as.code_scope_statement_types scope labels "
+                        "must be strings."
+                    )
+
+                scope_statement_type_clean = scope_statement_type.strip()
+
+                if (
+                    not scope_statement_type_clean
+                    or scope_statement_type_clean in seen_scope_statement_types
+                ):
+                    detail = (
+                        "a blank scope statement_type label."
+                        if not scope_statement_type_clean
+                        else (
+                            f"a duplicate scope label "
+                            f"{scope_statement_type_clean!r} for code type "
+                            f"{code_type_clean!r}."
+                        )
+                    )
+                    raise ValueError(
+                        f"CreateKGConfig.as.code_scope_statement_types contains {detail}"
+                    )
+
+                cleaned_scope_statement_types.append(scope_statement_type_clean)
+                seen_scope_statement_types.add(scope_statement_type_clean)
+
+            if not cleaned_scope_statement_types:
+                raise ValueError(
+                    "CreateKGConfig.as.code_scope_statement_types entries must "
+                    "contain at least one scope statement_type label. Omit a code "
+                    "type entirely when its codes are document-global."
+                )
+
+            cleaned[code_type_clean] = cleaned_scope_statement_types
+
+        return cleaned
+
     @field_validator("code_patterns")
     @classmethod
     def validate_code_patterns(cls, v: dict[str, str]) -> dict[str, str]:
@@ -1538,6 +1644,68 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
                     f"{item.statement_type!r}. Known code types: {sorted(known)}"
                 )
 
+    def _validate_code_scope_policy(self, known: set[str]) -> None:
+        """Validate code-scope references against code and statement-type policy.
+
+        Parameters
+        ----------
+        known
+            Known configured code-pattern keys.
+
+        Raises
+        ------
+        ValueError
+            If a scope mapping references an unknown or unused code type, an unknown
+            statement type, a non-grouping statement type, or a grouping statement
+            type without controlled values.
+        """
+
+        policy_by_statement_type = {
+            item.statement_type: item for item in self.statement_type_policy
+        }
+        used_code_types = {
+            item.code_type
+            for item in self.statement_type_policy
+            if item.code_type is not None
+        }
+
+        for code_type, scope_statement_types in self.code_scope_statement_types.items():
+            if code_type not in known:
+                raise ValueError(
+                    f"CreateKGConfig.as.code_scope_statement_types references unknown "
+                    f"code type {code_type!r}. Known code types: {sorted(known)}"
+                )
+
+            if code_type not in used_code_types:
+                raise ValueError(
+                    f"CreateKGConfig.as.code_scope_statement_types references code "
+                    f"type {code_type!r}, but no statement_type_policy item uses it."
+                )
+
+            for scope_statement_type in scope_statement_types:
+                policy_item = policy_by_statement_type.get(scope_statement_type)
+
+                if policy_item is None:
+                    raise ValueError(
+                        f"CreateKGConfig.as.code_scope_statement_types references "
+                        f"unknown statement_type {scope_statement_type!r}. Known "
+                        f"statement types: {sorted(policy_by_statement_type)}"
+                    )
+
+                if policy_item.normalized_statement_type != "Standard Grouping":
+                    raise ValueError(
+                        f"CreateKGConfig.as.code_scope_statement_types scope "
+                        f"statement_type {scope_statement_type!r} must normalize to "
+                        f"'Standard Grouping'."
+                    )
+
+                if not policy_item.controlled_values:
+                    raise ValueError(
+                        f"CreateKGConfig.as.code_scope_statement_types scope "
+                        f"statement_type {scope_statement_type!r} must define "
+                        f"controlled_values for deterministic resolution."
+                    )
+
     def _validate_dedup_context_statement_types(self) -> None:
         """Validate explicitly configured SFI dedup context statement types.
 
@@ -1656,6 +1824,7 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         known = set(self.code_patterns.keys())
         self._validate_windowing()
         self._validate_code_parent_rules(known)
+        self._validate_code_scope_policy(known)
         self._validate_dedup_context_statement_types()
         self._validate_has_child_statement_type_policy()
         self._validate_selection_overlap_policy()

@@ -36,7 +36,11 @@ from skg.kgs.schemas import (
     ExtractionWindowPlanItem,
     ExtractionWindowTablePayload,
 )
-from skg.kgs.utils import extract_block_source_text, get_table_selection_reasons
+from skg.kgs.utils import (
+    extract_block_source_text,
+    find_configured_code_matches,
+    get_table_selection_reasons,
+)
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, write_to_json
 
@@ -154,7 +158,19 @@ def _build_extraction_window(
         Validated extraction window.
     """
 
-    code_matches = _collect_code_matches(kg_config=kg_config, source_text=source_text)
+    code_matches = [
+        CodeMatch(
+            code_type=match.code_type,
+            end_char=match.end_char,
+            normalized_value=match.normalized_value,
+            raw_value=match.raw_value,
+            start_char=match.start_char,
+        )
+        for match in find_configured_code_matches(
+            code_patterns=kg_config.academic_standards.code_patterns,
+            source_text=source_text,
+        )
+    ]
     code_parent_hints = _collect_code_parent_hints(
         code_matches=code_matches, kg_config=kg_config
     )
@@ -205,35 +221,6 @@ def _build_extraction_window(
         window_index=window_index,
         window_notes=window_notes,
     )
-
-
-def _build_glued_code_pattern(pattern: str) -> Optional[str]:
-    """Build a conservative fallback regex for codes glued to statement text.
-
-    The configured code pattern remains authoritative. This function only removes one
-    terminal word-boundary token so a complete code can be detected when an alphabetic
-    statement begins immediately after it, for example `X1.2.3Describe`. The extracted
-    surface form is still revalidated against the original configured pattern before it
-    is accepted.
-
-    Parameters
-    ----------
-    pattern
-        Configured code regex.
-
-    Returns
-    -------
-    Optional[str]
-        Regex without one terminal `\\b` token, or `None` when the pattern does not end
-        with that token.
-    """
-
-    pattern_clean = pattern.rstrip()
-
-    if not pattern_clean.endswith(r"\b"):
-        return None
-
-    return pattern_clean[:-2]
 
 
 def _build_source_section_path_key(
@@ -460,93 +447,6 @@ def _build_table_windows(
     ]
     _validate_table_window_coverage(segment=segment, windows=windows)
     return windows
-
-
-def _collect_code_matches(
-    *, kg_config: CreateKGConfig, source_text: str
-) -> list[CodeMatch]:
-    """Collect KG config code regex matches from window source text.
-
-    Parameters
-    ----------
-    kg_config
-        Country/document-specific KG extraction configuration.
-    source_text
-        Window source text.
-
-    Returns
-    -------
-    list[CodeMatch]
-        Ordered code matches.
-    """
-
-    code_matches: list[CodeMatch] = []
-
-    for code_type, pattern in kg_config.academic_standards.code_patterns.items():
-        for match in re.finditer(pattern, source_text):
-            code_matches.append(
-                CodeMatch(
-                    code_type=code_type,
-                    end_char=match.end(),
-                    normalized_value=_normalize_code_match_value(
-                        pattern=pattern, raw_value=match.group(0)
-                    ),
-                    raw_value=match.group(0),
-                    start_char=match.start(),
-                )
-            )
-
-        glued_pattern = _build_glued_code_pattern(pattern)
-
-        if glued_pattern is None:
-            continue
-
-        for match in re.finditer(glued_pattern, source_text):
-            if match.end() >= len(source_text):
-                continue
-
-            next_character = source_text[match.end()]
-            matched_value = match.group(0)
-
-            if not next_character.isalpha():
-                continue
-
-            if re.fullmatch(pattern, matched_value) is None:
-                continue
-
-            code_matches.append(
-                CodeMatch(
-                    code_type=code_type,
-                    end_char=match.end(),
-                    normalized_value=_normalize_code_match_value(
-                        pattern=pattern, raw_value=matched_value
-                    ),
-                    raw_value=matched_value,
-                    start_char=match.start(),
-                )
-            )
-
-    code_matches.sort(key=lambda item: (item.start_char, item.end_char, item.code_type))
-
-    seen: set[tuple[str, int, str, str, int]] = set()
-    deduped: list[CodeMatch] = []
-
-    for code_match in code_matches:
-        key = (
-            code_match.code_type,
-            code_match.end_char,
-            code_match.normalized_value,
-            code_match.raw_value,
-            code_match.start_char,
-        )
-
-        if key in seen:
-            continue
-
-        seen.add(key)
-        deduped.append(code_match)
-
-    return deduped
 
 
 def _collect_code_parent_hints(
@@ -792,36 +692,6 @@ def _model_dump_list(values: Sequence[BaseModel]) -> list[dict[str, Any]]:
     """
 
     return [value.model_dump(mode="json") for value in values]
-
-
-def _normalize_code_match_value(*, pattern: str, raw_value: str) -> str:
-    """Normalize formatting around punctuation in a matched code surface.
-
-    The normalization is intentionally syntax-agnostic: it removes whitespace only when
-    that whitespace directly surrounds punctuation, while preserving spaces between
-    alphanumeric words. The compacted value is used only when it still matches the
-    configured code regex; otherwise the stripped raw value is retained.
-
-    Parameters
-    ----------
-    pattern
-        Configured regex that matched the source-visible code.
-    raw_value
-        Exact source-visible code surface form.
-
-    Returns
-    -------
-    str
-        Formatting-normalized code suitable for structured statement-code fields.
-    """
-
-    raw_value_clean = raw_value.strip()
-    compacted_value = re.sub(r"\s*([^\w\s])\s*", r"\1", raw_value_clean)
-
-    if re.fullmatch(pattern, compacted_value) is not None:
-        return compacted_value
-
-    return raw_value_clean
 
 
 def _optional_list_by_indexes(

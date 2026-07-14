@@ -107,8 +107,8 @@ def _annotate_same_code_different_content_audit_flags(
         Merge groups with same-code/different-content audit annotations added.
     """
 
-    groups_by_code_key: dict[tuple[str, str, str], list[SFIMergeGroup]] = defaultdict(
-        list
+    groups_by_code_key: dict[tuple[str, str, str, str], list[SFIMergeGroup]] = (
+        defaultdict(list)
     )
 
     for merge_group in merge_groups:
@@ -123,6 +123,7 @@ def _annotate_same_code_different_content_audit_flags(
 
         groups_by_code_key[
             (
+                merge_group.code_scope_key or "",
                 merge_group.statement_type,
                 merge_group.normalized_statement_type,
                 merge_group.canonical_normalized_statement_code,
@@ -132,6 +133,7 @@ def _annotate_same_code_different_content_audit_flags(
     annotated_by_id = {group.merge_group_id: group for group in merge_groups}
 
     for (
+        code_scope_key,
         statement_type,
         normalized_statement_type,
         normalized_statement_code,
@@ -161,7 +163,8 @@ def _annotate_same_code_different_content_audit_flags(
 
         group_ids = [group.merge_group_id for group in groups]
         audit_note = (
-            f"Shares statement_type={statement_type!r}, "
+            f"Shares code_scope_key={code_scope_key or None!r}, "
+            f"statement_type={statement_type!r}, "
             f"normalized_statement_type={normalized_statement_type!r}, "
             f"and normalized_statement_code={normalized_statement_code!r} "
             f"with another mintable merge group, but the source-visible "
@@ -586,6 +589,14 @@ def _build_merge_group(
     -------
     SFIMergeGroup
         Merge group preserving source and candidate evidence.
+
+    Raises
+    ------
+    ValueError
+        If a merged SFI group combines different configured code scopes or mix scoped
+            and unscoped candidates.
+        If candidates with one code_scope_key does not preserve identicical
+        code_scope_values.
     """
 
     sorted_candidates = sorted(
@@ -613,6 +624,40 @@ def _build_merge_group(
     statement_types = unique_nonempty(
         candidate.statement_type for candidate in sorted_candidates
     )
+    code_scope_signatures = {
+        candidate.code_scope_key or "" for candidate in sorted_candidates
+    }
+    code_scope_keys = unique_nonempty(
+        candidate.code_scope_key for candidate in sorted_candidates
+    )
+
+    if merge_decision == "merged" and len(code_scope_signatures) > 1:
+        raise ValueError(
+            "A merged SFI group cannot combine different configured code scopes or "
+            "mix scoped and unscoped candidates."
+        )
+
+    code_scope_key = (
+        next(iter(code_scope_signatures)) or None
+        if len(code_scope_signatures) == 1
+        else None
+    )
+    code_scope_values: dict[str, str] = {}
+
+    if code_scope_key is not None:
+        candidate_scope_values = {
+            tuple(candidate.code_scope_values.items())
+            for candidate in sorted_candidates
+        }
+
+        if len(candidate_scope_values) != 1:
+            raise ValueError(
+                "Candidates with one code_scope_key must preserve identical "
+                "code_scope_values."
+            )
+
+        code_scope_values = dict(next(iter(candidate_scope_values)))
+
     code_resolution = _resolve_code_resolution(
         candidates=sorted_candidates,
         canonical_code_selection_reason=canonical_code_selection_reason,
@@ -639,6 +684,8 @@ def _build_merge_group(
             {
                 "canonical_statement_value": candidate.canonical_statement_value,
                 "canonical_statement_value_key": candidate.canonical_statement_value_key,
+                "code_scope_key": candidate.code_scope_key,
+                "code_scope_values": candidate.code_scope_values,
                 "registry_candidate_id": candidate.registry_candidate_id,
                 "source_context_key": candidate.source_context_key,
                 "source_context_labels": candidate.source_context_labels,
@@ -674,6 +721,9 @@ def _build_merge_group(
         canonical_statement_values=canonical_statement_values,
         code_resolution_method=code_resolution.code_resolution_method,
         code_resolution_reason=code_resolution.code_resolution_reason,
+        code_scope_key=code_scope_key,
+        code_scope_keys=code_scope_keys,
+        code_scope_values=code_scope_values,
         confidence_max=max(confidence_values),
         confidence_min=min(confidence_values),
         llm_decision=llm_decision,
@@ -1019,10 +1069,11 @@ def _build_review_requests(
 ) -> tuple[list[SFIDedupReviewRequest], list[_ReviewComponent]]:
     """Build compact producer/checker requests and carry unresolved components forward.
 
-    Each request contains compact candidate-local fields, explicit candidate-subset
-    retrieval signals, and one de-duplicated request-level pool of nearby context
-    windows. Internal normalized text, source UUIDs, opaque bucket keys, full
-    provenance, and repeated candidate neighborhoods are not exposed to the LLM.
+    Each request contains compact candidate-local fields, configured code-scope values,
+    explicit candidate-subset retrieval signals, and one de-duplicated request-level
+    pool of nearby context windows. Internal normalized text, source UUIDs, duplicate
+    bucket keys, full provenance, and repeated candidate neighborhoods are not exposed
+    to the LLM.
 
     Parameters
     ----------
@@ -1094,6 +1145,8 @@ def _build_review_requests(
                 candidates=[
                     SFIDedupReviewCandidate(
                         canonical_statement_value=(candidate.canonical_statement_value),
+                        code_scope_key=candidate.code_scope_key,
+                        code_scope_values=candidate.code_scope_values,
                         context_window_indexes=(
                             candidate_context_window_indexes[
                                 candidate.registry_candidate_id
@@ -1207,9 +1260,10 @@ def _build_same_normalized_source_text_edges(
     or separate items with reused wording.
 
     To keep the comparison general and safe across jurisdictions, groups are
-    partitioned by both source-facing statement type and normalized statement type
-    before an edge is emitted. This prevents unrelated source roles from being sent
-    together solely because their visible text matches.
+    partitioned by configured code scope, source-facing statement type, and normalized
+    statement type before an edge is emitted. This prevents unrelated source roles or
+    distinct configured code scopes from being sent together solely because their
+    visible text matches.
 
     Parameters
     ----------
@@ -1223,7 +1277,9 @@ def _build_same_normalized_source_text_edges(
     """
 
     edges: list[tuple[set[str], set[str]]] = []
-    candidate_ids_by_text_key: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+    candidate_ids_by_text_key: dict[tuple[str, str, str, str], list[str]] = defaultdict(
+        list
+    )
 
     for candidate in sfi_candidate_registry.candidates:
         normalized_source_text = candidate.normalized_source_text.strip()
@@ -1233,6 +1289,7 @@ def _build_same_normalized_source_text_edges(
 
         candidate_ids_by_text_key[
             (
+                candidate.code_scope_key or "",
                 candidate.normalized_statement_type,
                 candidate.statement_type,
                 normalized_source_text,
@@ -1245,10 +1302,16 @@ def _build_same_normalized_source_text_edges(
         if len(candidate_ids) < 2:
             continue
 
-        normalized_statement_type, statement_type, normalized_source_text = text_key
+        (
+            code_scope_key,
+            normalized_statement_type,
+            statement_type,
+            normalized_source_text,
+        ) = text_key
         digest = hashlib.sha256(
             "|".join(
                 [
+                    code_scope_key,
                     normalized_statement_type,
                     statement_type,
                     normalized_source_text,
@@ -1261,7 +1324,8 @@ def _build_same_normalized_source_text_edges(
                 candidate_ids,
                 {
                     "same_normalized_source_text:"
-                    f"{statement_type}:{normalized_statement_type}:{digest}"
+                    f"{code_scope_key}:{statement_type}:"
+                    f"{normalized_statement_type}:{digest}"
                 },
             )
         )
@@ -2024,14 +2088,15 @@ def _normalized_source_text_signals(
         One signal per normalized source text shared by at least two candidates.
     """
 
-    normalized_source_groups: dict[tuple[str, str, str], list[SFIRegistryCandidate]] = (
-        defaultdict(list)
-    )
+    normalized_source_groups: dict[
+        tuple[str, str, str, str], list[SFIRegistryCandidate]
+    ] = defaultdict(list)
 
     for candidate in candidates:
         if candidate.normalized_source_text:
             normalized_source_groups[
                 (
+                    candidate.code_scope_key or "",
                     candidate.normalized_statement_type,
                     candidate.statement_type,
                     candidate.normalized_source_text,
@@ -2730,16 +2795,16 @@ def _split_and_bound_components(
 
     (
         candidate.statement_type,
-        candidate.normalized_statement_code
-        or candidate.code_bucket_key
+        candidate.code_bucket_key
+        or candidate.normalized_statement_code
         or candidate.canonical_statement_value_key
         or candidate.source_context_key,
     )
 
-    The key intentionally avoids inferred hierarchy scope and arbitrary source-order
-    window bands. If a split group remains too large, it is marked needs-review rather
-    than chunked into independent review sets that could under-merge duplicates across
-    chunk boundaries.
+    The key uses configured code scope when a scoped code bucket exists, while still
+    avoiding inferred hierarchy and arbitrary source-order window bands. If a split
+    group remains too large, it is marked needs-review rather than chunked into
+    independent review sets that could under-merge duplicates across chunk boundaries.
 
     The split is a retrieval-safety step, not a merge decision. Each resulting split
     group is handled as follows:
@@ -2775,8 +2840,8 @@ def _split_and_bound_components(
 
     (
         candidate.statement_type,
-        candidate.normalized_statement_code
-        or candidate.code_bucket_key
+        candidate.code_bucket_key
+        or candidate.normalized_statement_code
         or candidate.canonical_statement_value_key
         or candidate.source_context_key,
     )
@@ -2858,8 +2923,8 @@ def _split_and_bound_components(
             split_groups[
                 (
                     candidate.statement_type,
-                    candidate.normalized_statement_code
-                    or candidate.code_bucket_key
+                    candidate.code_bucket_key
+                    or candidate.normalized_statement_code
                     or candidate.canonical_statement_value_key
                     or candidate.source_context_key,
                 )

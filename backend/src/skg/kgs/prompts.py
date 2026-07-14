@@ -1136,7 +1136,8 @@ def extract_sfi_candidates_from_window(
 - Do not infer hierarchy or relationships in this step. Extract only SFI candidates directly visible in this compact source window; final hasChild relationships are resolved later from finalized SFIs and source provenance.
 - Extract grouping SFIs only when the grouping label itself is visible in block or table source content. Do not emit a grouping solely because it appears in source_context.section_path, and do not add absent grade, strand, sub-strand, or parent context.
 - Use the curriculum-specific extraction KG config below to adapt the generic ontology rules to this document.
-- If the generic instructions and the curriculum-specific runtime config conflict, follow the curriculum-specific runtime config. The runtime config is authoritative for document-specific extraction policy.
+- Treat `sfi_extraction_instructions` and every other applicable runtime policy field as authoritative for document-specific extraction behavior, including scope, source-occurrence boundaries, and candidate splitting or continuation rules.
+- If any generic instruction, example, heuristic, or default conflicts with the runtime config, follow the runtime config. Re-check the runtime instructions before finalizing the result rather than relying on a generic rule that appears elsewhere in this prompt.
 
 ## Curriculum-specific KG extraction config
 {json_dumps(kg_config_context)}
@@ -1155,7 +1156,10 @@ def extract_sfi_candidates_from_window(
 
 ## Candidate field policy
 - Return sfi_candidates in source order and assign candidate_id exactly by list position: sfi_1, sfi_2, through sfi_N with no gaps, alternate prefixes, or reordered numbers. For block content, order candidates by the first source-visible text that contributes to each candidate. For tables, order raw header-derived candidates before body-row-derived candidates, then follow table.source_rows order and left-to-right cell/text order within each row. Candidates sharing the same exact source location may use either stable relative order.
-- Emit one candidate per logical source item within this extraction result. When repeated continuation rows or cells contain the same canonical statement_type, the same normalized statement_code, and the same complete description, emit one candidate and combine all contributing raw row/header indexes. Do not merge candidates merely because their codes match: the same code with materially different source-visible wording represents separate candidates.
+- Preserve source occurrences during extraction; do not perform logical deduplication. Each independently printed or otherwise independently source-visible SFI occurrence must remain a separate candidate, even when another occurrence has the same statement type, code, description, normalized wording, or apparent logical identity.
+- Combine source locations into one candidate only when they are visible fragments of one source occurrence, such as a single statement continuing across adjacent cells, rows, slices, or headers. Do not combine complete independently printed occurrences merely because they repeat, overlap semantically, or are expected to merge in a later stage.
+- Apply the runtime `sfi_extraction_instructions` whenever they define more specific occurrence, continuation, splitting, or repetition behavior. If a generic example or heuristic conflicts with those instructions, the runtime instructions take precedence.
+- Leave logical identity resolution and merging of repeated source occurrences to the downstream SFI deduplication stage. The same code with materially different source-visible wording must also remain separate.
 - description should preserve the complete exact source-language wording of the SFI. For learning expectations, use the full official statement text. For groupings, preserve the complete grouping label or heading text, including visible hierarchy terms, ordinal numbers, punctuation, and separators such as "Grade", "Strand", "Sub-Strand", "3", and ":". Remove only a separately represented item identifier code. Do not mistake a hierarchy label or ordinal organizer prefix for a code. When a visible code functions as a separate item identifier, exclude that code from description and place its normalized form only in statement_code while preserving its raw source form in source_text. Removing a separately represented identifier is not a wording correction. When multiple explicit labeled fields appear on one physical line, such as one label-value field followed by another label-value field, treat each complete visible field as a separately bounded source span and preserve their source order. Do not clean, translate, correct spelling, normalize, expand, infer, or truncate the actual statement wording.
 - statement_type must use exactly one canonical source-facing role from statement_type_policy.
 - statement_code must use the candidate-local code_matches[].normalized_value whose code_type matches statement_type_policy.code_type for the candidate. The matching code_matches[].raw_value must be directly paired with the complete candidate description in the candidate's own source_text and cited source locations. Formatting normalization may remove whitespace around punctuation or separate a complete code printed immediately adjacent to statement text, but it must never change a code prefix, alphanumeric character, delimiter, or numeric component. Treat block.local_code and table.local_code as context only unless the same candidate-local code is also exposed by code_matches. When statement_type_policy.code_type is null, emit a code only when exactly one candidate-local code_match is unambiguous. Use null for nearby codes, segment labels, table identifiers that are not item codes, ambiguous or incomplete codes, codes not visible in the candidate's own source_text, or codes that belong to another statement. Do not leave statement_code null solely because code_matches[].raw_value contains spacing around punctuation or is glued to the statement text.
@@ -1538,25 +1542,39 @@ Do not assume the draft is correct. Return an `SFIExtractionValidationVerdict`.
   `SFIExtractionResult` in `corrected_result`.
 - The corrected result replaces the draft in the pipeline. It must be complete and
   self-contained, not a patch or list of edits.
-- You may add omitted candidates, remove false positives, combine or split candidates,
-  correct statement types, codes, languages, source text, source locations, auxiliary
-  records, notes, ordering, and IDs when the source and runtime policy require it.
+- You may add omitted candidates, remove false positives, split candidates, or combine
+  source fragments that belong to one source occurrence; you may also correct statement
+  types, codes, languages, source text, source locations, auxiliary records, notes,
+  ordering, and IDs when the source and runtime policy require it.
+- Do not combine independently printed or independently source-visible occurrences as a
+  form of logical deduplication. Logical merging belongs to the downstream SFI
+  deduplication stage.
 
 ## Runtime curriculum policy
 {json_dumps(config_context)}
 
-The runtime `bilingual_pair_policy` and `sfi_validation_instructions` fields are
-authoritative for curriculum-specific multilingual handling, edge cases, and tricky
-distinctions. When they conflict with generic semantic guidance, follow the runtime
-instructions unless doing so would invent source text or violate the structured output
-contract.
+The runtime `sfi_extraction_instructions`, `sfi_validation_instructions`,
+`bilingual_pair_policy`, and every other applicable runtime policy field are
+authoritative for curriculum-specific scope, source-occurrence boundaries,
+continuation rules, multilingual handling, edge cases, and tricky distinctions. If any
+generic instruction, example, heuristic, or default conflicts with the runtime config,
+follow the runtime config unless doing so would invent source text or violate the
+structured output contract. Re-check the runtime instructions before accepting or
+correcting the draft.
 
 ## What to validate
 
 ### 1. Completeness and scope
-- Check whether every source-visible item that should be an SFI under the runtime
-  extraction instructions is represented exactly once in the draft.
-- Find material omissions, duplicates, false positives, and over-extraction.
+- Check whether every source-visible occurrence that should be an SFI under the
+  runtime extraction instructions is represented exactly once in the draft.
+- Treat independently printed or independently source-visible repetitions as separate
+  extraction occurrences unless the runtime instructions explicitly define a more
+  specific source-fragment rule. Same type, code, description, normalized wording, or
+  apparent logical identity does not make separate occurrences duplicates at this
+  stage.
+- Find material omissions, duplicate extraction of the same single source occurrence,
+  false positives, and over-extraction. Do not label distinct repeated source
+  occurrences as duplicates merely because they may merge downstream.
 - Do not require ordinary examples, activities, resources, pedagogy, assessment notes,
   or other excluded material unless runtime instructions explicitly classify them as
   SFIs.
@@ -1578,8 +1596,10 @@ contract.
 - Verify that a table candidate cites the raw header/body rows that visibly support it.
   Citations should be sufficient and source-grounded; do not demand artificial
   minimality when multiple rows genuinely contribute to one statement.
-- Verify that statements split across adjacent cells or rows are combined or separated
-  according to their actual source role and wording.
+- Verify that visible fragments of one statement split across adjacent cells or rows
+  are combined only when they belong to the same source occurrence. Preserve complete
+  independently printed occurrences as separate candidates, following any more specific
+  runtime occurrence or continuation instructions.
 
 ### 4. Codes and language
 - Keep `statement_code` null when no official source-visible item code applies.
@@ -1615,10 +1635,12 @@ it passes:
   evidence quote, rather than only containing a nearby or parallel statement.
 - The candidate is an SFI under runtime policy, not an exemplar, activity, note,
   resource, repeated header, or other excluded material.
-- Distinct same-code/different-content source items remain separate. At result level,
-  group candidates by canonical statement type, normalized statement code, and complete
-  normalized description. Genuine repeated continuation occurrences in one result must
-  become one candidate with combined contributing provenance, not duplicate candidates.
+- Distinct same-code/different-content source items remain separate. Independently
+  printed or independently source-visible occurrences also remain separate when their
+  type, code, and wording are identical; do not group them into one logical candidate.
+  Combine provenance only for multiple visible fragments of the same single source
+  occurrence. Apply any more specific runtime occurrence, repetition, or continuation
+  instructions before this generic rule.
 - Routine excluded material is not emitted as an auxiliary record when runtime policy
   says auxiliaries are reserved for genuinely ambiguous source-visible text.
 

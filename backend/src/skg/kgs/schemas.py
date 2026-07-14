@@ -80,6 +80,49 @@ def _validate_iso8601_str(v: Optional[str]) -> Optional[str]:
     return v2
 
 
+def clean_code_scope_values(values: dict[str, str]) -> dict[str, str]:
+    """Clean and validate an ordered code-scope value mapping.
+
+    Parameters
+    ----------
+    values
+        Mapping from configured scope statement-type labels to canonical values.
+
+    Returns
+    -------
+    dict[str, str]
+        Cleaned mapping preserving configured scope order.
+
+    Raises
+    ------
+    TypeError
+        If a scope label or canonical value is not a string.
+    ValueError
+        If a scope label or canonical value is blank after stripping.
+    """
+
+    cleaned: dict[str, str] = {}
+
+    for statement_type, canonical_value in values.items():
+        if not isinstance(statement_type, str) or not isinstance(canonical_value, str):
+            raise TypeError("Code-scope labels and values must be strings.")
+
+        statement_type_clean = statement_type.strip()
+        canonical_value_clean = canonical_value.strip()
+
+        if not statement_type_clean or not canonical_value_clean:
+            raise ValueError("Code-scope labels and values must be non-empty.")
+
+        if statement_type_clean in cleaned:
+            raise ValueError(
+                f"Duplicate code-scope label {statement_type_clean!r} after stripping whitespace."
+            )
+
+        cleaned[statement_type_clean] = canonical_value_clean
+
+    return cleaned
+
+
 def unique_clean_strings(values: Sequence[str]) -> list[str]:
     """Clean and de-duplicate strings while preserving order.
 
@@ -775,7 +818,7 @@ class SFICandidate(BaseSchema):
     @field_validator("statement_code", mode="before")
     @classmethod
     def strip_statement_code(cls, v: Optional[str]) -> Optional[str]:
-        """Normalize blank statement codes to ``None``.
+        """Normalize blank statement codes to `None`.
 
         Parameters
         ----------
@@ -785,7 +828,7 @@ class SFICandidate(BaseSchema):
         Returns
         -------
         Optional[str]
-            Stripped code, or ``None``.
+            Stripped code, or `None`.
         """
 
         if v is None:
@@ -1322,7 +1365,22 @@ class SFIRegistryCandidate(BaseSchema):
     )
     code_bucket_key: Optional[str] = Field(
         default=None,
-        description="statement_type + normalized_statement_code bucket key, when coded.",
+        description=(
+            "Configured code scope + statement_type + normalized_statement_code "
+            "bucket key, when coded."
+        ),
+    )
+    code_scope_key: Optional[str] = Field(
+        description=(
+            "Deterministic ordered key for configured code-scope values, or null when "
+            "the candidate's code type is document-global or the candidate is uncoded."
+        )
+    )
+    code_scope_values: dict[str, str] = Field(
+        description=(
+            "Canonical controlled values for the configured statement types that "
+            "scope this candidate's accepted code."
+        )
     )
     confidence: float = Field(
         description="Original candidate confidence.", ge=0.0, le=1.0
@@ -1368,7 +1426,10 @@ class SFIRegistryCandidate(BaseSchema):
         description="Original candidate source_text.", min_length=1
     )
     source_text_bucket_key: str = Field(
-        description="statement_type + normalized source_text bucket key."
+        description=(
+            "Configured code scope or source context + statement_type + normalized "
+            "source_text bucket key."
+        )
     )
     source_window_candidate_id: str = Field(
         description="Original window-local candidate_id."
@@ -1387,10 +1448,76 @@ class SFIRegistryCandidate(BaseSchema):
         default_factory=list, description="Original candidate table_row_indexes."
     )
     text_bucket_key: str = Field(
-        description="statement_type + normalized description bucket key."
+        description=(
+            "Configured code scope or source context + statement_type + normalized "
+            "description bucket key."
+        )
     )
     window_id: str = Field(description="ExtractionWindow.window_id.")
     window_index: int = Field(description="ExtractionWindow.window_index.", ge=0)
+
+    @field_validator("code_scope_key", mode="before")
+    @classmethod
+    def clean_code_scope_key(cls, v: Optional[str]) -> Optional[str]:
+        """Strip an optional deterministic code-scope key.
+
+        Parameters
+        ----------
+        v
+            Raw optional code-scope key.
+
+        Returns
+        -------
+        Optional[str]
+            Stripped key, or `None` when blank.
+        """
+
+        if v is None:
+            return None
+
+        value = str(v).strip()
+        return value or None
+
+    @field_validator("code_scope_values")
+    @classmethod
+    def validate_code_scope_values(cls, v: dict[str, str]) -> dict[str, str]:
+        """Clean candidate code-scope values.
+
+        Parameters
+        ----------
+        v
+            Raw code-scope mapping.
+
+        Returns
+        -------
+        dict[str, str]
+            Cleaned ordered code-scope mapping.
+        """
+
+        return clean_code_scope_values(v)
+
+    @model_validator(mode="after")
+    def validate_code_scope_contract(self) -> Self:
+        """Require code-scope keys and values to be present together.
+
+        Returns
+        -------
+        Self
+            Validated registry candidate.
+
+        Raises
+        ------
+        ValueError
+            If exactly one of code_scope_key and code_scope_values is present.
+        """
+
+        if bool(self.code_scope_key) != bool(self.code_scope_values):
+            raise ValueError(
+                "code_scope_key and code_scope_values must either both be present or "
+                "both be empty."
+            )
+
+        return self
 
 
 class SFIRegistryDuplicateBucket(BaseSchema):
@@ -1579,6 +1706,12 @@ class SFIDedupReviewCandidate(BaseSchema):
         default=None,
         description="Canonical controlled statement value, when configured.",
     )
+    code_scope_key: Optional[str] = Field(
+        description="Deterministic configured code-scope key, when applicable."
+    )
+    code_scope_values: dict[str, str] = Field(
+        description="Canonical configured code-scope values, when applicable."
+    )
     context_window_indexes: list[int] = Field(
         description="Shared request-level context windows relevant to this candidate.",
         min_length=1,
@@ -1634,6 +1767,69 @@ class SFIDedupReviewCandidate(BaseSchema):
             raise ValueError("candidate index lists must be non-negative")
 
         return cleaned
+
+    @field_validator("code_scope_key", mode="before")
+    @classmethod
+    def clean_code_scope_key(cls, v: Optional[str]) -> Optional[str]:
+        """Strip an optional review-candidate code-scope key.
+
+        Parameters
+        ----------
+        v
+            Raw optional code-scope key.
+
+        Returns
+        -------
+        Optional[str]
+            Stripped key, or `None` when blank.
+        """
+
+        if v is None:
+            return None
+
+        value = str(v).strip()
+        return value or None
+
+    @field_validator("code_scope_values")
+    @classmethod
+    def validate_code_scope_values(cls, v: dict[str, str]) -> dict[str, str]:
+        """Clean review-candidate code-scope values.
+
+        Parameters
+        ----------
+        v
+            Raw code-scope mapping.
+
+        Returns
+        -------
+        dict[str, str]
+            Cleaned ordered code-scope mapping.
+        """
+
+        return clean_code_scope_values(v)
+
+    @model_validator(mode="after")
+    def validate_code_scope_contract(self) -> Self:
+        """Require review-candidate scope keys and values to agree.
+
+        Returns
+        -------
+        Self
+            Validated review candidate.
+
+        Raises
+        ------
+        ValueError
+            If exactly one of code_scope_key and code_scope_values is present.
+        """
+
+        if bool(self.code_scope_key) != bool(self.code_scope_values):
+            raise ValueError(
+                "code_scope_key and code_scope_values must either both be present or "
+                "both be empty."
+            )
+
+        return self
 
 
 class SFIDedupReviewRequest(BaseSchema):
@@ -1849,7 +2045,7 @@ class SFIDedupReviewSignal(BaseSchema):
         Returns
         -------
         Optional[str]
-            Cleaned value, or ``None`` when blank.
+            Cleaned value, or `None` when blank.
         """
 
         if v is None:
@@ -2091,6 +2287,21 @@ class SFIMergeGroup(BaseSchema):
         description="Source-grounded or deterministic canonical-code resolution reason.",
         min_length=1,
     )
+    code_scope_key: Optional[str] = Field(
+        description=(
+            "Shared deterministic code-scope key when all candidates have one common "
+            "configured code scope; otherwise null."
+        )
+    )
+    code_scope_keys: list[str] = Field(
+        description="All non-empty deterministic code-scope keys in the group."
+    )
+    code_scope_values: dict[str, str] = Field(
+        description=(
+            "Shared canonical configured code-scope values when the group has one "
+            "common non-empty scope; otherwise empty."
+        )
+    )
     confidence_max: float = Field(
         description="Maximum candidate confidence in this group.", ge=0.0, le=1.0
     )
@@ -2154,6 +2365,7 @@ class SFIMergeGroup(BaseSchema):
         "canonical_code_source_candidate_id",
         "canonical_normalized_statement_code",
         "canonical_statement_code",
+        "code_scope_key",
         "normalized_statement_code",
         "representative_candidate_id",
         "statement_code",
@@ -2206,6 +2418,7 @@ class SFIMergeGroup(BaseSchema):
         "candidate_source_texts",
         "canonical_statement_value_keys",
         "canonical_statement_values",
+        "code_scope_keys",
         "normalized_statement_codes",
         "normalized_statement_types",
         "registry_candidate_ids",
@@ -2248,6 +2461,106 @@ class SFIMergeGroup(BaseSchema):
         """
 
         return sorted(set(int(index) for index in v or []))
+
+    @field_validator("code_scope_values")
+    @classmethod
+    def validate_code_scope_values(cls, v: dict[str, str]) -> dict[str, str]:
+        """Clean shared merge-group code-scope values.
+
+        Parameters
+        ----------
+        v
+            Raw shared code-scope mapping.
+
+        Returns
+        -------
+        dict[str, str]
+            Cleaned ordered code-scope mapping.
+        """
+
+        return clean_code_scope_values(v)
+
+    @model_validator(mode="after")
+    def validate_code_scope_contract(self) -> Self:
+        """Validate merge-group scope fields against per-candidate source references.
+
+        Returns
+        -------
+        Self
+            Validated merge group.
+
+        Raises
+        ------
+        ValueError
+            If aggregate scope fields disagree with candidate references or a mintable
+            group combines scoped and unscoped candidates or multiple scopes.
+        """
+
+        source_scope_signatures = {
+            str(source_ref.get("code_scope_key") or "").strip()
+            for source_ref in self.candidate_source_refs
+        }
+        source_scope_keys = sorted(
+            scope_key for scope_key in source_scope_signatures if scope_key
+        )
+
+        if set(self.code_scope_keys) != set(source_scope_keys):
+            raise ValueError(
+                "code_scope_keys must equal the non-empty code-scope keys preserved "
+                "in candidate_source_refs."
+            )
+
+        if len(source_scope_signatures) == 1:
+            sole_scope_key = next(iter(source_scope_signatures)) or None
+        else:
+            sole_scope_key = None
+
+        if self.code_scope_key != sole_scope_key:
+            raise ValueError(
+                "code_scope_key must equal the sole candidate scope, or be null when "
+                "candidate scopes differ."
+            )
+
+        if (
+            self.merge_decision in {"merged", "singleton"}
+            and len(source_scope_signatures) > 1
+        ):
+            raise ValueError(
+                "Mintable merge groups cannot combine multiple configured code scopes "
+                "or mix scoped and unscoped candidates."
+            )
+
+        if self.code_scope_key is None:
+            if self.code_scope_values:
+                raise ValueError(
+                    "code_scope_values must be empty when code_scope_key is null."
+                )
+
+            return self
+
+        source_scope_values = {
+            tuple(
+                (str(key).strip(), str(value).strip())
+                for key, value in (source_ref.get("code_scope_values") or {}).items()
+            )
+            for source_ref in self.candidate_source_refs
+        }
+
+        if len(source_scope_values) != 1:
+            raise ValueError(
+                "Candidates sharing one code_scope_key must preserve identical "
+                "code_scope_values."
+            )
+
+        expected_scope_values = dict(next(iter(source_scope_values)))
+
+        if self.code_scope_values != expected_scope_values:
+            raise ValueError(
+                "code_scope_values must equal the shared values preserved in "
+                "candidate_source_refs."
+            )
+
+        return self
 
     @model_validator(mode="after")
     def validate_representative_candidate_contract(self) -> Self:

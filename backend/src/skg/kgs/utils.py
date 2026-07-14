@@ -10,7 +10,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 # Third Party Library
 from loguru import logger
@@ -22,6 +22,31 @@ from skg.document_ir.schemas import DocumentIR, TableSegment
 from skg.page_ir_extraction.schemas import TableCell, TextUnit
 from skg.schemas import CreateKGConfig, ExtractionConfig, RunCtx
 from skg.utils.general import make_dir, open_json_type, write_to_json
+
+
+@dataclass(frozen=True)
+class ConfiguredCodeMatch:
+    """One source-visible match for a configured curriculum code pattern.
+
+    Attributes
+    ----------
+    code_type
+        Runtime-config code-pattern key that produced the match.
+    end_char
+        Exclusive end character offset in the scanned source text.
+    normalized_value
+        Formatting-normalized code value suitable for structured fields.
+    raw_value
+        Exact source-visible code surface matched in the source text.
+    start_char
+        Inclusive start character offset in the scanned source text.
+    """
+
+    code_type: str
+    end_char: int
+    normalized_value: str
+    raw_value: str
+    start_char: int
 
 
 @dataclass(frozen=True)
@@ -76,6 +101,34 @@ class KGInputs:
     table_columns_signature_counts: dict[str, int]
     table_selection_match_counts: dict[str, Any]
     warnings: list[str]
+
+
+def _build_glued_code_pattern(pattern: str) -> str | None:
+    """Build a conservative fallback regex for a code glued to statement text.
+
+    The configured regex remains authoritative. This function removes one terminal word
+    boundary only when the pattern ends with a literal `\\b` token. The shared matcher
+    then accepts a fallback match only when alphabetic statement text follows
+    immediately and the isolated code still fully matches the original regex.
+
+    Parameters
+    ----------
+    pattern
+        Configured source-visible code regex.
+
+    Returns
+    -------
+    str | None
+        Regex without one terminal word-boundary token, or `None` when no supported
+        fallback can be built.
+    """
+
+    pattern_clean = pattern.rstrip()
+
+    if not pattern_clean.endswith(r"\b"):
+        return None
+
+    return pattern_clean[:-2]
 
 
 def _build_table_section_selection_text(
@@ -138,7 +191,12 @@ def _build_table_section_selection_text(
 def _count_code_pattern_matches(
     *, document_ir: DocumentIR, kg_config: CreateKGConfig
 ) -> dict[str, dict[str, int]]:
-    """Count configured code pattern matches in the DocumentIR.
+    """Count configured code matches across source-visible DocumentIR text units.
+
+    The same shared matcher used by extraction-window construction is applied to each
+    source-visible block or table-cell text unit. Scanning units independently avoids
+    manufacturing matches across unrelated cells or segments while keeping strict and
+    glued-code recognition identical to the later detector.
 
     Parameters
     ----------
@@ -150,7 +208,7 @@ def _count_code_pattern_matches(
     Returns
     -------
     dict[str, dict[str, int]]
-        Mapping of pattern name to total and unique match counts.
+        Mapping of pattern name to total and unique normalized match counts.
 
     Raises
     ------
@@ -158,32 +216,44 @@ def _count_code_pattern_matches(
         If a segment kind is unrecognized.
     """
 
-    # 1. Extract the same source-visible text used by extraction windows.
-    texts: list[str] = []
+    source_text_units: list[str] = []
 
     for segment in document_ir.segments:
         if segment.kind == "block":
             block_payload = segment.model_dump(mode="json")
 
             if block_text := extract_block_source_text(block_payload):
-                texts.append(block_text)
+                source_text_units.append(block_text)
         elif segment.kind == "table":
             for row in segment.rows:
                 for cell in row.cells:
                     if cell_text := _extract_cell_text(cell):
-                        texts.append(cell_text)
+                        source_text_units.append(cell_text)
         else:
             raise ValueError(f"Unrecognized segment kind: {segment.kind}")
 
-    # 2. Join extracted text and scan for code patterns.
-    all_text = "\n".join(texts)
-    counts: dict[str, dict[str, int]] = {}
+    total_counts: dict[str, int] = {
+        code_type: 0 for code_type in kg_config.academic_standards.code_patterns
+    }
+    unique_values: dict[str, set[str]] = {
+        code_type: set() for code_type in kg_config.academic_standards.code_patterns
+    }
 
-    for name, pattern in kg_config.academic_standards.code_patterns.items():
-        matches = [match.group(0) for match in re.finditer(pattern, all_text)]
-        counts[name] = {"total": len(matches), "unique": len(set(matches))}
+    for source_text in source_text_units:
+        for match in find_configured_code_matches(
+            code_patterns=kg_config.academic_standards.code_patterns,
+            source_text=source_text,
+        ):
+            total_counts[match.code_type] += 1
+            unique_values[match.code_type].add(match.normalized_value)
 
-    return counts
+    return {
+        code_type: {
+            "total": total_counts[code_type],
+            "unique": len(unique_values[code_type]),
+        }
+        for code_type in kg_config.academic_standards.code_patterns
+    }
 
 
 def _count_table_columns_signatures(document_ir: DocumentIR) -> dict[str, int]:
@@ -532,6 +602,34 @@ def _matches_any_pattern(*, patterns: Sequence[str], text: str) -> bool:
     """
 
     return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def _normalize_code_match_value(*, pattern: str, raw_value: str) -> str:
+    """Normalize punctuation-adjacent whitespace in a matched code surface.
+
+    The compacted value is used only when it still fully matches the configured regex;
+    otherwise the stripped source-visible value is retained.
+
+    Parameters
+    ----------
+    pattern
+        Configured regex that matched the source-visible code.
+    raw_value
+        Exact source-visible matched code surface.
+
+    Returns
+    -------
+    str
+        Formatting-normalized code suitable for structured code fields.
+    """
+
+    raw_value_clean = raw_value.strip()
+    compacted_value = re.sub(r"\s*([^\w\s])\s*", r"\1", raw_value_clean)
+
+    if re.fullmatch(pattern, compacted_value) is not None:
+        return compacted_value
+
+    return raw_value_clean
 
 
 def _validate_document_ir(*, document_ir_fp: Path, expected_doc_key: str) -> DocumentIR:
@@ -946,6 +1044,98 @@ def extract_block_source_text(block_payload: dict[str, Any]) -> str:
     return _extract_list_items_source_text(
         block_payload.get("list_items") or []
     ) or _extract_figure_source_text(block_payload)
+
+
+def find_configured_code_matches(
+    *, code_patterns: Mapping[str, str], source_text: str
+) -> list[ConfiguredCodeMatch]:
+    """Find strict and conservatively glued configured codes in source text.
+
+    Each configured regex is applied unchanged first. Patterns ending in a literal
+    terminal word boundary also receive a conservative fallback that removes only that
+    boundary. A fallback match is accepted only when an alphabetic character follows
+    immediately and the isolated matched value fully satisfies the original configured
+    regex. Strict and fallback results are then sorted and deduplicated.
+
+    Parameters
+    ----------
+    code_patterns
+        Configured source-visible regexes keyed by code type.
+    source_text
+        Source-visible text unit or extraction-window source text to scan.
+
+    Returns
+    -------
+    list[ConfiguredCodeMatch]
+        Ordered, deduplicated configured code matches with source offsets.
+    """
+
+    matches: list[ConfiguredCodeMatch] = []
+
+    for code_type, pattern in code_patterns.items():
+        for match in re.finditer(pattern, source_text):
+            raw_value = match.group(0)
+            matches.append(
+                ConfiguredCodeMatch(
+                    code_type=code_type,
+                    end_char=match.end(),
+                    normalized_value=_normalize_code_match_value(
+                        pattern=pattern, raw_value=raw_value
+                    ),
+                    raw_value=raw_value,
+                    start_char=match.start(),
+                )
+            )
+
+        glued_pattern = _build_glued_code_pattern(pattern)
+
+        if glued_pattern is None:
+            continue
+
+        for match in re.finditer(glued_pattern, source_text):
+            if match.end() >= len(source_text):
+                continue
+
+            raw_value = match.group(0)
+
+            if not source_text[match.end()].isalpha():
+                continue
+
+            if re.fullmatch(pattern, raw_value) is None:
+                continue
+
+            matches.append(
+                ConfiguredCodeMatch(
+                    code_type=code_type,
+                    end_char=match.end(),
+                    normalized_value=_normalize_code_match_value(
+                        pattern=pattern, raw_value=raw_value
+                    ),
+                    raw_value=raw_value,
+                    start_char=match.start(),
+                )
+            )
+
+    matches.sort(key=lambda item: (item.start_char, item.end_char, item.code_type))
+    deduplicated_matches: list[ConfiguredCodeMatch] = []
+    seen: set[tuple[str, int, str, str, int]] = set()
+
+    for code_match in matches:
+        match_key = (
+            code_match.code_type,
+            code_match.end_char,
+            code_match.normalized_value,
+            code_match.raw_value,
+            code_match.start_char,
+        )
+
+        if match_key in seen:
+            continue
+
+        seen.add(match_key)
+        deduplicated_matches.append(code_match)
+
+    return deduplicated_matches
 
 
 def get_table_selection_reasons(

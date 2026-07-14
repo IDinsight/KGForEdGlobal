@@ -9,7 +9,7 @@ infer hierarchy, compile final KG objects, or create relationships.
 
 # Standard Library
 import hashlib
-import re
+import json
 import uuid
 
 from collections import Counter
@@ -32,10 +32,32 @@ from skg.kgs.schemas import (
     SFIRegistryCandidate,
 )
 from skg.kgs.utils import KGDirs, normalize_text, unique_nonempty
-from skg.schemas import CreateKGConfig
+from skg.schemas import CreateKGConfig, normalize_controlled_value_key
 from skg.utils.general import make_dir, write_to_json
 
+_IDENTITY_SECTION_PATH_FALLBACK_LIMIT = 8
 _SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG = "same_code_different_content"
+_SUPPORTED_SYNTHETIC_IDENTITY_FIELDS = frozenset(
+    {
+        "author",
+        "canonical_statement_value",
+        "code_scope",
+        "country",
+        "doc_key",
+        "framework_title",
+        "grade_level",
+        "hierarchy_context",
+        "jurisdiction",
+        "language",
+        "normalized_statement_code",
+        "normalized_statement_type",
+        "normalized_text",
+        "primary_language",
+        "provider",
+        "statement_type",
+        "subject",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -45,19 +67,26 @@ class _IdentityBuildResult:
     Attributes
     ----------
     code_identity_disambiguator
-        Source/text/provenance disambiguator appended to coded identities, if used.
+        Stable text-based disambiguator appended for an audited coded collision, if
+        required by the configured synthetic identity fields.
     code_identity_family_key
-        Stable family key for coded identity collision detection, if applicable.
+        Serialized configured identity material for a coded SFI, when applicable.
     identity_key
         Complete deterministic identity key used for UUIDv5 minting.
     no_code_identity_disambiguator
-        Source/text/provenance disambiguator appended to no-code identities, if used.
+        Reserved no-code disambiguator metadata. No-code collisions are rejected rather
+        than resolved from incidental provenance.
     no_code_identity_family_key
-        Stable family key for no-code identity collision detection, if applicable.
+        Serialized configured identity material for a no-code SFI, when applicable.
+    synthetic_key_fields
+        Configured synthetic identity field names in their authoritative order.
+    synthetic_key_values
+        Normalized identity values resolved for the configured fields.
     uses_code_disambiguator
-        Whether the coded identity required source/text/provenance disambiguation.
+        Whether a stable audited coded-text disambiguator was appended.
     uses_no_code_disambiguator
-        Whether the no-code identity required source/text/provenance disambiguation.
+        Always false; no-code identity collisions must be fixed through configuration
+        or deduplication rather than provenance-derived suffixes.
     """
 
     code_identity_disambiguator: str | None
@@ -65,69 +94,10 @@ class _IdentityBuildResult:
     identity_key: str
     no_code_identity_disambiguator: str | None
     no_code_identity_family_key: str | None
+    synthetic_key_fields: tuple[str, ...]
+    synthetic_key_values: dict[str, str]
     uses_code_disambiguator: bool
     uses_no_code_disambiguator: bool
-
-
-def _build_code_group_counts(
-    eligible_merge_groups: Sequence[SFIMergeGroup],
-) -> dict[tuple[str, str, str], int]:
-    """Count eligible final groups sharing the same statement type and code.
-
-    Parameters
-    ----------
-    eligible_merge_groups
-        Merge groups that may be minted as final SFIs.
-
-    Returns
-    -------
-    dict[tuple[str, str, str], int]
-        Counts keyed by statement type, normalized statement type, and normalized code.
-    """
-
-    counts: Counter[tuple[str, str, str]] = Counter()
-
-    for merge_group in eligible_merge_groups:
-        normalized_statement_code = merge_group.canonical_normalized_statement_code
-
-        if not normalized_statement_code:
-            continue
-
-        key = _build_code_group_key(merge_group)
-        counts[key] += 1
-
-    return dict(counts)
-
-
-def _build_code_group_key(merge_group: SFIMergeGroup) -> tuple[str, str, str]:
-    """Build a stable same-code grouping key for one merge group.
-
-    Parameters
-    ----------
-    merge_group
-        Merge group whose normalized code identity should be counted.
-
-    Returns
-    -------
-    tuple[str, str, str]
-        Statement type, normalized statement type, and normalized statement code.
-
-    Raises
-    ------
-    ValueError
-        If the merge group does not have the fields required for coded identity.
-    """
-
-    if not merge_group.canonical_normalized_statement_code:
-        raise ValueError(
-            f"Merge group {merge_group.merge_group_id!r} has no normalized code."
-        )
-
-    return (
-        _shared_statement_type(merge_group),
-        _shared_normalized_statement_type(merge_group),
-        merge_group.canonical_normalized_statement_code,
-    )
 
 
 def _build_final_sfi_collision_details(
@@ -177,296 +147,775 @@ def _build_final_sfi_collision_details(
     return collision_details
 
 
-def _build_identity_key(
-    *,
-    code_group_counts: dict[tuple[str, str, str], int],
-    document_ir: DocumentIR,
-    merge_group: SFIMergeGroup,
-    no_code_group_counts: dict[tuple[str, str, str, str], int],
-) -> _IdentityBuildResult:
-    """Build a canonical identity string for deterministic final SFI UUID minting.
-
-    Coded statements use their statement code as the primary identity component and add
-    a deterministic source/text/provenance disambiguator only when the same-code family
-    is not unique or has already been flagged as same-code/different-content. No-code
-    statements use their existing source-context and canonicalized text/value
-    components as the primary identity base, then add the same kind of
-    source/text/provenance disambiguator only when multiple eligible merge groups share
-    that no-code identity family.
+def _build_controlled_value_alias_maps(
+    kg_config: CreateKGConfig,
+) -> dict[str, dict[str, str]]:
+    """Build normalized controlled-value alias maps by statement type.
 
     Parameters
     ----------
-    code_group_counts
-        Counts for eligible coded groups by same-code key.
+    kg_config
+        Runtime KG configuration containing statement-type controlled values.
+
+    Returns
+    -------
+    dict[str, dict[str, str]]
+        Statement types mapped to normalized aliases and canonical source values.
+    """
+
+    alias_maps: dict[str, dict[str, str]] = {}
+
+    for policy_item in kg_config.academic_standards.statement_type_policy:
+        alias_to_canonical: dict[str, str] = {}
+
+        for controlled_value in policy_item.controlled_values:
+            for alias in [controlled_value.canonical_value, *controlled_value.aliases]:
+                alias_key = normalize_controlled_value_key(alias)
+
+                if alias_key:
+                    alias_to_canonical[alias_key] = controlled_value.canonical_value
+
+        if alias_to_canonical:
+            alias_maps[policy_item.statement_type] = alias_to_canonical
+
+    return alias_maps
+
+
+def _build_grade_level_identity_value(
+    *,
+    kg_config: CreateKGConfig,
+    merge_group: SFIMergeGroup,
+    section_paths: Sequence[Sequence[str]],
+) -> str:
+    """Resolve stable configured scope values for the `grade_level` identity field.
+
+    The runtime schema uses `grade_level` as a conventional synthetic-key field, but
+    curricula may call the relevant scope `Grade`, `Class`, `Stage`, `Year`, or another
+    configured statement type. This resolver therefore uses the statement types
+    explicitly named by `code_scope_statement_types` and their controlled values rather
+    than hardcoding one curriculum's terminology. Explicit candidate code scope is
+    authoritative. Otherwise, the nearest matching value in each cumulative section
+    path is used so stale earlier scope labels do not leak into the identity.
+
+    Parameters
+    ----------
+    kg_config
+        Runtime KG configuration containing code-scope and controlled-value policy.
+    merge_group
+        Merge group whose stable scope values should be resolved.
+    section_paths
+        Source section paths recovered from the group's DocumentIR segments.
+
+    Returns
+    -------
+    str
+        Sorted normalized canonical scope assignments joined by `|`; empty when no
+        configured scope value is source-resolvable for the item.
+    """
+
+    scope_statement_types = {
+        statement_type
+        for statement_types in (
+            kg_config.academic_standards.code_scope_statement_types.values()
+        )
+        for statement_type in statement_types
+    }
+    resolved_values_by_type: dict[str, set[str]] = {
+        statement_type: set() for statement_type in scope_statement_types
+    }
+
+    for statement_type, value in merge_group.code_scope_values.items():
+        if statement_type not in scope_statement_types:
+            continue
+
+        value_key = normalize_controlled_value_key(value)
+
+        if value_key:
+            resolved_values_by_type[statement_type].add(value_key)
+
+    merge_statement_type = _shared_statement_type(merge_group)
+
+    if (
+        merge_statement_type in scope_statement_types
+        and merge_group.canonical_statement_value
+    ):
+        value_key = normalize_controlled_value_key(
+            merge_group.canonical_statement_value
+        )
+
+        if value_key:
+            resolved_values_by_type[merge_statement_type].add(value_key)
+
+    alias_maps = _build_controlled_value_alias_maps(kg_config)
+
+    for statement_type in sorted(scope_statement_types):
+        if resolved_values_by_type[statement_type]:
+            continue
+
+        alias_to_canonical = alias_maps.get(statement_type, {})
+
+        for section_path in section_paths:
+            canonical_value = next(
+                (
+                    matched_value
+                    for section_label in reversed(section_path)
+                    if (
+                        matched_value := alias_to_canonical.get(
+                            normalize_controlled_value_key(section_label)
+                        )
+                    )
+                ),
+                None,
+            )
+
+            if canonical_value:
+                resolved_values_by_type[statement_type].add(
+                    normalize_controlled_value_key(canonical_value)
+                )
+
+    return "|".join(
+        f"{normalize_controlled_value_key(statement_type)}=" f"{value_key}"
+        for statement_type in sorted(resolved_values_by_type)
+        for value_key in sorted(resolved_values_by_type[statement_type])
+    )
+
+
+def _build_hierarchy_context_identity_value(
+    *,
+    kg_config: CreateKGConfig,
+    merge_group: SFIMergeGroup,
+    section_paths: Sequence[Sequence[str]],
+) -> str:
+    """Build stable source-derived hierarchy context for synthetic identity.
+
+    Hierarchy context is limited to configured canonical code-scope assignments and
+    local DocumentIR section-path suffixes. For cumulative paths, the suffix begins at
+    the nearest configured scope value; this drops stale earlier grade/class/stage
+    labels. Segment IDs, window IDs, row indexes, and overlap-copy membership are never
+    included, so routine provenance changes do not alter final SFI identity.
+
+    Parameters
+    ----------
+    kg_config
+        Runtime KG configuration defining scope statement types and controlled values.
+    merge_group
+        Merge group containing configured scope values.
+    section_paths
+        Source section paths recovered from the group's DocumentIR segments.
+
+    Returns
+    -------
+    str
+        Sorted unique normalized hierarchy-context components.
+    """
+
+    components = {
+        f"scope:{normalize_controlled_value_key(statement_type)}="
+        f"{normalize_controlled_value_key(value)}"
+        for statement_type, value in merge_group.code_scope_values.items()
+        if normalize_controlled_value_key(statement_type)
+        and normalize_controlled_value_key(value)
+    }
+    scope_statement_types = {
+        statement_type
+        for statement_types in (
+            kg_config.academic_standards.code_scope_statement_types.values()
+        )
+        for statement_type in statement_types
+    }
+    merge_statement_type = _shared_statement_type(merge_group)
+    is_scope_grouping = bool(
+        merge_statement_type in scope_statement_types
+        and merge_group.canonical_statement_value
+    )
+
+    if is_scope_grouping:
+        components.add(
+            f"scope:{normalize_controlled_value_key(merge_statement_type)}="
+            f"{normalize_controlled_value_key(merge_group.canonical_statement_value)}"
+        )
+
+    alias_maps = _build_controlled_value_alias_maps(kg_config)
+    scope_alias_keys = {
+        alias_key
+        for statement_type in scope_statement_types
+        for alias_key in alias_maps.get(statement_type, {})
+    }
+    fallback_limit = _IDENTITY_SECTION_PATH_FALLBACK_LIMIT
+
+    for section_path in ([] if is_scope_grouping else section_paths):
+        normalized_labels = [
+            normalize_controlled_value_key(label) for label in section_path
+        ]
+        anchor_index = next(
+            (
+                index
+                for index in range(len(normalized_labels) - 1, -1, -1)
+                if normalized_labels[index] in scope_alias_keys
+            ),
+            None,
+        )
+        local_labels = (
+            normalized_labels[anchor_index:]
+            if anchor_index is not None
+            else normalized_labels[-fallback_limit:]
+        )
+        local_labels = [label for label in local_labels if label]
+
+        if local_labels:
+            components.add("section_path:" + ">".join(local_labels))
+
+    return "||".join(sorted(components))
+
+
+def _build_identity_key(
+    *,
+    document_ir: DocumentIR,
+    kg_config: CreateKGConfig,
+    merge_group: SFIMergeGroup,
+    representative_candidate: SFIRegistryCandidate,
+    segments_by_id: dict[str, BlockSegment | TableSegment],
+) -> _IdentityBuildResult:
+    """Build a configured, stable identity string for UUIDv5 minting.
+
+    Every final identity uses `synthetic_merge_key_fields` in configured order. The
+    supported values are derived from stable metadata, canonical code scope, canonical
+    controlled values, representative normalized text, and DocumentIR section paths.
+    Incidental extraction provenance such as window membership, row indexes, registry
+    IDs, and segment IDs is never part of the logical identity material.
+
+    For a coded group explicitly audited as same-code/different-content, a stable text
+    hash is appended only when `normalized_text` is absent from the configured fields.
+    This preserves the audited distinction without making identity depend on how many
+    peer groups happen to be finalizable in the current run.
+
+    Parameters
+    ----------
     document_ir
-        Source DocumentIR whose doc_key scopes all final SFI identities.
+        Source DocumentIR whose document key scopes the identity namespace.
+    kg_config
+        Runtime KG configuration carrying authoritative synthetic identity fields.
     merge_group
         Merge group to identify.
-    no_code_group_counts
-        Counts for eligible no-code groups by no-code base identity key.
+    representative_candidate
+        Source-backed representative candidate supplying final text and language.
+    segments_by_id
+        DocumentIR block/table segments keyed by segment ID.
 
     Returns
     -------
     _IdentityBuildResult
-        Complete identity key and identity-disambiguation metadata.
+        Complete identity key and auditable configured identity metadata.
     """
 
-    normalized_statement_type_key = _slug(
-        _shared_normalized_statement_type(merge_group)
+    synthetic_key_fields = tuple(
+        kg_config.academic_standards.synthetic_merge_key_fields
     )
-    statement_type_key = _slug(_shared_statement_type(merge_group))
-    base_key = (
-        f"lc:curriculum:{document_ir.doc_key}:sfi:"
-        f"{normalized_statement_type_key}:{statement_type_key}"
+    unsupported_fields = sorted(
+        set(synthetic_key_fields) - _SUPPORTED_SYNTHETIC_IDENTITY_FIELDS
     )
 
-    if merge_group.canonical_normalized_statement_code:
-        code_group_key = _build_code_group_key(merge_group)
-        code_identity_family_key = _format_identity_family_key(code_group_key)
-        identity_key = f"{base_key}:{merge_group.canonical_normalized_statement_code}"
-        needs_disambiguator = (
-            _SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG in merge_group.audit_flags
-            or code_group_counts.get(code_group_key, 0) > 1
+    if unsupported_fields:
+        raise ValueError(
+            "Unsupported synthetic_merge_key_fields for SFI finalization: "
+            f"{unsupported_fields}. Supported fields are "
+            f"{sorted(_SUPPORTED_SYNTHETIC_IDENTITY_FIELDS)}."
         )
-        code_disambiguator = None
 
-        if needs_disambiguator:
-            disambiguator_parts = [
-                *merge_group.candidate_descriptions,
-                *merge_group.candidate_source_texts,
-                *merge_group.source_segment_ids,
-                *(str(index) for index in merge_group.source_window_indexes),
-                *_source_context_keys(merge_group),
+    section_paths = _recover_merge_group_section_paths(
+        merge_group=merge_group, segments_by_id=segments_by_id
+    )
+    normalized_text_value = (
+        merge_group.canonical_statement_value_key
+        or representative_candidate.normalized_description
+        or normalize_text(representative_candidate.description)
+    )
+    available_values = {
+        "author": normalize_text(kg_config.metadata.author),
+        "canonical_statement_value": normalize_controlled_value_key(
+            merge_group.canonical_statement_value_key
+            or merge_group.canonical_statement_value
+            or ""
+        ),
+        "code_scope": "|".join(
+            f"{normalize_controlled_value_key(statement_type)}="
+            f"{normalize_controlled_value_key(value)}"
+            for statement_type, value in sorted(merge_group.code_scope_values.items())
+        ),
+        "country": normalize_text(kg_config.metadata.country),
+        "doc_key": normalize_text(document_ir.doc_key),
+        "framework_title": normalize_text(kg_config.metadata.framework_title),
+        "grade_level": _build_grade_level_identity_value(
+            kg_config=kg_config,
+            merge_group=merge_group,
+            section_paths=section_paths,
+        ),
+        "hierarchy_context": _build_hierarchy_context_identity_value(
+            kg_config=kg_config,
+            merge_group=merge_group,
+            section_paths=section_paths,
+        ),
+        "jurisdiction": normalize_text(kg_config.metadata.jurisdiction),
+        "language": normalize_text(representative_candidate.language),
+        "normalized_statement_code": normalize_text(
+            merge_group.canonical_normalized_statement_code or ""
+        ),
+        "normalized_statement_type": normalize_text(
+            _shared_normalized_statement_type(merge_group)
+        ),
+        "normalized_text": normalize_text(normalized_text_value),
+        "primary_language": normalize_text(kg_config.metadata.primary_language),
+        "provider": normalize_text(kg_config.metadata.provider),
+        "statement_type": normalize_text(_shared_statement_type(merge_group)),
+        "subject": normalize_text(kg_config.metadata.subject),
+    }
+    synthetic_key_values = {
+        field_name: available_values[field_name] for field_name in synthetic_key_fields
+    }
+    identity_family_key = json.dumps(
+        {
+            "fields": [
+                [field_name, synthetic_key_values[field_name]]
+                for field_name in synthetic_key_fields
             ]
-            code_disambiguator = _hash_text(
-                n_hex=20, value="\n".join(disambiguator_parts)
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    identity_key = f"lc:curriculum:{document_ir.doc_key}:sfi:{identity_family_key}"
+    is_coded = bool(merge_group.canonical_normalized_statement_code)
+    uses_code_disambiguator = bool(
+        is_coded
+        and _SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG in merge_group.audit_flags
+        and "normalized_text" not in synthetic_key_fields
+    )
+    code_identity_disambiguator = None
+
+    if uses_code_disambiguator:
+        if not normalized_text_value:
+            raise ValueError(
+                f"Merge group {merge_group.merge_group_id!r} is audited as "
+                "same-code/different-content but has no stable normalized text for "
+                "identity disambiguation."
             )
-            identity_key = f"{identity_key}:{code_disambiguator}"
 
-        return _IdentityBuildResult(
-            code_identity_disambiguator=code_disambiguator,
-            code_identity_family_key=code_identity_family_key,
-            identity_key=identity_key,
-            no_code_identity_disambiguator=None,
-            no_code_identity_family_key=None,
-            uses_code_disambiguator=needs_disambiguator,
-            uses_no_code_disambiguator=False,
-        )
-
-    no_code_group_key = _build_no_code_group_key(merge_group)
-    no_code_identity_family_key = _format_identity_family_key(no_code_group_key)
-    source_context_key = no_code_group_key[2]
-    source_text_key = no_code_group_key[3]
-    identity_key = f"{base_key}:{source_context_key}:{source_text_key}"
-    needs_no_code_disambiguator = no_code_group_counts.get(no_code_group_key, 0) > 1
-    no_code_disambiguator = None
-
-    if needs_no_code_disambiguator:
-        disambiguator_parts = [
-            *merge_group.candidate_descriptions,
-            *merge_group.candidate_source_texts,
-            *merge_group.source_segment_ids,
-            *(str(index) for index in merge_group.source_window_indexes),
-            *_source_context_keys(merge_group),
-            *_source_ref_disambiguator_parts(merge_group),
-            *merge_group.registry_candidate_ids,
-        ]
-        no_code_disambiguator = _hash_text(
-            n_hex=20, value="\n".join(disambiguator_parts)
-        )
-        identity_key = f"{identity_key}:{no_code_disambiguator}"
+        code_identity_disambiguator = _hash_text(n_hex=20, value=normalized_text_value)
+        identity_key = f"{identity_key}:same-code-text:{code_identity_disambiguator}"
 
     return _IdentityBuildResult(
-        code_identity_disambiguator=None,
-        code_identity_family_key=None,
+        code_identity_disambiguator=code_identity_disambiguator,
+        code_identity_family_key=(identity_family_key if is_coded else None),
         identity_key=identity_key,
-        no_code_identity_disambiguator=no_code_disambiguator,
-        no_code_identity_family_key=no_code_identity_family_key,
-        uses_code_disambiguator=False,
-        uses_no_code_disambiguator=needs_no_code_disambiguator,
+        no_code_identity_disambiguator=None,
+        no_code_identity_family_key=(None if is_coded else identity_family_key),
+        synthetic_key_fields=synthetic_key_fields,
+        synthetic_key_values=synthetic_key_values,
+        uses_code_disambiguator=uses_code_disambiguator,
+        uses_no_code_disambiguator=False,
     )
 
 
-def _build_no_code_group_counts(
-    eligible_merge_groups: Sequence[SFIMergeGroup],
-) -> dict[tuple[str, str, str, str], int]:
-    """Count eligible final groups sharing the same no-code identity base.
+def _build_source_page_indexes(
+    *,
+    merge_group: SFIMergeGroup,
+    segments_by_id: dict[str, BlockSegment | TableSegment],
+) -> list[int]:
+    """Recover the narrowest available page provenance for one merge group.
 
-    Parameters
-    ----------
-    eligible_merge_groups
-        Merge groups that may be minted as final SFIs.
-
-    Returns
-    -------
-    dict[tuple[str, str, str, str], int]
-        Counts keyed by statement type, normalized statement type, no-code
-        source-context identity component, and no-code statement text/value identity
-        component.
-    """
-
-    counts: Counter[tuple[str, str, str, str]] = Counter()
-
-    for merge_group in eligible_merge_groups:
-        if merge_group.canonical_normalized_statement_code:
-            continue
-
-        key = _build_no_code_group_key(merge_group)
-        counts[key] += 1
-
-    return dict(counts)
-
-
-def _build_no_code_group_key(merge_group: SFIMergeGroup) -> tuple[str, str, str, str]:
-    """Build a stable base-identity key for one no-code merge group.
+    Table candidates use their cited raw header/body row indexes and aligned
+    `TableSegment.row_provenance`. Block candidates use segment provenance. When an
+    external DocumentIR lacks optional table row provenance, the function falls back to
+    the table segment's page set rather than inventing an exact page.
 
     Parameters
     ----------
     merge_group
-        Merge group whose no-code identity base should be counted.
+        Merge group preserving per-candidate source references.
+    segments_by_id
+        DocumentIR block/table segments keyed by segment ID.
 
     Returns
     -------
-    tuple[str, str, str, str]
-        Statement type, normalized statement type, no-code source-context key, and
-        no-code statement text/value key.
+    list[int]
+        Sorted unique zero-based source page indexes.
 
     Raises
     ------
     ValueError
-        If the merge group has a normalized code and should use coded identity instead.
+        If a source reference points to a missing segment or an invalid table row.
     """
 
-    if merge_group.canonical_normalized_statement_code:
+    page_indexes: set[int] = set()
+    referenced_segment_ids: set[str] = set()
+
+    for source_ref in merge_group.candidate_source_refs:
+        if not isinstance(source_ref, dict):
+            continue
+
+        header_indexes = _source_ref_index_values(
+            key="table_header_indexes", source_ref=source_ref
+        )
+        row_indexes = _source_ref_index_values(
+            key="table_row_indexes", source_ref=source_ref
+        )
+        source_segment_ids = [
+            str(value).strip()
+            for value in source_ref.get("source_segment_ids") or []
+            if str(value).strip()
+        ]
+
+        for source_segment_id in source_segment_ids:
+            referenced_segment_ids.add(source_segment_id)
+            segment = segments_by_id.get(source_segment_id)
+
+            if not isinstance(segment, (BlockSegment, TableSegment)):
+                raise ValueError(
+                    f"Merge group {merge_group.merge_group_id!r} references missing "
+                    f"or unsupported source segment {source_segment_id!r}."
+                )
+
+            if isinstance(segment, TableSegment) and (header_indexes or row_indexes):
+                page_indexes.update(
+                    _table_reference_page_indexes(
+                        header_indexes=header_indexes,
+                        row_indexes=row_indexes,
+                        table_segment=segment,
+                    )
+                )
+            else:
+                page_indexes.update(_segment_page_indexes(segment))
+
+    for source_segment_id in merge_group.source_segment_ids:
+        if source_segment_id in referenced_segment_ids:
+            continue
+
+        segment = segments_by_id.get(source_segment_id)
+
+        if not isinstance(segment, (BlockSegment, TableSegment)):
+            raise ValueError(
+                f"Merge group {merge_group.merge_group_id!r} references missing or "
+                f"unsupported source segment {source_segment_id!r}."
+            )
+
+        page_indexes.update(_segment_page_indexes(segment))
+
+    return sorted(page_indexes)
+
+
+def _candidate_source_sort_key(
+    *,
+    candidate: SFIRegistryCandidate,
+    segment_order_by_id: dict[str, int],
+    segments_by_id: dict[str, BlockSegment | TableSegment],
+) -> tuple[int, int, int, int, str]:
+    """Build a row-aware source-order key for one registry candidate.
+
+    Parameters
+    ----------
+    candidate
+        Registry candidate carrying source segment and table-row references.
+    segment_order_by_id
+        DocumentIR segment indexes keyed by segment ID.
+    segments_by_id
+        DocumentIR segments keyed by segment ID.
+
+    Returns
+    -------
+    tuple[int, int, int, int, str]
+        Segment order, local row position, window index, candidate position, and stable
+        candidate ID.
+
+    Raises
+    ------
+    ValueError
+        If the candidate references no known source segment.
+    """
+
+    source_positions: list[tuple[int, int]] = []
+
+    for source_segment_id in candidate.source_segment_ids:
+        segment = segments_by_id.get(source_segment_id)
+        segment_order = segment_order_by_id.get(source_segment_id)
+
+        if (
+            not isinstance(segment, (BlockSegment, TableSegment))
+            or segment_order is None
+        ):
+            continue
+
+        local_positions = [
+            *candidate.table_header_indexes,
+            *candidate.table_row_indexes,
+        ]
+        local_position = min(local_positions) if local_positions else 0
+        source_positions.append((segment_order, local_position))
+
+    if not source_positions:
         raise ValueError(
-            f"Merge group {merge_group.merge_group_id!r} has a normalized code and "
-            f"cannot use no-code identity."
+            f"Registry candidate {candidate.registry_candidate_id!r} references no "
+            "known DocumentIR source segment."
         )
 
+    segment_order, local_position = min(source_positions)
     return (
-        _shared_statement_type(merge_group),
-        _shared_normalized_statement_type(merge_group),
-        _build_no_code_source_context_key(merge_group),
-        _build_no_code_statement_text_key(merge_group),
+        segment_order,
+        local_position,
+        candidate.window_index,
+        candidate.source_window_candidate_index,
+        candidate.registry_candidate_id,
     )
 
 
-def _build_no_code_source_context_key(merge_group: SFIMergeGroup) -> str:
-    """Build the source-context identity component for a no-code SFI group.
-
-    The identity component prefers registry-derived source-context keys. It falls back
-    to source segment IDs and then the merge-group ID so every eligible no-code group
-    has a deterministic source-context component without depending on inferred
-    hierarchy.
-
-    Parameters
-    ----------
-    merge_group
-        Merge group whose source context should become an identity component.
-
-    Returns
-    -------
-    str
-        Compact deterministic hash for final no-code identity construction.
-    """
-
-    return _hash_text(
-        n_hex=20,
-        value="\n".join(_source_context_keys(merge_group))
-        or "\n".join(merge_group.source_segment_ids)
-        or merge_group.merge_group_id,
-    )
-
-
-def _build_no_code_statement_text_key(merge_group: SFIMergeGroup) -> str:
-    """Build the statement-text identity component for a no-code SFI group.
-
-    No-code curriculum statements can share the same table cell evidence quote while
-    representing distinct numbered statements. The final SFI identity therefore uses
-    candidate descriptions before source evidence quotes so sibling list items remain
-    distinct when they were deduplicated as separate final statements. Source evidence
-    quotes remain part of the identity component after descriptions to preserve
-    provenance-sensitive separation when descriptions alone are not enough.
+def _final_record_source_sort_key(
+    *,
+    record: SFIFinalRecord,
+    segment_order_by_id: dict[str, int],
+    segments_by_id: dict[str, BlockSegment | TableSegment],
+    sfi_candidates_by_id: dict[str, SFIRegistryCandidate],
+) -> tuple[int, int, int, int, str]:
+    """Build the earliest row-aware source-order key for one final SFI record.
 
     Parameters
     ----------
-    merge_group
-        Merge group whose no-code statement text should be converted into a compact
-        deterministic identity component.
+    record
+        Final SFI record preserving registry candidate IDs.
+    segment_order_by_id
+        DocumentIR segment indexes keyed by segment ID.
+    segments_by_id
+        DocumentIR segments keyed by segment ID.
+    sfi_candidates_by_id
+        Current registry candidates keyed by candidate ID.
 
     Returns
     -------
-    str
-        Compact deterministic hash for the no-code statement text identity component.
+    tuple[int, int, int, int, str]
+        Earliest source-order key among all source occurrences in the final SFI.
+
+    Raises
+    ------
+    ValueError
+        If none of the final record's source candidates can be resolved.
     """
 
-    if merge_group.canonical_statement_value_key:
-        return _hash_text(n_hex=20, value=merge_group.canonical_statement_value_key)
-
-    identity_parts = [
-        *merge_group.candidate_descriptions,
-        *merge_group.candidate_source_texts,
-    ]
-    return _hash_text(
-        n_hex=20, value="\n".join(identity_parts) or merge_group.merge_group_id
-    )
-
-
-def _build_segment_page_index_lookup(document_ir: DocumentIR) -> dict[str, list[int]]:
-    """Build page-index provenance for each DocumentIR segment.
-
-    Parameters
-    ----------
-    document_ir
-        Source DocumentIR.
-
-    Returns
-    -------
-    dict[str, list[int]]
-        Sorted page indexes keyed by segment ID.
-    """
-
-    page_indexes_by_id: dict[str, list[int]] = {}
-
-    for segment in document_ir.segments:
-        page_indexes = sorted(
-            {
-                provenance.page_index
-                for provenance in getattr(segment, "segment_provenance", []) or []
-            }
+    candidate_keys = [
+        _candidate_source_sort_key(
+            candidate=sfi_candidates_by_id[candidate_id],
+            segment_order_by_id=segment_order_by_id,
+            segments_by_id=segments_by_id,
         )
-        page_indexes_by_id[segment.segment_id] = page_indexes
+        for candidate_id in record.source_registry_candidate_ids
+        if candidate_id in sfi_candidates_by_id
+    ]
 
-    return page_indexes_by_id
+    if not candidate_keys:
+        raise ValueError(
+            f"Final SFI {record.final_sfi_uuid} has no resolvable registry candidate "
+            "for row-aware source ordering."
+        )
+
+    return min(candidate_keys)
+
+
+def _recover_merge_group_section_paths(
+    *,
+    merge_group: SFIMergeGroup,
+    segments_by_id: dict[str, BlockSegment | TableSegment],
+) -> list[list[str]]:
+    """Recover unique source section paths for one merge group.
+
+    Parameters
+    ----------
+    merge_group
+        Merge group whose source segments should be inspected.
+    segments_by_id
+        DocumentIR segments keyed by segment ID.
+
+    Returns
+    -------
+    list[list[str]]
+        Unique non-empty section paths in source-reference order.
+
+    Raises
+    ------
+    ValueError
+        If a source segment is missing or contains an empty section-path label.
+    """
+
+    section_paths: list[list[str]] = []
+    seen_paths: set[tuple[str, ...]] = set()
+
+    for source_segment_id in merge_group.source_segment_ids:
+        segment = segments_by_id.get(source_segment_id)
+
+        if not isinstance(segment, (BlockSegment, TableSegment)):
+            raise ValueError(
+                f"Merge group {merge_group.merge_group_id!r} references source "
+                f"segment {source_segment_id!r}, but that segment is missing or "
+                f"unsupported for identity context recovery."
+            )
+
+        path: list[str] = []
+
+        for section_ref in segment.section_path:
+            label = section_ref.text.strip()
+
+            if not label:
+                raise ValueError(
+                    f"Merge group {merge_group.merge_group_id!r} references source "
+                    f"segment {source_segment_id!r} with an empty section-path label."
+                )
+
+            path.append(label)
+
+        path_key = tuple(path)
+
+        if path and path_key not in seen_paths:
+            section_paths.append(path)
+            seen_paths.add(path_key)
+
+    return section_paths
+
+
+def _segment_page_indexes(segment: BlockSegment | TableSegment) -> list[int]:
+    """Return sorted page indexes represented by one DocumentIR segment.
+
+    Parameters
+    ----------
+    segment
+        Block or table segment.
+
+    Returns
+    -------
+    list[int]
+        Sorted unique zero-based page indexes.
+    """
+
+    return sorted({provenance.page_index for provenance in segment.segment_provenance})
+
+
+def _source_ref_index_values(*, key: str, source_ref: dict[str, Any]) -> list[int]:
+    """Read sorted integer index values from one candidate source reference.
+
+    Parameters
+    ----------
+    key
+        Source-reference key containing row/header indexes.
+    source_ref
+        Candidate source-reference dictionary.
+
+    Returns
+    -------
+    list[int]
+        Sorted unique integer indexes.
+
+    Raises
+    ------
+    ValueError
+        If an index cannot be converted to a non-negative integer.
+    """
+
+    values: set[int] = set()
+
+    for value in source_ref.get(key) or []:
+        try:
+            index = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Candidate source reference {key!r} contains invalid index "
+                f"{value!r}."
+            ) from exc
+
+        if index < 0:
+            raise ValueError(
+                f"Candidate source reference {key!r} contains negative index "
+                f"{index}."
+            )
+
+        values.add(index)
+
+    return sorted(values)
+
+
+def _table_reference_page_indexes(
+    *,
+    header_indexes: Sequence[int],
+    row_indexes: Sequence[int],
+    table_segment: TableSegment,
+) -> list[int]:
+    """Recover pages for specifically cited rows in a stitched table segment.
+
+    Parameters
+    ----------
+    header_indexes
+        Cited raw table header indexes.
+    row_indexes
+        Cited raw table body-row indexes.
+    table_segment
+        Stitched table segment containing the cited rows.
+
+    Returns
+    -------
+    list[int]
+        Sorted unique row-level page indexes. Falls back to segment pages when optional
+        row provenance is unavailable.
+
+    Raises
+    ------
+    ValueError
+        If a cited row index is outside the source table.
+    """
+
+    cited_indexes = sorted(set(header_indexes).union(row_indexes))
+
+    for row_index in cited_indexes:
+        if row_index >= len(table_segment.rows):
+            raise ValueError(
+                f"Table segment {table_segment.segment_id!r} has "
+                f"{len(table_segment.rows)} "
+                f"rows but a final SFI cites row index {row_index}."
+            )
+
+    if not cited_indexes or table_segment.row_provenance is None:
+        return _segment_page_indexes(table_segment)
+
+    return sorted(
+        {
+            table_segment.row_provenance[row_index].page_index
+            for row_index in cited_indexes
+        }
+    )
 
 
 def _build_sfi_final_contexts(
     *,
     document_ir: DocumentIR,
     kg_config: CreateKGConfig,
+    sfi_candidates_by_id: dict[str, SFIRegistryCandidate],
     sfi_final_records: Sequence[SFIFinalRecord],
 ) -> list[SFIFinalContext]:
-    """Recover and package source context for finalized SFI records.
+    """Recover and package row-aware source context for finalized SFI records.
 
-    The returned context artifact is the handoff to SFI hasChild resolution. It
-    captures only source-derived evidence and finalized SFI metadata: source order,
-    recent section-path labels, source context keys, source segment/window provenance,
-    table row/header references, statement typing, code values, and audit flags. It
-    does not infer parentage or create relationships.
+    The returned context artifact is the handoff to SFI hasChild resolution. Source
+    order is assigned from the earliest actual source occurrence using DocumentIR
+    segment order, cited table row/header position, extraction-window order, and the
+    candidate's source-order position within that window. This prevents all records in
+    one stitched table from collapsing to the same source order.
 
     Parameters
     ----------
     document_ir
-        Source DocumentIR used to recover segment order and section-path evidence.
+        Source DocumentIR used to recover segment, row, and section-path evidence.
     kg_config
         Runtime KG configuration containing the recent section-path label bound.
+    sfi_candidates_by_id
+        Registry candidates keyed by candidate ID for row-aware source ordering.
     sfi_final_records
         Finalized SFI records to convert into relationship-resolution contexts.
 
     Returns
     -------
     list[SFIFinalContext]
-        Final SFI source contexts sorted by source order and UUID.
+        Final SFI contexts in deterministic source order.
     """
 
     contexts: list[SFIFinalContext] = []
@@ -474,16 +923,17 @@ def _build_sfi_final_contexts(
         segment.segment_id: index for index, segment in enumerate(document_ir.segments)
     }
     segments_by_id = {segment.segment_id: segment for segment in document_ir.segments}
+    ordered_records = sorted(
+        sfi_final_records,
+        key=lambda record: _final_record_source_sort_key(
+            record=record,
+            segment_order_by_id=segment_order_by_id,
+            segments_by_id=segments_by_id,
+            sfi_candidates_by_id=sfi_candidates_by_id,
+        ),
+    )
 
-    for record in sfi_final_records:
-        source_order = min(
-            [
-                segment_order_by_id[source_segment_id]
-                for source_segment_id in record.source_segment_ids
-                if source_segment_id in segment_order_by_id
-            ]
-            or [0]
-        )
+    for source_order, record in enumerate(ordered_records):
         section_path_labels = unique_nonempty(
             list(
                 reversed(
@@ -536,39 +986,29 @@ def _build_sfi_final_contexts(
             )
         )
 
-    contexts.sort(
-        key=lambda context: (context.source_order, str(context.final_sfi_uuid))
-    )
     return contexts
 
 
 def _build_sfi_final_record(
     *,
-    code_group_counts: dict[tuple[str, str, str], int],
     document_ir: DocumentIR,
     kg_config: CreateKGConfig,
     merge_group: SFIMergeGroup,
-    no_code_group_counts: dict[tuple[str, str, str, str], int],
-    segment_page_indexes_by_id: dict[str, list[int]],
+    segments_by_id: dict[str, BlockSegment | TableSegment],
     sfi_candidates_by_id: dict[str, SFIRegistryCandidate],
 ) -> SFIFinalRecord:
-    """Build one final SFI record from one eligible merge group.
+    """Build one deterministic final SFI record from one eligible merge group.
 
     Parameters
     ----------
-    code_group_counts
-        Counts for coded merge groups keyed by statement type and normalized code.
     document_ir
-        Source DocumentIR used to recover page-level provenance.
+        Source DocumentIR used for identity and source provenance recovery.
     kg_config
-        Runtime KG configuration with framework metadata.
+        Runtime KG configuration with framework metadata and identity policy.
     merge_group
         Eligible SFI merge group to mint as a final SFI.
-    no_code_group_counts
-        Counts for no-code merge groups keyed by statement type, normalized statement
-        type, source-context identity component, and statement text/value component.
-    segment_page_indexes_by_id
-        Page-index lookup keyed by DocumentIR segment ID.
+    segments_by_id
+        DocumentIR block/table segments keyed by segment ID.
     sfi_candidates_by_id
         Registry candidates keyed by registry candidate ID.
 
@@ -582,21 +1022,18 @@ def _build_sfi_final_record(
         merge_group=merge_group, sfi_candidates_by_id=sfi_candidates_by_id
     )
     identity_result = _build_identity_key(
-        code_group_counts=code_group_counts,
         document_ir=document_ir,
+        kg_config=kg_config,
         merge_group=merge_group,
-        no_code_group_counts=no_code_group_counts,
+        representative_candidate=representative_candidate,
+        segments_by_id=segments_by_id,
     )
     final_sfi_uuid = uuid.uuid5(
         Settings.LC_CANONICAL_NAMESPACE_UUID, identity_result.identity_key
     )
     source_context_keys = _source_context_keys(merge_group)
-    source_page_indexes = sorted(
-        {
-            page_index
-            for source_segment_id in merge_group.source_segment_ids
-            for page_index in segment_page_indexes_by_id.get(source_segment_id, [])
-        }
+    source_page_indexes = _build_source_page_indexes(
+        merge_group=merge_group, segments_by_id=segments_by_id
     )
     statement_type = _shared_statement_type(merge_group)
     return SFIFinalRecord(
@@ -655,13 +1092,25 @@ def _build_sfi_final_record(
             "doc_key": document_ir.doc_key,
             "framework_title": kg_config.metadata.framework_title,
             "identity": {
-                "code_identity_disambiguator": identity_result.code_identity_disambiguator,
+                "code_identity_disambiguator": (
+                    identity_result.code_identity_disambiguator
+                ),
                 "code_identity_family_key": identity_result.code_identity_family_key,
                 "namespace_uuid": str(Settings.LC_CANONICAL_NAMESPACE_UUID),
-                "no_code_identity_disambiguator": identity_result.no_code_identity_disambiguator,
-                "no_code_identity_family_key": identity_result.no_code_identity_family_key,
+                "no_code_identity_disambiguator": (
+                    identity_result.no_code_identity_disambiguator
+                ),
+                "no_code_identity_family_key": (
+                    identity_result.no_code_identity_family_key
+                ),
+                "synthetic_merge_key_fields": list(
+                    identity_result.synthetic_key_fields
+                ),
+                "synthetic_merge_key_values": identity_result.synthetic_key_values,
                 "uses_code_disambiguator": identity_result.uses_code_disambiguator,
-                "uses_no_code_disambiguator": identity_result.uses_no_code_disambiguator,
+                "uses_no_code_disambiguator": (
+                    identity_result.uses_no_code_disambiguator
+                ),
             },
             "pdf_name": document_ir.pdf_name,
             "primary_language": kg_config.metadata.primary_language,
@@ -670,13 +1119,15 @@ def _build_sfi_final_record(
             ),
             "statement_value_canonicalization": {
                 "canonical_statement_value": merge_group.canonical_statement_value,
-                "canonical_statement_value_key": merge_group.canonical_statement_value_key,
+                "canonical_statement_value_key": (
+                    merge_group.canonical_statement_value_key
+                ),
             },
         },
         normalized_statement_code=merge_group.canonical_normalized_statement_code,
         normalized_statement_type=_shared_normalized_statement_type(merge_group),
         provider=kg_config.metadata.provider,
-        representative_candidate_id=(representative_candidate.registry_candidate_id),
+        representative_candidate_id=representative_candidate.registry_candidate_id,
         source_context_keys=source_context_keys,
         source_normalized_statement_codes=merge_group.normalized_statement_codes,
         source_page_indexes=source_page_indexes,
@@ -804,23 +1255,6 @@ def _get_representative_candidate(
         )
 
     return representative_candidate
-
-
-def _format_identity_family_key(key: Sequence[str]) -> str:
-    """Format an identity-family key into a stable metadata string.
-
-    Parameters
-    ----------
-    key
-        Ordered identity-family key components.
-
-    Returns
-    -------
-    str
-        Pipe-delimited identity-family key suitable for metadata and diagnostics.
-    """
-
-    return "|".join(str(part) for part in key)
 
 
 def _hash_text(*, n_hex: int, value: str) -> str:
@@ -957,24 +1391,6 @@ def _shared_statement_type(merge_group: SFIMergeGroup) -> str:
     return values[0]
 
 
-def _slug(value: str) -> str:
-    """Convert text to a compact deterministic identity-key component.
-
-    Parameters
-    ----------
-    value
-        Raw text value.
-
-    Returns
-    -------
-    str
-        Lowercase slug.
-    """
-
-    slug = re.sub(r"[^0-9a-z]+", "-", normalize_text(value)).strip("-")
-    return slug or "unknown"
-
-
 def _source_context_keys(merge_group: SFIMergeGroup) -> list[str]:
     """Extract source-context keys from merge-group candidate source refs.
 
@@ -994,53 +1410,6 @@ def _source_context_keys(merge_group: SFIMergeGroup) -> list[str]:
         for source_ref in merge_group.candidate_source_refs
         if isinstance(source_ref, dict)
     )
-
-
-def _source_ref_disambiguator_parts(merge_group: SFIMergeGroup) -> list[str]:
-    """Build stable source-reference parts for identity disambiguation.
-
-    Parameters
-    ----------
-    merge_group
-        Merge group whose preserved candidate source refs should contribute provenance
-        detail to identity disambiguation.
-
-    Returns
-    -------
-    list[str]
-        Stable source-reference strings preserving candidate-source-ref order.
-    """
-
-    disambiguator_parts: list[str] = []
-
-    for source_ref_index, source_ref in enumerate(merge_group.candidate_source_refs):
-        if not isinstance(source_ref, dict):
-            continue
-
-        prefix = f"source_ref[{source_ref_index}]"
-        scalar_keys = [
-            "registry_candidate_id",
-            "source_context_key",
-            "window_id",
-            "window_index",
-        ]
-        list_keys = ["source_segment_ids", "table_header_indexes", "table_row_indexes"]
-
-        for key in scalar_keys:
-            value = source_ref.get(key)
-
-            if value not in (None, ""):
-                disambiguator_parts.append(f"{prefix}.{key}:{value}")
-
-        for key in list_keys:
-            values = source_ref.get(key) or []
-
-            if values:
-                disambiguator_parts.append(
-                    f"{prefix}.{key}:{'|'.join(str(value) for value in values)}"
-                )
-
-    return disambiguator_parts
 
 
 def _source_ref_int_values(*, key: str, record: SFIFinalRecord) -> list[int]:
@@ -1443,18 +1812,14 @@ def mint_final_sfi_ids(
         eligible_merge_groups=eligible_merge_groups,
         sfi_candidates_by_id=sfi_candidates_by_id,
     )
-    code_group_counts = _build_code_group_counts(eligible_merge_groups)
-    no_code_group_counts = _build_no_code_group_counts(eligible_merge_groups)
-    segment_page_indexes_by_id = _build_segment_page_index_lookup(document_ir)
+    segments_by_id = {segment.segment_id: segment for segment in document_ir.segments}
 
     sfi_final_records = [
         _build_sfi_final_record(
-            code_group_counts=code_group_counts,
             document_ir=document_ir,
             kg_config=kg_config,
             merge_group=merge_group,
-            no_code_group_counts=no_code_group_counts,
-            segment_page_indexes_by_id=segment_page_indexes_by_id,
+            segments_by_id=segments_by_id,
             sfi_candidates_by_id=sfi_candidates_by_id,
         )
         for merge_group in eligible_merge_groups
@@ -1468,6 +1833,7 @@ def mint_final_sfi_ids(
     sfi_final_contexts = _build_sfi_final_contexts(
         document_ir=document_ir,
         kg_config=kg_config,
+        sfi_candidates_by_id=sfi_candidates_by_id,
         sfi_final_records=sfi_final_records,
     )
     sfi_final_summary = _build_sfi_final_summary(
