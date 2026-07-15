@@ -1729,6 +1729,27 @@ class _CreateKGLearningComponentsConfig(BaseSchema):
     """Learning Components configuration for KG creation."""
 
     generation_instructions: str
+    lc_manual_review_overrides: Optional[dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Optional manual-review record for step-10 unresolved items. When "
+            "the step-10 bundle has finalization exclusions or unresolved "
+            "root-fallback edges, LC generation always proceeds over the "
+            "resolved subgraph and reports the gaps loudly. Set "
+            "allow_unresolved_ancestor_context=true here (with reviewed_by, "
+            "reviewed_at, review_notes) to additionally include seeds whose "
+            "ancestor path passes through an unresolved root-fallback edge. "
+            "Recorded verbatim in the LC generation summary."
+        ),
+    )
+    lc_source_statement_types: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Source-facing SFI statement types eligible as LC-generation seeds. "
+            "When omitted, selection defaults to leaf SFIs whose normalized "
+            "statement type is 'Standard'. When provided, must be non-empty."
+        ),
+    )
 
     @field_validator("generation_instructions", mode="before")
     @classmethod
@@ -1747,6 +1768,50 @@ class _CreateKGLearningComponentsConfig(BaseSchema):
         """
 
         return _strip_and_require_non_empty_str(v)
+
+    @field_validator("lc_source_statement_types")
+    @classmethod
+    def _validate_lc_source_statement_types(
+        cls, v: Optional[list[str]]
+    ) -> Optional[list[str]]:
+        """Validate the LC-source statement-type allowlist when provided.
+
+        Omitted (None) means "use the leaf default"; an explicitly empty or
+        blank-entry list is a configuration mistake and fails loudly.
+
+        Parameters
+        ----------
+        v
+            The configured allowlist, or None when omitted.
+
+        Returns
+        -------
+        Optional[list[str]]
+            The stripped, order-preserving deduplicated allowlist, or None.
+
+        Raises
+        ------
+        ValueError
+            If the provided allowlist is empty or contains blank entries.
+        """
+
+        if v is None:
+            return None
+        cleaned: list[str] = []
+        for entry in v:
+            stripped = entry.strip()
+            if not stripped:
+                raise ValueError(
+                    "lc_source_statement_types must not contain blank entries."
+                )
+            if stripped not in cleaned:
+                cleaned.append(stripped)
+        if not cleaned:
+            raise ValueError(
+                "lc_source_statement_types must be non-empty when provided; omit "
+                "it entirely to use the leaf-node default."
+            )
+        return cleaned
 
 
 class _CreateKGMetadata(BaseSchema):

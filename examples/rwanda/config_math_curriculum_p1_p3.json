@@ -475,7 +475,13 @@
 			]
 		},
 		"lc": {
-			"generation_instructions": "LearningComponents are out of scope for Academic Standards KG; do not generate LearningComponents in this run."
+			"generation_instructions": "Decompose each final Rwanda Lower Primary Mathematics Standard SFI into one or more atomic teachable skills, concepts, or dispositions. Preserve English source meaning and terminology. Do not create classroom activities, teaching aids, assessment criteria, examples, or prerequisite skills as LearningComponents.",
+			"lc_manual_review_overrides": null,
+			"lc_source_statement_types": [
+				"Knowledge Objective",
+				"Skills Objective",
+				"Attitudes and Values Objective"
+			]
 		},
 		"metadata": {
 			"adoption_status": "Third Edition, 2025",

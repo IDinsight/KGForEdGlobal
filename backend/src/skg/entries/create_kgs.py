@@ -28,6 +28,7 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
+from skg.kgs.lc_selection import select_lc_source_sfis
 from skg.kgs.llm import KGUsageTracker
 from skg.kgs.sfi_dedup import merge_sfi_candidates
 from skg.kgs.sfi_export import compile_academic_standards_kg
@@ -61,7 +62,7 @@ def build_kgs(
     kg_dirs: KGDirs,
     usage_tracker: KGUsageTracker,
 ) -> Path:
-    """Build Academic Standards KG artifacts for a DocumentIR and KG config.
+    """Build Academic Standards + Learning Components KG artifacts for a DocumentIR.
 
     The process is as follows:
 
@@ -75,6 +76,11 @@ def build_kgs(
     8. Mint deterministic final SFI records from merge groups.
     9. Resolve source-grounded final hasChild edges.
     10. Compile, validate, and write final Academic Standards KG export artifacts.
+    11. Gate LC generation on the step-10 bundle (validation + unresolved items).
+    12. Select eligible LC-source SFIs (profile allowlist or leaf default).
+
+    LC steps 13-18 (requests, LLM decomposition, LC minting, supports edges,
+    summary, AS+LC bundle merge) are wired in as they are built.
 
     Parameters
     ----------
@@ -178,6 +184,17 @@ def build_kgs(
         f"frameworks={final_bundle.summary.framework_count}; "
         f"items={final_bundle.summary.final_sfi_count}; "
         f"hasChild_relationships={final_bundle.summary.has_child_relationship_count}"
+    )
+
+    # 11-12. Later LC steps (13-18) are wired in as they are built; the LLM
+    # decomposition step (14) additionally requires reviewed per-curriculum
+    # generation_instructions before it may run.
+    select_lc_source_sfis(
+        academic_standards_bundle=final_bundle,
+        has_child_edges=has_child_edges,
+        kg_dirs=kg_dirs,
+        lc_config=kg_run_inputs.kg_config.learning_components,
+        sfi_final_records=sfi_final_records,
     )
 
     return kg_run_manifest_fp

@@ -1973,6 +1973,72 @@ class AcademicStandardsValidationReport(BaseSchema):
     validation_checks: list[str] = Field(default_factory=list)
 
 
+# Schemas for Learning Component generation.
+LCExclusionReason = Literal[
+    "empty_text",
+    "grouping_node",
+    "not_a_leaf",
+    "not_in_allowlist",
+    "unresolved_ancestor_path",
+]
+LCSelectionMode = Literal["explicit_allowlist", "leaf_default"]
+
+
+class LCEligibilityReport(BaseSchema):
+    """Coverage report for LC-source SFI selection (LC generation step 12)."""
+
+    excluded: list[LCExcludedSFI] = Field(default_factory=list)
+    lc_selection_mode: LCSelectionMode
+    lc_source_exclusion_reason_counts: dict[str, int] = Field(default_factory=dict)
+    total_lc_source_sfis_considered: int = Field(ge=0)
+    total_lc_source_sfis_eligible: int = Field(ge=0)
+    total_lc_source_sfis_empty_text: int = Field(ge=0)
+    total_lc_source_sfis_excluded: int = Field(ge=0)
+    warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> Self:
+        """Validate that eligibility counts reconcile.
+
+        Returns
+        -------
+        Self
+            The validated eligibility report.
+
+        Raises
+        ------
+        ValueError
+            If counts do not reconcile with the excluded records.
+        """
+
+        if (
+            self.total_lc_source_sfis_eligible + self.total_lc_source_sfis_excluded
+            != self.total_lc_source_sfis_considered
+        ):
+            raise ValueError(
+                "LC eligibility counts do not reconcile: eligible "
+                f"({self.total_lc_source_sfis_eligible}) + excluded "
+                f"({self.total_lc_source_sfis_excluded}) != considered "
+                f"({self.total_lc_source_sfis_considered})."
+            )
+        if len(self.excluded) != self.total_lc_source_sfis_excluded:
+            raise ValueError(
+                f"LC eligibility excluded records ({len(self.excluded)}) do not "
+                f"match total_lc_source_sfis_excluded "
+                f"({self.total_lc_source_sfis_excluded})."
+            )
+        return self
+
+
+class LCExcludedSFI(BaseSchema):
+    """One SFI excluded from LC-source selection, with the exclusion reason."""
+
+    final_sfi_uuid: UUID
+    normalized_statement_type: NormalizedStatementType
+    reason: LCExclusionReason
+    statement_type: str
+
+
 # Schemas for nodes.
 class StandardsFramework(_CaseIdentifierMixin, _DateValidationMixin, BaseSchema):
     """Root node for a standards framework (typically one per PDF).

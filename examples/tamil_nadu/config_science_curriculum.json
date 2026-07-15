@@ -1,0 +1,36 @@
+{
+	"page_ir_extraction": {
+		"country": "India",
+		"dpi": 250,
+		"end_page": null,
+		"languages": [
+			"en"
+		],
+		"output_dir": "/Users/mustafa/IDinsight/SenegalKG/results/tamil_nadu",
+		"overwrite": false,
+		"pdf_fp": "/Users/mustafa/IDinsight/SenegalKG/data/tamil_nadu/science.pdf",
+		"start_page": 0,
+		"use_extracted_hints": true,
+		"year": 2025
+	},
+	"page_ir_verification": {
+		"end_page": null,
+		"min_confidence_to_patch": 0.5,
+		"min_confidence_to_select_positive": 0.5,
+		"min_confidence_to_stop_negative_search": 0.9,
+		"next_page_crop_padding_px": 120,
+		"overwrite": false,
+		"start_page": 0
+	},
+	"document_ir": {
+		"keep_artifacts": false,
+		"max_section_path_length": 24,
+		"min_link_score": 1.0,
+		"overwrite": true,
+		"repair_hyphenation": true,
+		"sort_items_by_bbox": true,
+		"table_filldown_enabled": true,
+		"table_filldown_group_cols_max": 1,
+		"verification_auto_stitch_confidence": 0.7
+	}
+}

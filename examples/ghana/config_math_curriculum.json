@@ -414,7 +414,9 @@
 			]
 		},
 		"lc": {
-			"generation_instructions": "Decompose each final Ghana Mathematics Standard SFI into one or more atomic mathematical skills or concepts. Do not create activities, examples, or assessment tasks as LearningComponents."
+			"generation_instructions": "Decompose each final Ghana Mathematics Standard SFI into one or more atomic mathematical skills or concepts. Do not create activities, examples, or assessment tasks as LearningComponents.",
+			"lc_manual_review_overrides": null,
+			"lc_source_statement_types": null
 		},
 		"metadata": {
 			"adoption_status": "Adopted",
