@@ -1359,6 +1359,12 @@ Use exactly one decision for each decision group:
 - Never select a candidate outside the decision group, a candidate with no code, or a code value that is not already present on the selected candidate.
 - A coded merge may include an uncoded duplicate occurrence only when every candidate has the same applicable_code_type and the same code_scope_key/code_scope_values. If any candidate has a different applicable code type, contradictory scope, or unresolved scope while another candidate is scoped, use keep_separate, conflict, or needs_review.
 
+## Semantic identity-scope contract
+- identity_scope_key and identity_scope_values are deterministic, source-backed semantic scope resolved from runtime configuration. They are independent of official code scope and may be present for completely uncoded curricula.
+- Candidates with different identity_scope_key values must not be merged. Use keep_separate, conflict, or needs_review according to the visible evidence.
+- Matching identity scope is necessary for a merge but is never sufficient proof that candidates are duplicates.
+- Do not reinterpret, rewrite, or infer missing identity-scope values. Use the supplied canonical values exactly.
+
 ## Compact evidence model
 - review_signals are deterministic retrieval evidence. Each signal applies only to its listed candidate_ids; never assume it applies to the entire connected review set.
 - A same_normalized_source_text signal means the listed subset has exact equality after internal normalization. It is not an automatic merge rule, and normalized text itself is intentionally omitted from the prompt.
@@ -1437,7 +1443,7 @@ Independently determine the correct partition and decision for every supplied ca
 - context_windows are shared nearby windows. Use each candidate's context_window_indexes to locate the context relevant to that candidate.
 - context_items contain only runtime-configured context-bearing statement types. Their absence is not proof that no other source material exists.
 - section_labels, boundary_markers, page indexes, and excerpts are compact and fallible. They are not final hierarchy, parentage, or merge identity.
-- Candidate description, source_text, code fields, statement types, table indexes, canonical values, and runtime instructions are the primary evidence.
+- Candidate description, source_text, code fields, statement types, table indexes, canonical values, identity-scope fields, and runtime instructions are the primary evidence.
 - A canonical controlled value is meaningful according to the runtime policy. Do not discard it solely because visible wording contains punctuation, qualifiers, ranges, aliases, or expanded labels. Do not merge solely because it matches when source context or runtime instructions require separation.
 
 ## Independent audit procedure
@@ -1453,8 +1459,9 @@ Independently determine the correct partition and decision for every supplied ca
 10. For every proposed merge, count distinct non-null normalized codes. When there are multiple, independently verify that canonical_code_source_candidate_id identifies one coded candidate inside that merge group and that canonical_code_selection_reason justifies that exact source-backed choice.
 11. Reject a mixed-code merge that lacks a defensible source-candidate selection, selects an uncoded or out-of-group candidate, or invents a code. Use needs_review or conflict when no canonical source candidate can be justified.
 12. For every coded merge, verify that every candidate has the canonical applicable_code_type and the same resolved code_scope_key/code_scope_values. An uncoded occurrence may merge only when it independently preserves that same type and scope.
-13. Treat representative_candidate_id, canonical_type_source_candidate_id, and canonical_code_source_candidate_id as independent selections; they may identify different candidates.
-14. Use needs_review only when the bounded evidence remains genuinely insufficient after applying the runtime instructions.
+13. For every merge, verify that all candidates have the same identity_scope_key and identity_scope_values. Matching semantic identity scope permits comparison but does not prove duplication; different scope requires keep_separate, conflict, or needs_review.
+14. Treat representative_candidate_id, canonical_type_source_candidate_id, and canonical_code_source_candidate_id as independent selections; they may identify different candidates.
+15. Use needs_review only when the bounded evidence remains genuinely insufficient after applying the runtime instructions.
 
 ## Universal response contract
 - Copy review_set_id exactly from the request.
@@ -1467,6 +1474,7 @@ Independently determine the correct partition and decision for every supplied ca
 - A mixed-type merge must select one candidate inside the group and provide a source-grounded canonical_type_selection_reason.
 - canonical_code_source_candidate_id and canonical_code_selection_reason must be null except for merge groups with multiple distinct non-null normalized source codes.
 - A mixed-code merge must select one coded candidate inside the group and provide a source-grounded canonical_code_selection_reason.
+- Every merge must preserve one common identity_scope_key and identity_scope_values mapping across all candidates.
 - Representative, canonical-type, and canonical-code source selections are independent and may identify different candidates.
 - Do not infer hierarchy relationships or create final StandardsFrameworkItem IDs.
 

@@ -176,34 +176,34 @@ def _build_canonical_statement_value(
     return None, None
 
 
-def _build_code_scope(
+def _build_configured_scope(
     *,
     candidate: SFICandidate,
-    code_scope_statement_types: dict[str, list[str]],
-    code_type: Optional[str],
     extraction_window: ExtractionWindow,
+    scope_label: str,
+    scope_statement_types: Sequence[str],
     statement_value_policies: dict[str, _StatementValuePolicy],
 ) -> tuple[Optional[str], dict[str, str]]:
-    """Resolve configured canonical scope values for one accepted candidate code.
+    """Resolve one configured semantic scope from source-visible candidate context.
 
     Parameters
     ----------
     candidate
-        Window-local candidate whose accepted code may require configured scope.
-    code_scope_statement_types
-        Ordered scope statement-type labels keyed by configured code type.
-    code_type
-        Configured code type accepted for the candidate, or `None`.
+        Window-local candidate whose source context may expose scope values.
     extraction_window
         Source extraction window containing candidate-local and section context.
+    scope_label
+        Human-readable scope label used in validation errors.
+    scope_statement_types
+        Ordered source-facing statement types that define the semantic scope.
     statement_value_policies
         Controlled-value policies keyed by canonical statement type.
 
     Returns
     -------
     tuple[Optional[str], dict[str, str]]
-        Deterministic scope key and ordered canonical scope values. Both are empty when
-        the code type is document-global or unavailable.
+        Deterministic ordered scope key and canonical scope values. Both are empty when
+        no scope statement types are configured.
 
     Raises
     ------
@@ -211,25 +211,20 @@ def _build_code_scope(
         If a configured scope value cannot be resolved from source-derived context.
     """
 
-    if code_type is None:
-        return None, {}
-
-    scope_statement_types = code_scope_statement_types.get(code_type, [])
-
     if not scope_statement_types:
         return None, {}
 
-    evidence_values = _build_code_scope_evidence_values(
+    evidence_values = _build_scope_evidence_values(
         candidate=candidate, extraction_window=extraction_window
     )
-    code_scope_values: dict[str, str] = {}
+    scope_values: dict[str, str] = {}
 
     for scope_statement_type in scope_statement_types:
         policy = statement_value_policies.get(scope_statement_type)
 
         if policy is None:
             raise ValueError(
-                f"Code type {code_type!r} requires scope statement_type "
+                f"{scope_label} requires scope statement_type "
                 f"{scope_statement_type!r}, but no controlled-value policy is "
                 f"available."
             )
@@ -249,92 +244,21 @@ def _build_code_scope(
 
         if canonical_value is None:
             raise ValueError(
-                f"Could not resolve configured code scope {scope_statement_type!r} "
-                f"for candidate {candidate.candidate_id!r} in extraction window "
-                f"{extraction_window.window_id!r}."
+                f"Could not resolve configured {scope_label} value "
+                f"{scope_statement_type!r} for candidate {candidate.candidate_id!r} "
+                f"in extraction window {extraction_window.window_id!r}."
             )
 
-        code_scope_values[scope_statement_type] = canonical_value
+        scope_values[scope_statement_type] = canonical_value
 
-    code_scope_key = _join_bucket_key(
+    scope_key = _join_bucket_key(
         *(
             f"{normalize_controlled_value_key(statement_type)}="
             f"{normalize_controlled_value_key(canonical_value)}"
-            for statement_type, canonical_value in code_scope_values.items()
+            for statement_type, canonical_value in scope_values.items()
         )
     )
-    return code_scope_key, code_scope_values
-
-
-def _build_code_scope_evidence_values(
-    *, candidate: SFICandidate, extraction_window: ExtractionWindow
-) -> list[str]:
-    """Build ordered source-derived evidence values for code-scope resolution.
-
-    Candidate-local table helper rows are considered before raw rows, headers, and
-    nearest-first section labels. This lets configured scopes resolve from row-span or
-    filldown context while ensuring a current section label outranks stale cumulative
-    path entries. Candidate text is retained only as a final fallback.
-
-    Parameters
-    ----------
-    candidate
-        Window-local candidate with table row/header references.
-    extraction_window
-        Source extraction window containing structural and section context.
-
-    Returns
-    -------
-    list[str]
-        Unique non-empty source-derived evidence values in resolution priority order.
-    """
-
-    evidence_values: list[str] = []
-    table = extraction_window.table
-
-    if table is not None:
-        row_position_by_index = {
-            row_index: position for position, row_index in enumerate(table.row_indexes)
-        }
-
-        for row_index in candidate.table_row_indexes:
-            row_position = row_position_by_index.get(row_index)
-
-            if row_position is None:
-                continue
-
-            for rows in (table.rows_filldown, table.rows_grid, table.rows):
-                row_text = (
-                    _extract_table_row_text(rows[row_position])
-                    if rows is not None and row_position < len(rows)
-                    else ""
-                )
-
-                if row_text:
-                    evidence_values.append(row_text)
-
-        for header_index in candidate.table_header_indexes:
-            if 0 <= header_index < len(table.header_rows):
-                header_text = _extract_table_row_text(table.header_rows[header_index])
-
-                if header_text:
-                    evidence_values.append(header_text)
-
-    evidence_values.extend(
-        reversed(_extract_section_texts(extraction_window.source_section_path))
-    )
-
-    if extraction_window.block is not None:
-        evidence_values.extend(
-            reversed(
-                _extract_section_texts(
-                    extraction_window.block.get("section_path") or []
-                )
-            )
-        )
-
-    evidence_values.extend([candidate.source_text, candidate.description])
-    return _unique_limited(evidence_values, limit=64)
+    return scope_key, scope_values
 
 
 def _build_dedup_context_windows(
@@ -513,6 +437,7 @@ def _build_registry_candidate(
     code_patterns: dict[str, re.Pattern[str]],
     code_scope_statement_types: dict[str, list[str]],
     extraction_window: ExtractionWindow,
+    identity_scope_statement_types: dict[str, list[str]],
     source_window_candidate_index: int,
     statement_type_code_types: dict[str, str],
     statement_value_policies: dict[str, _StatementValuePolicy],
@@ -529,6 +454,8 @@ def _build_registry_candidate(
         Ordered code-scope statement types keyed by configured code type.
     extraction_window
         Source extraction window that produced the candidate.
+    identity_scope_statement_types
+        Ordered semantic identity-scope labels keyed by candidate statement type.
     source_window_candidate_index
         0-based candidate position within the extraction result.
     statement_type_code_types
@@ -582,6 +509,12 @@ def _build_registry_candidate(
         require_complete=resolved_code_type is not None,
         statement_value_policies=statement_value_policies,
     )
+    identity_scope_key, identity_scope_values = _resolve_identity_scope(
+        candidate=candidate,
+        extraction_window=extraction_window,
+        identity_scope_statement_types=identity_scope_statement_types,
+        statement_value_policies=statement_value_policies,
+    )
     # Generate deterministic temporary registry candidate ID.
     candidate_slug = re.sub(
         r"[^0-9A-Za-z_\-]+", "_", candidate.candidate_id.strip()
@@ -597,6 +530,7 @@ def _build_registry_candidate(
     statement_type_key = normalize_text(candidate.statement_type)
     text_bucket_key = _build_text_bucket_key(
         code_scope_key=code_scope_key,
+        identity_scope_key=identity_scope_key,
         normalized_statement_code=normalized_statement_code,
         normalized_text=normalized_description,
         source_context_key=source_context_key,
@@ -604,6 +538,7 @@ def _build_registry_candidate(
     )
     source_text_bucket_key = _build_text_bucket_key(
         code_scope_key=code_scope_key,
+        identity_scope_key=identity_scope_key,
         normalized_statement_code=normalized_statement_code,
         normalized_text=normalized_source_text,
         source_context_key=source_context_key,
@@ -628,6 +563,8 @@ def _build_registry_candidate(
         code_scope_values=code_scope_values,
         confidence=candidate.confidence,
         description=candidate.description,
+        identity_scope_key=identity_scope_key,
+        identity_scope_values=identity_scope_values,
         language=candidate.language,
         normalized_description=normalized_description,
         normalized_source_text=normalized_source_text,
@@ -802,6 +739,77 @@ def _build_registry_warnings(
     ]
 
 
+def _build_scope_evidence_values(
+    *, candidate: SFICandidate, extraction_window: ExtractionWindow
+) -> list[str]:
+    """Build ordered source-derived evidence values for semantic scope resolution.
+
+    Candidate-local table helper rows are considered before raw rows, headers, and
+    nearest-first section labels. This lets configured scopes resolve from row-span or
+    filldown context while ensuring a current section label outranks stale cumulative
+    path entries. Candidate text is retained only as a final fallback.
+
+    Parameters
+    ----------
+    candidate
+        Window-local candidate with table row/header references.
+    extraction_window
+        Source extraction window containing structural and section context.
+
+    Returns
+    -------
+    list[str]
+        Unique non-empty source-derived evidence values in resolution priority order.
+    """
+
+    evidence_values: list[str] = []
+    table = extraction_window.table
+
+    if table is not None:
+        row_position_by_index = {
+            row_index: position for position, row_index in enumerate(table.row_indexes)
+        }
+
+        for row_index in candidate.table_row_indexes:
+            row_position = row_position_by_index.get(row_index)
+
+            if row_position is None:
+                continue
+
+            for rows in (table.rows_filldown, table.rows_grid, table.rows):
+                row_text = (
+                    _extract_table_row_text(rows[row_position])
+                    if rows is not None and row_position < len(rows)
+                    else ""
+                )
+
+                if row_text:
+                    evidence_values.append(row_text)
+
+        for header_index in candidate.table_header_indexes:
+            if 0 <= header_index < len(table.header_rows):
+                header_text = _extract_table_row_text(table.header_rows[header_index])
+
+                if header_text:
+                    evidence_values.append(header_text)
+
+    evidence_values.extend(
+        reversed(_extract_section_texts(extraction_window.source_section_path))
+    )
+
+    if extraction_window.block is not None:
+        evidence_values.extend(
+            reversed(
+                _extract_section_texts(
+                    extraction_window.block.get("section_path") or []
+                )
+            )
+        )
+
+    evidence_values.extend([candidate.source_text, candidate.description])
+    return _unique_limited(evidence_values, limit=64)
+
+
 def _build_statement_value_policies(
     kg_config: CreateKGConfig,
 ) -> dict[str, _StatementValuePolicy]:
@@ -952,6 +960,7 @@ def _build_table_source_context(
 def _build_text_bucket_key(
     *,
     code_scope_key: Optional[str],
+    identity_scope_key: Optional[str],
     normalized_statement_code: Optional[str],
     normalized_text: str,
     source_context_key: str,
@@ -961,14 +970,17 @@ def _build_text_bucket_key(
 
     Coded candidates use configured deterministic code scope, statement type, and
     visible text as a secondary review signal because official code evidence is carried
-    separately. No-code candidates are scoped by deterministic source context and
-    visible text. Controlled-value matches are exposed separately as
-    same-canonical-value review edges, not as canonical bucket identity.
+    separately. No-code candidates use configured semantic identity scope when
+    available and otherwise fall back to deterministic source context. Controlled-value
+    matches are exposed separately as same-canonical-value review edges, not as
+    canonical bucket identity.
 
     Parameters
     ----------
     code_scope_key
         Deterministic configured code scope for accepted coded candidates.
+    identity_scope_key
+        Deterministic configured semantic identity scope for the candidate.
     normalized_statement_code
         Registry-normalized official statement code, when one was accepted.
     normalized_text
@@ -990,7 +1002,8 @@ def _build_text_bucket_key(
             *code_scope_key_parts, statement_type_key, normalized_text
         )
 
-    return _join_bucket_key(statement_type_key, source_context_key, normalized_text)
+    no_code_scope_key = identity_scope_key or source_context_key
+    return _join_bucket_key(statement_type_key, no_code_scope_key, normalized_text)
 
 
 def _deterministic_bucket_id(*, bucket_key: str, bucket_type: str) -> str:
@@ -1284,8 +1297,9 @@ def _resolve_applicable_code_scope(
 
     Coded candidates require complete configured scope because their accepted code
     cannot be safely bucketed or finalized without it. Uncoded candidates whose
-    statement type declares a code type are allowed to retain unresolved scope; this
-    preserves them in the registry while preventing unsafe coded merges later.
+    statement type declares a code type are allowed to retain unresolved code scope;
+    semantic identity scope is resolved independently and remains authoritative for
+    uncoded final identity.
 
     Parameters
     ----------
@@ -1298,30 +1312,32 @@ def _resolve_applicable_code_scope(
     extraction_window
         Source extraction window containing row and section context.
     require_complete
-        Whether missing configured scope must raise rather than remain unresolved.
+        Whether missing configured code scope must raise rather than remain unresolved.
     statement_value_policies
         Controlled-value policies keyed by statement type.
 
     Returns
     -------
     tuple[Optional[str], dict[str, str]]
-        Resolved scope key and canonical scope values, or an empty unresolved scope.
+        Resolved code-scope key and values, or an empty unresolved scope.
 
     Raises
     ------
     ValueError
-        If complete scope is required and configured source scope cannot be resolved.
+        If complete code scope is required and source scope cannot be resolved.
     """
 
     if applicable_code_type is None:
         return None, {}
 
+    scope_statement_types = code_scope_statement_types.get(applicable_code_type, [])
+
     try:
-        return _build_code_scope(
+        return _build_configured_scope(
             candidate=candidate,
-            code_scope_statement_types=code_scope_statement_types,
-            code_type=applicable_code_type,
             extraction_window=extraction_window,
+            scope_label=f"code scope for code type {applicable_code_type!r}",
+            scope_statement_types=scope_statement_types,
             statement_value_policies=statement_value_policies,
         )
     except ValueError:
@@ -1332,9 +1348,54 @@ def _resolve_applicable_code_scope(
             f"Could not resolve optional configured code scope for uncoded candidate "
             f"{candidate.candidate_id!r} in extraction window "
             f"{extraction_window.window_id!r}; preserving the candidate with "
-            f"applicable_code_type={applicable_code_type!r} and unresolved scope."
+            f"applicable_code_type={applicable_code_type!r} and unresolved code scope."
         )
         return None, {}
+
+
+def _resolve_identity_scope(
+    *,
+    candidate: SFICandidate,
+    extraction_window: ExtractionWindow,
+    identity_scope_statement_types: dict[str, list[str]],
+    statement_value_policies: dict[str, _StatementValuePolicy],
+) -> tuple[Optional[str], dict[str, str]]:
+    """Resolve configured semantic identity scope for one candidate statement type.
+
+    Parameters
+    ----------
+    candidate
+        Window-local candidate whose logical identity may require semantic scope.
+    extraction_window
+        Source extraction window containing row, header, and section evidence.
+    identity_scope_statement_types
+        Ordered identity-scope statement types keyed by candidate statement type.
+    statement_value_policies
+        Controlled-value policies keyed by statement type.
+
+    Returns
+    -------
+    tuple[Optional[str], dict[str, str]]
+        Resolved semantic identity-scope key and values, or empty values when the
+        candidate statement type has no configured identity scope.
+
+    Raises
+    ------
+    ValueError
+        If configured identity scope cannot be completely resolved from source-visible
+        context.
+    """
+
+    scope_statement_types = identity_scope_statement_types.get(
+        candidate.statement_type, []
+    )
+    return _build_configured_scope(
+        candidate=candidate,
+        extraction_window=extraction_window,
+        scope_label=f"identity scope for statement_type {candidate.statement_type!r}",
+        scope_statement_types=scope_statement_types,
+        statement_value_policies=statement_value_policies,
+    )
 
 
 def _statement_type_is_ancestor(
@@ -1981,6 +2042,9 @@ def build_candidate_registry(
         kg_config
     )
     code_scope_statement_types = kg_config.academic_standards.code_scope_statement_types
+    identity_scope_statement_types = (
+        kg_config.academic_standards.identity_scope_statement_types
+    )
     statement_value_policies = _build_statement_value_policies(kg_config)
 
     for result_index, extraction_result in enumerate(sfi_extraction_results):
@@ -2005,6 +2069,7 @@ def build_candidate_registry(
                     code_patterns=code_patterns,
                     code_scope_statement_types=code_scope_statement_types,
                     extraction_window=extraction_window,
+                    identity_scope_statement_types=identity_scope_statement_types,
                     source_window_candidate_index=source_window_candidate_index,
                     statement_type_code_types=statement_type_code_types,
                     statement_value_policies=statement_value_policies,

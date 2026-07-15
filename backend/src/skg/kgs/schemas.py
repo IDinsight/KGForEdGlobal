@@ -80,11 +80,13 @@ def _validate_iso8601_str(v: Optional[str]) -> Optional[str]:
     return v2
 
 
-def clean_code_scope_values(values: dict[str, str]) -> dict[str, str]:
-    """Clean and validate an ordered code-scope value mapping.
+def clean_scope_values(*, field_name: str, values: dict[str, str]) -> dict[str, str]:
+    """Clean and validate an ordered semantic scope-value mapping.
 
     Parameters
     ----------
+    field_name
+        Human-readable field name used in validation errors.
     values
         Mapping from configured scope statement-type labels to canonical values.
 
@@ -105,17 +107,18 @@ def clean_code_scope_values(values: dict[str, str]) -> dict[str, str]:
 
     for statement_type, canonical_value in values.items():
         if not isinstance(statement_type, str) or not isinstance(canonical_value, str):
-            raise TypeError("Code-scope labels and values must be strings.")
+            raise TypeError(f"{field_name} labels and values must be strings.")
 
         statement_type_clean = statement_type.strip()
         canonical_value_clean = canonical_value.strip()
 
         if not statement_type_clean or not canonical_value_clean:
-            raise ValueError("Code-scope labels and values must be non-empty.")
+            raise ValueError(f"{field_name} labels and values must be non-empty.")
 
         if statement_type_clean in cleaned:
             raise ValueError(
-                f"Duplicate code-scope label {statement_type_clean!r} after stripping whitespace."
+                f"Duplicate {field_name} label {statement_type_clean!r} after "
+                "stripping whitespace."
             )
 
         cleaned[statement_type_clean] = canonical_value_clean
@@ -1395,6 +1398,19 @@ class SFIRegistryCandidate(BaseSchema):
     description: str = Field(
         description="Original candidate description.", min_length=1
     )
+    identity_scope_key: Optional[str] = Field(
+        description=(
+            "Deterministic ordered key for configured semantic identity-scope values, "
+            "or null when the candidate statement type has no configured identity "
+            "scope."
+        )
+    )
+    identity_scope_values: dict[str, str] = Field(
+        description=(
+            "Canonical controlled values for the configured semantic identity scope "
+            "of this candidate statement type."
+        )
+    )
     language: LanguageField = Field(description="Original candidate language tag.")
     normalized_description: str = Field(
         description="Lightweight normalized candidate description."
@@ -1419,8 +1435,8 @@ class SFIRegistryCandidate(BaseSchema):
     )
     source_context_key: str = Field(
         description=(
-            "Deterministic source-derived context key used to scope no-code "
-            "duplicate bucketing and later review."
+            "Deterministic source-derived context key used as a no-code duplicate "
+            "bucketing fallback and as later review evidence."
         ),
         min_length=1,
     )
@@ -1440,8 +1456,8 @@ class SFIRegistryCandidate(BaseSchema):
     )
     source_text_bucket_key: str = Field(
         description=(
-            "Configured code scope or source context + statement_type + normalized "
-            "source_text bucket key."
+            "Configured code scope, semantic identity scope, or source-context "
+            "fallback + statement_type + normalized source_text bucket key."
         )
     )
     source_window_candidate_id: str = Field(
@@ -1462,14 +1478,14 @@ class SFIRegistryCandidate(BaseSchema):
     )
     text_bucket_key: str = Field(
         description=(
-            "Configured code scope or source context + statement_type + normalized "
-            "description bucket key."
+            "Configured code scope, semantic identity scope, or source-context "
+            "fallback + statement_type + normalized description bucket key."
         )
     )
     window_id: str = Field(description="ExtractionWindow.window_id.")
     window_index: int = Field(description="ExtractionWindow.window_index.", ge=0)
 
-    @field_validator("code_scope_key", mode="before")
+    @field_validator("code_scope_key", "identity_scope_key", mode="before")
     @classmethod
     def clean_code_scope_key(cls, v: Optional[str]) -> Optional[str]:
         """Strip an optional deterministic code-scope key.
@@ -1529,7 +1545,25 @@ class SFIRegistryCandidate(BaseSchema):
             Cleaned ordered code-scope mapping.
         """
 
-        return clean_code_scope_values(v)
+        return clean_scope_values(field_name="code_scope_values", values=v)
+
+    @field_validator("identity_scope_values")
+    @classmethod
+    def validate_identity_scope_values(cls, v: dict[str, str]) -> dict[str, str]:
+        """Clean candidate semantic identity-scope values.
+
+        Parameters
+        ----------
+        v
+            Raw identity-scope mapping.
+
+        Returns
+        -------
+        dict[str, str]
+            Cleaned ordered identity-scope mapping.
+        """
+
+        return clean_scope_values(field_name="identity_scope_values", values=v)
 
     @model_validator(mode="after")
     def validate_code_contract(self) -> Self:
@@ -1579,6 +1613,29 @@ class SFIRegistryCandidate(BaseSchema):
             raise ValueError(
                 "A candidate with configured code scope must define "
                 "applicable_code_type."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_identity_scope_contract(self) -> Self:
+        """Validate candidate semantic identity-scope field consistency.
+
+        Returns
+        -------
+        Self
+            Validated registry candidate.
+
+        Raises
+        ------
+        ValueError
+            If the identity-scope key and values are only partially populated.
+        """
+
+        if bool(self.identity_scope_key) != bool(self.identity_scope_values):
+            raise ValueError(
+                "identity_scope_key and identity_scope_values must either both be "
+                "present or both be empty."
             )
 
         return self
@@ -1801,6 +1858,12 @@ class SFIDedupReviewCandidate(BaseSchema):
         min_length=1,
     )
     description: str = Field(description="Candidate description.", min_length=1)
+    identity_scope_key: Optional[str] = Field(
+        description="Deterministic configured semantic identity-scope key, when any."
+    )
+    identity_scope_values: dict[str, str] = Field(
+        description="Canonical configured semantic identity-scope values, when any."
+    )
     language: LanguageField = Field(description="Candidate language tag.")
     normalized_statement_code: Optional[str] = Field(
         default=None, description="Registry-normalized official code, when present."
@@ -1857,7 +1920,11 @@ class SFIDedupReviewCandidate(BaseSchema):
         return cleaned
 
     @field_validator(
-        "applicable_code_type", "code_scope_key", "resolved_code_type", mode="before"
+        "applicable_code_type",
+        "code_scope_key",
+        "identity_scope_key",
+        "resolved_code_type",
+        mode="before",
     )
     @classmethod
     def clean_optional_code_fields(cls, v: Optional[str]) -> Optional[str]:
@@ -1896,7 +1963,25 @@ class SFIDedupReviewCandidate(BaseSchema):
             Cleaned ordered code-scope mapping.
         """
 
-        return clean_code_scope_values(v)
+        return clean_scope_values(field_name="code_scope_values", values=v)
+
+    @field_validator("identity_scope_values")
+    @classmethod
+    def validate_identity_scope_values(cls, v: dict[str, str]) -> dict[str, str]:
+        """Clean review-candidate semantic identity-scope values.
+
+        Parameters
+        ----------
+        v
+            Raw identity-scope mapping.
+
+        Returns
+        -------
+        dict[str, str]
+            Cleaned ordered identity-scope mapping.
+        """
+
+        return clean_scope_values(field_name="identity_scope_values", values=v)
 
     @model_validator(mode="after")
     def validate_code_scope_contract(self) -> Self:
@@ -1945,6 +2030,29 @@ class SFIDedupReviewCandidate(BaseSchema):
             raise ValueError(
                 "A review candidate with configured scope must define "
                 "applicable_code_type."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_identity_scope_contract(self) -> Self:
+        """Validate review-candidate semantic identity-scope consistency.
+
+        Returns
+        -------
+        Self
+            Validated review candidate.
+
+        Raises
+        ------
+        ValueError
+            If identity-scope key and values are only partially populated.
+        """
+
+        if bool(self.identity_scope_key) != bool(self.identity_scope_values):
+            raise ValueError(
+                "identity_scope_key and identity_scope_values must either both be "
+                "present or both be empty."
             )
 
         return self
@@ -2452,6 +2560,21 @@ class SFIMergeGroup(BaseSchema):
     confidence_min: float = Field(
         description="Minimum candidate confidence in this group.", ge=0.0, le=1.0
     )
+    identity_scope_key: Optional[str] = Field(
+        description=(
+            "Shared deterministic semantic identity-scope key when all candidates "
+            "have one common configured identity scope; otherwise null."
+        )
+    )
+    identity_scope_keys: list[str] = Field(
+        description="All non-empty semantic identity-scope keys in the group."
+    )
+    identity_scope_values: dict[str, str] = Field(
+        description=(
+            "Shared canonical semantic identity-scope values when the group has one "
+            "common non-empty scope; otherwise empty."
+        )
+    )
     llm_decision: Optional[SFIDedupDecision] = Field(
         default=None, description="Original LLM decision, when reviewed by the LLM."
     )
@@ -2515,6 +2638,7 @@ class SFIMergeGroup(BaseSchema):
         "canonical_type_selection_reason",
         "canonical_type_source_candidate_id",
         "code_scope_key",
+        "identity_scope_key",
         "normalized_statement_code",
         "representative_candidate_id",
         "statement_code",
@@ -2568,6 +2692,7 @@ class SFIMergeGroup(BaseSchema):
         "canonical_statement_value_keys",
         "canonical_statement_values",
         "code_scope_keys",
+        "identity_scope_keys",
         "normalized_statement_codes",
         "normalized_statement_types",
         "registry_candidate_ids",
@@ -2627,7 +2752,25 @@ class SFIMergeGroup(BaseSchema):
             Cleaned ordered code-scope mapping.
         """
 
-        return clean_code_scope_values(v)
+        return clean_scope_values(field_name="code_scope_values", values=v)
+
+    @field_validator("identity_scope_values")
+    @classmethod
+    def validate_identity_scope_values(cls, v: dict[str, str]) -> dict[str, str]:
+        """Clean shared merge-group semantic identity-scope values.
+
+        Parameters
+        ----------
+        v
+            Raw shared identity-scope mapping.
+
+        Returns
+        -------
+        dict[str, str]
+            Cleaned ordered identity-scope mapping.
+        """
+
+        return clean_scope_values(field_name="identity_scope_values", values=v)
 
     @model_validator(mode="after")
     def validate_code_scope_contract(self) -> Self:
@@ -2738,6 +2881,90 @@ class SFIMergeGroup(BaseSchema):
                 "canonical_code_type must be null when no canonical normalized code "
                 "is resolved."
             )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_identity_scope_contract(self) -> Self:
+        """Validate aggregate semantic identity scope against candidate references.
+
+        Returns
+        -------
+        Self
+            Validated merge group.
+
+        Raises
+        ------
+        ValueError
+            If aggregate identity scope disagrees with source references or a mintable
+            group combines incompatible identity scopes.
+        """
+
+        source_scope_keys = sorted(
+            {
+                str(source_ref.get("identity_scope_key") or "").strip()
+                for source_ref in self.candidate_source_refs
+                if str(source_ref.get("identity_scope_key") or "").strip()
+            }
+        )
+
+        if set(self.identity_scope_keys) != set(source_scope_keys):
+            raise ValueError(
+                "identity_scope_keys must equal the non-empty identity-scope keys "
+                "preserved in candidate_source_refs."
+            )
+
+        if self.identity_scope_key is None:
+            if self.identity_scope_values:
+                raise ValueError(
+                    "identity_scope_values must be empty when identity_scope_key is null."
+                )
+        else:
+            matching_scope_values = {
+                tuple(
+                    (str(key).strip(), str(value).strip())
+                    for key, value in (
+                        source_ref.get("identity_scope_values") or {}
+                    ).items()
+                )
+                for source_ref in self.candidate_source_refs
+                if str(source_ref.get("identity_scope_key") or "").strip()
+                == self.identity_scope_key
+            }
+
+            if len(matching_scope_values) != 1:
+                raise ValueError(
+                    "identity_scope_values must have one source-backed value mapping "
+                    "for the resolved identity_scope_key."
+                )
+
+            expected_scope_values = dict(next(iter(matching_scope_values)))
+
+            if self.identity_scope_values != expected_scope_values:
+                raise ValueError(
+                    "identity_scope_values must equal the source-backed values for "
+                    "identity_scope_key."
+                )
+
+        if self.merge_decision in {"merged", "singleton"}:
+            source_scope_signatures = {
+                str(source_ref.get("identity_scope_key") or "").strip()
+                for source_ref in self.candidate_source_refs
+            }
+
+            if len(source_scope_signatures) != 1:
+                raise ValueError(
+                    "Every candidate in a mintable merge group must preserve one "
+                    "common configured semantic identity scope."
+                )
+
+            expected_scope_key = next(iter(source_scope_signatures)) or None
+
+            if self.identity_scope_key != expected_scope_key:
+                raise ValueError(
+                    "identity_scope_key must equal the common source-backed identity "
+                    "scope for a mintable merge group."
+                )
 
         return self
 
@@ -3202,6 +3429,8 @@ class SFIFinalContext(BaseSchema):
     )
     description: str = Field(description="Final SFI description.", min_length=1)
     final_sfi_uuid: UUID = Field(description="Final SFI UUID.")
+    identity_scope_key: Optional[str] = Field(default=None)
+    identity_scope_values: dict[str, str] = Field(default_factory=dict)
     normalized_statement_code: Optional[str] = Field(default=None)
     normalized_statement_type: NormalizedStatementType
     section_path_labels: list[str] = Field(default_factory=list)
@@ -3330,6 +3559,14 @@ class SFIFinalRecord(BaseSchema):
     identity_key: str = Field(
         description="Canonical deterministic identity string used to mint the UUID."
     )
+    identity_scope_key: Optional[str] = Field(
+        default=None,
+        description="Resolved semantic identity-scope key for the final SFI.",
+    )
+    identity_scope_values: dict[str, str] = Field(
+        default_factory=dict,
+        description="Resolved canonical semantic identity-scope values.",
+    )
     in_language: LanguageField = Field(description="Language tag for the final SFI.")
     jurisdiction: str = Field(description="Jurisdiction from KG metadata.")
     language: str = Field(description="Source language tag chosen for the final SFI.")
@@ -3433,6 +3670,7 @@ class SFIFinalRecord(BaseSchema):
         "canonical_statement_code",
         "canonical_type_selection_reason",
         "canonical_type_source_candidate_id",
+        "identity_scope_key",
         "normalized_statement_code",
         "statement_code",
         mode="before",
@@ -3457,6 +3695,24 @@ class SFIFinalRecord(BaseSchema):
 
         v2 = v.strip()
         return v2 if v2 else None
+
+    @field_validator("identity_scope_values")
+    @classmethod
+    def validate_identity_scope_values(cls, v: dict[str, str]) -> dict[str, str]:
+        """Clean final-record semantic identity-scope values.
+
+        Parameters
+        ----------
+        v
+            Raw identity-scope mapping.
+
+        Returns
+        -------
+        dict[str, str]
+            Cleaned ordered identity-scope mapping.
+        """
+
+        return clean_scope_values(field_name="identity_scope_values", values=v)
 
     @field_validator(
         "audit_flags",
@@ -3529,6 +3785,29 @@ class SFIFinalRecord(BaseSchema):
 
         if not self.case_identifier_uri.endswith(str(self.final_sfi_uuid)):
             raise ValueError("case_identifier_uri must end with final_sfi_uuid.")
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_identity_scope_contract(self) -> Self:
+        """Validate final-record semantic identity-scope field consistency.
+
+        Returns
+        -------
+        Self
+            Validated final SFI record.
+
+        Raises
+        ------
+        ValueError
+            If identity-scope key and values are only partially populated.
+        """
+
+        if bool(self.identity_scope_key) != bool(self.identity_scope_values):
+            raise ValueError(
+                "identity_scope_key and identity_scope_values must either both be "
+                "present or both be empty."
+            )
 
         return self
 

@@ -777,6 +777,15 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
             "eligible."
         ),
     )
+    identity_scope_statement_types: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Ordered source-facing Standard Grouping statement types that form the "
+            "semantic identity scope for each candidate statement_type. These scopes "
+            "are resolved from source-visible row, header, and section context even "
+            "when the curriculum has no official codes."
+        ),
+    )
     included_table_columns_signatures: list[str] = Field(
         default_factory=list,
         description=(
@@ -885,10 +894,9 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         default_factory=lambda: [
             "country",
             "subject",
-            "grade_level",
             "normalized_statement_type",
             "statement_type",
-            "hierarchy_context",
+            "identity_scope",
             "normalized_text",
         ]
     )
@@ -1377,6 +1385,100 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
 
         return cleaned
 
+    @field_validator("identity_scope_statement_types")
+    @classmethod
+    def validate_identity_scope_statement_types(
+        cls, v: dict[str, list[str]]
+    ) -> dict[str, list[str]]:
+        """Validate configured semantic identity-scope statement-type lists.
+
+        Parameters
+        ----------
+        v
+            Mapping from candidate statement types to ordered identity-scope labels.
+
+        Returns
+        -------
+        dict[str, list[str]]
+            Cleaned mapping preserving configured target and scope order.
+
+        Raises
+        ------
+        TypeError
+            If keys, values, or scope labels have invalid types.
+        ValueError
+            If a target or scope label is blank, or a scope list is empty or contains
+            duplicate labels.
+        """
+
+        cleaned: dict[str, list[str]] = {}
+
+        for statement_type, scope_statement_types in v.items():
+            if not isinstance(statement_type, str):
+                raise TypeError(
+                    "CreateKGConfig.as.identity_scope_statement_types keys must be "
+                    "strings."
+                )
+
+            statement_type_clean = statement_type.strip()
+
+            if not statement_type_clean:
+                raise ValueError(
+                    "CreateKGConfig.as.identity_scope_statement_types cannot contain "
+                    "a blank target statement_type."
+                )
+
+            if statement_type_clean in cleaned:
+                raise ValueError(
+                    f"CreateKGConfig.as.identity_scope_statement_types contains "
+                    f"duplicate target statement_type {statement_type_clean!r} after "
+                    f"stripping whitespace."
+                )
+
+            if not isinstance(scope_statement_types, list):
+                raise TypeError(
+                    "CreateKGConfig.as.identity_scope_statement_types values must be "
+                    "lists of statement_type labels."
+                )
+
+            cleaned_scope_statement_types: list[str] = []
+            seen_scope_statement_types: set[str] = set()
+
+            for scope_statement_type in scope_statement_types:
+                if not isinstance(scope_statement_type, str):
+                    raise TypeError(
+                        "CreateKGConfig.as.identity_scope_statement_types scope labels "
+                        "must be strings."
+                    )
+
+                scope_statement_type_clean = scope_statement_type.strip()
+
+                if not scope_statement_type_clean:
+                    raise ValueError(
+                        "CreateKGConfig.as.identity_scope_statement_types cannot "
+                        "contain a blank scope statement_type label."
+                    )
+
+                if scope_statement_type_clean in seen_scope_statement_types:
+                    raise ValueError(
+                        f"CreateKGConfig.as.identity_scope_statement_types contains "
+                        f"duplicate scope label {scope_statement_type_clean!r} for "
+                        f"target statement_type {statement_type_clean!r}."
+                    )
+
+                cleaned_scope_statement_types.append(scope_statement_type_clean)
+                seen_scope_statement_types.add(scope_statement_type_clean)
+
+            if not cleaned_scope_statement_types:
+                raise ValueError(
+                    "CreateKGConfig.as.identity_scope_statement_types entries must "
+                    "contain at least one scope statement_type label."
+                )
+
+            cleaned[statement_type_clean] = cleaned_scope_statement_types
+
+        return cleaned
+
     @field_validator("code_patterns")
     @classmethod
     def validate_code_patterns(cls, v: dict[str, str]) -> dict[str, str]:
@@ -1706,6 +1808,65 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
                         f"controlled_values for deterministic resolution."
                     )
 
+    def _validate_identity_scope_policy(self) -> None:
+        """Validate semantic identity-scope references and identity-key usage.
+
+        Raises
+        ------
+        ValueError
+            If a target or scope statement type is unknown, a scope type is not a
+            controlled Standard Grouping, or configured identity scope is omitted from
+            the synthetic identity recipe.
+        """
+
+        policy_by_statement_type = {
+            item.statement_type: item for item in self.statement_type_policy
+        }
+
+        for (
+            statement_type,
+            scope_statement_types,
+        ) in self.identity_scope_statement_types.items():
+            if statement_type not in policy_by_statement_type:
+                raise ValueError(
+                    f"CreateKGConfig.as.identity_scope_statement_types references "
+                    f"unknown target statement_type {statement_type!r}. Known "
+                    f"statement types: {sorted(policy_by_statement_type)}"
+                )
+
+            for scope_statement_type in scope_statement_types:
+                policy_item = policy_by_statement_type.get(scope_statement_type)
+
+                if policy_item is None:
+                    raise ValueError(
+                        f"CreateKGConfig.as.identity_scope_statement_types references "
+                        f"unknown scope statement_type {scope_statement_type!r}. Known "
+                        f"statement types: {sorted(policy_by_statement_type)}"
+                    )
+
+                if policy_item.normalized_statement_type != "Standard Grouping":
+                    raise ValueError(
+                        f"CreateKGConfig.as.identity_scope_statement_types scope "
+                        f"statement_type {scope_statement_type!r} must normalize to "
+                        f"'Standard Grouping'."
+                    )
+
+                if not policy_item.controlled_values:
+                    raise ValueError(
+                        f"CreateKGConfig.as.identity_scope_statement_types scope "
+                        f"statement_type {scope_statement_type!r} must define "
+                        f"controlled_values for deterministic resolution."
+                    )
+
+        if (
+            self.identity_scope_statement_types
+            and "identity_scope" not in self.synthetic_merge_key_fields
+        ):
+            raise ValueError(
+                "CreateKGConfig.as.synthetic_merge_key_fields must include "
+                "'identity_scope' when identity_scope_statement_types is configured."
+            )
+
     def _validate_dedup_context_statement_types(self) -> None:
         """Validate explicitly configured SFI dedup context statement types.
 
@@ -1826,6 +1987,7 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         self._validate_code_parent_rules(known)
         self._validate_code_scope_policy(known)
         self._validate_dedup_context_statement_types()
+        self._validate_identity_scope_policy()
         self._validate_has_child_statement_type_policy()
         self._validate_selection_overlap_policy()
         self._validate_statement_type_policy_code_types(known)

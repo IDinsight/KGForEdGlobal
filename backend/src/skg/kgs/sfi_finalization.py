@@ -47,6 +47,7 @@ _SUPPORTED_SYNTHETIC_IDENTITY_FIELDS = frozenset(
         "framework_title",
         "grade_level",
         "hierarchy_context",
+        "identity_scope",
         "jurisdiction",
         "language",
         "normalized_statement_code",
@@ -187,45 +188,37 @@ def _build_grade_level_identity_value(
     merge_group: SFIMergeGroup,
     section_paths: Sequence[Sequence[str]],
 ) -> str:
-    """Resolve stable configured scope values for the `grade_level` identity field.
+    """Resolve configured identity-scope values for the `grade_level` field.
 
-    The runtime schema uses `grade_level` as a conventional synthetic-key field, but
-    curricula may call the relevant scope `Grade`, `Class`, `Stage`, `Year`, or another
-    configured statement type. This resolver therefore uses the statement types
-    explicitly named by `code_scope_statement_types` and their controlled values rather
-    than hardcoding one curriculum's terminology. Explicit candidate code scope is
-    authoritative. Otherwise, the nearest matching value in each cumulative section
-    path is used so stale earlier scope labels do not leak into the identity.
+    The conventional field name remains curriculum-neutral: any configured semantic
+    identity-scope statement type may contribute. Resolved registry scope is
+    authoritative; section paths are used only as a deterministic source-visible
+    fallback for configured scope types.
 
     Parameters
     ----------
     kg_config
-        Runtime KG configuration containing code-scope and controlled-value policy.
+        Runtime KG configuration containing identity-scope and controlled-value policy.
     merge_group
-        Merge group whose stable scope values should be resolved.
+        Merge group whose stable semantic scope should be resolved.
     section_paths
         Source section paths recovered from the group's DocumentIR segments.
 
     Returns
     -------
     str
-        Sorted normalized canonical scope assignments joined by `|`; empty when no
-        configured scope value is source-resolvable for the item.
+        Sorted normalized canonical scope assignments joined by `|`.
     """
 
-    scope_statement_types = {
-        statement_type
-        for statement_types in (
-            kg_config.academic_standards.code_scope_statement_types.values()
-        )
-        for statement_type in statement_types
-    }
+    scope_statement_types = _configured_identity_scope_statement_types(
+        kg_config=kg_config, merge_group=merge_group
+    )
     resolved_values_by_type: dict[str, set[str]] = {
         statement_type: set() for statement_type in scope_statement_types
     }
 
-    for statement_type, value in merge_group.code_scope_values.items():
-        if statement_type not in scope_statement_types:
+    for statement_type, value in merge_group.identity_scope_values.items():
+        if statement_type not in resolved_values_by_type:
             continue
 
         value_key = normalize_controlled_value_key(value)
@@ -233,22 +226,9 @@ def _build_grade_level_identity_value(
         if value_key:
             resolved_values_by_type[statement_type].add(value_key)
 
-    merge_statement_type = _canonical_statement_type(merge_group)
-
-    if (
-        merge_statement_type in scope_statement_types
-        and merge_group.canonical_statement_value
-    ):
-        value_key = normalize_controlled_value_key(
-            merge_group.canonical_statement_value
-        )
-
-        if value_key:
-            resolved_values_by_type[merge_statement_type].add(value_key)
-
     alias_maps = _build_controlled_value_alias_maps(kg_config)
 
-    for statement_type in sorted(scope_statement_types):
+    for statement_type in scope_statement_types:
         if resolved_values_by_type[statement_type]:
             continue
 
@@ -274,8 +254,8 @@ def _build_grade_level_identity_value(
                 )
 
     return "|".join(
-        f"{normalize_controlled_value_key(statement_type)}=" f"{value_key}"
-        for statement_type in sorted(resolved_values_by_type)
+        f"{normalize_controlled_value_key(statement_type)}={value_key}"
+        for statement_type in scope_statement_types
         for value_key in sorted(resolved_values_by_type[statement_type])
     )
 
@@ -286,20 +266,18 @@ def _build_hierarchy_context_identity_value(
     merge_group: SFIMergeGroup,
     section_paths: Sequence[Sequence[str]],
 ) -> str:
-    """Build stable source-derived hierarchy context for synthetic identity.
+    """Build stable hierarchy context from semantic identity scope and sections.
 
-    Hierarchy context is limited to configured canonical code-scope assignments and
-    local DocumentIR section-path suffixes. For cumulative paths, the suffix begins at
-    the nearest configured scope value; this drops stale earlier grade/class/stage
-    labels. Segment IDs, window IDs, row indexes, and overlap-copy membership are never
-    included, so routine provenance changes do not alter final SFI identity.
+    Configured semantic identity-scope assignments are authoritative. Local DocumentIR
+    section-path suffixes provide additional stable source context. Segment IDs,
+    windows, row indexes, and overlap-copy membership are excluded from identity.
 
     Parameters
     ----------
     kg_config
-        Runtime KG configuration defining scope statement types and controlled values.
+        Runtime KG configuration defining semantic identity scope.
     merge_group
-        Merge group containing configured scope values.
+        Merge group containing resolved semantic identity-scope values.
     section_paths
         Source section paths recovered from the group's DocumentIR segments.
 
@@ -312,38 +290,21 @@ def _build_hierarchy_context_identity_value(
     components = {
         f"scope:{normalize_controlled_value_key(statement_type)}="
         f"{normalize_controlled_value_key(value)}"
-        for statement_type, value in merge_group.code_scope_values.items()
+        for statement_type, value in merge_group.identity_scope_values.items()
         if normalize_controlled_value_key(statement_type)
         and normalize_controlled_value_key(value)
     }
-    scope_statement_types = {
-        statement_type
-        for statement_types in (
-            kg_config.academic_standards.code_scope_statement_types.values()
-        )
-        for statement_type in statement_types
-    }
-    merge_statement_type = _canonical_statement_type(merge_group)
-    is_scope_grouping = bool(
-        merge_statement_type in scope_statement_types
-        and merge_group.canonical_statement_value
+    scope_statement_types = _configured_identity_scope_statement_types(
+        kg_config=kg_config, merge_group=merge_group
     )
-
-    if is_scope_grouping:
-        components.add(
-            f"scope:{normalize_controlled_value_key(merge_statement_type)}="
-            f"{normalize_controlled_value_key(merge_group.canonical_statement_value)}"
-        )
-
     alias_maps = _build_controlled_value_alias_maps(kg_config)
     scope_alias_keys = {
         alias_key
         for statement_type in scope_statement_types
         for alias_key in alias_maps.get(statement_type, {})
     }
-    fallback_limit = _IDENTITY_SECTION_PATH_FALLBACK_LIMIT
 
-    for section_path in ([] if is_scope_grouping else section_paths):
+    for section_path in section_paths:
         normalized_labels = [
             normalize_controlled_value_key(label) for label in section_path
         ]
@@ -358,7 +319,7 @@ def _build_hierarchy_context_identity_value(
         local_labels = (
             normalized_labels[anchor_index:]
             if anchor_index is not None
-            else normalized_labels[-fallback_limit:]
+            else normalized_labels[-_IDENTITY_SECTION_PATH_FALLBACK_LIMIT:]
         )
         local_labels = [label for label in local_labels if label]
 
@@ -498,7 +459,7 @@ def _build_identity_key(
 
     if unsupported_fields:
         raise ValueError(
-            f"Unsupported synthetic_merge_key_fields for no-code SFI finalization: "
+            "Unsupported synthetic_merge_key_fields for no-code SFI finalization: "
             f"{unsupported_fields}. Supported fields are "
             f"{sorted(_SUPPORTED_SYNTHETIC_IDENTITY_FIELDS)}."
         )
@@ -522,10 +483,19 @@ def _build_identity_key(
         "doc_key": normalize_text(document_ir.doc_key),
         "framework_title": normalize_text(kg_config.metadata.framework_title),
         "grade_level": _build_grade_level_identity_value(
-            kg_config=kg_config, merge_group=merge_group, section_paths=section_paths
+            kg_config=kg_config,
+            merge_group=merge_group,
+            section_paths=section_paths,
         ),
         "hierarchy_context": _build_hierarchy_context_identity_value(
-            kg_config=kg_config, merge_group=merge_group, section_paths=section_paths
+            kg_config=kg_config,
+            merge_group=merge_group,
+            section_paths=section_paths,
+        ),
+        "identity_scope": "|".join(
+            f"{normalize_controlled_value_key(statement_type)}="
+            f"{normalize_controlled_value_key(value)}"
+            for statement_type, value in merge_group.identity_scope_values.items()
         ),
         "jurisdiction": normalize_text(kg_config.metadata.jurisdiction),
         "language": normalize_text(representative_candidate.language),
@@ -650,6 +620,8 @@ def _build_sfi_final_contexts(
                 canonical_statement_value_key=record.canonical_statement_value_key,
                 description=record.description,
                 final_sfi_uuid=record.final_sfi_uuid,
+                identity_scope_key=record.identity_scope_key,
+                identity_scope_values=record.identity_scope_values,
                 normalized_statement_code=record.normalized_statement_code,
                 normalized_statement_type=record.normalized_statement_type,
                 section_path_labels=section_path_labels,
@@ -752,6 +724,8 @@ def _build_sfi_final_record(
         final_sfi_uuid=final_sfi_uuid,
         identifier=final_sfi_uuid,
         identity_key=identity_result.identity_key,
+        identity_scope_key=merge_group.identity_scope_key,
+        identity_scope_values=merge_group.identity_scope_values,
         in_language=representative_candidate.language,
         jurisdiction=kg_config.metadata.jurisdiction,
         language=representative_candidate.language,
@@ -799,6 +773,10 @@ def _build_sfi_final_record(
                 "uses_no_code_disambiguator": (
                     identity_result.uses_no_code_disambiguator
                 ),
+            },
+            "identity_scope": {
+                "key": merge_group.identity_scope_key,
+                "values": merge_group.identity_scope_values,
             },
             "pdf_name": document_ir.pdf_name,
             "primary_language": kg_config.metadata.primary_language,
@@ -1061,6 +1039,92 @@ def _candidate_source_sort_key(
     )
 
 
+def _canonical_normalized_statement_type(merge_group: SFIMergeGroup) -> str:
+    """Return the resolved canonical normalized type for a mintable merge group.
+
+    Parameters
+    ----------
+    merge_group
+        Merge group to inspect.
+
+    Returns
+    -------
+    str
+        Canonical normalized statement type.
+
+    Raises
+    ------
+    ValueError
+        If the merge group lacks a resolved canonical normalized statement type.
+    """
+
+    value = merge_group.canonical_normalized_statement_type
+
+    if not value:
+        raise ValueError(
+            f"Merge group {merge_group.merge_group_id!r} has no resolved canonical "
+            f"normalized statement type for final SFI minting."
+        )
+
+    return value
+
+
+def _canonical_statement_type(merge_group: SFIMergeGroup) -> str:
+    """Return the resolved canonical source-facing type for a mintable group.
+
+    Parameters
+    ----------
+    merge_group
+        Merge group to inspect.
+
+    Returns
+    -------
+    str
+        Canonical source-facing statement type.
+
+    Raises
+    ------
+    ValueError
+        If the merge group lacks a resolved canonical statement type.
+    """
+
+    value = merge_group.canonical_statement_type
+
+    if not value:
+        raise ValueError(
+            f"Merge group {merge_group.merge_group_id!r} has no resolved canonical "
+            f"statement type for final SFI minting."
+        )
+
+    return value
+
+
+def _configured_identity_scope_statement_types(
+    *, kg_config: CreateKGConfig, merge_group: SFIMergeGroup
+) -> list[str]:
+    """Return configured semantic identity-scope types for one merge group.
+
+    Parameters
+    ----------
+    kg_config
+        Runtime KG configuration containing identity-scope policy.
+    merge_group
+        Merge group whose canonical statement type selects the applicable policy.
+
+    Returns
+    -------
+    list[str]
+        Ordered configured identity-scope statement types.
+    """
+
+    statement_type = _canonical_statement_type(merge_group)
+    return list(
+        kg_config.academic_standards.identity_scope_statement_types.get(
+            statement_type, []
+        )
+    )
+
+
 def _final_record_source_sort_key(
     *,
     record: SFIFinalRecord,
@@ -1180,66 +1244,6 @@ def _hash_text(*, n_hex: int, value: str) -> str:
 
     normalized = normalize_text(value)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:n_hex]
-
-
-def _canonical_normalized_statement_type(merge_group: SFIMergeGroup) -> str:
-    """Return the resolved canonical normalized type for a mintable merge group.
-
-    Parameters
-    ----------
-    merge_group
-        Merge group to inspect.
-
-    Returns
-    -------
-    str
-        Canonical normalized statement type.
-
-    Raises
-    ------
-    ValueError
-        If the merge group lacks a resolved canonical normalized statement type.
-    """
-
-    value = merge_group.canonical_normalized_statement_type
-
-    if not value:
-        raise ValueError(
-            f"Merge group {merge_group.merge_group_id!r} has no resolved canonical "
-            f"normalized statement type for final SFI minting."
-        )
-
-    return value
-
-
-def _canonical_statement_type(merge_group: SFIMergeGroup) -> str:
-    """Return the resolved canonical source-facing type for a mintable group.
-
-    Parameters
-    ----------
-    merge_group
-        Merge group to inspect.
-
-    Returns
-    -------
-    str
-        Canonical source-facing statement type.
-
-    Raises
-    ------
-    ValueError
-        If the merge group lacks a resolved canonical statement type.
-    """
-
-    value = merge_group.canonical_statement_type
-
-    if not value:
-        raise ValueError(
-            f"Merge group {merge_group.merge_group_id!r} has no resolved canonical "
-            f"statement type for final SFI minting."
-        )
-
-    return value
 
 
 def _recover_merge_group_section_paths(

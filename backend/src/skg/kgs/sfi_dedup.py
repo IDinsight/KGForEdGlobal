@@ -597,6 +597,11 @@ def _build_merge_group(
             merge_decision=merge_decision,
         )
     )
+    identity_scope_key, identity_scope_keys, identity_scope_values = (
+        _resolve_merge_group_identity_scope(
+            candidates=sorted_candidates, merge_decision=merge_decision
+        )
+    )
     digest = hashlib.sha256(
         "|".join(
             str(value)
@@ -624,6 +629,8 @@ def _build_merge_group(
                 ),
                 "code_scope_key": candidate.code_scope_key,
                 "code_scope_values": candidate.code_scope_values,
+                "identity_scope_key": candidate.identity_scope_key,
+                "identity_scope_values": candidate.identity_scope_values,
                 "normalized_statement_code": candidate.normalized_statement_code,
                 "normalized_statement_type": candidate.normalized_statement_type,
                 "registry_candidate_id": candidate.registry_candidate_id,
@@ -680,6 +687,9 @@ def _build_merge_group(
         code_scope_values=code_scope_values,
         confidence_max=max(confidence_values),
         confidence_min=min(confidence_values),
+        identity_scope_key=identity_scope_key,
+        identity_scope_keys=identity_scope_keys,
+        identity_scope_values=identity_scope_values,
         llm_decision=llm_decision,
         llm_review_set_id=llm_review_set_id,
         merge_decision=merge_decision,
@@ -1114,6 +1124,8 @@ def _build_review_requests(
                             ]
                         ),
                         description=candidate.description,
+                        identity_scope_key=candidate.identity_scope_key,
+                        identity_scope_values=candidate.identity_scope_values,
                         language=candidate.language,
                         normalized_statement_code=(candidate.normalized_statement_code),
                         normalized_statement_type=(candidate.normalized_statement_type),
@@ -1164,8 +1176,8 @@ def _build_same_canonical_statement_value_edges(
     """
 
     edges: list[tuple[set[str], set[str]]] = []
-    candidate_ids_by_value_key: dict[tuple[str, str, str], list[str]] = defaultdict(
-        list
+    candidate_ids_by_value_key: dict[tuple[str, str, str, str], list[str]] = (
+        defaultdict(list)
     )
 
     for candidate in sfi_candidate_registry.candidates:
@@ -1174,6 +1186,7 @@ def _build_same_canonical_statement_value_edges(
 
         candidate_ids_by_value_key[
             (
+                candidate.identity_scope_key or "",
                 candidate.normalized_statement_type,
                 candidate.statement_type,
                 candidate.canonical_statement_value_key,
@@ -1186,10 +1199,16 @@ def _build_same_canonical_statement_value_edges(
         if len(candidate_ids) < 2:
             continue
 
-        normalized_statement_type, statement_type, canonical_value_key = value_key
+        (
+            identity_scope_key,
+            normalized_statement_type,
+            statement_type,
+            canonical_value_key,
+        ) = value_key
         digest = hashlib.sha256(
             "|".join(
                 [
+                    identity_scope_key,
                     normalized_statement_type,
                     statement_type,
                     canonical_value_key,
@@ -1202,7 +1221,8 @@ def _build_same_canonical_statement_value_edges(
                 candidate_ids,
                 {
                     "same_canonical_statement_value:"
-                    f"{statement_type}:{normalized_statement_type}:{digest}"
+                    f"{identity_scope_key}:{statement_type}:"
+                    f"{normalized_statement_type}:{digest}"
                 },
             )
         )
@@ -1239,8 +1259,8 @@ def _build_same_normalized_source_text_edges(
     """
 
     edges: list[tuple[set[str], set[str]]] = []
-    candidate_ids_by_text_key: dict[tuple[str, str, str, str], list[str]] = defaultdict(
-        list
+    candidate_ids_by_text_key: dict[tuple[str, str, str, str, str], list[str]] = (
+        defaultdict(list)
     )
 
     for candidate in sfi_candidate_registry.candidates:
@@ -1252,6 +1272,7 @@ def _build_same_normalized_source_text_edges(
         candidate_ids_by_text_key[
             (
                 candidate.code_scope_key or "",
+                candidate.identity_scope_key or "",
                 candidate.normalized_statement_type,
                 candidate.statement_type,
                 normalized_source_text,
@@ -1266,6 +1287,7 @@ def _build_same_normalized_source_text_edges(
 
         (
             code_scope_key,
+            identity_scope_key,
             normalized_statement_type,
             statement_type,
             normalized_source_text,
@@ -1274,6 +1296,7 @@ def _build_same_normalized_source_text_edges(
             "|".join(
                 [
                     code_scope_key,
+                    identity_scope_key,
                     normalized_statement_type,
                     statement_type,
                     normalized_source_text,
@@ -1286,7 +1309,7 @@ def _build_same_normalized_source_text_edges(
                 candidate_ids,
                 {
                     "same_normalized_source_text:"
-                    f"{code_scope_key}:{statement_type}:"
+                    f"{code_scope_key}:{identity_scope_key}:{statement_type}:"
                     f"{normalized_statement_type}:{digest}"
                 },
             )
@@ -1437,7 +1460,7 @@ def _canonical_value_signals(
         One signal per canonical value key shared by at least two candidates.
     """
 
-    canonical_groups: dict[tuple[str, str, str], list[SFIRegistryCandidate]] = (
+    canonical_groups: dict[tuple[str, str, str, str], list[SFIRegistryCandidate]] = (
         defaultdict(list)
     )
 
@@ -1445,6 +1468,7 @@ def _canonical_value_signals(
         if candidate.canonical_statement_value_key:
             canonical_groups[
                 (
+                    candidate.identity_scope_key or "",
                     candidate.normalized_statement_type,
                     candidate.statement_type,
                     candidate.canonical_statement_value_key,
@@ -2051,7 +2075,7 @@ def _normalized_source_text_signals(
     """
 
     normalized_source_groups: dict[
-        tuple[str, str, str, str], list[SFIRegistryCandidate]
+        tuple[str, str, str, str, str], list[SFIRegistryCandidate]
     ] = defaultdict(list)
 
     for candidate in candidates:
@@ -2059,6 +2083,7 @@ def _normalized_source_text_signals(
             normalized_source_groups[
                 (
                     candidate.code_scope_key or "",
+                    candidate.identity_scope_key or "",
                     candidate.normalized_statement_type,
                     candidate.statement_type,
                     candidate.normalized_source_text,
@@ -2345,6 +2370,72 @@ def _resolve_merge_group_code_scope(
         )
 
     return code_scope_key, code_scope_keys, dict(next(iter(matching_scope_values)))
+
+
+def _resolve_merge_group_identity_scope(
+    *, candidates: Sequence[SFIRegistryCandidate], merge_decision: SFIMergeDecision
+) -> tuple[str | None, list[str], dict[str, str]]:
+    """Resolve one compatible semantic identity scope for a merge group.
+
+    Parameters
+    ----------
+    candidates
+        Registry candidates included in the merge group.
+    merge_decision
+        Final merge decision for the group.
+
+    Returns
+    -------
+    tuple[str | None, list[str], dict[str, str]]
+        Shared identity-scope key, all non-empty observed keys, and shared canonical
+        identity-scope values.
+
+    Raises
+    ------
+    ValueError
+        If a mintable group combines different identity scopes or one scope key is
+        associated with contradictory source-backed values.
+    """
+
+    identity_scope_keys = unique_nonempty(
+        candidate.identity_scope_key for candidate in candidates
+    )
+    source_scope_signatures = {
+        candidate.identity_scope_key or "" for candidate in candidates
+    }
+
+    if merge_decision in {"merged", "singleton"} and len(source_scope_signatures) != 1:
+        raise ValueError(
+            "Every candidate in a mintable merge group must preserve one common "
+            "configured semantic identity scope."
+        )
+
+    identity_scope_key = (
+        next(iter(source_scope_signatures)) or None
+        if len(source_scope_signatures) == 1
+        else None
+    )
+
+    if identity_scope_key is None:
+        return None, identity_scope_keys, {}
+
+    matching_scope_values = {
+        tuple(candidate.identity_scope_values.items())
+        for candidate in candidates
+        if candidate.identity_scope_key == identity_scope_key
+    }
+
+    if len(matching_scope_values) != 1:
+        raise ValueError(
+            "Candidates sharing one identity_scope_key must preserve identical "
+            "identity_scope_values."
+        )
+
+    return (
+        identity_scope_key,
+        identity_scope_keys,
+        dict(next(iter(matching_scope_values))),
+    )
 
 
 def _resolve_no_source_code(
@@ -2634,7 +2725,8 @@ def _resolve_type_resolution(
             or canonical_type_source_candidate_id is not None
         ):
             raise ValueError(
-                "Single-type merge groups must not define canonical type selection fields."
+                "Single-type merge groups must not define canonical type selection "
+                "fields."
             )
 
         statement_type, normalized_statement_type = next(iter(type_pairs))

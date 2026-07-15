@@ -1077,6 +1077,70 @@ def _validate_dedup_issue_candidate_ids(
             )
 
 
+def _validate_dedup_merge_identity_scope_compatibility(
+    *, review_request: SFIDedupReviewRequest, review_response: SFIDedupReviewResponse
+) -> None:
+    """Validate semantic identity-scope compatibility for proposed merges.
+
+    Matching identity scope is a deterministic prerequisite for minting one logical
+    SFI. It is not evidence that candidates are duplicates; the producer and checker
+    still make that semantic decision from source-visible evidence and runtime policy.
+
+    Parameters
+    ----------
+    review_request
+        Bounded review request containing candidate identity-scope evidence.
+    review_response
+        Structured dedup response containing proposed merge groups.
+
+    Raises
+    ------
+    QualityError
+        If a proposed merge combines different identity-scope keys or contradictory
+        values for one shared key.
+    """
+
+    candidates_by_id = {
+        candidate.registry_candidate_id: candidate
+        for candidate in review_request.candidates
+    }
+
+    for group_index, decision_group in enumerate(review_response.decision_groups):
+        if decision_group.decision != "merge":
+            continue
+
+        group_candidates = [
+            candidates_by_id[candidate_id]
+            for candidate_id in decision_group.candidate_ids
+        ]
+        scope_signatures = {
+            candidate.identity_scope_key or "" for candidate in group_candidates
+        }
+
+        if len(scope_signatures) != 1:
+            raise QualityError(
+                f"Dedup merge group {group_index} combines candidates from different "
+                f"configured semantic identity scopes. Return keep_separate, conflict, "
+                f"or needs_review."
+            )
+
+        common_scope_key = next(iter(scope_signatures)) or None
+
+        if common_scope_key is None:
+            continue
+
+        scope_value_signatures = {
+            tuple(candidate.identity_scope_values.items())
+            for candidate in group_candidates
+        }
+
+        if len(scope_value_signatures) != 1:
+            raise QualityError(
+                f"Dedup merge group {group_index} preserves one identity-scope key "
+                f"but contradictory source-backed identity-scope values."
+            )
+
+
 def _validate_dedup_merge_scope_compatibility(
     *, review_request: SFIDedupReviewRequest, review_response: SFIDedupReviewResponse
 ) -> None:
@@ -1697,6 +1761,9 @@ def verify_sfi_dedup_review_integrity(
         review_request=review_request, review_response=review_response
     )
     _validate_dedup_merge_scope_compatibility(
+        review_request=review_request, review_response=review_response
+    )
+    _validate_dedup_merge_identity_scope_compatibility(
         review_request=review_request, review_response=review_response
     )
     _validate_dedup_representative_selections(
