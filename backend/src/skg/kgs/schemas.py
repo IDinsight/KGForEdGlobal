@@ -2788,90 +2788,9 @@ class SFIMergeGroup(BaseSchema):
             coded group contains candidates with incompatible code types or scopes.
         """
 
-        source_scope_keys = sorted(
-            {
-                str(source_ref.get("code_scope_key") or "").strip()
-                for source_ref in self.candidate_source_refs
-                if str(source_ref.get("code_scope_key") or "").strip()
-            }
-        )
-
-        if set(self.code_scope_keys) != set(source_scope_keys):
-            raise ValueError(
-                "code_scope_keys must equal the non-empty code-scope keys preserved "
-                "in candidate_source_refs."
-            )
-
-        if self.code_scope_key is None:
-            if self.code_scope_values:
-                raise ValueError(
-                    "code_scope_values must be empty when code_scope_key is null."
-                )
-        else:
-            matching_scope_values = {
-                tuple(
-                    (str(key).strip(), str(value).strip())
-                    for key, value in (
-                        source_ref.get("code_scope_values") or {}
-                    ).items()
-                )
-                for source_ref in self.candidate_source_refs
-                if str(source_ref.get("code_scope_key") or "").strip()
-                == self.code_scope_key
-            }
-
-            if len(matching_scope_values) != 1:
-                raise ValueError(
-                    "code_scope_values must have one source-backed value mapping for "
-                    "the resolved code_scope_key."
-                )
-
-            expected_scope_values = dict(next(iter(matching_scope_values)))
-
-            if self.code_scope_values != expected_scope_values:
-                raise ValueError(
-                    "code_scope_values must equal the source-backed values for "
-                    "code_scope_key."
-                )
-
-        if (
-            self.merge_decision in {"merged", "singleton"}
-            and self.canonical_normalized_statement_code is not None
-        ):
-            if self.canonical_code_type is None:
-                raise ValueError(
-                    "Mintable coded merge groups require canonical_code_type."
-                )
-
-            applicable_code_types = {
-                str(source_ref.get("applicable_code_type") or "").strip()
-                for source_ref in self.candidate_source_refs
-            }
-            source_scope_signatures = {
-                str(source_ref.get("code_scope_key") or "").strip()
-                for source_ref in self.candidate_source_refs
-            }
-
-            if applicable_code_types != {self.canonical_code_type}:
-                raise ValueError(
-                    "Every candidate in a mintable coded merge group must have the "
-                    "canonical applicable code type."
-                )
-
-            if len(source_scope_signatures) != 1:
-                raise ValueError(
-                    "Every candidate in a mintable coded merge group must preserve "
-                    "one common configured code scope, including a common unscoped "
-                    "document-global value."
-                )
-
-            expected_scope_key = next(iter(source_scope_signatures)) or None
-
-            if self.code_scope_key != expected_scope_key:
-                raise ValueError(
-                    "code_scope_key must equal the common source-backed scope for a "
-                    "mintable coded merge group."
-                )
+        self._validate_code_scope_keys_consistency()
+        self._validate_code_scope_values_consistency()
+        self._validate_mintable_code_scope_contract()
 
         if (
             self.canonical_normalized_statement_code is None
@@ -2883,6 +2802,123 @@ class SFIMergeGroup(BaseSchema):
             )
 
         return self
+
+    def _validate_code_scope_keys_consistency(self) -> None:
+        """Validate that aggregate code-scope keys mirror source references.
+
+        Raises
+        ------
+        ValueError
+            If `code_scope_keys` does not equal the non-empty code-scope keys preserved
+            in `candidate_source_refs`.
+        """
+
+        source_scope_keys = {
+            str(source_ref.get("code_scope_key") or "").strip()
+            for source_ref in self.candidate_source_refs
+            if str(source_ref.get("code_scope_key") or "").strip()
+        }
+
+        if set(self.code_scope_keys) != source_scope_keys:
+            raise ValueError(
+                "code_scope_keys must equal the non-empty code-scope keys preserved "
+                "in candidate_source_refs."
+            )
+
+    def _validate_code_scope_values_consistency(self) -> None:
+        """Validate aggregate code-scope values against the resolved scope key.
+
+        Raises
+        ------
+        ValueError
+            If code-scope values are set without a scope key, or if they do not equal
+            the single source-backed value mapping for `code_scope_key`.
+        """
+
+        if self.code_scope_key is None:
+            if self.code_scope_values:
+                raise ValueError(
+                    "code_scope_values must be empty when code_scope_key is null."
+                )
+
+            return
+
+        matching_scope_values = {
+            tuple(
+                (str(key).strip(), str(value).strip())
+                for key, value in (source_ref.get("code_scope_values") or {}).items()
+            )
+            for source_ref in self.candidate_source_refs
+            if str(source_ref.get("code_scope_key") or "").strip()
+            == self.code_scope_key
+        }
+
+        if len(matching_scope_values) != 1:
+            raise ValueError(
+                "code_scope_values must have one source-backed value mapping for "
+                "the resolved code_scope_key."
+            )
+
+        expected_scope_values = dict(next(iter(matching_scope_values)))
+
+        if self.code_scope_values != expected_scope_values:
+            raise ValueError(
+                "code_scope_values must equal the source-backed values for "
+                "code_scope_key."
+            )
+
+    def _validate_mintable_code_scope_contract(self) -> None:
+        """Validate code type and scope agreement for a mintable coded group.
+
+        The contract applies only when the merge group is mintable (`merged` or
+        `singleton`) and a canonical normalized statement code is resolved.
+
+        Raises
+        ------
+        ValueError
+            If the canonical code type is missing, candidate applicable code types
+            differ from the canonical type, candidates preserve more than one code
+            scope, or `code_scope_key` disagrees with the common source scope.
+        """
+
+        if (
+            self.merge_decision not in {"merged", "singleton"}
+            or self.canonical_normalized_statement_code is None
+        ):
+            return
+
+        if self.canonical_code_type is None:
+            raise ValueError("Mintable coded merge groups require canonical_code_type.")
+
+        applicable_code_types = {
+            str(source_ref.get("applicable_code_type") or "").strip()
+            for source_ref in self.candidate_source_refs
+        }
+        source_scope_signatures = {
+            str(source_ref.get("code_scope_key") or "").strip()
+            for source_ref in self.candidate_source_refs
+        }
+
+        if applicable_code_types != {self.canonical_code_type}:
+            raise ValueError(
+                "Every candidate in a mintable coded merge group must have the "
+                "canonical applicable code type."
+            )
+
+        if len(source_scope_signatures) != 1:
+            raise ValueError(
+                "Every candidate in a mintable coded merge group must preserve "
+                "one common configured code scope, including a common unscoped "
+                "document-global value."
+            )
+
+        expected_scope_key = next(iter(source_scope_signatures)) or None
+
+        if self.code_scope_key != expected_scope_key:
+            raise ValueError(
+                "code_scope_key must equal the common source-backed scope for a "
+                "mintable coded merge group."
+            )
 
     @model_validator(mode="after")
     def validate_identity_scope_contract(self) -> Self:
@@ -3002,11 +3038,10 @@ class SFIMergeGroup(BaseSchema):
         )
 
         if self.merge_decision not in {"merged", "singleton"}:
-            if canonical_pair != ("", "") or selection_fields_present:
-                raise ValueError(
-                    "Conflict and needs_review groups must not define canonical "
-                    "statement-type resolution fields."
-                )
+            self._validate_non_mintable_type_contract(
+                canonical_pair=canonical_pair,
+                selection_fields_present=selection_fields_present,
+            )
 
             return self
 
@@ -3031,6 +3066,59 @@ class SFIMergeGroup(BaseSchema):
 
             return self
 
+        self._validate_mixed_type_selection_contract(canonical_pair)
+
+        return self
+
+    def _validate_non_mintable_type_contract(
+        self, *, canonical_pair: tuple[str, str], selection_fields_present: bool
+    ) -> None:
+        """Validate that a non-mintable group asserts no type-resolution fields.
+
+        Parameters
+        ----------
+        canonical_pair
+            The (statement type, normalized statement type) pair resolved on the group,
+            with missing values normalized to empty strings.
+        selection_fields_present
+            Whether any canonical type selection metadata field is populated.
+
+        Raises
+        ------
+        ValueError
+            If a conflict or needs_review group defines any canonical statement-type
+            resolution field.
+        """
+
+        if canonical_pair != ("", "") or selection_fields_present:
+            raise ValueError(
+                "Conflict and needs_review groups must not define canonical "
+                "statement-type resolution fields."
+            )
+
+    def _validate_mixed_type_selection_contract(
+        self, canonical_pair: tuple[str, str]
+    ) -> None:
+        """Validate canonical type selection for a mixed-type merged group.
+
+        Applies when a merged group preserves more than one observed statement-type
+        pair and must therefore record which source candidate the canonical type was
+        selected from.
+
+        Parameters
+        ----------
+        canonical_pair
+            The (statement type, normalized statement type) pair resolved on the group,
+            with missing values normalized to empty strings.
+
+        Raises
+        ------
+        ValueError
+            If the group is not merged, required selection metadata is missing, the
+            selected candidate is absent or non-unique, or the canonical pair does not
+            equal the selected candidate's type pair.
+        """
+
         if self.merge_decision != "merged":
             raise ValueError(
                 "Only merged groups may resolve multiple observed statement types."
@@ -3038,8 +3126,7 @@ class SFIMergeGroup(BaseSchema):
 
         if not self.canonical_type_source_candidate_id:
             raise ValueError(
-                "Mixed-type merged groups require "
-                "canonical_type_source_candidate_id."
+                "Mixed-type merged groups require canonical_type_source_candidate_id."
             )
 
         if not self.canonical_type_selection_reason:
@@ -3075,8 +3162,6 @@ class SFIMergeGroup(BaseSchema):
                 "Canonical statement type must equal the selected source candidate's "
                 "type pair."
             )
-
-        return self
 
     @model_validator(mode="after")
     def validate_representative_candidate_contract(self) -> Self:

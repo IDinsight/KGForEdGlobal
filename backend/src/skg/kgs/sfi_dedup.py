@@ -2744,7 +2744,7 @@ def _resolve_type_resolution(
 
     if canonical_type_source_candidate_id is None:
         raise ValueError(
-            "A mixed-type merged group requires " "canonical_type_source_candidate_id."
+            "A mixed-type merged group requires canonical_type_source_candidate_id."
         )
 
     if canonical_type_selection_reason is None:

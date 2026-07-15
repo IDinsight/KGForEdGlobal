@@ -1688,6 +1688,72 @@ def _validate_merge_group_canonical_code_presence(merge_group: SFIMergeGroup) ->
         )
 
 
+def _validate_merge_group_canonical_type_pair(
+    *,
+    canonical_pair: tuple[str | None, str | None],
+    merge_group: SFIMergeGroup,
+    sfi_candidates_by_id: dict[str, SFIRegistryCandidate],
+) -> set[tuple[str | None, str | None]]:
+    """Validate the canonical statement-type pair against source candidates.
+
+    Verifies that the canonical type pair is fully populated, that every registry
+    candidate referenced by the group is known, and that the canonical pair is
+    preserved by at least one source candidate.
+
+    Parameters
+    ----------
+    canonical_pair
+        The group's `(statement_type, normalized_statement_type)` canonical pair.
+    merge_group
+        Merge group eligible for final SFI minting.
+    sfi_candidates_by_id
+        Registry candidates keyed by candidate ID.
+
+    Returns
+    -------
+    set[tuple[str | None, str | None]]
+        The distinct `(statement_type, normalized_statement_type)` pairs observed
+        across the group's source candidates.
+
+    Raises
+    ------
+    ValueError
+        If the canonical type pair is incomplete, a referenced registry candidate is
+        unknown, or the canonical pair is not preserved by any source candidate.
+    """
+
+    if not all(canonical_pair):
+        raise ValueError(
+            f"Eligible merge group {merge_group.merge_group_id!r} lacks a "
+            f"canonical statement-type pair."
+        )
+
+    group_candidates = [
+        sfi_candidates_by_id[candidate_id]
+        for candidate_id in merge_group.registry_candidate_ids
+        if candidate_id in sfi_candidates_by_id
+    ]
+
+    if len(group_candidates) != len(merge_group.registry_candidate_ids):
+        raise ValueError(
+            f"Eligible merge group {merge_group.merge_group_id!r} references an "
+            f"unknown registry candidate during type validation."
+        )
+
+    observed_pairs = {
+        (candidate.statement_type, candidate.normalized_statement_type)
+        for candidate in group_candidates
+    }
+
+    if canonical_pair not in observed_pairs:
+        raise ValueError(
+            f"Eligible merge group {merge_group.merge_group_id!r} has a "
+            f"canonical type pair not preserved by any source candidate."
+        )
+
+    return observed_pairs
+
+
 def _validate_merge_group_code_resolutions(
     *,
     eligible_merge_groups: Sequence[SFIMergeGroup],
@@ -1873,83 +1939,100 @@ def _validate_merge_group_type_resolutions(
             merge_group.canonical_statement_type,
             merge_group.canonical_normalized_statement_type,
         )
-
-        if not all(canonical_pair):
-            raise ValueError(
-                f"Eligible merge group {merge_group.merge_group_id!r} lacks a "
-                f"canonical statement-type pair."
-            )
-
-        group_candidates = [
-            sfi_candidates_by_id[candidate_id]
-            for candidate_id in merge_group.registry_candidate_ids
-            if candidate_id in sfi_candidates_by_id
-        ]
-
-        if len(group_candidates) != len(merge_group.registry_candidate_ids):
-            raise ValueError(
-                f"Eligible merge group {merge_group.merge_group_id!r} references an "
-                f"unknown registry candidate during type validation."
-            )
-
-        observed_pairs = {
-            (candidate.statement_type, candidate.normalized_statement_type)
-            for candidate in group_candidates
-        }
-
-        if canonical_pair not in observed_pairs:
-            raise ValueError(
-                f"Eligible merge group {merge_group.merge_group_id!r} has a "
-                f"canonical type pair not preserved by any source candidate."
-            )
-
-        selected_candidate_id = merge_group.canonical_type_source_candidate_id
-
-        if len(observed_pairs) == 1:
-            if (
-                selected_candidate_id is not None
-                or merge_group.canonical_type_selection_reason is not None
-            ):
-                raise ValueError(
-                    f"Eligible merge group {merge_group.merge_group_id!r} has one "
-                    f"observed type pair but defines mixed-type selection metadata."
-                )
-
-            continue
-
-        if selected_candidate_id is None:
-            raise ValueError(
-                f"Eligible mixed-type merge group {merge_group.merge_group_id!r} "
-                f"has no canonical type source candidate."
-            )
-
-        if not merge_group.canonical_type_selection_reason:
-            raise ValueError(
-                f"Eligible mixed-type merge group {merge_group.merge_group_id!r} "
-                f"has no canonical type selection reason."
-            )
-
-        selected_candidate = sfi_candidates_by_id.get(selected_candidate_id)
-
-        if (
-            selected_candidate is None
-            or selected_candidate_id not in merge_group.registry_candidate_ids
-        ):
-            raise ValueError(
-                f"Eligible mixed-type merge group {merge_group.merge_group_id!r} "
-                f"selected an unknown or out-of-group canonical type source."
-            )
-
-        selected_pair = (
-            selected_candidate.statement_type,
-            selected_candidate.normalized_statement_type,
+        observed_pairs = _validate_merge_group_canonical_type_pair(
+            canonical_pair=canonical_pair,
+            merge_group=merge_group,
+            sfi_candidates_by_id=sfi_candidates_by_id,
+        )
+        _validate_merge_group_type_selection(
+            canonical_pair=canonical_pair,
+            merge_group=merge_group,
+            observed_pairs=observed_pairs,
+            sfi_candidates_by_id=sfi_candidates_by_id,
         )
 
-        if canonical_pair != selected_pair:
+
+def _validate_merge_group_type_selection(
+    *,
+    canonical_pair: tuple[str | None, str | None],
+    merge_group: SFIMergeGroup,
+    observed_pairs: set[tuple[str | None, str | None]],
+    sfi_candidates_by_id: dict[str, SFIRegistryCandidate],
+) -> None:
+    """Validate mixed-type selection metadata for one merge group.
+
+    For single-type groups (one observed pair), verifies that no mixed-type selection
+    metadata is asserted. For mixed-type groups, verifies that a selection source
+    candidate and reason are present, that the selected candidate is known and in
+    group, and that it supports the canonical type pair.
+
+    Parameters
+    ----------
+    canonical_pair
+        The group's `(statement_type, normalized_statement_type)` canonical pair.
+    merge_group
+        Merge group eligible for final SFI minting.
+    observed_pairs
+        The distinct `(statement_type, normalized_statement_type)` pairs observed
+        across the group's source candidates.
+    sfi_candidates_by_id
+        Registry candidates keyed by candidate ID.
+
+    Raises
+    ------
+    ValueError
+        If a single-type group defines mixed-type selection metadata, or a mixed-type
+        group has a missing reason, or a missing, unknown, out-of-group, or
+        non-matching canonical type source candidate.
+    """
+
+    selected_candidate_id = merge_group.canonical_type_source_candidate_id
+
+    if len(observed_pairs) == 1:
+        if (
+            selected_candidate_id is not None
+            or merge_group.canonical_type_selection_reason is not None
+        ):
             raise ValueError(
-                f"Eligible mixed-type merge group {merge_group.merge_group_id!r} "
-                f"canonical type does not match the selected source candidate."
+                f"Eligible merge group {merge_group.merge_group_id!r} has one "
+                f"observed type pair but defines mixed-type selection metadata."
             )
+
+        return
+
+    if selected_candidate_id is None:
+        raise ValueError(
+            f"Eligible mixed-type merge group {merge_group.merge_group_id!r} "
+            f"has no canonical type source candidate."
+        )
+
+    if not merge_group.canonical_type_selection_reason:
+        raise ValueError(
+            f"Eligible mixed-type merge group {merge_group.merge_group_id!r} "
+            f"has no canonical type selection reason."
+        )
+
+    selected_candidate = sfi_candidates_by_id.get(selected_candidate_id)
+
+    if (
+        selected_candidate is None
+        or selected_candidate_id not in merge_group.registry_candidate_ids
+    ):
+        raise ValueError(
+            f"Eligible mixed-type merge group {merge_group.merge_group_id!r} "
+            f"selected an unknown or out-of-group canonical type source."
+        )
+
+    selected_pair = (
+        selected_candidate.statement_type,
+        selected_candidate.normalized_statement_type,
+    )
+
+    if canonical_pair != selected_pair:
+        raise ValueError(
+            f"Eligible mixed-type merge group {merge_group.merge_group_id!r} "
+            f"canonical type does not match the selected source candidate."
+        )
 
 
 def mint_final_sfi_ids(

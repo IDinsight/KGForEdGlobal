@@ -1385,6 +1385,75 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
 
         return cleaned
 
+    @staticmethod
+    def _clean_identity_scope_statement_type_list(
+        *, scope_statement_types: object, target_statement_type: str
+    ) -> list[str]:
+        """Clean and validate one target's identity-scope statement-type list.
+
+        Parameters
+        ----------
+        scope_statement_types
+            Raw configured value for the target; expected to be a list of labels.
+        target_statement_type
+            Already-cleaned target statement type, used only in error messages.
+
+        Returns
+        -------
+        list[str]
+            Whitespace-stripped scope labels in configured order, de-duplicated of
+            nothing (duplicates are rejected rather than dropped).
+
+        Raises
+        ------
+        TypeError
+            If the value is not a list or a scope label is not a string.
+        ValueError
+            If a scope label is blank, the list is empty, or it contains duplicates.
+        """
+
+        if not isinstance(scope_statement_types, list):
+            raise TypeError(
+                "CreateKGConfig.as.identity_scope_statement_types values must be "
+                "lists of statement_type labels."
+            )
+
+        cleaned_scope_statement_types: list[str] = []
+        seen_scope_statement_types: set[str] = set()
+
+        for scope_statement_type in scope_statement_types:
+            if not isinstance(scope_statement_type, str):
+                raise TypeError(
+                    "CreateKGConfig.as.identity_scope_statement_types scope labels "
+                    "must be strings."
+                )
+
+            scope_statement_type_clean = scope_statement_type.strip()
+
+            if not scope_statement_type_clean:
+                raise ValueError(
+                    "CreateKGConfig.as.identity_scope_statement_types cannot "
+                    "contain a blank scope statement_type label."
+                )
+
+            if scope_statement_type_clean in seen_scope_statement_types:
+                raise ValueError(
+                    f"CreateKGConfig.as.identity_scope_statement_types contains "
+                    f"duplicate scope label {scope_statement_type_clean!r} for "
+                    f"target statement_type {target_statement_type!r}."
+                )
+
+            cleaned_scope_statement_types.append(scope_statement_type_clean)
+            seen_scope_statement_types.add(scope_statement_type_clean)
+
+        if not cleaned_scope_statement_types:
+            raise ValueError(
+                "CreateKGConfig.as.identity_scope_statement_types entries must "
+                "contain at least one scope statement_type label."
+            )
+
+        return cleaned_scope_statement_types
+
     @field_validator("identity_scope_statement_types")
     @classmethod
     def validate_identity_scope_statement_types(
@@ -1435,47 +1504,12 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
                     f"stripping whitespace."
                 )
 
-            if not isinstance(scope_statement_types, list):
-                raise TypeError(
-                    "CreateKGConfig.as.identity_scope_statement_types values must be "
-                    "lists of statement_type labels."
+            cleaned[statement_type_clean] = (
+                cls._clean_identity_scope_statement_type_list(
+                    scope_statement_types=scope_statement_types,
+                    target_statement_type=statement_type_clean,
                 )
-
-            cleaned_scope_statement_types: list[str] = []
-            seen_scope_statement_types: set[str] = set()
-
-            for scope_statement_type in scope_statement_types:
-                if not isinstance(scope_statement_type, str):
-                    raise TypeError(
-                        "CreateKGConfig.as.identity_scope_statement_types scope labels "
-                        "must be strings."
-                    )
-
-                scope_statement_type_clean = scope_statement_type.strip()
-
-                if not scope_statement_type_clean:
-                    raise ValueError(
-                        "CreateKGConfig.as.identity_scope_statement_types cannot "
-                        "contain a blank scope statement_type label."
-                    )
-
-                if scope_statement_type_clean in seen_scope_statement_types:
-                    raise ValueError(
-                        f"CreateKGConfig.as.identity_scope_statement_types contains "
-                        f"duplicate scope label {scope_statement_type_clean!r} for "
-                        f"target statement_type {statement_type_clean!r}."
-                    )
-
-                cleaned_scope_statement_types.append(scope_statement_type_clean)
-                seen_scope_statement_types.add(scope_statement_type_clean)
-
-            if not cleaned_scope_statement_types:
-                raise ValueError(
-                    "CreateKGConfig.as.identity_scope_statement_types entries must "
-                    "contain at least one scope statement_type label."
-                )
-
-            cleaned[statement_type_clean] = cleaned_scope_statement_types
+            )
 
         return cleaned
 
