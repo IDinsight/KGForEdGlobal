@@ -8,7 +8,7 @@ in this module enforce quality checks that require access to other inputs.
 # Standard Library
 import re
 
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 # Third Party Library
 from loguru import logger
@@ -39,6 +39,7 @@ NEARBY_SOURCE_CONTEXT_KEY_REASON = "nearby_source_context_key"
 NEAREST_PRECEDING_GROUPING_REASON = "nearest_preceding_grouping"
 ROOT_EVIDENCE_REASON = "root_fallback"
 SAME_SOURCE_CONTEXT_KEY_REASON = "same_source_context_key"
+SAME_SOURCE_OCCURRENCE_CROSS_TYPE_SIGNAL = "same_source_occurrence_cross_type"
 SAME_SOURCE_SEGMENT_REASON = "same_source_segment"
 SAME_SOURCE_WINDOW_REASON = "same_source_window"
 SAME_TABLE_CONTEXT_REASON = "same_table_context"
@@ -300,6 +301,33 @@ def _child_has_viable_source_visible_parent(
     return False
 
 
+def _decision_group_has_same_source_occurrence_cross_type_signal(
+    *, candidate_ids: Sequence[str], review_request: SFIDedupReviewRequest
+) -> bool:
+    """Check whether one decision group has direct cross-type occurrence evidence.
+
+    Parameters
+    ----------
+    candidate_ids
+        Candidate IDs proposed for one dedup decision group.
+    review_request
+        Bounded review request containing candidate-subset retrieval signals.
+
+    Returns
+    -------
+    bool
+        True when one direct same-source-occurrence cross-type signal covers every
+        candidate in the decision group.
+    """
+
+    decision_candidate_ids = set(candidate_ids)
+    return any(
+        signal.signal_type == SAME_SOURCE_OCCURRENCE_CROSS_TYPE_SIGNAL
+        and decision_candidate_ids.issubset(signal.candidate_ids)
+        for signal in review_request.review_signals
+    )
+
+
 def _extract_leading_code_for_parent_match(value: Any) -> str:
     """Extract a leading dot-delimited statement code from visible text.
 
@@ -356,6 +384,36 @@ def _extract_serialized_row_text(row: dict[str, Any]) -> str:
             cell_texts.append(cell_text)
 
     return "\n".join(cell_texts)
+
+
+def _find_scope_value_conflicts(
+    scope_value_maps: Sequence[dict[str, str]],
+) -> dict[str, list[str]]:
+    """Find contradictory values assigned to shared semantic scope dimensions.
+
+    Parameters
+    ----------
+    scope_value_maps
+        Source-backed scope mappings to compare.
+
+    Returns
+    -------
+    dict[str, list[str]]
+        Scope labels mapped to distinct conflicting values. An empty mapping means
+        every shared scope dimension is compatible.
+    """
+
+    values_by_scope_label: dict[str, set[str]] = {}
+
+    for scope_values in scope_value_maps:
+        for scope_label, scope_value in scope_values.items():
+            values_by_scope_label.setdefault(scope_label, set()).add(scope_value)
+
+    return {
+        scope_label: sorted(scope_values)
+        for scope_label, scope_values in sorted(values_by_scope_label.items())
+        if len(scope_values) > 1
+    }
 
 
 def _get_candidate_cited_source_text(
@@ -1082,9 +1140,10 @@ def _validate_dedup_merge_identity_scope_compatibility(
 ) -> None:
     """Validate semantic identity-scope compatibility for proposed merges.
 
-    Matching identity scope is a deterministic prerequisite for minting one logical
-    SFI. It is not evidence that candidates are duplicates; the producer and checker
-    still make that semantic decision from source-visible evidence and runtime policy.
+    Same-type merges require exact configured identity-scope equality. Mixed-type
+    merges retain that strict path when possible; otherwise they may use canonical-type
+    scope resolution only when direct same-source-occurrence cross-type evidence covers
+    the proposed group and every shared scope dimension agrees.
 
     Parameters
     ----------
@@ -1096,8 +1155,8 @@ def _validate_dedup_merge_identity_scope_compatibility(
     Raises
     ------
     QualityError
-        If a proposed merge combines different identity-scope keys or contradictory
-        values for one shared key.
+        If a proposed merge has incompatible identity scope or attempts relaxed
+        mixed-type scope resolution without direct source-occurrence evidence.
     """
 
     candidates_by_id = {
@@ -1116,40 +1175,63 @@ def _validate_dedup_merge_identity_scope_compatibility(
         scope_signatures = {
             candidate.identity_scope_key or "" for candidate in group_candidates
         }
-
-        if len(scope_signatures) != 1:
-            raise QualityError(
-                f"Dedup merge group {group_index} combines candidates from different "
-                f"configured semantic identity scopes. Return keep_separate, conflict, "
-                f"or needs_review."
-            )
-
-        common_scope_key = next(iter(scope_signatures)) or None
-
-        if common_scope_key is None:
-            continue
-
         scope_value_signatures = {
             tuple(candidate.identity_scope_values.items())
             for candidate in group_candidates
         }
+        strict_scope_compatible = bool(
+            len(scope_signatures) == 1 and len(scope_value_signatures) == 1
+        )
 
-        if len(scope_value_signatures) != 1:
+        if strict_scope_compatible:
+            continue
+
+        type_pairs = {
+            (candidate.statement_type, candidate.normalized_statement_type)
+            for candidate in group_candidates
+        }
+        has_cross_type_occurrence_signal = (
+            _decision_group_has_same_source_occurrence_cross_type_signal(
+                candidate_ids=decision_group.candidate_ids,
+                review_request=review_request,
+            )
+        )
+
+        if len(type_pairs) == 1 or not has_cross_type_occurrence_signal:
             raise QualityError(
-                f"Dedup merge group {group_index} preserves one identity-scope key "
-                f"but contradictory source-backed identity-scope values."
+                f"Dedup merge group {group_index} combines candidates from different "
+                f"configured semantic identity scopes without direct same-source-"
+                f"occurrence cross-type evidence. Return keep_separate, conflict, or "
+                f"needs_review."
+            )
+
+        if decision_group.canonical_type_source_candidate_id is None:
+            raise QualityError(
+                f"Dedup mixed-type merge group {group_index} requires a canonical "
+                f"type source candidate before identity scope can be resolved."
+            )
+
+        scope_conflicts = _find_scope_value_conflicts(
+            [candidate.identity_scope_values for candidate in group_candidates]
+        )
+
+        if scope_conflicts:
+            raise QualityError(
+                f"Dedup mixed-type merge group {group_index} has contradictory "
+                f"shared identity-scope values: {scope_conflicts}."
             )
 
 
 def _validate_dedup_merge_scope_compatibility(
     *, review_request: SFIDedupReviewRequest, review_response: SFIDedupReviewResponse
 ) -> None:
-    """Validate code-type and source-scope compatibility for proposed merges.
+    """Validate code-type and code-scope compatibility for proposed merges.
 
-    A coded merge may include uncoded duplicate occurrences only when every candidate
-    independently carries the same applicable code type and the same resolved
-    configured scope. This prevents a semantically accepted LLM response from failing
-    later during merge-group construction or crossing curriculum scopes.
+    Same-type coded merges require exact code-policy and configured scope agreement.
+    Mixed-type merges retain that strict path when possible. When classification alone
+    causes code-policy differences, direct same-source-occurrence cross-type evidence
+    permits canonical source-code policy as long as shared scope dimensions do not
+    contradict one another.
 
     Parameters
     ----------
@@ -1161,8 +1243,9 @@ def _validate_dedup_merge_scope_compatibility(
     Raises
     ------
     QualityError
-        If a coded merge contains incompatible code types, contradictory scopes, or an
-        unresolved scope on any candidate.
+        If a coded merge has no source-backed canonical code, preserves contradictory
+        scope, or attempts relaxed mixed-type code policy without direct occurrence
+        evidence.
     """
 
     candidates_by_id = {
@@ -1195,10 +1278,23 @@ def _validate_dedup_merge_scope_compatibility(
             selected_candidate_id = decision_group.canonical_code_source_candidate_id
             canonical_candidate = candidates_by_id.get(selected_candidate_id or "")
         else:
-            canonical_candidate = sorted(
-                coded_candidates,
-                key=lambda candidate: candidate.registry_candidate_id,
-            )[0]
+            canonical_type_candidate = candidates_by_id.get(
+                decision_group.canonical_type_source_candidate_id or ""
+            )
+            shared_normalized_code = next(iter(distinct_normalized_codes))
+
+            if (
+                canonical_type_candidate is not None
+                and canonical_type_candidate.normalized_statement_code
+                == shared_normalized_code
+                and canonical_type_candidate.resolved_code_type is not None
+            ):
+                canonical_candidate = canonical_type_candidate
+            else:
+                canonical_candidate = sorted(
+                    coded_candidates,
+                    key=lambda candidate: candidate.registry_candidate_id,
+                )[0]
 
         if (
             canonical_candidate is None
@@ -1210,44 +1306,50 @@ def _validate_dedup_merge_scope_compatibility(
             )
 
         canonical_code_type = canonical_candidate.resolved_code_type
-        incompatible_candidate_ids = sorted(
-            candidate.registry_candidate_id
-            for candidate in group_candidates
-            if candidate.applicable_code_type != canonical_code_type
-        )
-
-        if incompatible_candidate_ids:
-            raise QualityError(
-                f"Dedup coded merge group {group_index} combines candidates whose "
-                f"applicable code types do not match canonical code type "
-                f"{canonical_code_type!r}: {incompatible_candidate_ids}. Return "
-                f"keep_separate, conflict, or needs_review."
-            )
-
+        applicable_code_types = {
+            candidate.applicable_code_type for candidate in group_candidates
+        }
         scope_signatures = {
             candidate.code_scope_key or "" for candidate in group_candidates
         }
-
-        if len(scope_signatures) != 1:
-            raise QualityError(
-                f"Dedup coded merge group {group_index} combines unresolved or "
-                f"contradictory configured code scopes. Every candidate must resolve "
-                f"the same scope before it can be merged."
-            )
-
-        common_scope_key = next(iter(scope_signatures)) or None
-
-        if common_scope_key is None:
-            continue
-
         scope_value_signatures = {
             tuple(candidate.code_scope_values.items()) for candidate in group_candidates
         }
+        strict_scope_compatible = bool(
+            applicable_code_types == {canonical_code_type}
+            and len(scope_signatures) == 1
+            and len(scope_value_signatures) == 1
+        )
 
-        if len(scope_value_signatures) != 1:
+        if strict_scope_compatible:
+            continue
+
+        type_pairs = {
+            (candidate.statement_type, candidate.normalized_statement_type)
+            for candidate in group_candidates
+        }
+        has_cross_type_occurrence_signal = (
+            _decision_group_has_same_source_occurrence_cross_type_signal(
+                candidate_ids=decision_group.candidate_ids,
+                review_request=review_request,
+            )
+        )
+
+        if len(type_pairs) == 1 or not has_cross_type_occurrence_signal:
             raise QualityError(
-                f"Dedup coded merge group {group_index} preserves one scope key but "
-                f"different source-backed scope values."
+                f"Dedup coded merge group {group_index} combines incompatible code "
+                f"types or scopes without direct same-source-occurrence cross-type "
+                f"evidence. Return keep_separate, conflict, or needs_review."
+            )
+
+        scope_conflicts = _find_scope_value_conflicts(
+            [candidate.code_scope_values for candidate in group_candidates]
+        )
+
+        if scope_conflicts:
+            raise QualityError(
+                f"Dedup mixed-type coded merge group {group_index} has contradictory "
+                f"shared code-scope values: {scope_conflicts}."
             )
 
 

@@ -1357,17 +1357,25 @@ Use exactly one decision for each decision group:
 - The selected candidate's existing statement_code and normalized_statement_code become the canonical code of the logical merged SFI. Preserve all other printed codes as source provenance.
 - If the bounded evidence and runtime instructions do not justify selecting one coded source candidate, do not return merge. Use needs_review or conflict.
 - Never select a candidate outside the decision group, a candidate with no code, or a code value that is not already present on the selected candidate.
-- A coded merge may include an uncoded duplicate occurrence only when every candidate has the same applicable_code_type and the same code_scope_key/code_scope_values. If any candidate has a different applicable code type, contradictory scope, or unresolved scope while another candidate is scoped, use keep_separate, conflict, or needs_review.
+- For same-type coded merges, every candidate must preserve the same applicable_code_type and the same code_scope_key/code_scope_values.
+- A mixed-type subset covered by one same_source_occurrence_cross_type signal may preserve code-policy differences caused by its competing classifications. Merge it only when visible evidence supports one duplicate source occurrence, shared code-scope dimensions do not contradict one another, and one source-backed canonical code can be resolved. The canonical type source and canonical code source may be different candidates.
+- Outside that narrow mixed-type same-occurrence case, incompatible code types, contradictory scope, or unresolved scope while another candidate is scoped require keep_separate, conflict, or needs_review.
 
 ## Semantic identity-scope contract
 - identity_scope_key and identity_scope_values are deterministic, source-backed semantic scope resolved from runtime configuration. They are independent of official code scope and may be present for completely uncoded curricula.
-- Candidates with different identity_scope_key values must not be merged. Use keep_separate, conflict, or needs_review according to the visible evidence.
-- Matching identity scope is necessary for a merge but is never sufficient proof that candidates are duplicates.
+- For same-type merges, every candidate must preserve the same identity_scope_key and identity_scope_values. Matching semantic scope permits comparison but never proves duplication.
+- A mixed-type subset covered by one same_source_occurrence_cross_type signal may preserve different identity-scope shapes caused by its competing statement-type policies. Merge it only when visible evidence supports one duplicate source occurrence and every scope dimension shared by two or more candidates has the same source-backed value. The selected canonical type source supplies the merged item's identity scope.
+- Outside that narrow mixed-type same-occurrence case, different identity scope requires keep_separate, conflict, or needs_review.
 - Do not reinterpret, rewrite, or infer missing identity-scope values. Use the supplied canonical values exactly.
 
 ## Compact evidence model
 - review_signals are deterministic retrieval evidence. Each signal applies only to its listed candidate_ids; never assume it applies to the entire connected review set.
 - A same_normalized_source_text signal means the listed subset has exact equality after internal normalization. It is not an automatic merge rule, and normalized text itself is intentionally omitted from the prompt.
+- A same_source_occurrence_cross_type signal means the listed differently classified
+  candidates cite the same physical source occurrence and have exact internally
+  normalized description and/or source-text equality. Treat it as strong evidence of
+  duplicate extraction, not an automatic merge rule. If you merge that subset, select
+  the existing candidate whose source role supplies the correct canonical type.
 - A canonical-value, code-bucket, text-bucket, warning, or shared-table-location signal is also review evidence rather than a merge decision.
 - context_windows are shared nearby source windows. Each candidate's context_window_indexes identifies which windows are relevant to that candidate.
 - context_items contain only runtime-configured context-bearing statement types. Their absence does not prove that no other source content exists.
@@ -1440,6 +1448,11 @@ Independently determine the correct partition and decision for every supplied ca
 - Runtime sfi_dedup_instructions are authoritative for curriculum-specific identity, organizer scope, aliases, progression, codes, repeated headings, and known source anomalies.
 - review_signals are candidate-subset retrieval evidence. Check the candidate_ids on every signal; a signal applying to one subset must not be generalized to the whole review set.
 - A same_normalized_source_text signal records exact internal normalized equality for its listed subset only. It is not a universal merge rule.
+- A same_source_occurrence_cross_type signal records the same physical source occurrence
+  plus exact internally normalized description and/or source-text equality across
+  different classifications. Treat it as strong duplicate-extraction evidence, not an
+  automatic merge rule, and verify any canonical type selection against the visible
+  source role.
 - context_windows are shared nearby windows. Use each candidate's context_window_indexes to locate the context relevant to that candidate.
 - context_items contain only runtime-configured context-bearing statement types. Their absence is not proof that no other source material exists.
 - section_labels, boundary_markers, page indexes, and excerpts are compact and fallible. They are not final hierarchy, parentage, or merge identity.
@@ -1458,10 +1471,11 @@ Independently determine the correct partition and decision for every supplied ca
 9. For every proposed merge, count distinct statement-type pairs. When there are multiple, independently verify that canonical_type_source_candidate_id identifies one candidate inside that group and that canonical_type_selection_reason justifies that exact existing type pair.
 10. For every proposed merge, count distinct non-null normalized codes. When there are multiple, independently verify that canonical_code_source_candidate_id identifies one coded candidate inside that merge group and that canonical_code_selection_reason justifies that exact source-backed choice.
 11. Reject a mixed-code merge that lacks a defensible source-candidate selection, selects an uncoded or out-of-group candidate, or invents a code. Use needs_review or conflict when no canonical source candidate can be justified.
-12. For every coded merge, verify that every candidate has the canonical applicable_code_type and the same resolved code_scope_key/code_scope_values. An uncoded occurrence may merge only when it independently preserves that same type and scope.
-13. For every merge, verify that all candidates have the same identity_scope_key and identity_scope_values. Matching semantic identity scope permits comparison but does not prove duplication; different scope requires keep_separate, conflict, or needs_review.
-14. Treat representative_candidate_id, canonical_type_source_candidate_id, and canonical_code_source_candidate_id as independent selections; they may identify different candidates.
-15. Use needs_review only when the bounded evidence remains genuinely insufficient after applying the runtime instructions.
+12. For every same-type coded merge, verify that all candidates have the canonical applicable_code_type and the same resolved code_scope_key/code_scope_values. For a mixed-type subset covered by one same_source_occurrence_cross_type signal, permit classification-derived code-policy differences only when shared scope dimensions agree and one source-backed canonical code policy can be resolved.
+13. For every same-type merge, verify exact identity_scope_key and identity_scope_values equality. For a mixed-type subset covered by one same_source_occurrence_cross_type signal, permit classification-derived scope-shape differences only when shared scope dimensions agree; the selected canonical type source supplies final identity scope.
+14. Reject relaxed mixed-type code or identity-scope treatment when no single same_source_occurrence_cross_type signal directly covers every candidate in the proposed merge group.
+15. Treat representative_candidate_id, canonical_type_source_candidate_id, and canonical_code_source_candidate_id as independent selections; they may identify different candidates.
+16. Use needs_review only when the bounded evidence remains genuinely insufficient after applying the runtime instructions.
 
 ## Universal response contract
 - Copy review_set_id exactly from the request.
@@ -1474,7 +1488,7 @@ Independently determine the correct partition and decision for every supplied ca
 - A mixed-type merge must select one candidate inside the group and provide a source-grounded canonical_type_selection_reason.
 - canonical_code_source_candidate_id and canonical_code_selection_reason must be null except for merge groups with multiple distinct non-null normalized source codes.
 - A mixed-code merge must select one coded candidate inside the group and provide a source-grounded canonical_code_selection_reason.
-- Every merge must preserve one common identity_scope_key and identity_scope_values mapping across all candidates.
+- Every same-type merge must preserve one common identity_scope_key and identity_scope_values mapping. A directly signaled mixed-type same-occurrence merge may instead use the canonical type source candidate's mapping when shared scope dimensions are non-contradictory.
 - Representative, canonical-type, and canonical-code source selections are independent and may identify different candidates.
 - Do not infer hierarchy relationships or create final StandardsFrameworkItem IDs.
 

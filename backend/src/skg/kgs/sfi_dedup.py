@@ -46,7 +46,10 @@ from skg.kgs.utils import (
     reset_output_files,
     unique_nonempty,
 )
-from skg.kgs.validators import verify_sfi_dedup_review_integrity
+from skg.kgs.validators import (
+    SAME_SOURCE_OCCURRENCE_CROSS_TYPE_SIGNAL,
+    verify_sfi_dedup_review_integrity,
+)
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, open_json_type, write_to_json
@@ -270,6 +273,7 @@ def _build_component_review_signals(
 
     signals = [
         *_canonical_value_signals(candidates),
+        *_same_source_occurrence_cross_type_signals(candidates),
         *_normalized_source_text_signals(candidates),
         *_duplicate_bucket_signals(
             component_candidate_ids=component_candidate_ids,
@@ -413,7 +417,13 @@ def _build_initial_review_edges(
     overlap, or layout artifacts. It is only a retrieval signal: same row or same
     header does not by itself prove that candidates are duplicates.
 
-    4. Different edge sources can overlap. For example, candidate `A` and candidate `B`
+    4. A narrow cross-type occurrence edge connects differently classified candidates
+    only when they cite the same type-independent physical source location and have
+    exact normalized description or source-text equality. This lets the producer and
+    checker correct duplicate extraction under inconsistent statement types without
+    broadening ordinary type-aware buckets.
+
+    5. Different edge sources can overlap. For example, candidate `A` and candidate `B`
     might share a duplicate bucket, while candidate `B` and candidate `C` share a
     source-row overlap. This function returns two separate edges, and
     `_merge_edges_to_components()` later combines them into one connected component
@@ -433,6 +443,7 @@ def _build_initial_review_edges(
     edges: list[tuple[set[str], set[str]]] = []
     edges.extend(_build_same_canonical_statement_value_edges(sfi_candidate_registry))
     edges.extend(_build_same_normalized_source_text_edges(sfi_candidate_registry))
+    edges.extend(_build_same_source_occurrence_cross_type_edges(sfi_candidate_registry))
 
     for bucket in sfi_candidate_registry.duplicate_buckets:
         candidate_ids = set(bucket.registry_candidate_ids)
@@ -578,28 +589,32 @@ def _build_merge_group(
     statement_types = unique_nonempty(
         candidate.statement_type for candidate in sorted_candidates
     )
-    code_resolution = _resolve_code_resolution(
-        candidates=sorted_candidates,
-        canonical_code_selection_reason=canonical_code_selection_reason,
-        canonical_code_source_candidate_id=canonical_code_source_candidate_id,
-        merge_decision=merge_decision,
-    )
     type_resolution = _resolve_type_resolution(
         candidates=sorted_candidates,
         canonical_type_selection_reason=canonical_type_selection_reason,
         canonical_type_source_candidate_id=canonical_type_source_candidate_id,
         merge_decision=merge_decision,
     )
+    code_resolution = _resolve_code_resolution(
+        candidates=sorted_candidates,
+        canonical_code_selection_reason=canonical_code_selection_reason,
+        canonical_code_source_candidate_id=canonical_code_source_candidate_id,
+        merge_decision=merge_decision,
+        preferred_candidate_id=(type_resolution.canonical_type_source_candidate_id),
+    )
     code_scope_key, code_scope_keys, code_scope_values = (
         _resolve_merge_group_code_scope(
             candidates=sorted_candidates,
             code_resolution=code_resolution,
             merge_decision=merge_decision,
+            type_resolution=type_resolution,
         )
     )
     identity_scope_key, identity_scope_keys, identity_scope_values = (
         _resolve_merge_group_identity_scope(
-            candidates=sorted_candidates, merge_decision=merge_decision
+            candidates=sorted_candidates,
+            merge_decision=merge_decision,
+            type_resolution=type_resolution,
         )
     )
     digest = hashlib.sha256(
@@ -631,12 +646,17 @@ def _build_merge_group(
                 "code_scope_values": candidate.code_scope_values,
                 "identity_scope_key": candidate.identity_scope_key,
                 "identity_scope_values": candidate.identity_scope_values,
+                "normalized_description": candidate.normalized_description,
+                "normalized_source_text": candidate.normalized_source_text,
                 "normalized_statement_code": candidate.normalized_statement_code,
                 "normalized_statement_type": candidate.normalized_statement_type,
                 "registry_candidate_id": candidate.registry_candidate_id,
                 "resolved_code_type": candidate.resolved_code_type,
                 "source_context_key": candidate.source_context_key,
                 "source_context_labels": candidate.source_context_labels,
+                "source_occurrence_location_key": (
+                    candidate.source_occurrence_location_key
+                ),
                 "source_segment_ids": candidate.source_segment_ids,
                 "statement_code": candidate.statement_code,
                 "statement_type": candidate.statement_type,
@@ -1318,6 +1338,48 @@ def _build_same_normalized_source_text_edges(
     return edges
 
 
+def _build_same_source_occurrence_cross_type_edges(
+    sfi_candidate_registry: SFIRegistryArtifact,
+) -> list[tuple[set[str], set[str]]]:
+    """Build narrow cross-type review edges for one physical source occurrence.
+
+    The edge requires a shared type-independent source occurrence location plus exact
+    normalized description or source-text equality. It intentionally does not broaden
+    ordinary type-aware text buckets or same-row provenance retrieval.
+
+    Parameters
+    ----------
+    sfi_candidate_registry
+        Registry artifact containing the candidates to compare.
+
+    Returns
+    -------
+    list[tuple[set[str], set[str]]]
+        Candidate-ID sets paired with a deterministic cross-type occurrence reason.
+    """
+
+    edges: list[tuple[set[str], set[str]]] = []
+
+    for (
+        candidate_ids,
+        evidence_kinds,
+    ) in _group_same_source_occurrence_cross_type_candidates(
+        sfi_candidate_registry.candidates
+    ):
+        edges.append(
+            (
+                set(candidate_ids),
+                {
+                    SAME_SOURCE_OCCURRENCE_CROSS_TYPE_SIGNAL
+                    + ":"
+                    + ",".join(evidence_kinds)
+                },
+            )
+        )
+
+    return edges
+
+
 def _build_singleton_merge_groups(
     *,
     covered_candidate_ids: set[str],
@@ -1444,6 +1506,34 @@ def _build_singleton_merge_groups(
     return singleton_groups
 
 
+def _candidates_share_same_source_occurrence_cross_type_evidence(
+    candidates: Sequence[SFIRegistryCandidate],
+) -> bool:
+    """Check whether every candidate shares one direct cross-type occurrence signal.
+
+    Parameters
+    ----------
+    candidates
+        Registry candidates proposed for one mixed-type merge group.
+
+    Returns
+    -------
+    bool
+        True when all candidates cite one type-independent source occurrence and share
+        exact normalized description or source-text equality across multiple type pairs.
+    """
+
+    expected_candidate_ids = {
+        candidate.registry_candidate_id for candidate in candidates
+    }
+    return any(
+        set(candidate_ids) == expected_candidate_ids
+        for candidate_ids, _evidence_kinds in (
+            _group_same_source_occurrence_cross_type_candidates(candidates)
+        )
+    )
+
+
 def _canonical_value_signals(
     candidates: Sequence[SFIRegistryCandidate],
 ) -> list[SFIDedupReviewSignal]:
@@ -1554,6 +1644,106 @@ def _duplicate_bucket_signals(
         )
 
     return signals
+
+
+def _find_scope_value_conflicts(
+    scope_value_maps: Sequence[dict[str, str]],
+) -> dict[str, list[str]]:
+    """Find contradictory values assigned to shared semantic scope dimensions.
+
+    Parameters
+    ----------
+    scope_value_maps
+        Source-backed scope mappings to compare.
+
+    Returns
+    -------
+    dict[str, list[str]]
+        Scope labels mapped to their distinct conflicting values. An empty mapping
+        means every shared scope dimension is compatible.
+    """
+
+    values_by_scope_label: dict[str, set[str]] = {}
+
+    for scope_values in scope_value_maps:
+        for scope_label, scope_value in scope_values.items():
+            values_by_scope_label.setdefault(scope_label, set()).add(scope_value)
+
+    return {
+        scope_label: sorted(scope_values)
+        for scope_label, scope_values in sorted(values_by_scope_label.items())
+        if len(scope_values) > 1
+    }
+
+
+def _group_same_source_occurrence_cross_type_candidates(
+    candidates: Sequence[SFIRegistryCandidate],
+) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
+    """Group probable cross-type copies of one physical source occurrence.
+
+    Candidates are grouped only when they share the same type-independent source
+    occurrence location and have exact equality for normalized description or
+    normalized source text. The grouping is retrieval evidence only; it does not make a
+    merge decision.
+
+    Parameters
+    ----------
+    candidates
+        Registry candidates to inspect.
+
+    Returns
+    -------
+    list[tuple[tuple[str, ...], tuple[str, ...]]]
+        Candidate-ID tuples paired with the exact-text evidence kinds that connected
+        them. Every group contains at least two distinct statement-type pairs.
+    """
+
+    candidates_by_evidence: dict[tuple[str, str, str], list[SFIRegistryCandidate]] = (
+        defaultdict(list)
+    )
+
+    for candidate in candidates:
+        for evidence_kind, normalized_text_value in [
+            ("normalized_description", candidate.normalized_description),
+            ("normalized_source_text", candidate.normalized_source_text),
+        ]:
+            if normalized_text_value:
+                candidates_by_evidence[
+                    (
+                        candidate.source_occurrence_location_key,
+                        evidence_kind,
+                        normalized_text_value,
+                    )
+                ].append(candidate)
+
+    evidence_kinds_by_candidate_ids: dict[tuple[str, ...], set[str]] = defaultdict(set)
+
+    for (
+        _source_occurrence_location_key,
+        evidence_kind,
+        _normalized_text_value,
+    ), grouped_candidates in sorted(candidates_by_evidence.items()):
+        candidate_ids = tuple(
+            sorted(
+                {candidate.registry_candidate_id for candidate in grouped_candidates}
+            )
+        )
+        type_pairs = {
+            (candidate.statement_type, candidate.normalized_statement_type)
+            for candidate in grouped_candidates
+        }
+
+        if len(candidate_ids) < 2 or len(type_pairs) < 2:
+            continue
+
+        evidence_kinds_by_candidate_ids[candidate_ids].add(evidence_kind)
+
+    return [
+        (candidate_ids, tuple(sorted(evidence_kinds)))
+        for candidate_ids, evidence_kinds in sorted(
+            evidence_kinds_by_candidate_ids.items()
+        )
+    ]
 
 
 def _load_complete_existing_merge_report(
@@ -2159,6 +2349,7 @@ def _resolve_code_resolution(
     canonical_code_selection_reason: str | None,
     canonical_code_source_candidate_id: str | None,
     merge_decision: SFIMergeDecision,
+    preferred_candidate_id: str | None,
 ) -> _CodeResolution:
     """Resolve one merge group's canonical statement code deterministically.
 
@@ -2177,6 +2368,9 @@ def _resolve_code_resolution(
         Candidate selected by the LLM as the canonical code source, when required.
     merge_decision
         Final merge decision for the group.
+    preferred_candidate_id
+        Canonical type source candidate to prefer for a shared source code when that
+        candidate carries the code.
 
     Returns
     -------
@@ -2212,6 +2406,7 @@ def _resolve_code_resolution(
             canonical_code_selection_reason=canonical_code_selection_reason,
             canonical_code_source_candidate_id=canonical_code_source_candidate_id,
             normalized_code=normalized_codes[0],
+            preferred_candidate_id=preferred_candidate_id,
             sorted_candidates=sorted_candidates,
         )
 
@@ -2282,13 +2477,14 @@ def _resolve_merge_group_code_scope(
     candidates: Sequence[SFIRegistryCandidate],
     code_resolution: _CodeResolution,
     merge_decision: SFIMergeDecision,
+    type_resolution: _TypeResolution,
 ) -> tuple[str | None, list[str], dict[str, str]]:
     """Resolve aggregate source-backed code scope for one merge group.
 
-    Mintable coded groups require every source candidate to carry the canonical
-    applicable code type and the same resolved scope. This permits coded and uncoded
-    duplicate occurrences to merge when the uncoded occurrence independently resolves
-    the same configured scope, while rejecting contradictory or unresolved scope.
+    Same-type mintable coded groups require exact code-type and scope agreement.
+    Mixed-type groups use the canonical code source candidate's code policy while
+    allowing classification-derived missing or additional scope dimensions. Shared
+    dimensions must remain compatible.
 
     Parameters
     ----------
@@ -2298,18 +2494,21 @@ def _resolve_merge_group_code_scope(
         Canonical code resolution for the merge group.
     merge_decision
         Final merge decision for the group.
+    type_resolution
+        Canonical statement-type resolution for the merge group.
 
     Returns
     -------
     tuple[str | None, list[str], dict[str, str]]
-        Resolved common scope key, all non-empty observed scope keys, and the common
-        canonical scope-value mapping.
+        Resolved canonical scope key, all non-empty observed scope keys, and canonical
+        source-backed scope values.
 
     Raises
     ------
     ValueError
-        If a mintable coded group contains incompatible code types, contradictory
-        scopes, or unresolved source scope on any candidate.
+        If canonical code metadata is missing, same-type candidates have incompatible
+        code policy, mixed-type candidates contradict shared scope values, or the
+        canonical code source cannot be resolved.
     """
 
     code_scope_keys = unique_nonempty(
@@ -2321,6 +2520,10 @@ def _resolve_merge_group_code_scope(
     is_mintable_coded = bool(
         merge_decision in {"merged", "singleton"}
         and code_resolution.canonical_normalized_statement_code
+    )
+    is_mixed_type_merge = bool(
+        merge_decision == "merged"
+        and type_resolution.canonical_type_source_candidate_id is not None
     )
 
     if is_mintable_coded:
@@ -2334,18 +2537,57 @@ def _resolve_merge_group_code_scope(
         applicable_code_types = {
             candidate.applicable_code_type for candidate in candidates
         }
+        source_scope_value_signatures = {
+            tuple(candidate.code_scope_values.items()) for candidate in candidates
+        }
+        strict_scope_compatible = bool(
+            applicable_code_types == {canonical_code_type}
+            and len(source_scope_signatures) == 1
+            and len(source_scope_value_signatures) == 1
+        )
 
-        if applicable_code_types != {canonical_code_type}:
-            raise ValueError(
-                "Every candidate in a mintable coded merge group must have the same "
-                "applicable code type as the canonical source code."
+        if not strict_scope_compatible and is_mixed_type_merge:
+            if not _candidates_share_same_source_occurrence_cross_type_evidence(
+                candidates
+            ):
+                raise ValueError(
+                    "Relaxed mixed-type code policy requires direct same-source-"
+                    "occurrence cross-type evidence for every candidate."
+                )
+
+            canonical_candidate = _select_canonical_code_candidate(
+                candidates=candidates,
+                code_resolution=code_resolution,
+                type_resolution=type_resolution,
             )
 
-        if len(source_scope_signatures) != 1:
+            if canonical_candidate is None:
+                raise ValueError(
+                    "A mixed-type mintable coded merge group requires one "
+                    "source-backed canonical code candidate."
+                )
+
+            scope_conflicts = _find_scope_value_conflicts(
+                [candidate.code_scope_values for candidate in candidates]
+            )
+
+            if scope_conflicts:
+                raise ValueError(
+                    "Mixed-type mintable coded merge groups must not preserve "
+                    f"contradictory shared code-scope values: {scope_conflicts}."
+                )
+
+            return (
+                canonical_candidate.code_scope_key,
+                code_scope_keys,
+                dict(canonical_candidate.code_scope_values),
+            )
+
+        if not strict_scope_compatible:
             raise ValueError(
-                "Every candidate in a mintable coded merge group must preserve one "
-                "common configured code scope. Unresolved or contradictory scope "
-                "requires needs_review or conflict."
+                "Every candidate in a same-type mintable coded merge group must have "
+                "the canonical applicable code type and one common configured code "
+                "scope."
             )
 
     code_scope_key = (
@@ -2373,9 +2615,17 @@ def _resolve_merge_group_code_scope(
 
 
 def _resolve_merge_group_identity_scope(
-    *, candidates: Sequence[SFIRegistryCandidate], merge_decision: SFIMergeDecision
+    *,
+    candidates: Sequence[SFIRegistryCandidate],
+    merge_decision: SFIMergeDecision,
+    type_resolution: _TypeResolution,
 ) -> tuple[str | None, list[str], dict[str, str]]:
-    """Resolve one compatible semantic identity scope for a merge group.
+    """Resolve canonical semantic identity scope for a merge group.
+
+    Same-type mintable groups require one exactly shared identity scope. Mixed-type
+    merged groups use the selected canonical type source candidate's identity scope and
+    permit classification-derived missing or additional dimensions when all shared
+    dimensions agree.
 
     Parameters
     ----------
@@ -2383,18 +2633,20 @@ def _resolve_merge_group_identity_scope(
         Registry candidates included in the merge group.
     merge_decision
         Final merge decision for the group.
+    type_resolution
+        Canonical statement-type resolution for the merge group.
 
     Returns
     -------
     tuple[str | None, list[str], dict[str, str]]
-        Shared identity-scope key, all non-empty observed keys, and shared canonical
-        identity-scope values.
+        Canonical identity-scope key, all non-empty observed keys, and canonical
+        source-backed identity-scope values.
 
     Raises
     ------
     ValueError
-        If a mintable group combines different identity scopes or one scope key is
-        associated with contradictory source-backed values.
+        If same-type mintable candidates have different scopes, mixed-type candidates
+        contradict shared dimensions, or the canonical type source cannot be resolved.
     """
 
     identity_scope_keys = unique_nonempty(
@@ -2403,11 +2655,58 @@ def _resolve_merge_group_identity_scope(
     source_scope_signatures = {
         candidate.identity_scope_key or "" for candidate in candidates
     }
+    is_mixed_type_merge = bool(
+        merge_decision == "merged"
+        and type_resolution.canonical_type_source_candidate_id is not None
+    )
 
-    if merge_decision in {"merged", "singleton"} and len(source_scope_signatures) != 1:
+    source_scope_value_signatures = {
+        tuple(candidate.identity_scope_values.items()) for candidate in candidates
+    }
+    strict_scope_compatible = bool(
+        len(source_scope_signatures) == 1 and len(source_scope_value_signatures) == 1
+    )
+
+    if is_mixed_type_merge and not strict_scope_compatible:
+        if not _candidates_share_same_source_occurrence_cross_type_evidence(candidates):
+            raise ValueError(
+                "Relaxed mixed-type identity scope requires direct same-source-"
+                "occurrence cross-type evidence for every candidate."
+            )
+
+        candidates_by_id = {
+            candidate.registry_candidate_id: candidate for candidate in candidates
+        }
+        canonical_candidate = candidates_by_id.get(
+            type_resolution.canonical_type_source_candidate_id or ""
+        )
+
+        if canonical_candidate is None:
+            raise ValueError(
+                "A mixed-type merged group requires a resolvable canonical type "
+                "source candidate."
+            )
+
+        scope_conflicts = _find_scope_value_conflicts(
+            [candidate.identity_scope_values for candidate in candidates]
+        )
+
+        if scope_conflicts:
+            raise ValueError(
+                "Mixed-type merged groups must not preserve contradictory shared "
+                f"identity-scope values: {scope_conflicts}."
+            )
+
+        return (
+            canonical_candidate.identity_scope_key,
+            identity_scope_keys,
+            dict(canonical_candidate.identity_scope_values),
+        )
+
+    if merge_decision in {"merged", "singleton"} and not strict_scope_compatible:
         raise ValueError(
-            "Every candidate in a mintable merge group must preserve one common "
-            "configured semantic identity scope."
+            "Every candidate in a same-type mintable merge group must preserve one "
+            "common configured semantic identity scope."
         )
 
     identity_scope_key = (
@@ -2586,6 +2885,7 @@ def _resolve_single_source_code(
     canonical_code_selection_reason: str | None,
     canonical_code_source_candidate_id: str | None,
     normalized_code: str,
+    preferred_candidate_id: str | None,
     sorted_candidates: Sequence[SFIRegistryCandidate],
 ) -> _CodeResolution:
     """Resolve a merge group that shares a single normalized source code.
@@ -2598,6 +2898,8 @@ def _resolve_single_source_code(
         Candidate selected as the canonical code source; must be absent.
     normalized_code
         The single distinct normalized statement code shared by the group.
+    preferred_candidate_id
+        Candidate to prefer when it carries the shared normalized source code.
     sorted_candidates
         Registry candidates in the merge group, ordered by registry candidate ID.
 
@@ -2625,11 +2927,23 @@ def _resolve_single_source_code(
         (
             candidate
             for candidate in sorted_candidates
-            if candidate.normalized_statement_code == normalized_code
+            if candidate.registry_candidate_id == preferred_candidate_id
+            and candidate.normalized_statement_code == normalized_code
             and candidate.statement_code
         ),
         None,
     )
+
+    if canonical_candidate is None:
+        canonical_candidate = next(
+            (
+                candidate
+                for candidate in sorted_candidates
+                if candidate.normalized_statement_code == normalized_code
+                and candidate.statement_code
+            ),
+            None,
+        )
 
     if canonical_candidate is None:
         raise ValueError(
@@ -2924,6 +3238,112 @@ def _run_dedup_reviews(
         review_responses.append(review_response)
 
     return review_responses
+
+
+def _same_source_occurrence_cross_type_signals(
+    candidates: Sequence[SFIRegistryCandidate],
+) -> list[SFIDedupReviewSignal]:
+    """Build review signals for probable cross-type copies of one occurrence.
+
+    Parameters
+    ----------
+    candidates
+        Registry candidates belonging to the connected review component.
+
+    Returns
+    -------
+    list[SFIDedupReviewSignal]
+        One signal per candidate subset sharing an exact source location and exact
+        normalized description or source text across different statement-type pairs.
+    """
+
+    signals: list[SFIDedupReviewSignal] = []
+
+    for (
+        candidate_ids,
+        evidence_kinds,
+    ) in _group_same_source_occurrence_cross_type_candidates(candidates):
+        evidence_summary = " and ".join(
+            evidence_kind.replace("normalized_", "normalized ").replace("_", " ")
+            for evidence_kind in evidence_kinds
+        )
+        signals.append(
+            SFIDedupReviewSignal(
+                candidate_ids=list(candidate_ids),
+                signal_type=SAME_SOURCE_OCCURRENCE_CROSS_TYPE_SIGNAL,
+                summary=(
+                    f"These differently classified candidates cite the same physical "
+                    f"source occurrence and have exact internal equality for "
+                    f"{evidence_summary}. Treat this as high-confidence duplicate "
+                    f"retrieval evidence, not an automatic merge decision."
+                ),
+                value=None,
+            )
+        )
+
+    return signals
+
+
+def _select_canonical_code_candidate(
+    *,
+    candidates: Sequence[SFIRegistryCandidate],
+    code_resolution: _CodeResolution,
+    type_resolution: _TypeResolution,
+) -> SFIRegistryCandidate | None:
+    """Select the source candidate that supplies canonical code policy.
+
+    Parameters
+    ----------
+    candidates
+        Registry candidates in the merge group.
+    code_resolution
+        Resolved canonical code details.
+    type_resolution
+        Resolved canonical type details used as the preferred source when possible.
+
+    Returns
+    -------
+    SFIRegistryCandidate | None
+        Source-backed canonical code candidate, or `None` when the group is uncoded.
+    """
+
+    canonical_normalized_code = code_resolution.canonical_normalized_statement_code
+
+    if canonical_normalized_code is None:
+        return None
+
+    candidates_by_id = {
+        candidate.registry_candidate_id: candidate for candidate in candidates
+    }
+    explicit_candidate_id = code_resolution.canonical_code_source_candidate_id
+
+    if explicit_candidate_id is not None:
+        return candidates_by_id.get(explicit_candidate_id)
+
+    preferred_candidate_id = type_resolution.canonical_type_source_candidate_id
+    preferred_candidate = candidates_by_id.get(preferred_candidate_id or "")
+
+    if (
+        preferred_candidate is not None
+        and preferred_candidate.normalized_statement_code == canonical_normalized_code
+        and preferred_candidate.statement_code is not None
+        and preferred_candidate.resolved_code_type
+        == code_resolution.canonical_code_type
+    ):
+        return preferred_candidate
+
+    return next(
+        (
+            candidate
+            for candidate in sorted(
+                candidates, key=lambda item: item.registry_candidate_id
+            )
+            if candidate.normalized_statement_code == canonical_normalized_code
+            and candidate.statement_code is not None
+            and candidate.resolved_code_type == code_resolution.canonical_code_type
+        ),
+        None,
+    )
 
 
 def _select_request_context_windows(

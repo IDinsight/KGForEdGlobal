@@ -9,6 +9,7 @@ without claiming inferred hierarchy as canonical.
 
 # Standard Library
 import hashlib
+import json
 import re
 
 from collections import Counter, defaultdict
@@ -495,6 +496,9 @@ def _build_registry_candidate(
     source_context_key, source_context_labels = _build_candidate_source_context(
         candidate=candidate, extraction_window=extraction_window
     )
+    source_occurrence_location_key = _build_source_occurrence_location_key(
+        candidate=candidate, extraction_window=extraction_window
+    )
     (
         canonical_statement_value,
         canonical_statement_value_key,
@@ -574,6 +578,7 @@ def _build_registry_candidate(
         resolved_code_type=resolved_code_type,
         source_context_key=source_context_key,
         source_context_labels=source_context_labels,
+        source_occurrence_location_key=source_occurrence_location_key,
         source_segment_ids=extraction_window.source_segment_ids,
         source_text=candidate.source_text,
         source_text_bucket_key=source_text_bucket_key,
@@ -808,6 +813,42 @@ def _build_scope_evidence_values(
 
     evidence_values.extend([candidate.source_text, candidate.description])
     return _unique_limited(evidence_values, limit=64)
+
+
+def _build_source_occurrence_location_key(
+    *, candidate: SFICandidate, extraction_window: ExtractionWindow
+) -> str:
+    """Build a type-independent key for one candidate's physical source location.
+
+    The key intentionally excludes extraction-window identity, candidate type, and
+    semantic scope. This allows overlapping windows and differently classified copies
+    of the same source occurrence to be compared without treating source location as a
+    logical merge decision.
+
+    Parameters
+    ----------
+    candidate
+        Window-local candidate carrying exact table row and header references.
+    extraction_window
+        Source extraction window carrying the document and segment identity.
+
+    Returns
+    -------
+    str
+        Stable SHA-256-derived source-occurrence location key.
+    """
+
+    location_payload = {
+        "doc_key": extraction_window.doc_key,
+        "segment_kind": extraction_window.segment_kind,
+        "source_segment_ids": sorted(set(extraction_window.source_segment_ids)),
+        "table_header_indexes": sorted(set(candidate.table_header_indexes)),
+        "table_row_indexes": sorted(set(candidate.table_row_indexes)),
+    }
+    location_basis = json.dumps(
+        location_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    )
+    return hashlib.sha256(location_basis.encode("utf-8")).hexdigest()[:32]
 
 
 def _build_statement_value_policies(

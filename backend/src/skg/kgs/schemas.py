@@ -39,6 +39,83 @@ SFIDedupDecision = Literal["conflict", "keep_separate", "merge", "needs_review"]
 SFIMergeDecision = Literal["conflict", "merged", "needs_review", "singleton"]
 
 
+def _find_scope_value_conflicts(
+    scope_value_maps: Sequence[dict[str, str]],
+) -> dict[str, list[str]]:
+    """Find contradictory values assigned to shared semantic scope dimensions.
+
+    Parameters
+    ----------
+    scope_value_maps
+        Source-backed scope mappings to compare.
+
+    Returns
+    -------
+    dict[str, list[str]]
+        Scope labels mapped to their distinct conflicting values. An empty mapping
+        means every shared scope dimension is compatible.
+    """
+
+    values_by_scope_label: dict[str, set[str]] = {}
+
+    for scope_values in scope_value_maps:
+        for scope_label, scope_value in scope_values.items():
+            values_by_scope_label.setdefault(scope_label, set()).add(scope_value)
+
+    return {
+        scope_label: sorted(scope_values)
+        for scope_label, scope_values in sorted(values_by_scope_label.items())
+        if len(scope_values) > 1
+    }
+
+
+def _source_refs_share_same_source_occurrence_cross_type_evidence(
+    source_refs: Sequence[dict[str, Any]],
+) -> bool:
+    """Check whether source refs preserve one direct cross-type occurrence signal.
+
+    Parameters
+    ----------
+    source_refs
+        Candidate source-reference dictionaries from one proposed merge group.
+
+    Returns
+    -------
+    bool
+        True when all refs share one non-empty source-occurrence location, represent
+        multiple statement-type pairs, and have exact normalized description or
+        source-text equality.
+    """
+
+    if len(source_refs) < 2:
+        return False
+
+    occurrence_keys = {
+        str(source_ref.get("source_occurrence_location_key") or "").strip()
+        for source_ref in source_refs
+    }
+    type_pairs = {
+        (
+            str(source_ref.get("statement_type") or "").strip(),
+            str(source_ref.get("normalized_statement_type") or "").strip(),
+        )
+        for source_ref in source_refs
+    }
+
+    if "" in occurrence_keys or len(occurrence_keys) != 1 or len(type_pairs) < 2:
+        return False
+
+    for field_name in ["normalized_description", "normalized_source_text"]:
+        normalized_values = {
+            str(source_ref.get(field_name) or "").strip() for source_ref in source_refs
+        }
+
+        if "" not in normalized_values and len(normalized_values) == 1:
+            return True
+
+    return False
+
+
 def _validate_iso8601_str(v: Optional[str]) -> Optional[str]:
     """Validate ISO-8601 parseability for timestamps if provided.
 
@@ -1447,6 +1524,15 @@ class SFIRegistryCandidate(BaseSchema):
         ),
         min_length=1,
     )
+    source_occurrence_location_key: str = Field(
+        description=(
+            "Deterministic type-independent key for the underlying source occurrence "
+            "location. It excludes extraction-window identity and candidate "
+            "classification so overlapping windows and classification variants can "
+            "be compared safely."
+        ),
+        min_length=1,
+    )
     source_segment_ids: list[str] = Field(
         description="ExtractionWindow.source_segment_ids for source recovery.",
         min_length=1,
@@ -1528,6 +1614,24 @@ class SFIRegistryCandidate(BaseSchema):
 
         value = str(v).strip()
         return value or None
+
+    @field_validator("source_occurrence_location_key", mode="before")
+    @classmethod
+    def clean_source_occurrence_location_key(cls, v: str) -> str:
+        """Strip and require the type-independent source-occurrence location key.
+
+        Parameters
+        ----------
+        v
+            Raw source-occurrence location key.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty key.
+        """
+
+        return strip_and_require_non_empty_str(v)
 
     @field_validator("code_scope_values")
     @classmethod
@@ -2868,17 +2972,19 @@ class SFIMergeGroup(BaseSchema):
             )
 
     def _validate_mintable_code_scope_contract(self) -> None:
-        """Validate code type and scope agreement for a mintable coded group.
+        """Validate canonical code policy for a mintable coded merge group.
 
-        The contract applies only when the merge group is mintable (`merged` or
-        `singleton`) and a canonical normalized statement code is resolved.
+        Same-type groups retain strict code-type and code-scope equality. Mixed-type
+        groups may preserve classification-derived code-policy differences, but the
+        aggregate canonical code and scope must come from one source-backed coded
+        candidate and all shared scope dimensions must remain non-contradictory.
 
         Raises
         ------
         ValueError
-            If the canonical code type is missing, candidate applicable code types
-            differ from the canonical type, candidates preserve more than one code
-            scope, or `code_scope_key` disagrees with the common source scope.
+            If canonical code metadata is missing, a same-type group has incompatible
+            code policy, a mixed-type group has contradictory shared scope values, or
+            the aggregate canonical code scope is not source-backed.
         """
 
         if (
@@ -2894,35 +3000,94 @@ class SFIMergeGroup(BaseSchema):
             str(source_ref.get("applicable_code_type") or "").strip()
             for source_ref in self.candidate_source_refs
         }
+        observed_type_pairs = {
+            (
+                str(source_ref.get("statement_type") or "").strip(),
+                str(source_ref.get("normalized_statement_type") or "").strip(),
+            )
+            for source_ref in self.candidate_source_refs
+        }
         source_scope_signatures = {
             str(source_ref.get("code_scope_key") or "").strip()
             for source_ref in self.candidate_source_refs
         }
+        expected_scope_key = (
+            next(iter(source_scope_signatures)) or None
+            if len(source_scope_signatures) == 1
+            else None
+        )
+        strict_scope_compatible = bool(
+            applicable_code_types == {self.canonical_code_type}
+            and len(source_scope_signatures) == 1
+            and self.code_scope_key == expected_scope_key
+        )
 
-        if applicable_code_types != {self.canonical_code_type}:
+        if strict_scope_compatible:
+            return
+
+        if len(observed_type_pairs) == 1:
             raise ValueError(
-                "Every candidate in a mintable coded merge group must have the "
-                "canonical applicable code type."
+                "Every candidate in a same-type mintable coded merge group must have "
+                "the canonical applicable code type and one common configured code "
+                "scope."
             )
 
-        if len(source_scope_signatures) != 1:
+        if not _source_refs_share_same_source_occurrence_cross_type_evidence(
+            self.candidate_source_refs
+        ):
             raise ValueError(
-                "Every candidate in a mintable coded merge group must preserve "
-                "one common configured code scope, including a common unscoped "
-                "document-global value."
+                "Relaxed mixed-type code policy requires direct same-source-"
+                "occurrence cross-type evidence in candidate_source_refs."
             )
 
-        expected_scope_key = next(iter(source_scope_signatures)) or None
+        scope_conflicts = _find_scope_value_conflicts(
+            [
+                dict(source_ref.get("code_scope_values") or {})
+                for source_ref in self.candidate_source_refs
+            ]
+        )
 
-        if self.code_scope_key != expected_scope_key:
+        if scope_conflicts:
             raise ValueError(
-                "code_scope_key must equal the common source-backed scope for a "
-                "mintable coded merge group."
+                f"Mixed-type mintable coded merge groups must not preserve "
+                f"contradictory shared code-scope values: {scope_conflicts}."
+            )
+
+        canonical_source_candidate_id = self.canonical_code_source_candidate_id
+        matching_canonical_source_refs = [
+            source_ref
+            for source_ref in self.candidate_source_refs
+            if (
+                (
+                    canonical_source_candidate_id is None
+                    or source_ref.get("registry_candidate_id")
+                    == canonical_source_candidate_id
+                )
+                and source_ref.get("normalized_statement_code")
+                == self.canonical_normalized_statement_code
+                and source_ref.get("resolved_code_type") == self.canonical_code_type
+                and (str(source_ref.get("code_scope_key") or "").strip() or None)
+                == self.code_scope_key
+                and dict(source_ref.get("code_scope_values") or {})
+                == self.code_scope_values
+            )
+        ]
+
+        if not matching_canonical_source_refs:
+            raise ValueError(
+                "A mixed-type mintable coded merge group must derive its aggregate "
+                "canonical code type and code scope from one source-backed coded "
+                "candidate in the group."
             )
 
     @model_validator(mode="after")
     def validate_identity_scope_contract(self) -> Self:
         """Validate aggregate semantic identity scope against candidate references.
+
+        Same-type mintable groups require one exactly shared configured identity scope.
+        Mixed-type merged groups use the selected canonical type source candidate's
+        scope while permitting additional or missing dimensions caused by different
+        statement-type policies. Shared dimensions must never contradict one another.
 
         Returns
         -------
@@ -2932,8 +3097,9 @@ class SFIMergeGroup(BaseSchema):
         Raises
         ------
         ValueError
-            If aggregate identity scope disagrees with source references or a mintable
-            group combines incompatible identity scopes.
+            If aggregate scope fields are not source-backed, a same-type mintable group
+            combines different scopes, or mixed-type candidates contradict one another
+            on a shared scope dimension.
         """
 
         source_scope_keys = sorted(
@@ -2982,16 +3148,26 @@ class SFIMergeGroup(BaseSchema):
                     "identity_scope_key."
                 )
 
-        if self.merge_decision in {"merged", "singleton"}:
-            source_scope_signatures = {
-                str(source_ref.get("identity_scope_key") or "").strip()
-                for source_ref in self.candidate_source_refs
-            }
+        if self.merge_decision not in {"merged", "singleton"}:
+            return self
 
+        observed_type_pairs = {
+            (
+                str(source_ref.get("statement_type") or "").strip(),
+                str(source_ref.get("normalized_statement_type") or "").strip(),
+            )
+            for source_ref in self.candidate_source_refs
+        }
+        source_scope_signatures = {
+            str(source_ref.get("identity_scope_key") or "").strip()
+            for source_ref in self.candidate_source_refs
+        }
+
+        if len(observed_type_pairs) == 1:
             if len(source_scope_signatures) != 1:
                 raise ValueError(
-                    "Every candidate in a mintable merge group must preserve one "
-                    "common configured semantic identity scope."
+                    "Every candidate in a same-type mintable merge group must preserve "
+                    "one common configured semantic identity scope."
                 )
 
             expected_scope_key = next(iter(source_scope_signatures)) or None
@@ -2999,8 +3175,86 @@ class SFIMergeGroup(BaseSchema):
             if self.identity_scope_key != expected_scope_key:
                 raise ValueError(
                     "identity_scope_key must equal the common source-backed identity "
-                    "scope for a mintable merge group."
+                    "scope for a same-type mintable merge group."
                 )
+
+            return self
+
+        source_scope_value_signatures = {
+            tuple(
+                (str(key).strip(), str(value).strip())
+                for key, value in (
+                    source_ref.get("identity_scope_values") or {}
+                ).items()
+            )
+            for source_ref in self.candidate_source_refs
+        }
+        strict_scope_compatible = bool(
+            len(source_scope_signatures) == 1
+            and len(source_scope_value_signatures) == 1
+        )
+
+        if (
+            not strict_scope_compatible
+            and not _source_refs_share_same_source_occurrence_cross_type_evidence(
+                self.candidate_source_refs
+            )
+        ):
+            raise ValueError(
+                "Relaxed mixed-type identity scope requires direct same-source-"
+                "occurrence cross-type evidence in candidate_source_refs."
+            )
+
+        if self.canonical_type_source_candidate_id is None:
+            raise ValueError(
+                "Mixed-type mintable merge groups require a canonical type source "
+                "candidate before identity scope can be resolved."
+            )
+
+        canonical_source_ref = next(
+            (
+                source_ref
+                for source_ref in self.candidate_source_refs
+                if source_ref.get("registry_candidate_id")
+                == self.canonical_type_source_candidate_id
+            ),
+            None,
+        )
+
+        if canonical_source_ref is None:
+            raise ValueError(
+                "The canonical type source candidate is not preserved in "
+                "candidate_source_refs."
+            )
+
+        canonical_scope_key = (
+            str(canonical_source_ref.get("identity_scope_key") or "").strip() or None
+        )
+        canonical_scope_values = dict(
+            canonical_source_ref.get("identity_scope_values") or {}
+        )
+
+        if (
+            self.identity_scope_key != canonical_scope_key
+            or self.identity_scope_values != canonical_scope_values
+        ):
+            raise ValueError(
+                "A mixed-type mintable merge group must derive aggregate identity "
+                "scope from its canonical type source candidate."
+            )
+
+        scope_conflicts = _find_scope_value_conflicts(
+            [
+                dict(source_ref.get("identity_scope_values") or {})
+                for source_ref in self.candidate_source_refs
+            ]
+        )
+
+        if scope_conflicts:
+            raise ValueError(
+                f"Mixed-type mintable merge groups must not preserve contradictory "
+                f"shared identity-scope values: {scope_conflicts}."
+            )
 
         return self
 
