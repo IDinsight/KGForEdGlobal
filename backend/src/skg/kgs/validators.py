@@ -932,10 +932,11 @@ def _validate_dedup_canonical_code_selections(
         if (
             selected_candidate.statement_code is None
             or selected_candidate.normalized_statement_code is None
+            or selected_candidate.resolved_code_type is None
         ):
             raise QualityError(
                 f"Dedup mixed-code merge group {group_index} selected uncoded "
-                f"candidate {selection_candidate_id!r}."
+                f"or unresolved candidate {selection_candidate_id!r}."
             )
 
         if (
@@ -946,6 +947,97 @@ def _validate_dedup_canonical_code_selections(
                 f"Dedup mixed-code merge group {group_index} selected candidate "
                 f"{selection_candidate_id!r} whose normalized code is not among the "
                 f"group's preserved source codes."
+            )
+
+
+def _validate_dedup_canonical_type_selections(
+    *, review_request: SFIDedupReviewRequest, review_response: SFIDedupReviewResponse
+) -> None:
+    """Validate canonical statement-type selections for dedup decision groups.
+
+    Python validates only stable selection integrity. The producer/checker LLM decides
+    which existing candidate has the correct classification when duplicate extraction
+    produced multiple statement-type pairs.
+
+    Parameters
+    ----------
+    review_request
+        Bounded review request containing candidate type evidence.
+    review_response
+        Structured dedup response whose type selections should be checked.
+
+    Raises
+    ------
+    QualityError
+        If canonical type selection fields are missing, unexpected, out of group, or
+        inconsistent with the selected candidate's existing type pair.
+    """
+
+    candidates_by_id = {
+        candidate.registry_candidate_id: candidate
+        for candidate in review_request.candidates
+    }
+
+    for group_index, decision_group in enumerate(review_response.decision_groups):
+        group_candidates = [
+            candidates_by_id[candidate_id]
+            for candidate_id in decision_group.candidate_ids
+        ]
+        distinct_type_pairs = {
+            (candidate.statement_type, candidate.normalized_statement_type)
+            for candidate in group_candidates
+        }
+        selection_candidate_id = decision_group.canonical_type_source_candidate_id
+        selection_reason = decision_group.canonical_type_selection_reason
+        requires_selection = (
+            decision_group.decision == "merge" and len(distinct_type_pairs) > 1
+        )
+
+        if not requires_selection:
+            if selection_candidate_id is not None or selection_reason is not None:
+                raise QualityError(
+                    f"Dedup decision group {group_index} must leave canonical-type "
+                    f"selection fields null unless decision='merge' and multiple "
+                    f"statement-type pairs are present."
+                )
+
+            continue
+
+        if selection_candidate_id is None:
+            raise QualityError(
+                f"Dedup mixed-type merge group {group_index} must provide "
+                f"canonical_type_source_candidate_id."
+            )
+
+        if selection_reason is None:
+            raise QualityError(
+                f"Dedup mixed-type merge group {group_index} must provide "
+                f"canonical_type_selection_reason."
+            )
+
+        if selection_candidate_id not in decision_group.candidate_ids:
+            raise QualityError(
+                f"Dedup mixed-type merge group {group_index} selected candidate "
+                f"{selection_candidate_id!r}, which is outside that decision group."
+            )
+
+        selected_candidate = candidates_by_id.get(selection_candidate_id)
+
+        if selected_candidate is None:
+            raise QualityError(
+                f"Dedup mixed-type merge group {group_index} selected unknown "
+                f"candidate {selection_candidate_id!r}."
+            )
+
+        selected_pair = (
+            selected_candidate.statement_type,
+            selected_candidate.normalized_statement_type,
+        )
+
+        if selected_pair not in distinct_type_pairs:
+            raise QualityError(
+                f"Dedup mixed-type merge group {group_index} selected a type pair "
+                f"that is not preserved in the decision group."
             )
 
 
@@ -982,6 +1074,116 @@ def _validate_dedup_issue_candidate_ids(
             raise QualityError(
                 f"SFI dedup validation issue {issue_index} references candidate IDs "
                 f"outside the review request: {unknown_candidate_ids}."
+            )
+
+
+def _validate_dedup_merge_scope_compatibility(
+    *, review_request: SFIDedupReviewRequest, review_response: SFIDedupReviewResponse
+) -> None:
+    """Validate code-type and source-scope compatibility for proposed merges.
+
+    A coded merge may include uncoded duplicate occurrences only when every candidate
+    independently carries the same applicable code type and the same resolved
+    configured scope. This prevents a semantically accepted LLM response from failing
+    later during merge-group construction or crossing curriculum scopes.
+
+    Parameters
+    ----------
+    review_request
+        Bounded review request containing candidate code type and scope evidence.
+    review_response
+        Structured dedup response containing proposed merge groups.
+
+    Raises
+    ------
+    QualityError
+        If a coded merge contains incompatible code types, contradictory scopes, or an
+        unresolved scope on any candidate.
+    """
+
+    candidates_by_id = {
+        candidate.registry_candidate_id: candidate
+        for candidate in review_request.candidates
+    }
+
+    for group_index, decision_group in enumerate(review_response.decision_groups):
+        if decision_group.decision != "merge":
+            continue
+
+        group_candidates = [
+            candidates_by_id[candidate_id]
+            for candidate_id in decision_group.candidate_ids
+        ]
+        coded_candidates = [
+            candidate
+            for candidate in group_candidates
+            if candidate.normalized_statement_code is not None
+        ]
+
+        if not coded_candidates:
+            continue
+
+        distinct_normalized_codes = {
+            candidate.normalized_statement_code for candidate in coded_candidates
+        }
+
+        if len(distinct_normalized_codes) > 1:
+            selected_candidate_id = decision_group.canonical_code_source_candidate_id
+            canonical_candidate = candidates_by_id.get(selected_candidate_id or "")
+        else:
+            canonical_candidate = sorted(
+                coded_candidates,
+                key=lambda candidate: candidate.registry_candidate_id,
+            )[0]
+
+        if (
+            canonical_candidate is None
+            or canonical_candidate.resolved_code_type is None
+        ):
+            raise QualityError(
+                f"Dedup coded merge group {group_index} has no fully resolved "
+                f"canonical code source candidate."
+            )
+
+        canonical_code_type = canonical_candidate.resolved_code_type
+        incompatible_candidate_ids = sorted(
+            candidate.registry_candidate_id
+            for candidate in group_candidates
+            if candidate.applicable_code_type != canonical_code_type
+        )
+
+        if incompatible_candidate_ids:
+            raise QualityError(
+                f"Dedup coded merge group {group_index} combines candidates whose "
+                f"applicable code types do not match canonical code type "
+                f"{canonical_code_type!r}: {incompatible_candidate_ids}. Return "
+                f"keep_separate, conflict, or needs_review."
+            )
+
+        scope_signatures = {
+            candidate.code_scope_key or "" for candidate in group_candidates
+        }
+
+        if len(scope_signatures) != 1:
+            raise QualityError(
+                f"Dedup coded merge group {group_index} combines unresolved or "
+                f"contradictory configured code scopes. Every candidate must resolve "
+                f"the same scope before it can be merged."
+            )
+
+        common_scope_key = next(iter(scope_signatures)) or None
+
+        if common_scope_key is None:
+            continue
+
+        scope_value_signatures = {
+            tuple(candidate.code_scope_values.items()) for candidate in group_candidates
+        }
+
+        if len(scope_value_signatures) != 1:
+            raise QualityError(
+                f"Dedup coded merge group {group_index} preserves one scope key but "
+                f"different source-backed scope values."
             )
 
 
@@ -1489,6 +1691,12 @@ def verify_sfi_dedup_review_integrity(
         review_request=review_request, review_response=review_response
     )
     _validate_dedup_canonical_code_selections(
+        review_request=review_request, review_response=review_response
+    )
+    _validate_dedup_canonical_type_selections(
+        review_request=review_request, review_response=review_response
+    )
+    _validate_dedup_merge_scope_compatibility(
         review_request=review_request, review_response=review_response
     )
     _validate_dedup_representative_selections(

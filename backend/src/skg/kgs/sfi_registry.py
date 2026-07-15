@@ -560,8 +560,10 @@ def _build_registry_candidate(
             f"{extraction_window.window_id!r}: {exc}"
         ) from exc
 
+    expected_code_type = statement_type_code_types.get(candidate.statement_type)
     normalized_statement_code = code_resolution.normalized_statement_code
     resolved_code_type = code_resolution.resolved_code_type
+    applicable_code_type = resolved_code_type or expected_code_type
 
     source_context_key, source_context_labels = _build_candidate_source_context(
         candidate=candidate, extraction_window=extraction_window
@@ -572,11 +574,12 @@ def _build_registry_candidate(
     ) = _build_canonical_statement_value(
         candidate=candidate, statement_value_policies=statement_value_policies
     )
-    code_scope_key, code_scope_values = _build_code_scope(
+    code_scope_key, code_scope_values = _resolve_applicable_code_scope(
+        applicable_code_type=applicable_code_type,
         candidate=candidate,
         code_scope_statement_types=code_scope_statement_types,
-        code_type=resolved_code_type,
         extraction_window=extraction_window,
+        require_complete=resolved_code_type is not None,
         statement_value_policies=statement_value_policies,
     )
     # Generate deterministic temporary registry candidate ID.
@@ -616,6 +619,7 @@ def _build_registry_candidate(
     )
 
     return SFIRegistryCandidate(
+        applicable_code_type=applicable_code_type,
         candidate_payload=candidate,
         canonical_statement_value=canonical_statement_value,
         canonical_statement_value_key=canonical_statement_value_key,
@@ -1265,6 +1269,72 @@ def _maybe_append_warning(
             warning_type=warning_type,
         )
     )
+
+
+def _resolve_applicable_code_scope(
+    *,
+    applicable_code_type: Optional[str],
+    candidate: SFICandidate,
+    code_scope_statement_types: dict[str, list[str]],
+    extraction_window: ExtractionWindow,
+    require_complete: bool,
+    statement_value_policies: dict[str, _StatementValuePolicy],
+) -> tuple[Optional[str], dict[str, str]]:
+    """Resolve source-derived scope for a candidate's applicable code type.
+
+    Coded candidates require complete configured scope because their accepted code
+    cannot be safely bucketed or finalized without it. Uncoded candidates whose
+    statement type declares a code type are allowed to retain unresolved scope; this
+    preserves them in the registry while preventing unsafe coded merges later.
+
+    Parameters
+    ----------
+    applicable_code_type
+        Resolved or statement-type-derived code type applicable to the candidate.
+    candidate
+        Window-local SFI candidate whose source context may expose scope values.
+    code_scope_statement_types
+        Ordered scope statement types keyed by configured code type.
+    extraction_window
+        Source extraction window containing row and section context.
+    require_complete
+        Whether missing configured scope must raise rather than remain unresolved.
+    statement_value_policies
+        Controlled-value policies keyed by statement type.
+
+    Returns
+    -------
+    tuple[Optional[str], dict[str, str]]
+        Resolved scope key and canonical scope values, or an empty unresolved scope.
+
+    Raises
+    ------
+    ValueError
+        If complete scope is required and configured source scope cannot be resolved.
+    """
+
+    if applicable_code_type is None:
+        return None, {}
+
+    try:
+        return _build_code_scope(
+            candidate=candidate,
+            code_scope_statement_types=code_scope_statement_types,
+            code_type=applicable_code_type,
+            extraction_window=extraction_window,
+            statement_value_policies=statement_value_policies,
+        )
+    except ValueError:
+        if require_complete:
+            raise
+
+        logger.warning(
+            f"Could not resolve optional configured code scope for uncoded candidate "
+            f"{candidate.candidate_id!r} in extraction window "
+            f"{extraction_window.window_id!r}; preserving the candidate with "
+            f"applicable_code_type={applicable_code_type!r} and unresolved scope."
+        )
+        return None, {}
 
 
 def _statement_type_is_ancestor(

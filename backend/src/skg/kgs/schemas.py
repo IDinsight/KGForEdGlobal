@@ -1352,6 +1352,13 @@ class SFIRegistryCandidate(BaseSchema):
     not a final StandardsFrameworkItem and must not be used as a final KG ID.
     """
 
+    applicable_code_type: Optional[str] = Field(
+        default=None,
+        description=(
+            "Configured code type applicable to this candidate from either its "
+            "resolved source code or statement-type policy."
+        ),
+    )
     candidate_payload: SFICandidate = Field(
         description="Original window-local SFI candidate payload."
     )
@@ -1373,13 +1380,13 @@ class SFIRegistryCandidate(BaseSchema):
     code_scope_key: Optional[str] = Field(
         description=(
             "Deterministic ordered key for configured code-scope values, or null when "
-            "the candidate's code type is document-global or the candidate is uncoded."
+            "the applicable code type is document-global or source scope is unresolved."
         )
     )
     code_scope_values: dict[str, str] = Field(
         description=(
             "Canonical controlled values for the configured statement types that "
-            "scope this candidate's accepted code."
+            "scope this candidate's applicable code type."
         )
     )
     confidence: float = Field(
@@ -1484,15 +1491,15 @@ class SFIRegistryCandidate(BaseSchema):
         value = str(v).strip()
         return value or None
 
-    @field_validator("resolved_code_type", mode="before")
+    @field_validator("applicable_code_type", "resolved_code_type", mode="before")
     @classmethod
-    def clean_resolved_code_type(cls, v: Optional[str]) -> Optional[str]:
-        """Strip an optional resolved code type and normalize blanks to null.
+    def clean_optional_code_type(cls, v: Optional[str]) -> Optional[str]:
+        """Strip an optional applicable or resolved code type.
 
         Parameters
         ----------
         v
-            Raw optional resolved code type.
+            Raw optional code type.
 
         Returns
         -------
@@ -1526,7 +1533,7 @@ class SFIRegistryCandidate(BaseSchema):
 
     @model_validator(mode="after")
     def validate_code_contract(self) -> Self:
-        """Validate candidate code resolution and configured scope consistency.
+        """Validate source-code, applicable-type, and scope consistency.
 
         Returns
         -------
@@ -1536,8 +1543,9 @@ class SFIRegistryCandidate(BaseSchema):
         Raises
         ------
         ValueError
-            If source, normalized, and resolved code fields are not present together,
-            or if exactly one of code_scope_key and code_scope_values is present.
+            If source-code fields disagree, a resolved type differs from the applicable
+            type, scope fields are only partially present, or scope exists without an
+            applicable code type.
         """
 
         code_field_presence = {
@@ -1552,10 +1560,25 @@ class SFIRegistryCandidate(BaseSchema):
                 "must either all be present or all be null."
             )
 
+        if (
+            self.resolved_code_type is not None
+            and self.applicable_code_type != self.resolved_code_type
+        ):
+            raise ValueError(
+                "applicable_code_type must equal resolved_code_type when a source "
+                "code is present."
+            )
+
         if bool(self.code_scope_key) != bool(self.code_scope_values):
             raise ValueError(
                 "code_scope_key and code_scope_values must either both be present or "
                 "both be empty."
+            )
+
+        if self.code_scope_key is not None and self.applicable_code_type is None:
+            raise ValueError(
+                "A candidate with configured code scope must define "
+                "applicable_code_type."
             )
 
         return self
@@ -1651,6 +1674,20 @@ class SFIDedupDecisionGroup(BaseSchema):
             "a merge decision combines multiple distinct normalized source codes."
         ),
     )
+    canonical_type_selection_reason: Optional[str] = Field(
+        default=None,
+        description=(
+            "Source-grounded reason for choosing canonical_type_source_candidate_id "
+            "when a merge group contains multiple statement-type pairs."
+        ),
+    )
+    canonical_type_source_candidate_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Candidate whose existing statement_type and normalized_statement_type "
+            "should become canonical for a mixed-type merge."
+        ),
+    )
     confidence: float = Field(
         default=0.5, description="LLM confidence in the decision.", ge=0.0, le=1.0
     )
@@ -1669,6 +1706,8 @@ class SFIDedupDecisionGroup(BaseSchema):
     @field_validator(
         "canonical_code_selection_reason",
         "canonical_code_source_candidate_id",
+        "canonical_type_selection_reason",
+        "canonical_type_source_candidate_id",
         "representative_candidate_id",
         mode="before",
     )
@@ -1743,6 +1782,10 @@ class SFIDedupDecisionGroup(BaseSchema):
 class SFIDedupReviewCandidate(BaseSchema):
     """Compact registry-candidate view for one bounded dedup review set."""
 
+    applicable_code_type: Optional[str] = Field(
+        default=None,
+        description="Configured code type applicable to this candidate.",
+    )
     canonical_statement_value: Optional[str] = Field(
         default=None,
         description="Canonical controlled statement value, when configured.",
@@ -1766,6 +1809,10 @@ class SFIDedupReviewCandidate(BaseSchema):
         description="Candidate normalized statement type."
     )
     registry_candidate_id: str = Field(description="Temporary registry candidate ID.")
+    resolved_code_type: Optional[str] = Field(
+        default=None,
+        description="Configured code type resolved from the candidate's source code.",
+    )
     source_text: str = Field(description="Source-visible evidence text.", min_length=1)
     statement_code: Optional[str] = Field(
         default=None, description="Original statement code, when present."
@@ -1809,20 +1856,22 @@ class SFIDedupReviewCandidate(BaseSchema):
 
         return cleaned
 
-    @field_validator("code_scope_key", mode="before")
+    @field_validator(
+        "applicable_code_type", "code_scope_key", "resolved_code_type", mode="before"
+    )
     @classmethod
-    def clean_code_scope_key(cls, v: Optional[str]) -> Optional[str]:
-        """Strip an optional review-candidate code-scope key.
+    def clean_optional_code_fields(cls, v: Optional[str]) -> Optional[str]:
+        """Strip optional review-candidate code metadata.
 
         Parameters
         ----------
         v
-            Raw optional code-scope key.
+            Raw optional code field.
 
         Returns
         -------
         Optional[str]
-            Stripped key, or `None` when blank.
+            Stripped value, or `None` when blank.
         """
 
         if v is None:
@@ -1851,7 +1900,7 @@ class SFIDedupReviewCandidate(BaseSchema):
 
     @model_validator(mode="after")
     def validate_code_scope_contract(self) -> Self:
-        """Require review-candidate scope keys and values to agree.
+        """Validate review-candidate code type and scope metadata.
 
         Returns
         -------
@@ -1861,13 +1910,41 @@ class SFIDedupReviewCandidate(BaseSchema):
         Raises
         ------
         ValueError
-            If exactly one of code_scope_key and code_scope_values is present.
+            If code fields disagree, scope fields are partially populated, or scope
+            exists without an applicable code type.
         """
+
+        code_field_presence = {
+            self.statement_code is not None,
+            self.normalized_statement_code is not None,
+            self.resolved_code_type is not None,
+        }
+
+        if len(code_field_presence) != 1:
+            raise ValueError(
+                "statement_code, normalized_statement_code, and resolved_code_type "
+                "must either all be present or all be null."
+            )
+
+        if (
+            self.resolved_code_type is not None
+            and self.applicable_code_type != self.resolved_code_type
+        ):
+            raise ValueError(
+                "applicable_code_type must equal resolved_code_type when a source "
+                "code is present."
+            )
 
         if bool(self.code_scope_key) != bool(self.code_scope_values):
             raise ValueError(
                 "code_scope_key and code_scope_values must either both be present or "
                 "both be empty."
+            )
+
+        if self.code_scope_key is not None and self.applicable_code_type is None:
+            raise ValueError(
+                "A review candidate with configured scope must define "
+                "applicable_code_type."
             )
 
         return self
@@ -2290,6 +2367,10 @@ class SFIMergeGroup(BaseSchema):
     candidate_source_texts: list[str] = Field(
         default_factory=list, description="Unique source-visible evidence snippets."
     )
+    canonical_code_type: Optional[str] = Field(
+        default=None,
+        description="Resolved configured code type for the logical merged SFI.",
+    )
     canonical_code_source_candidate_id: Optional[str] = Field(
         default=None,
         description=(
@@ -2304,6 +2385,28 @@ class SFIMergeGroup(BaseSchema):
     canonical_statement_code: Optional[str] = Field(
         default=None,
         description="Resolved source-backed code for the logical merged SFI, when coded.",
+    )
+    canonical_normalized_statement_type: Optional[NormalizedStatementType] = Field(
+        default=None,
+        description="Resolved normalized statement type for a mintable merge group.",
+    )
+    canonical_statement_type: Optional[str] = Field(
+        default=None,
+        description="Resolved source-facing statement type for a mintable merge group.",
+    )
+    canonical_type_selection_reason: Optional[str] = Field(
+        default=None,
+        description=(
+            "Source-grounded reason for the canonical type selection in a mixed-type "
+            "merge group."
+        ),
+    )
+    canonical_type_source_candidate_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Registry candidate whose existing type pair was selected for a "
+            "mixed-type merge group."
+        ),
     )
     canonical_statement_value: Optional[str] = Field(
         default=None,
@@ -2404,8 +2507,13 @@ class SFIMergeGroup(BaseSchema):
 
     @field_validator(
         "canonical_code_source_candidate_id",
+        "canonical_code_type",
         "canonical_normalized_statement_code",
+        "canonical_normalized_statement_type",
         "canonical_statement_code",
+        "canonical_statement_type",
+        "canonical_type_selection_reason",
+        "canonical_type_source_candidate_id",
         "code_scope_key",
         "normalized_statement_code",
         "representative_candidate_id",
@@ -2523,7 +2631,7 @@ class SFIMergeGroup(BaseSchema):
 
     @model_validator(mode="after")
     def validate_code_scope_contract(self) -> Self:
-        """Validate merge-group scope fields against per-candidate source references.
+        """Validate aggregate code-scope fields against candidate source references.
 
         Returns
         -------
@@ -2533,16 +2641,16 @@ class SFIMergeGroup(BaseSchema):
         Raises
         ------
         ValueError
-            If aggregate scope fields disagree with candidate references or a mintable
-            group combines scoped and unscoped candidates or multiple scopes.
+            If aggregate scope fields disagree with source references or a mintable
+            coded group contains candidates with incompatible code types or scopes.
         """
 
-        source_scope_signatures = {
-            str(source_ref.get("code_scope_key") or "").strip()
-            for source_ref in self.candidate_source_refs
-        }
         source_scope_keys = sorted(
-            scope_key for scope_key in source_scope_signatures if scope_key
+            {
+                str(source_ref.get("code_scope_key") or "").strip()
+                for source_ref in self.candidate_source_refs
+                if str(source_ref.get("code_scope_key") or "").strip()
+            }
         )
 
         if set(self.code_scope_keys) != set(source_scope_keys):
@@ -2551,54 +2659,194 @@ class SFIMergeGroup(BaseSchema):
                 "in candidate_source_refs."
             )
 
-        if len(source_scope_signatures) == 1:
-            sole_scope_key = next(iter(source_scope_signatures)) or None
-        else:
-            sole_scope_key = None
-
-        if self.code_scope_key != sole_scope_key:
-            raise ValueError(
-                "code_scope_key must equal the sole candidate scope, or be null when "
-                "candidate scopes differ."
-            )
-
-        if (
-            self.merge_decision in {"merged", "singleton"}
-            and len(source_scope_signatures) > 1
-        ):
-            raise ValueError(
-                "Mintable merge groups cannot combine multiple configured code scopes "
-                "or mix scoped and unscoped candidates."
-            )
-
         if self.code_scope_key is None:
             if self.code_scope_values:
                 raise ValueError(
                     "code_scope_values must be empty when code_scope_key is null."
                 )
+        else:
+            matching_scope_values = {
+                tuple(
+                    (str(key).strip(), str(value).strip())
+                    for key, value in (
+                        source_ref.get("code_scope_values") or {}
+                    ).items()
+                )
+                for source_ref in self.candidate_source_refs
+                if str(source_ref.get("code_scope_key") or "").strip()
+                == self.code_scope_key
+            }
 
-            return self
+            if len(matching_scope_values) != 1:
+                raise ValueError(
+                    "code_scope_values must have one source-backed value mapping for "
+                    "the resolved code_scope_key."
+                )
 
-        source_scope_values = {
-            tuple(
-                (str(key).strip(), str(value).strip())
-                for key, value in (source_ref.get("code_scope_values") or {}).items()
+            expected_scope_values = dict(next(iter(matching_scope_values)))
+
+            if self.code_scope_values != expected_scope_values:
+                raise ValueError(
+                    "code_scope_values must equal the source-backed values for "
+                    "code_scope_key."
+                )
+
+        if (
+            self.merge_decision in {"merged", "singleton"}
+            and self.canonical_normalized_statement_code is not None
+        ):
+            if self.canonical_code_type is None:
+                raise ValueError(
+                    "Mintable coded merge groups require canonical_code_type."
+                )
+
+            applicable_code_types = {
+                str(source_ref.get("applicable_code_type") or "").strip()
+                for source_ref in self.candidate_source_refs
+            }
+            source_scope_signatures = {
+                str(source_ref.get("code_scope_key") or "").strip()
+                for source_ref in self.candidate_source_refs
+            }
+
+            if applicable_code_types != {self.canonical_code_type}:
+                raise ValueError(
+                    "Every candidate in a mintable coded merge group must have the "
+                    "canonical applicable code type."
+                )
+
+            if len(source_scope_signatures) != 1:
+                raise ValueError(
+                    "Every candidate in a mintable coded merge group must preserve "
+                    "one common configured code scope, including a common unscoped "
+                    "document-global value."
+                )
+
+            expected_scope_key = next(iter(source_scope_signatures)) or None
+
+            if self.code_scope_key != expected_scope_key:
+                raise ValueError(
+                    "code_scope_key must equal the common source-backed scope for a "
+                    "mintable coded merge group."
+                )
+
+        if (
+            self.canonical_normalized_statement_code is None
+            and self.canonical_code_type
+        ):
+            raise ValueError(
+                "canonical_code_type must be null when no canonical normalized code "
+                "is resolved."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_type_resolution_contract(self) -> Self:
+        """Validate canonical statement-type resolution for the merge group.
+
+        Returns
+        -------
+        Self
+            Validated merge group.
+
+        Raises
+        ------
+        ValueError
+            If mintable groups lack a canonical type pair, non-mintable groups assert
+            one, or mixed-type selection metadata is inconsistent.
+        """
+
+        observed_pairs = {
+            (
+                str(source_ref.get("statement_type") or "").strip(),
+                str(source_ref.get("normalized_statement_type") or "").strip(),
             )
             for source_ref in self.candidate_source_refs
         }
+        observed_pairs.discard(("", ""))
+        canonical_pair = (
+            self.canonical_statement_type or "",
+            self.canonical_normalized_statement_type or "",
+        )
+        selection_fields_present = bool(
+            self.canonical_type_selection_reason
+            or self.canonical_type_source_candidate_id
+        )
 
-        if len(source_scope_values) != 1:
+        if self.merge_decision not in {"merged", "singleton"}:
+            if canonical_pair != ("", "") or selection_fields_present:
+                raise ValueError(
+                    "Conflict and needs_review groups must not define canonical "
+                    "statement-type resolution fields."
+                )
+
+            return self
+
+        if not all(canonical_pair):
             raise ValueError(
-                "Candidates sharing one code_scope_key must preserve identical "
-                "code_scope_values."
+                "Mintable merge groups require canonical_statement_type and "
+                "canonical_normalized_statement_type."
             )
 
-        expected_scope_values = dict(next(iter(source_scope_values)))
-
-        if self.code_scope_values != expected_scope_values:
+        if canonical_pair not in observed_pairs:
             raise ValueError(
-                "code_scope_values must equal the shared values preserved in "
-                "candidate_source_refs."
+                "Canonical statement type must be preserved by a candidate source "
+                "reference in the merge group."
+            )
+
+        if len(observed_pairs) == 1:
+            if selection_fields_present:
+                raise ValueError(
+                    "Single-type merge groups must not define canonical type "
+                    "selection fields."
+                )
+
+            return self
+
+        if self.merge_decision != "merged":
+            raise ValueError(
+                "Only merged groups may resolve multiple observed statement types."
+            )
+
+        if not self.canonical_type_source_candidate_id:
+            raise ValueError(
+                "Mixed-type merged groups require "
+                "canonical_type_source_candidate_id."
+            )
+
+        if not self.canonical_type_selection_reason:
+            raise ValueError(
+                "Mixed-type merged groups require canonical_type_selection_reason."
+            )
+
+        if self.canonical_type_source_candidate_id not in self.registry_candidate_ids:
+            raise ValueError(
+                "canonical_type_source_candidate_id must belong to the merge group."
+            )
+
+        selected_refs = [
+            source_ref
+            for source_ref in self.candidate_source_refs
+            if source_ref.get("registry_candidate_id")
+            == self.canonical_type_source_candidate_id
+        ]
+
+        if len(selected_refs) != 1:
+            raise ValueError(
+                "canonical_type_source_candidate_id must identify exactly one "
+                "candidate source reference."
+            )
+
+        selected_pair = (
+            str(selected_refs[0].get("statement_type") or "").strip(),
+            str(selected_refs[0].get("normalized_statement_type") or "").strip(),
+        )
+
+        if canonical_pair != selected_pair:
+            raise ValueError(
+                "Canonical statement type must equal the selected source candidate's "
+                "type pair."
             )
 
         return self
@@ -2725,6 +2973,7 @@ class SFIMergeGroup(BaseSchema):
 
         if any(
             [
+                self.canonical_code_type,
                 self.canonical_code_source_candidate_id,
                 self.canonical_normalized_statement_code,
                 self.canonical_statement_code,
@@ -2766,6 +3015,9 @@ class SFIMergeGroup(BaseSchema):
                 "single_source_code canonical normalized code must equal the "
                 "single preserved normalized source code."
             )
+
+        if not self.canonical_code_type:
+            raise ValueError("single_source_code requires canonical_code_type.")
 
         if (
             not self.canonical_statement_code
@@ -2820,6 +3072,11 @@ class SFIMergeGroup(BaseSchema):
             raise ValueError(
                 "review_selected_source_code requires "
                 "canonical_code_source_candidate_id."
+            )
+
+        if not self.canonical_code_type:
+            raise ValueError(
+                "review_selected_source_code requires canonical_code_type."
             )
 
         if (
@@ -2883,6 +3140,7 @@ class SFIMergeGroup(BaseSchema):
 
         if any(
             [
+                self.canonical_code_type,
                 self.canonical_code_source_candidate_id,
                 self.canonical_normalized_statement_code,
                 self.canonical_statement_code,
@@ -3013,6 +3271,10 @@ class SFIFinalRecord(BaseSchema):
             "for a mixed-code merge."
         ),
     )
+    canonical_code_type: Optional[str] = Field(
+        default=None,
+        description="Resolved configured code type for the final logical SFI.",
+    )
     canonical_normalized_statement_code: Optional[str] = Field(
         default=None,
         description="Resolved normalized statement code for the final logical SFI.",
@@ -3020,6 +3282,20 @@ class SFIFinalRecord(BaseSchema):
     canonical_statement_code: Optional[str] = Field(
         default=None,
         description="Resolved source-backed statement code for the final logical SFI.",
+    )
+    canonical_type_selection_reason: Optional[str] = Field(
+        default=None,
+        description=(
+            "Source-grounded reason for canonical statement-type selection in a "
+            "mixed-type merge."
+        ),
+    )
+    canonical_type_source_candidate_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Registry candidate whose source-backed type pair was selected as "
+            "canonical for a mixed-type merge."
+        ),
     )
     canonical_statement_value: Optional[str] = Field(
         default=None,
@@ -3152,8 +3428,11 @@ class SFIFinalRecord(BaseSchema):
 
     @field_validator(
         "canonical_code_source_candidate_id",
+        "canonical_code_type",
         "canonical_normalized_statement_code",
         "canonical_statement_code",
+        "canonical_type_selection_reason",
+        "canonical_type_source_candidate_id",
         "normalized_statement_code",
         "statement_code",
         mode="before",
@@ -3277,6 +3556,45 @@ class SFIFinalRecord(BaseSchema):
         return self
 
     @model_validator(mode="after")
+    def validate_final_type_resolution_contract(self) -> Self:
+        """Validate final-record canonical statement-type resolution metadata.
+
+        Returns
+        -------
+        Self
+            Validated final SFI record.
+
+        Raises
+        ------
+        ValueError
+            If mixed-type selection metadata is partially populated or references a
+            candidate outside the preserved source candidate set.
+        """
+
+        selection_fields = (
+            self.canonical_type_selection_reason,
+            self.canonical_type_source_candidate_id,
+        )
+
+        if any(selection_fields) and not all(selection_fields):
+            raise ValueError(
+                "canonical type selection reason and source candidate ID must be "
+                "present together."
+            )
+
+        if (
+            self.canonical_type_source_candidate_id is not None
+            and self.canonical_type_source_candidate_id
+            not in self.source_registry_candidate_ids
+        ):
+            raise ValueError(
+                "canonical_type_source_candidate_id must be preserved in "
+                "source_registry_candidate_ids."
+            )
+
+        return self
+
+    @model_validator(mode="after")
     def validate_final_code_resolution_contract(self) -> Self:
         """Validate final-record canonical-code resolution semantics.
 
@@ -3346,6 +3664,7 @@ class SFIFinalRecord(BaseSchema):
 
         if any(
             [
+                self.canonical_code_type,
                 self.canonical_code_source_candidate_id,
                 self.canonical_normalized_statement_code,
                 self.canonical_statement_code,
@@ -3388,6 +3707,11 @@ class SFIFinalRecord(BaseSchema):
             raise ValueError(
                 "single_source_code canonical normalized code must equal the "
                 "single preserved normalized source code."
+            )
+
+        if not self.canonical_code_type:
+            raise ValueError(
+                "single_source_code final records require canonical_code_type."
             )
 
         if (
@@ -3444,6 +3768,12 @@ class SFIFinalRecord(BaseSchema):
             raise ValueError(
                 "review_selected_source_code final records require "
                 "canonical_code_source_candidate_id."
+            )
+
+        if not self.canonical_code_type:
+            raise ValueError(
+                "review_selected_source_code final records require "
+                "canonical_code_type."
             )
 
         if (
