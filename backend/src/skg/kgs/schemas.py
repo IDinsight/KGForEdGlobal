@@ -3102,6 +3102,34 @@ class SFIMergeGroup(BaseSchema):
             on a shared scope dimension.
         """
 
+        self._validate_aggregate_identity_scope_is_source_backed()
+
+        if self.merge_decision not in {"merged", "singleton"}:
+            return self
+
+        if self._validate_same_type_identity_scope():
+            return self
+
+        self._validate_mixed_type_identity_scope()
+
+        return self
+
+    def _validate_aggregate_identity_scope_is_source_backed(self) -> None:
+        """Validate that aggregate identity-scope fields are source-backed.
+
+        Confirms that the aggregate identity-scope keys equal the non-empty
+        identity-scope keys preserved across candidate references, and that the
+        resolved identity-scope key and values are drawn from those references.
+
+        Raises
+        ------
+        ValueError
+            If the aggregate identity-scope keys do not equal the source-backed keys,
+            identity-scope values are populated while the key is null, no single
+            source-backed value mapping exists for the resolved key, or the aggregate
+            values do not equal that source-backed mapping.
+        """
+
         source_scope_keys = sorted(
             {
                 str(source_ref.get("identity_scope_key") or "").strip()
@@ -3121,35 +3149,55 @@ class SFIMergeGroup(BaseSchema):
                 raise ValueError(
                     "identity_scope_values must be empty when identity_scope_key is null."
                 )
-        else:
-            matching_scope_values = {
-                tuple(
-                    (str(key).strip(), str(value).strip())
-                    for key, value in (
-                        source_ref.get("identity_scope_values") or {}
-                    ).items()
-                )
-                for source_ref in self.candidate_source_refs
-                if str(source_ref.get("identity_scope_key") or "").strip()
-                == self.identity_scope_key
-            }
 
-            if len(matching_scope_values) != 1:
-                raise ValueError(
-                    "identity_scope_values must have one source-backed value mapping "
-                    "for the resolved identity_scope_key."
-                )
+            return
 
-            expected_scope_values = dict(next(iter(matching_scope_values)))
+        matching_scope_values = {
+            tuple(
+                (str(key).strip(), str(value).strip())
+                for key, value in (
+                    source_ref.get("identity_scope_values") or {}
+                ).items()
+            )
+            for source_ref in self.candidate_source_refs
+            if str(source_ref.get("identity_scope_key") or "").strip()
+            == self.identity_scope_key
+        }
 
-            if self.identity_scope_values != expected_scope_values:
-                raise ValueError(
-                    "identity_scope_values must equal the source-backed values for "
-                    "identity_scope_key."
-                )
+        if len(matching_scope_values) != 1:
+            raise ValueError(
+                "identity_scope_values must have one source-backed value mapping "
+                "for the resolved identity_scope_key."
+            )
 
-        if self.merge_decision not in {"merged", "singleton"}:
-            return self
+        expected_scope_values = dict(next(iter(matching_scope_values)))
+
+        if self.identity_scope_values != expected_scope_values:
+            raise ValueError(
+                "identity_scope_values must equal the source-backed values for "
+                "identity_scope_key."
+            )
+
+    def _validate_same_type_identity_scope(self) -> bool:
+        """Validate identity scope for a same-type mintable merge group.
+
+        Applies only when every candidate preserves a single observed statement-type
+        pair. Such a group must share one common configured identity scope, and the
+        aggregate identity-scope key must equal that shared scope.
+
+        Returns
+        -------
+        bool
+            `True` when the group is same-type and identity-scope validation is
+            therefore complete, `False` when the group is mixed-type and mixed-type
+            validation must still run.
+
+        Raises
+        ------
+        ValueError
+            If a same-type group does not preserve one common configured identity
+            scope, or the aggregate identity-scope key does not equal that shared scope.
+        """
 
         observed_type_pairs = {
             (
@@ -3158,28 +3206,53 @@ class SFIMergeGroup(BaseSchema):
             )
             for source_ref in self.candidate_source_refs
         }
+
+        if len(observed_type_pairs) != 1:
+            return False
+
         source_scope_signatures = {
             str(source_ref.get("identity_scope_key") or "").strip()
             for source_ref in self.candidate_source_refs
         }
 
-        if len(observed_type_pairs) == 1:
-            if len(source_scope_signatures) != 1:
-                raise ValueError(
-                    "Every candidate in a same-type mintable merge group must preserve "
-                    "one common configured semantic identity scope."
-                )
+        if len(source_scope_signatures) != 1:
+            raise ValueError(
+                "Every candidate in a same-type mintable merge group must preserve "
+                "one common configured semantic identity scope."
+            )
 
-            expected_scope_key = next(iter(source_scope_signatures)) or None
+        expected_scope_key = next(iter(source_scope_signatures)) or None
 
-            if self.identity_scope_key != expected_scope_key:
-                raise ValueError(
-                    "identity_scope_key must equal the common source-backed identity "
-                    "scope for a same-type mintable merge group."
-                )
+        if self.identity_scope_key != expected_scope_key:
+            raise ValueError(
+                "identity_scope_key must equal the common source-backed identity "
+                "scope for a same-type mintable merge group."
+            )
 
-            return self
+        return True
 
+    def _validate_mixed_type_identity_scope(self) -> None:
+        """Validate identity scope for a mixed-type mintable merge group.
+
+        Applies when a mintable group preserves more than one observed statement-type
+        pair. Unless every candidate shares an identical scope key and value mapping,
+        the group requires direct same-source-occurrence cross-type evidence. The
+        aggregate scope must derive from the canonical type source candidate, and
+        shared scope dimensions must not contradict one another.
+
+        Raises
+        ------
+        ValueError
+            If a relaxed mixed-type scope lacks same-source-occurrence cross-type
+            evidence, the canonical type source candidate is missing or not preserved,
+            the aggregate scope does not derive from that candidate, or candidates
+            contradict one another on a shared scope dimension.
+        """
+
+        source_scope_signatures = {
+            str(source_ref.get("identity_scope_key") or "").strip()
+            for source_ref in self.candidate_source_refs
+        }
         source_scope_value_signatures = {
             tuple(
                 (str(key).strip(), str(value).strip())
@@ -3255,8 +3328,6 @@ class SFIMergeGroup(BaseSchema):
                 f"Mixed-type mintable merge groups must not preserve contradictory "
                 f"shared identity-scope values: {scope_conflicts}."
             )
-
-        return self
 
     @model_validator(mode="after")
     def validate_type_resolution_contract(self) -> Self:
