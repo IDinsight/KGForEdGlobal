@@ -714,10 +714,75 @@ def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
 
 
-def _resolve_candidate_source_anchors(
+def _render_candidate_source_text(
+    resolved_spans: Sequence[tuple[SFISourceUnit, int, int]],
+) -> str:
+    """Render deterministic candidate evidence from resolved source spans.
+
+    Exact source text is preserved inside every span. Whitespace between spans in the
+    same source unit is preserved when the intervening source contains only whitespace.
+    Spans from different source units, or spans separated by other visible source text,
+    are joined with a newline so the rendering does not imply false contiguity.
+
+    Parameters
+    ----------
+    resolved_spans
+        Unique candidate evidence spans in deterministic source order.
+
+    Returns
+    -------
+    str
+        Non-empty deterministic evidence rendering.
+
+    Raises
+    ------
+    QualityError
+        If no non-empty source evidence can be rendered.
+    """
+
+    rendered_parts: list[str] = []
+    previous_span: Optional[tuple[SFISourceUnit, int, int]] = None
+
+    for source_unit, start_char, end_char in resolved_spans:
+        fragment = source_unit.source_text[start_char:end_char]
+
+        if not fragment:
+            continue
+
+        if previous_span is None:
+            rendered_parts.append(fragment)
+        else:
+            previous_unit, _previous_start, previous_end = previous_span
+
+            if previous_unit.source_unit_id == source_unit.source_unit_id:
+                intervening_text = source_unit.source_text[previous_end:start_char]
+                separator = intervening_text if not intervening_text.strip() else "\n"
+            else:
+                separator = "\n"
+
+            rendered_parts.extend([separator, fragment])
+
+        previous_span = (source_unit, start_char, end_char)
+
+    rendered_text = "".join(rendered_parts).strip()
+
+    if not rendered_text:
+        raise QualityError(
+            "An SFI candidate must resolve to non-empty source-anchor evidence."
+        )
+
+    return rendered_text
+
+
+def _resolve_candidate_evidence_spans(
     *, candidate: SFICandidate, source_unit_map: dict[str, SFISourceUnit]
-) -> list[tuple[tuple[tuple[int, int, int, int], int, int], str]]:
-    """Resolve every candidate anchor to its ordered source position and text.
+) -> list[tuple[SFISourceUnit, int, int]]:
+    """Resolve and order the unique source spans supporting one candidate.
+
+    Description and code anchors are resolved against the same stable source-unit map.
+    Exact duplicate spans shared by both anchor lists are retained once. Overlapping
+    description/code evidence spans in one source unit are coalesced for rendering;
+    description-anchor overlap remains subject to its separate integrity validator.
 
     Parameters
     ----------
@@ -728,18 +793,19 @@ def _resolve_candidate_source_anchors(
 
     Returns
     -------
-    list[tuple[tuple[tuple[int, int, int, int], int, int], str]]
-        One `((source_order, start_char, end_char), source_text)` entry per description
-        and code anchor, in the candidate's anchor order.
+    list[tuple[SFISourceUnit, int, int]]
+        Unique source units and inclusive-start/exclusive-end character spans in
+        deterministic source order.
 
     Raises
     ------
     QualityError
-        If an anchor references an unknown source unit or points to a nonexistent
+        If an anchor references an unknown source unit or identifies a nonexistent
         excerpt occurrence.
     """
 
-    resolved_anchors: list[tuple[tuple[tuple[int, int, int, int], int, int], str]] = []
+    resolved_spans: list[tuple[SFISourceUnit, int, int]] = []
+    seen_span_keys: set[tuple[str, int, int]] = set()
 
     for anchor in [
         *candidate.description_source_anchors,
@@ -749,8 +815,8 @@ def _resolve_candidate_source_anchors(
 
         if source_unit is None:
             raise QualityError(
-                f"Candidate {candidate.candidate_id!r} references unknown source_unit_id "
-                f"{anchor.source_unit_id!r}."
+                f"Candidate {candidate.candidate_id!r} references unknown "
+                f"source_unit_id {anchor.source_unit_id!r}."
             )
 
         try:
@@ -763,48 +829,38 @@ def _resolve_candidate_source_anchors(
                 f"{exc}"
             ) from exc
 
-        resolved_anchors.append(
-            ((source_unit.source_order, start_char, end_char), anchor.source_text)
-        )
+        span_key = (source_unit.source_unit_id, start_char, end_char)
 
-    return resolved_anchors
+        if span_key in seen_span_keys:
+            continue
 
+        seen_span_keys.add(span_key)
+        resolved_spans.append((source_unit, start_char, end_char))
 
-def _text_contains_fragments_in_order(
-    *, container_text: str, fragments: Sequence[str]
-) -> bool:
-    """Check whether normalized fragments occur in source order in container text.
+    resolved_spans.sort(key=lambda item: (item[0].source_order, item[1], item[2]))
+    coalesced_spans: list[tuple[SFISourceUnit, int, int]] = []
 
-    Parameters
-    ----------
-    container_text
-        Candidate text expected to contain the fragments.
-    fragments
-        Exact source fragments in anchor order.
+    for source_unit, start_char, end_char in resolved_spans:
+        if not coalesced_spans:
+            coalesced_spans.append((source_unit, start_char, end_char))
+            continue
 
-    Returns
-    -------
-    bool
-        Whether every non-empty fragment appears in order.
-    """
+        previous_unit, previous_start, previous_end = coalesced_spans[-1]
 
-    normalized_container = _normalize_anchor_composition_text(container_text)
-    search_start = 0
+        if (
+            previous_unit.source_unit_id == source_unit.source_unit_id
+            and start_char < previous_end
+        ):
+            coalesced_spans[-1] = (
+                previous_unit,
+                previous_start,
+                max(previous_end, end_char),
+            )
+            continue
 
-    for fragment in fragments:
-        normalized_fragment = _normalize_anchor_composition_text(fragment)
+        coalesced_spans.append((source_unit, start_char, end_char))
 
-        if not normalized_fragment:
-            return False
-
-        fragment_start = normalized_container.find(normalized_fragment, search_start)
-
-        if fragment_start < 0:
-            return False
-
-        search_start = fragment_start + len(normalized_fragment)
-
-    return True
+    return coalesced_spans
 
 
 def _text_equals_anchor_fragments(*, fragments: Sequence[str], value: str) -> bool:
@@ -1048,7 +1104,7 @@ def _validate_candidate_source_anchors(
         support the candidate's code and language.
     """
 
-    resolved_anchors = _resolve_candidate_source_anchors(
+    _resolve_candidate_evidence_spans(
         candidate=candidate, source_unit_map=source_unit_map
     )
 
@@ -1086,54 +1142,10 @@ def _validate_candidate_source_anchors(
             f"exactly from description_source_anchors after whitespace normalization."
         )
 
-    all_anchor_fragments = [
-        source_text for _position, source_text in sorted(resolved_anchors)
-    ]
-
-    if not _text_contains_fragments_in_order(
-        container_text=candidate.source_text, fragments=all_anchor_fragments
-    ):
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} source_text must contain its code "
-            f"and description anchor excerpts in source order."
-        )
-
     _validate_candidate_description_language(
         candidate=candidate, description_languages=description_languages, window=window
     )
     _validate_candidate_code_evidence(candidate=candidate, window=window)
-
-
-def _validate_candidate_source_exists(
-    *, candidate: SFICandidate, window: ExtractionWindow
-) -> None:
-    """Validate that candidate evidence text exists in source-visible window text.
-
-    This is a conservative anti-hallucination check, not a description-completeness,
-    semantic, or citation-minimality check. The validation LLM decides whether the
-    candidate description and selected source locations are appropriate.
-
-    Parameters
-    ----------
-    candidate
-        Candidate whose source wording should exist in the window.
-    window
-        Source extraction window.
-
-    Raises
-    ------
-    QualityError
-        If the candidate evidence quote is absent from source-visible window text.
-    """
-
-    window_text = _normalize_text(window.source_text)
-    source_text_normalized = _normalize_text(candidate.source_text)
-
-    if not source_text_normalized or source_text_normalized not in window_text:
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} source_text is not present in "
-            "the source-visible extraction-window text."
-        )
 
 
 def _validate_candidate_statement_type(
@@ -1850,6 +1862,39 @@ def _validate_description_anchor_span_contiguity(
             )
 
 
+def _validate_extraction_result_is_canonical(
+    *, extraction_result: SFIExtractionResult, window: ExtractionWindow
+) -> None:
+    """Validate deterministic candidate rendering, ordering, IDs, and references.
+
+    Parameters
+    ----------
+    extraction_result
+        Extraction result expected to already be in canonical form.
+    window
+        Source extraction window supplying stable source units.
+
+    Raises
+    ------
+    QualityError
+        If any candidate evidence rendering, candidate position, candidate ID, or
+        auxiliary candidate reference differs from deterministic canonical form.
+    """
+
+    canonical_result = canonicalize_sfi_extraction_result(
+        extraction_result=extraction_result, window=window
+    )
+
+    if extraction_result.model_dump(mode="python") != canonical_result.model_dump(
+        mode="python"
+    ):
+        raise QualityError(
+            "SFI extraction results must use deterministic anchor-composed source_text, "
+            "candidate source order, sequential candidate IDs, and remapped auxiliary "
+            "candidate references."
+        )
+
+
 def _validate_has_child_parent_selection_policy(
     *,
     resolution_request: SFIHasChildResolutionRequest,
@@ -2208,6 +2253,116 @@ def _validate_result_identity(
         )
 
 
+def canonicalize_sfi_extraction_result(
+    *, extraction_result: SFIExtractionResult, window: ExtractionWindow
+) -> SFIExtractionResult:
+    """Canonicalize candidate evidence text, source order, IDs, and references.
+
+    Exact source anchors are authoritative. Python deterministically renders each
+    candidate's `source_text` from its description and code anchors, orders candidates
+    by the first contributing source span, assigns sequential `sfi_1` through `sfi_N`
+    identifiers, and remaps auxiliary candidate references. Curriculum semantics,
+    candidate classification, and occurrence-boundary decisions are not changed.
+
+    Parameters
+    ----------
+    extraction_result
+        Parsed producer or checker extraction result.
+    window
+        Source extraction window supplying stable source units.
+
+    Returns
+    -------
+    SFIExtractionResult
+        A newly validated result in deterministic canonical form.
+
+    Raises
+    ------
+    QualityError
+        If candidate anchors cannot be resolved into valid deterministic evidence.
+    """
+
+    source_unit_map = build_sfi_source_unit_map(window)
+    sortable_candidates: list[
+        tuple[
+            tuple[tuple[int, int, int, int], int, int],
+            int,
+            SFICandidate,
+            str,
+        ]
+    ] = []
+
+    for original_index, candidate in enumerate(extraction_result.sfi_candidates):
+        resolved_spans = _resolve_candidate_evidence_spans(
+            candidate=candidate, source_unit_map=source_unit_map
+        )
+
+        if not resolved_spans:
+            raise QualityError(
+                f"Candidate {candidate.candidate_id!r} has no resolvable source "
+                f"evidence spans."
+            )
+
+        first_source_unit, first_start_char, first_end_char = resolved_spans[0]
+        source_order_key = (
+            first_source_unit.source_order,
+            first_start_char,
+            first_end_char,
+        )
+        canonical_source_text = _render_candidate_source_text(resolved_spans)
+        sortable_candidates.append(
+            (
+                source_order_key,
+                original_index,
+                candidate,
+                canonical_source_text,
+            )
+        )
+
+    sortable_candidates.sort(key=lambda item: (item[0], item[1]))
+    candidate_id_map: dict[str, str] = {}
+    canonical_candidates: list[SFICandidate] = []
+
+    for candidate_number, (
+        _source_order_key,
+        _original_index,
+        candidate,
+        canonical_source_text,
+    ) in enumerate(sortable_candidates, start=1):
+        canonical_candidate_id = f"sfi_{candidate_number}"
+        candidate_id_map[candidate.candidate_id] = canonical_candidate_id
+        canonical_candidates.append(
+            candidate.model_copy(
+                deep=True,
+                update={
+                    "candidate_id": canonical_candidate_id,
+                    "source_text": canonical_source_text,
+                },
+            )
+        )
+
+    canonical_auxiliary_candidates = [
+        auxiliary_candidate.model_copy(
+            deep=True,
+            update={
+                "related_candidate_ids": [
+                    candidate_id_map[candidate_id]
+                    for candidate_id in auxiliary_candidate.related_candidate_ids
+                ]
+            },
+        )
+        for auxiliary_candidate in extraction_result.auxiliary_candidates
+    ]
+    canonical_payload = extraction_result.model_dump(mode="python")
+    canonical_payload.update(
+        {
+            "auxiliary_candidates": canonical_auxiliary_candidates,
+            "sfi_candidates": canonical_candidates,
+        }
+    )
+    return SFIExtractionResult.model_validate(canonical_payload)
+
+
 def verify_sfi_dedup_review_integrity(
     *, review_request: SFIDedupReviewRequest, review_response: SFIDedupReviewResponse
 ) -> None:
@@ -2341,8 +2496,8 @@ def verify_sfi_extraction_integrity(
     Raises
     ------
     QualityError
-        If the result violates a stable identity, policy, source-existence, or
-        reference-integrity constraint.
+        If the result violates a stable identity, policy, canonical anchor-backed
+        evidence, or reference-integrity constraint.
     """
 
     statement_type_alias_to_canonical = _build_statement_type_alias_map(kg_config)
@@ -2356,6 +2511,9 @@ def verify_sfi_extraction_integrity(
     }
 
     _validate_result_identity(result=extraction_result, window=window)
+    _validate_extraction_result_is_canonical(
+        extraction_result=extraction_result, window=window
+    )
     _validate_candidate_ids(extraction_result)
     source_unit_map = build_sfi_source_unit_map(window)
 
@@ -2369,7 +2527,6 @@ def verify_sfi_extraction_integrity(
             statement_type_normalized_by_label=statement_type_normalized_by_label,
         )
         _validate_candidate_table_indexes(candidate=candidate, window=window)
-        _validate_candidate_source_exists(candidate=candidate, window=window)
         _validate_candidate_code(
             candidate=candidate,
             code_patterns_by_type=dict(kg_config.academic_standards.code_patterns),

@@ -161,7 +161,10 @@ def _build_compact_extraction_window_payload(
             "occurrence of that exact excerpt within the complete source unit. "
             "Multiple description anchors in one source unit must not overlap or "
             "omit non-whitespace visible text between them. Helper-only and "
-            "context-only content cannot be anchored."
+            "context-only content cannot be anchored. Python deterministically "
+            "rebuilds each candidate source_text from its resolved description and "
+            "code anchors, then canonicalizes candidate source order, IDs, and "
+            "auxiliary candidate references."
         ),
         "source_context": {
             "section_path": [
@@ -638,18 +641,18 @@ def _build_compact_table_payload(
             "merged headers and body columns. A source_rows entry may itself be a "
             "continuation or "
             "subheader row, so determine its role from visible wording and geometry "
-            "rather than assuming every source_rows entry is ordinary data. Quote "
-            "source_text only from block.source_text, table.header_rows cell text, "
-            "or table.source_rows cell text. For table-derived SFI candidates, "
-            "description must be copied from the same cited table.header_rows and/or "
-            "table.source_rows text. If unsure, set description equal to source_text. "
-            "Do not clean, translate, correct spelling, normalize, expand, or infer "
-            "table descriptions from surrounding context. If an official table "
+            "rather than assuming every source_rows entry is ordinary data. For "
+            "table-derived SFI candidates, exact description/code anchors must cite "
+            "table.header_rows and/or table.source_rows cells, and description must be "
+            "composed from the cited description-anchor excerpts. Candidate source_text "
+            "is a provisional rendering of anchored fragments and is rebuilt by "
+            "Python. Do not clean, translate, correct spelling, normalize, expand, or "
+            "infer table descriptions from surrounding context. If an official table "
             "statement is split across adjacent source rows or cells, use all visible "
             "contributing fragments and include all contributing table_row_indexes. "
             "Use rowspan_context_rows and filldown_context_rows only to understand "
-            "structural carryover; never quote helper_context_only rows as source_text "
-            "or description."
+            "structural carryover; never anchor helper_context_only rows or use them in "
+            "description."
         ),
     }
 
@@ -857,32 +860,31 @@ def extract_sfi_candidates_from_window(
 - The candidate normalized_statement_type must exactly match the normalized_statement_type configured for its canonical statement_type.
 
 ## Candidate field policy
-- Return sfi_candidates in source order and assign candidate_id exactly by list position: sfi_1, sfi_2, through sfi_N with no gaps, alternate prefixes, or reordered numbers. For block content, order candidates by the first source-visible text that contributes to each candidate. For tables, order raw header-derived candidates before body-row-derived candidates, then follow table.source_rows order and left-to-right cell/text order within each row. Candidates sharing the same exact source location may use either stable relative order.
+- Return sfi_candidates in your best source order and use temporary unique candidate_id values. Python deterministically orders candidates by their earliest resolved description/code anchor, assigns candidate_id values sfi_1 through sfi_N, and remaps auxiliary related_candidate_ids before integrity validation. For block content, the derived order follows source units and character offsets. For tables, header cells precede body cells, followed by source row and left-to-right column order. Candidates sharing the same exact earliest source position retain their model-supplied relative order.
 - Preserve source occurrences during extraction; do not perform logical deduplication. Each independently printed or otherwise independently source-visible SFI occurrence must remain a separate candidate, even when another occurrence has the same statement type, code, description, normalized wording, or apparent logical identity.
 - Combine source locations into one candidate only when they are visible fragments of one source occurrence, such as a single statement continuing across adjacent cells, rows, slices, or headers. Do not combine complete independently printed occurrences merely because they repeat, overlap semantically, or are expected to merge in a later stage.
 - Apply the runtime `sfi_extraction_instructions` whenever they define more specific occurrence, continuation, splitting, or repetition behavior. If a generic example or heuristic conflicts with those instructions, the runtime instructions take precedence.
 - Leave logical identity resolution and merging of repeated source occurrences to the downstream SFI deduplication stage. The same code with materially different source-visible wording must also remain separate.
-- Every candidate must provide non-empty description_source_anchors. Copy each source_unit_id exactly from the supporting block.source_units entry or raw table cell. For each anchor, copy an exact non-empty source excerpt into source_text and set occurrence_index to the zero-based left-to-right non-overlapping occurrence of that exact excerpt within the complete referenced source unit. Use occurrence_index=0 when the excerpt appears once.
+- Every candidate must provide non-empty description_source_anchors. Copy each source_unit_id exactly from the supporting block.source_units entry or raw table cell. For each anchor, copy an exact non-empty source excerpt into that anchor's source_text and set occurrence_index to the zero-based left-to-right non-overlapping occurrence of that exact excerpt within the complete referenced source unit. Use occurrence_index=0 when the excerpt appears once.
 - description_source_anchors must identify exactly the source-visible fragments that compose description, in source order. After whitespace normalization, concatenating their source_text values in order with only source-boundary whitespace must equal description. Multiple anchors within one source unit must not overlap or skip non-whitespace source-visible text. Do not anchor broader neighboring text, a complete row, or a complete block when a narrower source-visible unit/excerpt identifies the statement.
 - code_source_anchors must be empty when statement_code is null. When statement_code is non-null, code_source_anchors must identify the exact source-unit occurrence of the corresponding code_matches[].raw_value. Do not use description anchors, surrounding text, local_code, section context, or another candidate's code as a substitute.
 - Stable source anchors define physical source occurrence. Two candidates in different table cells, list items, block slices, or different repeated excerpt occurrences are distinct source occurrences even when they share one row, segment, code, and wording.
-- description should preserve the complete exact source-language wording of the SFI. For learning expectations, use the full official statement text. For groupings, preserve the complete grouping label or heading text, including visible hierarchy terms, ordinal numbers, punctuation, and separators such as "Grade", "Strand", "Sub-Strand", "3", and ":". Remove only a separately represented item identifier code. Do not mistake a hierarchy label or ordinal organizer prefix for a code. When a visible code functions as a separate item identifier, exclude that code from description and place its normalized form only in statement_code while preserving its raw source form in source_text. Removing a separately represented identifier is not a wording correction. When multiple explicit labeled fields appear on one physical line, such as one label-value field followed by another label-value field, treat each complete visible field as a separately bounded source span and preserve their source order. Do not clean, translate, correct spelling, normalize, expand, infer, or truncate the actual statement wording.
+- description should preserve the complete exact source-language wording of the SFI. For learning expectations, use the full official statement text. For groupings, preserve the complete grouping label or heading text, including visible hierarchy terms, ordinal numbers, punctuation, and separators such as "Grade", "Strand", "Sub-Strand", "3", and ":". Remove only a separately represented item identifier code. Do not mistake a hierarchy label or ordinal organizer prefix for a code. When a visible code functions as a separate item identifier, exclude that code from description, place its normalized form only in statement_code, and cite its raw source form in code_source_anchors. Removing a separately represented identifier is not a wording correction. When multiple explicit labeled fields appear on one physical line, such as one label-value field followed by another label-value field, treat each complete visible field as a separately bounded source span and preserve their source order. Do not clean, translate, correct spelling, normalize, expand, infer, or truncate the actual statement wording.
 - statement_type must use exactly one canonical source-facing role from statement_type_policy.
-- statement_code must use the candidate-local code_matches[].normalized_value whose code_type matches statement_type_policy.code_type for the candidate. The matching code_matches[].raw_value must be directly paired with the complete candidate description in the candidate's own source_text and cited source locations. Formatting normalization may remove whitespace around punctuation or separate a complete code printed immediately adjacent to statement text, but it must never change a code prefix, alphanumeric character, delimiter, or numeric component. Treat block.local_code and table.local_code as context only unless the same candidate-local code is also exposed by code_matches. When statement_type_policy.code_type is null, emit a code only when exactly one candidate-local code_match is unambiguous. Use null for nearby codes, segment labels, table identifiers that are not item codes, ambiguous or incomplete codes, codes not visible in the candidate's own source_text, or codes that belong to another statement. Do not leave statement_code null solely because code_matches[].raw_value contains spacing around punctuation or is glued to the statement text.
-- language must match the source language tag on the exact block.source_units or table cells that support description/source_text. Use "mul" when the candidate combines visible text from more than one source language. Use the KG config primary language only when the supporting source units have no language metadata.
+- statement_code must use the candidate-local code_matches[].normalized_value whose code_type matches statement_type_policy.code_type for the candidate. The matching code_matches[].raw_value must be cited exactly by code_source_anchors and must belong to this candidate's source occurrence. Formatting normalization may remove whitespace around punctuation or separate a complete code printed immediately adjacent to statement text, but it must never change a code prefix, alphanumeric character, delimiter, or numeric component. Treat block.local_code and table.local_code as context only unless the same candidate-local code is also exposed by code_matches. When statement_type_policy.code_type is null, emit a code only when exactly one candidate-local code_match is unambiguous. Use null for nearby codes, segment labels, table identifiers that are not item codes, ambiguous or incomplete codes, codes not supported by this candidate's exact source anchors, or codes that belong to another statement. Do not leave statement_code null solely because code_matches[].raw_value contains spacing around punctuation or is glued to the statement text.
+- language must match the source language tag on the exact block.source_units or table cells cited by description_source_anchors. Use "mul" when the description combines visible text from more than one source language. Use the KG config primary language only when the supporting source units have no language metadata.
 - confidence should reflect how clearly the source window supports the candidate.
 - table_header_indexes and table_row_indexes are source-text location fields, not general context fields.
-- For table candidates, both description and source_text must be supported by the cited table_header_indexes and/or table_row_indexes.
-- Populate table_header_indexes only when the candidate source_text or description is quoted from table.header_rows.
-- Populate table_row_indexes only when the candidate source_text or description is quoted from table.source_rows.
+- For table candidates, description and every description/code source anchor must be supported by the cited table_header_indexes and/or table_row_indexes.
+- Populate table_header_indexes only when candidate anchors cite table.header_rows.
+- Populate table_row_indexes only when candidate anchors cite table.source_rows.
 - Do not include table_header_indexes merely because a row appears under a relevant column header such as Content Standard or Indicators and Exemplars; use the header text as classification context only.
-- Include both table_header_indexes and table_row_indexes only when the candidate source_text visibly includes quoted text from both table.header_rows and table.source_rows.
+- Include both table_header_indexes and table_row_indexes only when candidate anchors cite visible text from both table.header_rows and table.source_rows.
 - description should contain the complete source-visible SFI statement or grouping label, including visible continuation fragments when an official statement is split across adjacent table rows or cells.
-- source_text is a source-visible evidence quote for validation. It is not the final canonical KG statement text and it is not the only downstream provenance.
-- For every SFI candidate, source_text must be a contiguous excerpt of description, or contain the complete description with tightly bounded visible source context. Do not use an unrelated quote from another cited row or source unit.
-- Whenever statement_code is non-null, source_text must contain the corresponding code_matches[].raw_value directly paired with the complete description, while statement_code contains code_matches[].normalized_value. Preserve the source's spacing or lack of spacing between the raw code and statement text. Use only "raw code + complete description" or "complete description + raw code" as visibly presented in the source. Keep the separately represented code out of description. Do not include another statement, another code, a segment label, a table identifier, or unrelated surrounding text merely to make a code visible.
-- Keep source_text concise but sufficient. For coded table statements, quote only the official code and complete statement text, not examples, exemplars, teacher guidance, activities, competencies, or neighboring statements. When a statement is split across multiple visible rows/cells, quote the complete visible statement only if the contributing fragments can be represented as a source-visible excerpt; otherwise omit statement_code and quote the strongest exact visible fragment while relying on table_row_indexes/table_header_indexes for downstream source recovery.
-- For table candidates, description may equal source_text only when source_text contains the complete official statement and no separately represented identifier code or unrelated context. When source_text includes a separate item code, description must contain only the complete official statement wording. A description may also be a complete source-visible cell, contiguous cell range, bounded clause, or statement assembled from adjacent cited cells or adjacent cited rows. Do not create a description by deleting, interleaving, or truncating words from the actual statement wording.
+- source_text is a provisional anchor-composed evidence rendering. Python replaces it with a deterministic rendering of the unique description and code anchor spans in source order before integrity validation and persistence.
+- For every SFI candidate, include only exact text represented by description_source_anchors and code_source_anchors. The rendering may span multiple source units and does not need to be a contiguous substring of the flattened extraction-window text. Use whitespace or newlines only as boundaries between exact anchored fragments; do not add neighboring statements, hidden context, inferred wording, or unanchored visible text.
+- Whenever statement_code is non-null, code_source_anchors must cite the corresponding code_matches[].raw_value while statement_code contains code_matches[].normalized_value. Keep the separately represented code out of description. Python will place the raw code and complete description fragments in their actual source order, even when they occupy different cells, rows, slices, or source units.
+- For table candidates, description may equal the provisional source_text only when the anchor set contains the complete official statement and no separately represented identifier code. A description may be a complete source-visible cell, contiguous cell range, bounded clause, or statement assembled from adjacent cited cells or adjacent cited rows. Do not create a description by deleting, interleaving, or truncating words from the actual statement wording.
 
 ## Source fidelity rules
 - Preserve source-language text. Do not translate. Use block.source_units and table-cell language fields to assign candidate and auxiliary language accurately.
@@ -890,22 +892,22 @@ def extract_sfi_candidates_from_window(
 - If one exact source excerpt occurs more than once within a source unit, occurrence_index must identify the correct physical occurrence. Different occurrence_index values are different physical source occurrences.
 - For a statement assembled from adjacent visible fragments, return one description anchor per contributing fragment. Do not combine independently complete cells or text occurrences into one candidate merely because their words are identical.
 - For a non-list stitched block, block.source_text is the complete source-visible logical block and may contain one statement continuing across multiple block.source_units/slices.
-- For every candidate and auxiliary record, source_text must be a verbatim source-visible excerpt from block.source_text/block.source_units, table.header_rows cell text, or table.source_rows cell text. Never quote source_context.section_path or helper-only filldown context.
-- For table candidates, description must be source-visible in the cited table_header_indexes and/or table_row_indexes. Cite exactly the raw header/body rows that contribute to the candidate description and source_text; do not include unrelated context rows. Do not use text from another visible row/header unless that row/header index is also cited.
+- For SFI candidates, every fragment represented in source_text must come from exact description/code anchors on block.source_units, table.header_rows cells, or table.source_rows cells; Python composes the final rendering. Auxiliary candidate source_text remains one verbatim source-visible excerpt from block.source_text, table.header_rows, or table.source_rows. Never use source_context.section_path or helper-only filldown context.
+- For table candidates, description and every description/code anchor must be source-visible in the cited table_header_indexes and/or table_row_indexes. Cite exactly the raw header/body rows that contribute anchored evidence; do not include unrelated context rows. Do not use text from another visible row/header unless that row/header index is also cited.
 - If a table statement visibly continues across adjacent source rows or cells, include every contributing table_row_index and assemble the complete official statement in description from those visible fragments. Do not truncate description at the first row/cell.
-- The final KG-building stages recover full source provenance from window_id, window_source_segment_ids, table_row_indexes, table_header_indexes, and the persisted ExtractionWindow/DocumentIR. Do not use source_text to carry hidden context, parentage, or non-visible text.
-- Use code_matches as typed source evidence, not as final KG nodes. Assign code_matches[].normalized_value to statement_code only when the corresponding code_matches[].raw_value is directly paired with that candidate's complete description in source_text and cited source locations. Immediate adjacency between a complete raw code and the first character of statement text is valid pairing when that is how the source is printed.
-- Treat block.local_code and table.local_code as context that can help locate the relevant candidate-local code_match, not as an independent source of statement_code. Do not automatically copy a table identifier or segment label into statement_code. When the same normalized code is visibly repeated for distinct source items, multiple candidates may preserve it only when each candidate's own source_text and exact cited source locations independently contain the corresponding raw code directly paired with its complete description.
+- The final KG-building stages recover full source provenance from exact anchors, window_id, window_source_segment_ids, table_row_indexes, table_header_indexes, and the persisted ExtractionWindow/DocumentIR. Do not use source_text to carry hidden context, parentage, or non-visible text.
+- Use code_matches as typed source evidence, not as final KG nodes. Assign code_matches[].normalized_value to statement_code only when the corresponding code_matches[].raw_value is cited by this candidate's exact code_source_anchors and the bounded source evidence associates it with the candidate occurrence. Immediate adjacency between a complete raw code and the first character of statement text is valid pairing when that is how the source is printed.
+- Treat block.local_code and table.local_code as context that can help locate the relevant candidate-local code_match, not as an independent source of statement_code. Do not automatically copy a table identifier or segment label into statement_code. When the same normalized code is visibly repeated for distinct source items, multiple candidates may preserve it only when each candidate independently cites the corresponding raw code and its complete description with exact source anchors.
 - Table headers are source-visible structural evidence. When the curriculum-specific KG config says a table-header label is an official grouping SFI, extract it as a Standard Grouping candidate.
-- For table-row-derived SFI candidates, table_row_indexes must be non-empty and must use the visible table.source_rows[].row_index values containing the quoted candidate source_text.
-- For table-header-derived SFI candidates, table_header_indexes must be non-empty and must use the visible table.header_rows[].header_row_index values containing the quoted candidate source_text; table_row_indexes should be empty unless the quoted source_text also includes visible text from table.source_rows.
-- Do not cite a table header row as source evidence when the header only explains the meaning of a body-row column. In that case, use the header as classification context and cite only the body row indexes that contain the candidate source_text.
-- If a table candidate's quoted source_text includes visible text from both header rows and body rows, include both table_header_indexes and table_row_indexes; otherwise cite only the header rows or body rows that contain the quoted source_text.
-- Treat table.filldown_context_rows as helper context only. These cells repeat row-span context for interpretation, but they are not source-visible evidence. Do not quote helper_context_only cells as candidate source_text or auxiliary source_text unless the same text is also visible in block.source_text, table.header_rows, or table.source_rows.
+- For table-row-derived SFI candidates, table_row_indexes must be non-empty and must use the visible table.source_rows[].row_index values containing candidate description/code anchors.
+- For table-header-derived SFI candidates, table_header_indexes must be non-empty and must use the visible table.header_rows[].header_row_index values containing candidate description/code anchors; table_row_indexes should be empty unless anchors also cite visible text from table.source_rows.
+- Do not cite a table header row as source evidence when the header only explains the meaning of a body-row column. In that case, use the header as classification context and cite only the body row indexes containing candidate anchors.
+- If a table candidate's anchors cite visible text from both header rows and body rows, include both table_header_indexes and table_row_indexes; otherwise cite only the header rows or body rows containing anchored evidence.
+- Treat table.filldown_context_rows as helper context only. These cells repeat row-span context for interpretation, but they are not source-visible evidence. Do not anchor helper_context_only cells or use them as auxiliary source_text unless the same text is also visible in block.source_text, table.header_rows, or table.source_rows.
 
 ## Output contract
-Copy window_id, window_index, and window_source_segment_ids exactly from the compact source window. Return sfi_candidates in nondecreasing source order with candidate_id values exactly matching their 1-based list positions.
-Every SFI candidate requires exact description_source_anchors. A coded candidate also requires exact code_source_anchors; an uncoded candidate must return an empty code_source_anchors list.
+Copy window_id, window_index, and window_source_segment_ids exactly from the compact source window. Return sfi_candidates in your best source order with unique temporary candidate_id values; Python derives final source order and sequential IDs from exact anchors.
+Every SFI candidate requires exact description_source_anchors. A coded candidate also requires exact code_source_anchors; an uncoded candidate must return an empty code_source_anchors list. Provide a non-empty provisional source_text containing only anchored fragments; Python replaces it with the deterministic anchor-composed rendering.
 Keep extraction_notes short; use them only for window-level extraction issues, not to summarize examples, competencies, or activities.
 Return auxiliary candidates only when they clarify why prominent source-visible text was not extracted as an SFI; do not list ordinary examples, activities, competencies, or guidance notes.
 Do not emit auxiliary candidates for routine front matter, ordinary examples, or repeated core-competency lists unless they are unusually ambiguous or likely to be mistaken for an SFI.
@@ -1292,8 +1294,10 @@ Do not assume the draft is correct. Return an `SFIExtractionValidationVerdict`.
   self-contained, not a patch or list of edits.
 - You may add omitted candidates, remove false positives, split candidates, or combine
   source fragments that belong to one source occurrence; you may also correct statement
-  types, codes, languages, source text, source locations, auxiliary records, notes,
-  ordering, and IDs when the source and runtime policy require it.
+  types, codes, languages, exact anchors, source locations, auxiliary records, and
+  notes when the source and runtime policy require it. Candidate source_text rendering,
+  source order, IDs, and auxiliary ID references are canonicalized deterministically by
+  Python from the corrected exact anchors.
 - Do not combine independently printed or independently source-visible occurrences as a
   form of logical deduplication. Logical merging belongs to the downstream SFI
   deduplication stage.
@@ -1336,9 +1340,10 @@ correcting the draft.
 - Apply curriculum-specific exceptions and known source anomalies exactly as instructed.
 
 ### 3. Source fidelity
-- Candidate descriptions and `source_text` must preserve source-visible wording and
-  language. Do not translate, paraphrase, normalize, repair spelling, or silently add
-  missing text.
+- Candidate descriptions and exact description/code anchors must preserve
+  source-visible wording and language. Do not translate, paraphrase, normalize, repair
+  spelling, or silently add missing text. Candidate source_text is only a provisional
+  anchor-composed rendering and is replaced deterministically by Python.
 - Verify every description_source_anchor and code_source_anchor against the exact
   source_unit_id exposed in the compact source window. Each anchor source_text must be
   an exact excerpt of that source unit, and occurrence_index must select the correct
@@ -1384,9 +1389,9 @@ it passes:
   Equations` to only its topic wording is a material error.
 - When `statement_code` is non-null, it equals the applicable candidate-local
   `code_matches[].normalized_value`, and the corresponding `code_matches[].raw_value`
-  is visibly paired with this candidate's complete description in its own `source_text`
-  and cited source locations. Immediate code-to-text adjacency is allowed when
-  source-visible.
+  is cited exactly by this candidate's code_source_anchors and belongs to the same
+  bounded source occurrence as the complete description. Immediate code-to-text
+  adjacency is allowed when source-visible.
 - When `statement_code` is null, check the candidate's own cited source and
   candidate-local `code_matches` for a complete compatible code. A raw code that differs
   from its normalized value only through spacing around punctuation, trailing layout
@@ -1394,7 +1399,8 @@ it passes:
   supplied `normalized_value`. Leaving such a complete code null is a material error.
   Do not repair incomplete codes or change code characters or components.
 - The cited table rows or headers visibly support this candidate's description and
-  evidence quote, rather than only containing a nearby or parallel statement.
+  exact description/code anchors, rather than only containing a nearby or parallel
+  statement.
 - The candidate is an SFI under runtime policy, not an exemplar, activity, note,
   resource, repeated header, or other excluded material.
 - Distinct same-code/different-content source items remain separate. Independently
@@ -1408,13 +1414,16 @@ it passes:
 
 Any failure in this audit that changes candidate content, code, classification,
 coverage, provenance, or auxiliary output requires `passed=false`, an `error` issue,
-and a complete corrected result.
+and a complete corrected result. Do not fail a semantically correct draft solely for
+source_text rendering, candidate ordering, sequential IDs, or auxiliary related-ID
+renumbering; Python canonicalizes those fields from exact anchors.
 
 ### 6. Ordering and identifiers
-- Return candidates in source order.
-- In any corrected result, renumber candidates exactly as `sfi_1` through `sfi_N` after
-  all additions, removals, splits, merges, and reordering.
-- Update auxiliary `related_candidate_ids` to the corrected IDs.
+- Return candidates in your best source order and use unique temporary candidate IDs.
+- Ensure auxiliary `related_candidate_ids` reference those temporary IDs correctly.
+- Python deterministically sorts candidates by their earliest resolved description/code
+  anchor, assigns `sfi_1` through `sfi_N`, rebuilds source_text, and remaps auxiliary
+  references before integrity validation.
 - Copy `window_id`, `window_index`, and `window_source_segment_ids` exactly from the
   source window.
 

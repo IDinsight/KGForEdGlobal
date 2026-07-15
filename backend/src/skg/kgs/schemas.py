@@ -943,7 +943,12 @@ class SFICandidate(BaseSchema):
         description="Standard, Standard Grouping, or Other."
     )
     source_text: str = Field(
-        description="Verbatim source text supporting this candidate.", min_length=1
+        description=(
+            "Deterministic evidence rendering composed from the candidate's exact "
+            "description and code source anchors in source order. Python canonicalizes "
+            "this field before integrity validation and persistence."
+        ),
+        min_length=1,
     )
     statement_code: Optional[str] = Field(
         default=None,

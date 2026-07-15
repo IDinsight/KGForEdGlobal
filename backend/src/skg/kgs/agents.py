@@ -18,6 +18,7 @@ from skg.kgs.schemas import (
     SFIHasChildResolutionRequest,
     SFIHasChildResolutionResponse,
 )
+from skg.kgs.validators import canonicalize_sfi_extraction_result
 from skg.model_registry import ModelConfig
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
@@ -233,10 +234,11 @@ def create_sfi_extraction_agent(
 ) -> Agent:
     """Create an Agent configured for SFI candidate extraction.
 
-    The returned agent validates parsed output with universal Python integrity checks.
-    Semantic review and curriculum-specific correction are performed by a separate
-    validation LLM after this draft result is produced. Integrity failures raise
-    `ModelRetry` so the model can repair malformed or unsupported references.
+    The returned agent canonicalizes anchor-derived evidence text, candidate source
+    order, IDs, and auxiliary references before applying universal Python integrity
+    checks. Semantic review and curriculum-specific correction are performed by a
+    separate validation LLM after this draft result is produced. Integrity failures
+    raise `ModelRetry` so the model can repair malformed or unsupported references.
 
     Parameters
     ----------
@@ -294,8 +296,11 @@ def create_sfi_extraction_agent(
         attempt = attempt_counter["value"]
 
         try:
+            canonical_output = canonicalize_sfi_extraction_result(
+                extraction_result=output, window=window
+            )
             verify_integrity_fn(
-                extraction_result=output, kg_config=kg_config, window=window
+                extraction_result=canonical_output, kg_config=kg_config, window=window
             )
         except QualityError as e:
             truncated_msg = str(e)[:500]
@@ -315,7 +320,7 @@ def create_sfi_extraction_agent(
             ) from e
 
         attempt_counter["value"] += 1
-        return output
+        return canonical_output
 
     return agent
 
@@ -335,8 +340,8 @@ def create_sfi_extraction_validation_agent(
     The validation agent receives the same compact source window as the extraction
     agent plus the complete draft result. It applies generic checker instructions and
     curriculum-specific runtime guidance, then either accepts the draft or returns a
-    complete corrected `SFIExtractionResult`. Python validates only universal integrity
-    constraints on the corrected result.
+    complete corrected `SFIExtractionResult`. Python canonicalizes any corrected result
+    from its exact anchors before validating universal integrity constraints.
 
     Parameters
     ----------
@@ -397,10 +402,20 @@ def create_sfi_extraction_validation_agent(
         attempt = attempt_counter["value"]
 
         try:
+            canonical_output = output
+
+            if output.corrected_result is not None:
+                canonical_corrected_result = canonicalize_sfi_extraction_result(
+                    extraction_result=output.corrected_result, window=window
+                )
+                canonical_output = output.model_copy(
+                    deep=True, update={"corrected_result": canonical_corrected_result}
+                )
+
             verify_integrity_fn(
                 draft_result=draft_result,
                 kg_config=kg_config,
-                validation_verdict=output,
+                validation_verdict=canonical_output,
                 window=window,
             )
         except QualityError as e:
@@ -422,7 +437,7 @@ def create_sfi_extraction_validation_agent(
             ) from e
 
         attempt_counter["value"] += 1
-        return output
+        return canonical_output
 
     return agent
 
