@@ -12,67 +12,15 @@ from skg.kgs.schemas import (
     SFIDedupReviewResponse,
     SFIExtractionResult,
     SFIHasChildResolutionRequest,
+    SFISourceUnitKind,
 )
-from skg.kgs.utils import text_starts_with_complete_marker
+from skg.kgs.sfi_source_anchors import (
+    build_sfi_source_unit_id,
+    build_sfi_source_units,
+    map_raw_row_cells_to_column_ranges,
+)
 from skg.schemas import CreateKGConfig
 from skg.utils.general import PromptPair, json_dumps
-
-
-def _build_compact_block_list_item_source_units(
-    extraction_window: ExtractionWindow,
-) -> list[dict[str, Any]]:
-    """Build source-visible units from a block's serialized list items.
-
-    Each list item retains its own item-level language so multilingual lists are not
-    flattened into the configured primary language. Items without visible source text
-    are skipped.
-
-    Parameters
-    ----------
-    extraction_window
-        Source-faithful extraction window whose block carries the list items.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        Source-visible list-item units in source order.
-    """
-
-    block = extraction_window.block
-
-    if block is None:
-        return []
-
-    list_items = block.get("list_items")
-
-    if not (isinstance(list_items, list) and list_items):
-        return []
-
-    source_units: list[dict[str, Any]] = []
-
-    for item_index, item in enumerate(list_items):
-        if not isinstance(item, dict):
-            continue
-
-        source_text = _build_list_item_source_text(item)
-
-        if not source_text:
-            continue
-
-        language = _get_text_unit_language(
-            fallback=extraction_window.primary_language, text_unit=item.get("text")
-        )
-        source_units.append(
-            {
-                "item_index": item_index,
-                "language": language,
-                "marker": item.get("marker"),
-                "source_text": source_text,
-                "source_visibility": "source_visible_list_item",
-            }
-        )
-
-    return source_units
 
 
 def _build_compact_block_payload(
@@ -116,163 +64,25 @@ def _build_compact_block_payload(
     }
 
 
-def _build_compact_block_slice_source_unit(
-    *,
-    fallback_language: str,
-    slice_index: int,
-    slice_payload: dict[str, Any],
-) -> Optional[dict[str, Any]]:
-    """Build one source-visible unit from a serialized block slice.
-
-    Parameters
-    ----------
-    fallback_language
-        Language to use when the slice lacks source-language metadata.
-    slice_index
-        Source-order slice index within the stitched block.
-    slice_payload
-        Serialized DocumentIR block-slice payload.
-
-    Returns
-    -------
-    Optional[dict[str, Any]]
-        Prompt-facing source unit, or `None` when the slice has no visible text.
-    """
-
-    text_unit = slice_payload.get("text")
-
-    if isinstance(text_unit, dict):
-        text = str(text_unit.get("text") or "").strip()
-
-        if text:
-            return {
-                "language": _get_text_unit_language(
-                    fallback=fallback_language, text_unit=text_unit
-                ),
-                "slice_index": slice_index,
-                "source_text": text,
-                "source_visibility": "source_visible_block_slice",
-            }
-
-    figure = slice_payload.get("figure")
-
-    if isinstance(figure, dict):
-        for field_name in ["embedded_text", "caption"]:
-            figure_text = figure.get(field_name)
-
-            if isinstance(figure_text, dict):
-                text = str(figure_text.get("text") or "").strip()
-
-                if text:
-                    return {
-                        "language": _get_text_unit_language(
-                            fallback=fallback_language, text_unit=figure_text
-                        ),
-                        "slice_index": slice_index,
-                        "source_text": text,
-                        "source_visibility": "source_visible_block_slice",
-                    }
-            elif isinstance(figure_text, str) and figure_text.strip():
-                return {
-                    "language": fallback_language,
-                    "slice_index": slice_index,
-                    "source_text": figure_text.strip(),
-                    "source_visibility": "source_visible_block_slice",
-                }
-
-    return None
-
-
-def _build_compact_block_slice_source_units(
-    extraction_window: ExtractionWindow,
-) -> list[dict[str, Any]]:
-    """Build source-visible units from a block's serialized slices.
-
-    Slices without visible text are skipped. Returns an empty list when the block has
-    no slices or none of them expose source-visible text.
-
-    Parameters
-    ----------
-    extraction_window
-        Source-faithful extraction window whose block carries the slices.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        Source-visible slice units in source order.
-    """
-
-    block = extraction_window.block
-
-    if block is None:
-        return []
-
-    slices = block.get("slices")
-
-    if not isinstance(slices, list):
-        return []
-
-    source_units: list[dict[str, Any]] = []
-
-    for slice_index, slice_payload in enumerate(slices):
-        if not isinstance(slice_payload, dict):
-            continue
-
-        source_unit = _build_compact_block_slice_source_unit(
-            fallback_language=extraction_window.primary_language,
-            slice_index=slice_index,
-            slice_payload=slice_payload,
-        )
-
-        if source_unit is not None:
-            source_units.append(source_unit)
-
-    return source_units
-
-
 def _build_compact_block_source_units(
     extraction_window: ExtractionWindow,
 ) -> list[dict[str, Any]]:
-    """Build source-visible block units with their source languages.
-
-    List items retain item-level languages so multilingual lists are not flattened into
-    the configured primary language. Other block kinds expose the source block text as
-    one unit with the best available DocumentIR language tag.
+    """Build exact prompt-facing source units for one block window.
 
     Parameters
     ----------
     extraction_window
-        Source-faithful extraction window containing a block payload.
+        Source-faithful block extraction window.
 
     Returns
     -------
     list[dict[str, Any]]
-        Source-visible block units in source order.
+        Source-visible block units with stable IDs and structural locators.
     """
 
-    block = extraction_window.block
-
-    if block is None:
-        return []
-
-    list_item_source_units = _build_compact_block_list_item_source_units(
-        extraction_window
-    )
-
-    if list_item_source_units:
-        return list_item_source_units
-
-    slice_source_units = _build_compact_block_slice_source_units(extraction_window)
-
-    if slice_source_units:
-        return slice_source_units
-
     return [
-        {
-            "language": _get_block_language(extraction_window),
-            "source_text": extraction_window.source_text,
-            "source_visibility": "source_visible_block",
-        }
+        source_unit.to_prompt_payload()
+        for source_unit in build_sfi_source_units(extraction_window)
     ]
 
 
@@ -342,6 +152,17 @@ def _build_compact_extraction_window_payload(
             for code_match in extraction_window.code_matches
         ],
         "segment_kind": extraction_window.segment_kind,
+        "source_anchor_policy": (
+            "Every source-visible block source_units entry and raw table cell has a "
+            "stable source_unit_id. Candidate description_source_anchors and "
+            "code_source_anchors must copy those IDs exactly. Each anchor source_text "
+            "must be an exact non-empty excerpt of that source unit, and "
+            "occurrence_index is the zero-based left-to-right non-overlapping "
+            "occurrence of that exact excerpt within the complete source unit. "
+            "Multiple description anchors in one source unit must not overlap or "
+            "omit non-whitespace visible text between them. Helper-only and "
+            "context-only content cannot be anchored."
+        ),
         "source_context": {
             "section_path": [
                 {
@@ -440,7 +261,7 @@ def _build_compact_filldown_context_row_payload(
 
 
 def _build_compact_header_rows(
-    *, header_rows: list[dict[str, Any]], n_cols: int
+    *, header_rows: list[dict[str, Any]], n_cols: int, source_segment_id: str
 ) -> list[dict[str, Any]]:
     """Build compact raw header rows with true grid column ranges.
 
@@ -455,6 +276,8 @@ def _build_compact_header_rows(
         Raw source header rows in table order.
     n_cols
         Total table grid width.
+    source_segment_id
+        Stable DocumentIR table segment identifier.
 
     Returns
     -------
@@ -471,7 +294,7 @@ def _build_compact_header_rows(
             for column_index, remaining_rows in enumerate(active_rowspans)
             if remaining_rows == 0
         }
-        mapped_cells = _map_raw_row_cells_to_column_ranges(
+        mapped_cells = map_raw_row_cells_to_column_ranges(
             available_column_indexes=available_column_indexes,
             n_cols=n_cols,
             row=header_row,
@@ -486,6 +309,9 @@ def _build_compact_header_rows(
                 cell=cell,
                 column_end_index_exclusive=column_end_index_exclusive,
                 column_start_index=column_start_index,
+                row_index=header_row_index,
+                source_segment_id=source_segment_id,
+                source_unit_kind="table_header_cell",
             )
 
             if cell_payload is not None:
@@ -619,7 +445,13 @@ def _build_compact_rowspan_context_row_payload(
 
 
 def _build_compact_source_cell_payload(
-    *, cell: dict[str, Any], column_end_index_exclusive: int, column_start_index: int
+    *,
+    cell: dict[str, Any],
+    column_end_index_exclusive: int,
+    column_start_index: int,
+    row_index: int,
+    source_segment_id: str,
+    source_unit_kind: SFISourceUnitKind,
 ) -> Optional[dict[str, Any]]:
     """Build one compact text-bearing source cell with exact grid placement.
 
@@ -631,6 +463,12 @@ def _build_compact_source_cell_payload(
         Exclusive ending grid column occupied by the cell.
     column_start_index
         Inclusive starting grid column occupied by the cell.
+    row_index
+        Source header/body row index.
+    source_segment_id
+        Stable DocumentIR table segment identifier.
+    source_unit_kind
+        Structural source-unit kind for the cell.
 
     Returns
     -------
@@ -647,6 +485,15 @@ def _build_compact_source_cell_payload(
     payload: dict[str, Any] = {
         "column_range": [column_start_index, column_end_index_exclusive],
         "language": text_unit.get("language"),
+        "source_unit_id": build_sfi_source_unit_id(
+            column_end_index_exclusive=column_end_index_exclusive,
+            column_start_index=column_start_index,
+            row_index=row_index,
+            source_segment_id=source_segment_id,
+            source_unit_index=None,
+            source_unit_kind=source_unit_kind,
+        ),
+        "source_unit_kind": source_unit_kind,
         "text": text,
     }
     row_span = max(1, int(cell.get("row_span") or 1))
@@ -663,6 +510,7 @@ def _build_compact_source_row_payload(
     n_cols: int,
     row: dict[str, Any],
     row_index: int,
+    source_segment_id: str,
 ) -> dict[str, Any]:
     """Build one compact body row with exact source-grid column placement.
 
@@ -680,6 +528,8 @@ def _build_compact_source_row_payload(
         Raw serialized source row.
     row_index
         Source table row index.
+    source_segment_id
+        Stable DocumentIR table segment identifier.
 
     Returns
     -------
@@ -696,7 +546,7 @@ def _build_compact_source_row_payload(
             if source_info.get("source_row") == row_index
         }
 
-    mapped_cells = _map_raw_row_cells_to_column_ranges(
+    mapped_cells = map_raw_row_cells_to_column_ranges(
         available_column_indexes=available_column_indexes, n_cols=n_cols, row=row
     )
     cells: list[dict[str, Any]] = []
@@ -706,6 +556,9 @@ def _build_compact_source_row_payload(
             cell=cell,
             column_end_index_exclusive=column_end_index_exclusive,
             column_start_index=column_start_index,
+            row_index=row_index,
+            source_segment_id=source_segment_id,
+            source_unit_kind="table_body_cell",
         )
 
         if cell_payload is not None:
@@ -745,6 +598,12 @@ def _build_compact_table_payload(
 
     _validate_compact_body_row_placement(table)
 
+    if len(extraction_window.source_segment_ids) != 1:
+        raise ValueError(
+            "Exact SFI table source anchors require one source segment per window."
+        )
+
+    source_segment_id = extraction_window.source_segment_ids[0]
     grid_sources_by_row = (
         table.grid_sources
         if table.grid_sources is not None
@@ -752,7 +611,11 @@ def _build_compact_table_payload(
     )
     source_rows = [
         _build_compact_source_row_payload(
-            grid_sources=grid_sources, n_cols=table.n_cols, row=row, row_index=row_index
+            grid_sources=grid_sources,
+            n_cols=table.n_cols,
+            row=row,
+            row_index=row_index,
+            source_segment_id=source_segment_id,
         )
         for grid_sources, row, row_index in zip(
             grid_sources_by_row, table.rows, table.row_indexes
@@ -761,7 +624,9 @@ def _build_compact_table_payload(
     payload: dict[str, Any] = {
         "declared_header_row_count": table.header_row_count,
         "header_rows": _build_compact_header_rows(
-            header_rows=table.header_rows, n_cols=table.n_cols
+            header_rows=table.header_rows,
+            n_cols=table.n_cols,
+            source_segment_id=source_segment_id,
         ),
         "local_code": table.local_code,
         "n_cols": table.n_cols,
@@ -849,36 +714,6 @@ def _build_filldown_context_rows(
     return context_rows
 
 
-def _build_list_item_source_text(item: dict[str, Any]) -> str:
-    """Render one serialized list item with its visible marker.
-
-    Parameters
-    ----------
-    item
-        Serialized DocumentIR list-item payload.
-
-    Returns
-    -------
-    str
-        Source-visible list-item text with a non-duplicated marker.
-    """
-
-    marker = str(item.get("marker") or "").strip()
-    text_unit = item.get("text")
-
-    if isinstance(text_unit, dict):
-        text = str(text_unit.get("text") or "").strip()
-    elif text_unit is not None:
-        text = str(text_unit).strip()
-    else:
-        text = ""
-
-    if marker and text and text_starts_with_complete_marker(marker=marker, text=text):
-        return text
-
-    return " ".join(part for part in [marker, text] if part)
-
-
 def _build_rowspan_context_rows(
     *,
     grid_rows: list[dict[str, Any]],
@@ -915,139 +750,6 @@ def _build_rowspan_context_rows(
             context_rows.append(context_row)
 
     return context_rows
-
-
-def _get_block_language(extraction_window: ExtractionWindow) -> str:
-    """Return the best available language for a non-list block window.
-
-    The block-level TextUnit is authoritative when present. Figure embedded text or
-    caption language is used for figure windows. The KG primary language is only a
-    fallback when DocumentIR has no source-language metadata.
-
-    Parameters
-    ----------
-    extraction_window
-        Source-faithful extraction window containing an optional block payload.
-
-    Returns
-    -------
-    str
-        Source block language when available; otherwise the window primary language.
-    """
-
-    block = extraction_window.block
-
-    if block is None:
-        return extraction_window.primary_language
-
-    language = _get_text_unit_language(fallback="", text_unit=block.get("text"))
-
-    if language:
-        return language
-
-    figure = block.get("figure")
-
-    if isinstance(figure, dict):
-        for field_name in ["embedded_text", "caption"]:
-            language = _get_text_unit_language(
-                fallback="", text_unit=figure.get(field_name)
-            )
-
-            if language:
-                return language
-
-    block_language = block.get("language")
-
-    if isinstance(block_language, str) and block_language.strip():
-        return block_language.strip()
-
-    return extraction_window.primary_language
-
-
-def _get_text_unit_language(*, fallback: str, text_unit: Any) -> str:
-    """Return a TextUnit language or a configured fallback.
-
-    Parameters
-    ----------
-    fallback
-        Language to use when the text unit has no usable language tag.
-    text_unit
-        Serialized TextUnit payload or another value.
-
-    Returns
-    -------
-    str
-        Source language tag when available, otherwise `fallback`.
-    """
-
-    if isinstance(text_unit, dict):
-        language = text_unit.get("language")
-
-        if isinstance(language, str) and language.strip():
-            return language.strip()
-
-    return fallback
-
-
-def _map_raw_row_cells_to_column_ranges(
-    *, available_column_indexes: set[int], n_cols: int, row: dict[str, Any]
-) -> list[tuple[dict[str, Any], int, int]]:
-    """Map raw table cells to their true span-expanded grid column ranges.
-
-    Synthetic row-span placeholders are omitted because they are represented separately
-    as helper-only inherited row-span context. Empty source cells still participate in
-    placement so following visible cells retain correct columns.
-
-    Parameters
-    ----------
-    available_column_indexes
-        Grid columns originating from the current source row.
-    n_cols
-        Total table grid width.
-    row
-        Raw serialized table row.
-
-    Returns
-    -------
-    list[tuple[dict[str, Any], int, int]]
-        Raw non-placeholder cells with inclusive start and exclusive end columns.
-
-    Raises
-    ------
-    ValueError
-        If no contiguous range can represent the raw cell within the supplied grid.
-    """
-
-    column_cursor = 0
-    mapped_cells: list[tuple[dict[str, Any], int, int]] = []
-
-    for cell in row.get("cells") or []:
-        if cell.get("rowspan_placeholder"):
-            continue
-
-        col_span = max(1, int(cell.get("col_span") or 1))
-
-        # Find the next contiguous available column range.
-        for column_start_index in range(column_cursor, n_cols - col_span + 1):
-            column_end_index_exclusive = column_start_index + col_span
-
-            if available_column_indexes.issuperset(
-                range(column_start_index, column_end_index_exclusive)
-            ):
-                mapped_cells.append(
-                    (cell, column_start_index, column_end_index_exclusive)
-                )
-                column_cursor = column_end_index_exclusive
-                break
-        else:
-            # If the loop finishes without breaking, a valid range was not found.
-            raise ValueError(
-                f"Could not place a raw table cell in the compact structural grid: "
-                f"column_cursor={column_cursor}, col_span={col_span}, n_cols={n_cols}, "
-                f"available_columns={sorted(available_column_indexes)}."
-            )
-
-    return mapped_cells
 
 
 def _validate_compact_body_row_placement(table: ExtractionWindowTablePayload) -> None:
@@ -1160,6 +862,10 @@ def extract_sfi_candidates_from_window(
 - Combine source locations into one candidate only when they are visible fragments of one source occurrence, such as a single statement continuing across adjacent cells, rows, slices, or headers. Do not combine complete independently printed occurrences merely because they repeat, overlap semantically, or are expected to merge in a later stage.
 - Apply the runtime `sfi_extraction_instructions` whenever they define more specific occurrence, continuation, splitting, or repetition behavior. If a generic example or heuristic conflicts with those instructions, the runtime instructions take precedence.
 - Leave logical identity resolution and merging of repeated source occurrences to the downstream SFI deduplication stage. The same code with materially different source-visible wording must also remain separate.
+- Every candidate must provide non-empty description_source_anchors. Copy each source_unit_id exactly from the supporting block.source_units entry or raw table cell. For each anchor, copy an exact non-empty source excerpt into source_text and set occurrence_index to the zero-based left-to-right non-overlapping occurrence of that exact excerpt within the complete referenced source unit. Use occurrence_index=0 when the excerpt appears once.
+- description_source_anchors must identify exactly the source-visible fragments that compose description, in source order. After whitespace normalization, concatenating their source_text values in order with only source-boundary whitespace must equal description. Multiple anchors within one source unit must not overlap or skip non-whitespace source-visible text. Do not anchor broader neighboring text, a complete row, or a complete block when a narrower source-visible unit/excerpt identifies the statement.
+- code_source_anchors must be empty when statement_code is null. When statement_code is non-null, code_source_anchors must identify the exact source-unit occurrence of the corresponding code_matches[].raw_value. Do not use description anchors, surrounding text, local_code, section context, or another candidate's code as a substitute.
+- Stable source anchors define physical source occurrence. Two candidates in different table cells, list items, block slices, or different repeated excerpt occurrences are distinct source occurrences even when they share one row, segment, code, and wording.
 - description should preserve the complete exact source-language wording of the SFI. For learning expectations, use the full official statement text. For groupings, preserve the complete grouping label or heading text, including visible hierarchy terms, ordinal numbers, punctuation, and separators such as "Grade", "Strand", "Sub-Strand", "3", and ":". Remove only a separately represented item identifier code. Do not mistake a hierarchy label or ordinal organizer prefix for a code. When a visible code functions as a separate item identifier, exclude that code from description and place its normalized form only in statement_code while preserving its raw source form in source_text. Removing a separately represented identifier is not a wording correction. When multiple explicit labeled fields appear on one physical line, such as one label-value field followed by another label-value field, treat each complete visible field as a separately bounded source span and preserve their source order. Do not clean, translate, correct spelling, normalize, expand, infer, or truncate the actual statement wording.
 - statement_type must use exactly one canonical source-facing role from statement_type_policy.
 - statement_code must use the candidate-local code_matches[].normalized_value whose code_type matches statement_type_policy.code_type for the candidate. The matching code_matches[].raw_value must be directly paired with the complete candidate description in the candidate's own source_text and cited source locations. Formatting normalization may remove whitespace around punctuation or separate a complete code printed immediately adjacent to statement text, but it must never change a code prefix, alphanumeric character, delimiter, or numeric component. Treat block.local_code and table.local_code as context only unless the same candidate-local code is also exposed by code_matches. When statement_type_policy.code_type is null, emit a code only when exactly one candidate-local code_match is unambiguous. Use null for nearby codes, segment labels, table identifiers that are not item codes, ambiguous or incomplete codes, codes not visible in the candidate's own source_text, or codes that belong to another statement. Do not leave statement_code null solely because code_matches[].raw_value contains spacing around punctuation or is glued to the statement text.
@@ -1180,6 +886,9 @@ def extract_sfi_candidates_from_window(
 
 ## Source fidelity rules
 - Preserve source-language text. Do not translate. Use block.source_units and table-cell language fields to assign candidate and auxiliary language accurately.
+- Use only source_unit_id values exposed on source-visible block units or raw table cells. Never invent an ID and never anchor source_context.section_path, rowspan_context_rows, filldown_context_rows, canonical headers, or other helper/context content.
+- If one exact source excerpt occurs more than once within a source unit, occurrence_index must identify the correct physical occurrence. Different occurrence_index values are different physical source occurrences.
+- For a statement assembled from adjacent visible fragments, return one description anchor per contributing fragment. Do not combine independently complete cells or text occurrences into one candidate merely because their words are identical.
 - For a non-list stitched block, block.source_text is the complete source-visible logical block and may contain one statement continuing across multiple block.source_units/slices.
 - For every candidate and auxiliary record, source_text must be a verbatim source-visible excerpt from block.source_text/block.source_units, table.header_rows cell text, or table.source_rows cell text. Never quote source_context.section_path or helper-only filldown context.
 - For table candidates, description must be source-visible in the cited table_header_indexes and/or table_row_indexes. Cite exactly the raw header/body rows that contribute to the candidate description and source_text; do not include unrelated context rows. Do not use text from another visible row/header unless that row/header index is also cited.
@@ -1196,6 +905,7 @@ def extract_sfi_candidates_from_window(
 
 ## Output contract
 Copy window_id, window_index, and window_source_segment_ids exactly from the compact source window. Return sfi_candidates in nondecreasing source order with candidate_id values exactly matching their 1-based list positions.
+Every SFI candidate requires exact description_source_anchors. A coded candidate also requires exact code_source_anchors; an uncoded candidate must return an empty code_source_anchors list.
 Keep extraction_notes short; use them only for window-level extraction issues, not to summarize examples, competencies, or activities.
 Return auxiliary candidates only when they clarify why prominent source-visible text was not extracted as an SFI; do not list ordinary examples, activities, competencies, or guidance notes.
 Do not emit auxiliary candidates for routine front matter, ordinary examples, or repeated core-competency lists unless they are unusually ambiguous or likely to be mistaken for an SFI.
@@ -1358,13 +1068,13 @@ Use exactly one decision for each decision group:
 - If the bounded evidence and runtime instructions do not justify selecting one coded source candidate, do not return merge. Use needs_review or conflict.
 - Never select a candidate outside the decision group, a candidate with no code, or a code value that is not already present on the selected candidate.
 - For same-type coded merges, every candidate must preserve the same applicable_code_type and the same code_scope_key/code_scope_values.
-- A mixed-type subset covered by one same_source_occurrence_cross_type signal may preserve code-policy differences caused by its competing classifications. Merge it only when visible evidence supports one duplicate source occurrence, shared code-scope dimensions do not contradict one another, and one source-backed canonical code can be resolved. The canonical type source and canonical code source may be different candidates.
+- A mixed-type subset covered by one same_source_occurrence_cross_type signal may preserve code-policy differences caused by its competing classifications. That signal is valid only when every listed candidate has one identical non-empty description_source_anchors set. Merge it only when those exact anchors identify one duplicate source occurrence, shared code-scope dimensions do not contradict one another, and one source-backed canonical code can be resolved. The canonical type source and canonical code source may be different candidates.
 - Outside that narrow mixed-type same-occurrence case, incompatible code types, contradictory scope, or unresolved scope while another candidate is scoped require keep_separate, conflict, or needs_review.
 
 ## Semantic identity-scope contract
 - identity_scope_key and identity_scope_values are deterministic, source-backed semantic scope resolved from runtime configuration. They are independent of official code scope and may be present for completely uncoded curricula.
 - For same-type merges, every candidate must preserve the same identity_scope_key and identity_scope_values. Matching semantic scope permits comparison but never proves duplication.
-- A mixed-type subset covered by one same_source_occurrence_cross_type signal may preserve different identity-scope shapes caused by its competing statement-type policies. Merge it only when visible evidence supports one duplicate source occurrence and every scope dimension shared by two or more candidates has the same source-backed value. The selected canonical type source supplies the merged item's identity scope.
+- A mixed-type subset covered by one same_source_occurrence_cross_type signal may preserve different identity-scope shapes caused by its competing statement-type policies. Merge it only when every candidate preserves one identical non-empty description_source_anchors set and every scope dimension shared by two or more candidates has the same source-backed value. The selected canonical type source supplies the merged item's identity scope.
 - Outside that narrow mixed-type same-occurrence case, different identity scope requires keep_separate, conflict, or needs_review.
 - Do not reinterpret, rewrite, or infer missing identity-scope values. Use the supplied canonical values exactly.
 
@@ -1372,15 +1082,16 @@ Use exactly one decision for each decision group:
 - review_signals are deterministic retrieval evidence. Each signal applies only to its listed candidate_ids; never assume it applies to the entire connected review set.
 - A same_normalized_source_text signal means the listed subset has exact equality after internal normalization. It is not an automatic merge rule, and normalized text itself is intentionally omitted from the prompt.
 - A same_source_occurrence_cross_type signal means the listed differently classified
-  candidates cite the same physical source occurrence and have exact internally
-  normalized description and/or source-text equality. Treat it as strong evidence of
-  duplicate extraction, not an automatic merge rule. If you merge that subset, select
-  the existing candidate whose source role supplies the correct canonical type.
+  candidates preserve one identical validated set of exact description_source_anchors.
+  Treat it as strong evidence of duplicate extraction, not an automatic merge rule.
+  Same row, header, segment, window, code, or wording without identical anchors is not
+  same-occurrence evidence. If you merge that subset, select the existing candidate
+  whose source role supplies the correct canonical type.
 - A canonical-value, code-bucket, text-bucket, warning, or shared-table-location signal is also review evidence rather than a merge decision.
 - context_windows are shared nearby source windows. Each candidate's context_window_indexes identifies which windows are relevant to that candidate.
 - context_items contain only runtime-configured context-bearing statement types. Their absence does not prove that no other source content exists.
 - section_labels, boundary_markers, page_indexes, and source_text_excerpt are compact, fallible context. They are not resolved hierarchy or parentage.
-- candidate description and source_text preserve the source-facing evidence. Use them rather than guessing omitted normalized forms or internal bucket keys.
+- candidate description, source_text, and exact description/code source anchors preserve the source-facing evidence. Use them rather than guessing omitted normalized forms or internal bucket keys.
 
 ## Merge guardrails
 - Apply evidence in this order: runtime sfi_dedup_instructions, visible candidate text and source references, shared context windows, then general dedup heuristics.
@@ -1448,15 +1159,16 @@ Independently determine the correct partition and decision for every supplied ca
 - Runtime sfi_dedup_instructions are authoritative for curriculum-specific identity, organizer scope, aliases, progression, codes, repeated headings, and known source anomalies.
 - review_signals are candidate-subset retrieval evidence. Check the candidate_ids on every signal; a signal applying to one subset must not be generalized to the whole review set.
 - A same_normalized_source_text signal records exact internal normalized equality for its listed subset only. It is not a universal merge rule.
-- A same_source_occurrence_cross_type signal records the same physical source occurrence
-  plus exact internally normalized description and/or source-text equality across
-  different classifications. Treat it as strong duplicate-extraction evidence, not an
-  automatic merge rule, and verify any canonical type selection against the visible
-  source role.
+- A same_source_occurrence_cross_type signal records one identical validated set of
+  exact description_source_anchors across different classifications. Treat it as strong
+  duplicate-extraction evidence, not an automatic merge rule, and verify any canonical
+  type selection against the visible source role. Candidates that merely share a row,
+  header, segment, window, code, or wording are not the same physical occurrence when
+  their exact anchors differ.
 - context_windows are shared nearby windows. Use each candidate's context_window_indexes to locate the context relevant to that candidate.
 - context_items contain only runtime-configured context-bearing statement types. Their absence is not proof that no other source material exists.
 - section_labels, boundary_markers, page indexes, and excerpts are compact and fallible. They are not final hierarchy, parentage, or merge identity.
-- Candidate description, source_text, code fields, statement types, table indexes, canonical values, identity-scope fields, and runtime instructions are the primary evidence.
+- Candidate description, source_text, exact description/code source anchors, code fields, statement types, table indexes, canonical values, identity-scope fields, and runtime instructions are the primary evidence.
 - A canonical controlled value is meaningful according to the runtime policy. Do not discard it solely because visible wording contains punctuation, qualifiers, ranges, aliases, or expanded labels. Do not merge solely because it matches when source context or runtime instructions require separation.
 
 ## Independent audit procedure
@@ -1471,9 +1183,9 @@ Independently determine the correct partition and decision for every supplied ca
 9. For every proposed merge, count distinct statement-type pairs. When there are multiple, independently verify that canonical_type_source_candidate_id identifies one candidate inside that group and that canonical_type_selection_reason justifies that exact existing type pair.
 10. For every proposed merge, count distinct non-null normalized codes. When there are multiple, independently verify that canonical_code_source_candidate_id identifies one coded candidate inside that merge group and that canonical_code_selection_reason justifies that exact source-backed choice.
 11. Reject a mixed-code merge that lacks a defensible source-candidate selection, selects an uncoded or out-of-group candidate, or invents a code. Use needs_review or conflict when no canonical source candidate can be justified.
-12. For every same-type coded merge, verify that all candidates have the canonical applicable_code_type and the same resolved code_scope_key/code_scope_values. For a mixed-type subset covered by one same_source_occurrence_cross_type signal, permit classification-derived code-policy differences only when shared scope dimensions agree and one source-backed canonical code policy can be resolved.
-13. For every same-type merge, verify exact identity_scope_key and identity_scope_values equality. For a mixed-type subset covered by one same_source_occurrence_cross_type signal, permit classification-derived scope-shape differences only when shared scope dimensions agree; the selected canonical type source supplies final identity scope.
-14. Reject relaxed mixed-type code or identity-scope treatment when no single same_source_occurrence_cross_type signal directly covers every candidate in the proposed merge group.
+12. For every same-type coded merge, verify that all candidates have the canonical applicable_code_type and the same resolved code_scope_key/code_scope_values. For a mixed-type subset, permit classification-derived code-policy differences only when every candidate has one identical non-empty description_source_anchors set, shared scope dimensions agree, and one source-backed canonical code policy can be resolved.
+13. For every same-type merge, verify exact identity_scope_key and identity_scope_values equality. For a mixed-type subset, permit classification-derived scope-shape differences only when every candidate has one identical non-empty description_source_anchors set and shared scope dimensions agree; the selected canonical type source supplies final identity scope.
+14. Reject relaxed mixed-type code or identity-scope treatment when the candidates do not preserve one identical exact description-source-anchor set, even if a coarse review signal, shared row, shared segment, matching code, or identical wording suggests similarity.
 15. Treat representative_candidate_id, canonical_type_source_candidate_id, and canonical_code_source_candidate_id as independent selections; they may identify different candidates.
 16. Use needs_review only when the bounded evidence remains genuinely insufficient after applying the runtime instructions.
 
@@ -1627,6 +1339,17 @@ correcting the draft.
 - Candidate descriptions and `source_text` must preserve source-visible wording and
   language. Do not translate, paraphrase, normalize, repair spelling, or silently add
   missing text.
+- Verify every description_source_anchor and code_source_anchor against the exact
+  source_unit_id exposed in the compact source window. Each anchor source_text must be
+  an exact excerpt of that source unit, and occurrence_index must select the correct
+  zero-based repeated occurrence. Context-only and helper-only content cannot be
+  anchored.
+- Concatenating description_source_anchors[].source_text in source order with only source-boundary whitespace must reproduce the
+  complete candidate description after whitespace normalization. Multiple anchors in one source unit must not overlap or omit non-whitespace visible text. A coded candidate
+  must anchor the exact raw code surface; an uncoded candidate must have no code anchors.
+- Treat different source_unit_id values or different occurrence_index values as
+  different physical source occurrences, even when candidates share a row, block, code,
+  or identical wording.
 - `source_context.section_path`, canonical headers, and filldown helper values are
   context only unless the same wording is visible in raw block/header/body content.
 - Verify that a table candidate cites the raw header/body rows that visibly support it.
@@ -1651,6 +1374,9 @@ correcting the draft.
 ### 5. Mandatory candidate-by-candidate audit
 For every draft candidate, explicitly verify all of the following before deciding that
 it passes:
+- `description_source_anchors` are non-empty, exact, source-ordered, and compose the
+  complete description; `code_source_anchors` exactly support the raw code when coded
+  and are empty when uncoded.
 - `description` contains the complete official statement or grouping wording. Remove
   only a separately represented item code. Preserve every other visible part of an
   organizer label, including hierarchy terms, ordinal numbers, punctuation, and

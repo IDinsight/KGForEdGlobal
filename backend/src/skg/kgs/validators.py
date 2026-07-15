@@ -26,6 +26,12 @@ from skg.kgs.schemas import (
     SFIHasChildResolutionRequest,
     SFIHasChildResolutionResponse,
 )
+from skg.kgs.sfi_source_anchors import (
+    SFISourceUnit,
+    build_sfi_source_unit_map,
+    find_source_anchor_span,
+    source_anchor_set_signature,
+)
 from skg.kgs.utils import resolve_candidate_code
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
@@ -301,30 +307,57 @@ def _child_has_viable_source_visible_parent(
     return False
 
 
-def _decision_group_has_same_source_occurrence_cross_type_signal(
+def _decision_group_shares_exact_description_source_anchors(
     *, candidate_ids: Sequence[str], review_request: SFIDedupReviewRequest
 ) -> bool:
-    """Check whether one decision group has direct cross-type occurrence evidence.
+    """Check whether one mixed-type group shares exact description anchors.
 
     Parameters
     ----------
     candidate_ids
         Candidate IDs proposed for one dedup decision group.
     review_request
-        Bounded review request containing candidate-subset retrieval signals.
+        Bounded review request containing exact candidate source anchors.
 
     Returns
     -------
     bool
-        True when one direct same-source-occurrence cross-type signal covers every
-        candidate in the decision group.
+        True when every candidate preserves one identical non-empty exact
+        description-anchor set and the group contains multiple statement-type pairs.
     """
 
-    decision_candidate_ids = set(candidate_ids)
-    return any(
-        signal.signal_type == SAME_SOURCE_OCCURRENCE_CROSS_TYPE_SIGNAL
-        and decision_candidate_ids.issubset(signal.candidate_ids)
-        for signal in review_request.review_signals
+    candidates_by_id = {
+        candidate.registry_candidate_id: candidate
+        for candidate in review_request.candidates
+    }
+    group_candidates = [
+        candidates_by_id[candidate_id]
+        for candidate_id in candidate_ids
+        if candidate_id in candidates_by_id
+    ]
+
+    if len(group_candidates) != len(candidate_ids):
+        return False
+
+    type_pairs = {
+        (candidate.statement_type, candidate.normalized_statement_type)
+        for candidate in group_candidates
+    }
+
+    if len(type_pairs) < 2:
+        return False
+
+    anchor_signatures = {
+        source_anchor_set_signature(candidate.description_source_anchors)
+        for candidate in group_candidates
+    }
+    occurrence_keys = {
+        candidate.source_occurrence_location_key for candidate in group_candidates
+    }
+    return (
+        len(anchor_signatures) == 1
+        and bool(next(iter(anchor_signatures)))
+        and len(occurrence_keys) == 1
     )
 
 
@@ -609,6 +642,23 @@ def _log_duplicate_sfi_candidate_warnings(
         )
 
 
+def _normalize_anchor_composition_text(value: str) -> str:
+    """Normalize source-anchor composition text without changing case or punctuation.
+
+    Parameters
+    ----------
+    value
+        Source-visible text to normalize.
+
+    Returns
+    -------
+    str
+        Text with whitespace collapsed and leading/trailing whitespace removed.
+    """
+
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
 def _normalize_code_for_parent_match(value: Any) -> str:
     """Normalize a source or finalization code for parent-prefix comparison.
 
@@ -662,6 +712,73 @@ def _normalize_text(value: str) -> str:
     """
 
     return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+
+def _text_contains_fragments_in_order(
+    *, container_text: str, fragments: Sequence[str]
+) -> bool:
+    """Check whether normalized fragments occur in source order in container text.
+
+    Parameters
+    ----------
+    container_text
+        Candidate text expected to contain the fragments.
+    fragments
+        Exact source fragments in anchor order.
+
+    Returns
+    -------
+    bool
+        Whether every non-empty fragment appears in order.
+    """
+
+    normalized_container = _normalize_anchor_composition_text(container_text)
+    search_start = 0
+
+    for fragment in fragments:
+        normalized_fragment = _normalize_anchor_composition_text(fragment)
+
+        if not normalized_fragment:
+            return False
+
+        fragment_start = normalized_container.find(normalized_fragment, search_start)
+
+        if fragment_start < 0:
+            return False
+
+        search_start = fragment_start + len(normalized_fragment)
+
+    return True
+
+
+def _text_equals_anchor_fragments(*, fragments: Sequence[str], value: str) -> bool:
+    """Check whether text is composed only from ordered anchor fragments.
+
+    Parameters
+    ----------
+    fragments
+        Exact source fragments in source order.
+    value
+        Candidate description to compare.
+
+    Returns
+    -------
+    bool
+        Whether the value equals the fragments with only optional whitespace inserted
+        at source-unit boundaries.
+    """
+
+    normalized_fragments = [
+        _normalize_anchor_composition_text(fragment) for fragment in fragments
+    ]
+
+    if not normalized_fragments or any(
+        not fragment for fragment in normalized_fragments
+    ):
+        return False
+
+    pattern = r"\s*".join(re.escape(fragment) for fragment in normalized_fragments)
+    return re.fullmatch(pattern, _normalize_anchor_composition_text(value)) is not None
 
 
 def _validate_candidate_code(
@@ -763,6 +880,142 @@ def _validate_candidate_ids(result: SFIExtractionResult) -> None:
         raise QualityError(
             f"SFI candidate IDs must match their 1-based list positions exactly. "
             f"Expected {expected_ids!r}; got {actual_ids!r}."
+        )
+
+
+def _validate_candidate_source_anchors(
+    *,
+    candidate: SFICandidate,
+    source_unit_map: dict[str, SFISourceUnit],
+    window: ExtractionWindow,
+) -> None:
+    """Validate exact source anchors for one extracted SFI candidate.
+
+    Parameters
+    ----------
+    candidate
+        Candidate carrying exact description and optional code anchors.
+    source_unit_map
+        Stable source units available in the extraction window.
+    window
+        Source extraction window used for language and code-evidence checks.
+
+    Raises
+    ------
+    QualityError
+        If an anchor is unknown, points to a nonexistent excerpt occurrence, appears
+        out of source order, fails to compose the candidate description, or does not
+        support the candidate's code and language.
+    """
+
+    description_languages: list[str] = []
+    resolved_anchors: list[tuple[tuple[tuple[int, int, int, int], int, int], str]] = []
+
+    for anchor in [
+        *candidate.description_source_anchors,
+        *candidate.code_source_anchors,
+    ]:
+        source_unit = source_unit_map.get(anchor.source_unit_id)
+
+        if source_unit is None:
+            raise QualityError(
+                f"Candidate {candidate.candidate_id!r} references unknown source_unit_id "
+                f"{anchor.source_unit_id!r}."
+            )
+
+        try:
+            start_char, end_char = find_source_anchor_span(
+                anchor=anchor, source_unit=source_unit
+            )
+        except ValueError as exc:
+            raise QualityError(
+                f"Candidate {candidate.candidate_id!r} has an invalid source anchor: "
+                f"{exc}"
+            ) from exc
+
+        resolved_anchors.append(
+            ((source_unit.source_order, start_char, end_char), anchor.source_text)
+        )
+
+    description_positions: list[tuple[tuple[int, int, int, int], int, int]] = []
+    resolved_description_anchors: list[tuple[SFISourceUnit, int, int]] = []
+
+    for anchor in candidate.description_source_anchors:
+        source_unit = source_unit_map[anchor.source_unit_id]
+        start_char, end_char = find_source_anchor_span(
+            anchor=anchor, source_unit=source_unit
+        )
+        description_positions.append((source_unit.source_order, start_char, end_char))
+        description_languages.append(source_unit.language)
+        resolved_description_anchors.append((source_unit, start_char, end_char))
+
+    if description_positions != sorted(description_positions):
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} description_source_anchors must "
+            f"follow source order."
+        )
+
+    _validate_description_anchor_span_contiguity(
+        candidate=candidate,
+        resolved_description_anchors=resolved_description_anchors,
+    )
+
+    if not _text_equals_anchor_fragments(
+        fragments=[
+            anchor.source_text for anchor in candidate.description_source_anchors
+        ],
+        value=candidate.description,
+    ):
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} description must be composed "
+            f"exactly from description_source_anchors after whitespace normalization."
+        )
+
+    all_anchor_fragments = [
+        source_text for _position, source_text in sorted(resolved_anchors)
+    ]
+
+    if not _text_contains_fragments_in_order(
+        container_text=candidate.source_text, fragments=all_anchor_fragments
+    ):
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} source_text must contain its code "
+            f"and description anchor excerpts in source order."
+        )
+
+    nonempty_languages = sorted(
+        {language.strip() for language in description_languages if language.strip()}
+    )
+    expected_language = (
+        nonempty_languages[0]
+        if len(nonempty_languages) == 1
+        else "mul" if len(nonempty_languages) > 1 else window.primary_language
+    )
+
+    if candidate.language != expected_language:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} language must match its exact "
+            f"description source anchors. Expected {expected_language!r}; got "
+            f"{candidate.language!r}."
+        )
+
+    if candidate.statement_code is None:
+        return
+
+    matching_raw_values = {
+        code_match.raw_value
+        for code_match in window.code_matches
+        if code_match.normalized_value == candidate.statement_code
+    }
+    anchored_code_values = {
+        anchor.source_text for anchor in candidate.code_source_anchors
+    }
+
+    if not anchored_code_values.intersection(matching_raw_values):
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} code_source_anchors do not cite "
+            f"the exact raw configured code evidence for statement_code="
+            f"{candidate.statement_code!r}."
         )
 
 
@@ -1191,7 +1444,7 @@ def _validate_dedup_merge_identity_scope_compatibility(
             for candidate in group_candidates
         }
         has_cross_type_occurrence_signal = (
-            _decision_group_has_same_source_occurrence_cross_type_signal(
+            _decision_group_shares_exact_description_source_anchors(
                 candidate_ids=decision_group.candidate_ids,
                 review_request=review_request,
             )
@@ -1329,7 +1582,7 @@ def _validate_dedup_merge_scope_compatibility(
             for candidate in group_candidates
         }
         has_cross_type_occurrence_signal = (
-            _decision_group_has_same_source_occurrence_cross_type_signal(
+            _decision_group_shares_exact_description_source_anchors(
                 candidate_ids=decision_group.candidate_ids,
                 review_request=review_request,
             )
@@ -1463,6 +1716,53 @@ def _validate_dedup_response_candidate_coverage(
             f"Dedup response assigned candidate IDs to more than one group: "
             f"{duplicate_candidate_ids}."
         )
+
+
+def _validate_description_anchor_span_contiguity(
+    *,
+    candidate: SFICandidate,
+    resolved_description_anchors: Sequence[tuple[SFISourceUnit, int, int]],
+) -> None:
+    """Reject overlapping or selectively gapped excerpts within one source unit.
+
+    Parameters
+    ----------
+    candidate
+        Candidate whose description anchors are being validated.
+    resolved_description_anchors
+        Description source units and resolved character spans in candidate order.
+
+    Raises
+    ------
+    QualityError
+        If two consecutive description anchors in one source unit overlap or omit
+        non-whitespace source-visible text between their excerpts.
+    """
+
+    for previous_anchor, current_anchor in zip(
+        resolved_description_anchors, resolved_description_anchors[1:]
+    ):
+        previous_unit, _previous_start, previous_end = previous_anchor
+        current_unit, current_start, _current_end = current_anchor
+
+        if previous_unit.source_unit_id != current_unit.source_unit_id:
+            continue
+
+        if current_start < previous_end:
+            raise QualityError(
+                f"Candidate {candidate.candidate_id!r} has overlapping description "
+                f"anchors in source unit {current_unit.source_unit_id!r}."
+            )
+
+        omitted_text = current_unit.source_text[previous_end:current_start]
+
+        if omitted_text.strip():
+            raise QualityError(
+                f"Candidate {candidate.candidate_id!r} description anchors omit "
+                f"source-visible text within source unit "
+                f"{current_unit.source_unit_id!r}. Use one contiguous exact excerpt "
+                f"or include the omitted text in the description anchors."
+            )
 
 
 def _validate_has_child_parent_selection_policy(
@@ -1972,8 +2272,12 @@ def verify_sfi_extraction_integrity(
 
     _validate_result_identity(result=extraction_result, window=window)
     _validate_candidate_ids(extraction_result)
+    source_unit_map = build_sfi_source_unit_map(window)
 
     for candidate in extraction_result.sfi_candidates:
+        _validate_candidate_source_anchors(
+            candidate=candidate, source_unit_map=source_unit_map, window=window
+        )
         _validate_candidate_statement_type(
             candidate=candidate,
             statement_type_alias_to_canonical=statement_type_alias_to_canonical,

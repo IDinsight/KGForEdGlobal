@@ -34,6 +34,7 @@ from skg.kgs.schemas import (
     SFIRegistrySummary,
     SFIRegistryWarning,
 )
+from skg.kgs.sfi_source_anchors import source_anchor_set_signature
 from skg.kgs.utils import normalize_code, normalize_text, resolve_candidate_code
 from skg.kgs.validators import verify_sfi_extraction_integrity
 from skg.page_ir_extraction.validators import QualityError
@@ -497,7 +498,7 @@ def _build_registry_candidate(
         candidate=candidate, extraction_window=extraction_window
     )
     source_occurrence_location_key = _build_source_occurrence_location_key(
-        candidate=candidate, extraction_window=extraction_window
+        candidate=candidate, doc_key=extraction_window.doc_key
     )
     (
         canonical_statement_value,
@@ -565,8 +566,10 @@ def _build_registry_candidate(
         code_bucket_key=code_bucket_key,
         code_scope_key=code_scope_key,
         code_scope_values=code_scope_values,
+        code_source_anchors=candidate.code_source_anchors,
         confidence=candidate.confidence,
         description=candidate.description,
+        description_source_anchors=candidate.description_source_anchors,
         identity_scope_key=identity_scope_key,
         identity_scope_values=identity_scope_values,
         language=candidate.language,
@@ -816,34 +819,28 @@ def _build_scope_evidence_values(
 
 
 def _build_source_occurrence_location_key(
-    *, candidate: SFICandidate, extraction_window: ExtractionWindow
+    *, candidate: SFICandidate, doc_key: str
 ) -> str:
-    """Build a type-independent key for one candidate's physical source location.
-
-    The key intentionally excludes extraction-window identity, candidate type, and
-    semantic scope. This allows overlapping windows and differently classified copies
-    of the same source occurrence to be compared without treating source location as a
-    logical merge decision.
+    """Build an exact type-independent physical-occurrence key.
 
     Parameters
     ----------
     candidate
-        Window-local candidate carrying exact table row and header references.
-    extraction_window
-        Source extraction window carrying the document and segment identity.
+        Window-local candidate carrying validated description source anchors.
+    doc_key
+        Stable source document key.
 
     Returns
     -------
     str
-        Stable SHA-256-derived source-occurrence location key.
+        Stable SHA-256-derived key for the exact description-bearing source spans.
     """
 
     location_payload = {
-        "doc_key": extraction_window.doc_key,
-        "segment_kind": extraction_window.segment_kind,
-        "source_segment_ids": sorted(set(extraction_window.source_segment_ids)),
-        "table_header_indexes": sorted(set(candidate.table_header_indexes)),
-        "table_row_indexes": sorted(set(candidate.table_row_indexes)),
+        "description_source_anchors": source_anchor_set_signature(
+            candidate.description_source_anchors
+        ),
+        "doc_key": doc_key,
     }
     location_basis = json.dumps(
         location_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True

@@ -37,6 +37,7 @@ from skg.kgs.schemas import (
     SFIRegistryArtifact,
     SFIRegistryCandidate,
 )
+from skg.kgs.sfi_source_anchors import source_anchor_set_signature
 from skg.kgs.utils import (
     KGDirs,
     append_jsonl_model,
@@ -418,10 +419,10 @@ def _build_initial_review_edges(
     header does not by itself prove that candidates are duplicates.
 
     4. A narrow cross-type occurrence edge connects differently classified candidates
-    only when they cite the same type-independent physical source location and have
-    exact normalized description or source-text equality. This lets the producer and
-    checker correct duplicate extraction under inconsistent statement types without
-    broadening ordinary type-aware buckets.
+    only when they preserve one identical validated description-anchor set. This lets
+    the producer and checker correct duplicate extraction under inconsistent statement
+    types without broadening ordinary type-aware buckets or confusing different cells
+    in one row.
 
     5. Different edge sources can overlap. For example, candidate `A` and candidate `B`
     might share a duplicate bucket, while candidate `B` and candidate `C` share a
@@ -644,6 +645,14 @@ def _build_merge_group(
                 ),
                 "code_scope_key": candidate.code_scope_key,
                 "code_scope_values": candidate.code_scope_values,
+                "code_source_anchors": [
+                    anchor.model_dump(mode="json")
+                    for anchor in candidate.code_source_anchors
+                ],
+                "description_source_anchors": [
+                    anchor.model_dump(mode="json")
+                    for anchor in candidate.description_source_anchors
+                ],
                 "identity_scope_key": candidate.identity_scope_key,
                 "identity_scope_values": candidate.identity_scope_values,
                 "normalized_description": candidate.normalized_description,
@@ -1138,12 +1147,14 @@ def _build_review_requests(
                         canonical_statement_value=(candidate.canonical_statement_value),
                         code_scope_key=candidate.code_scope_key,
                         code_scope_values=candidate.code_scope_values,
+                        code_source_anchors=candidate.code_source_anchors,
                         context_window_indexes=(
                             candidate_context_window_indexes[
                                 candidate.registry_candidate_id
                             ]
                         ),
                         description=candidate.description,
+                        description_source_anchors=candidate.description_source_anchors,
                         identity_scope_key=candidate.identity_scope_key,
                         identity_scope_values=candidate.identity_scope_values,
                         language=candidate.language,
@@ -1151,6 +1162,9 @@ def _build_review_requests(
                         normalized_statement_type=(candidate.normalized_statement_type),
                         registry_candidate_id=candidate.registry_candidate_id,
                         resolved_code_type=candidate.resolved_code_type,
+                        source_occurrence_location_key=(
+                            candidate.source_occurrence_location_key
+                        ),
                         source_text=candidate.source_text,
                         statement_code=candidate.statement_code,
                         statement_type=candidate.statement_type,
@@ -1343,9 +1357,9 @@ def _build_same_source_occurrence_cross_type_edges(
 ) -> list[tuple[set[str], set[str]]]:
     """Build narrow cross-type review edges for one physical source occurrence.
 
-    The edge requires a shared type-independent source occurrence location plus exact
-    normalized description or source-text equality. It intentionally does not broaden
-    ordinary type-aware text buckets or same-row provenance retrieval.
+    The edge requires one identical validated description-anchor set across differently
+    classified candidates. It intentionally does not broaden ordinary type-aware text
+    buckets or same-row provenance retrieval.
 
     Parameters
     ----------
@@ -1355,7 +1369,7 @@ def _build_same_source_occurrence_cross_type_edges(
     Returns
     -------
     list[tuple[set[str], set[str]]]
-        Candidate-ID sets paired with a deterministic cross-type occurrence reason.
+        Candidate-ID sets paired with a deterministic exact-anchor occurrence reason.
     """
 
     edges: list[tuple[set[str], set[str]]] = []
@@ -1519,8 +1533,8 @@ def _candidates_share_same_source_occurrence_cross_type_evidence(
     Returns
     -------
     bool
-        True when all candidates cite one type-independent source occurrence and share
-        exact normalized description or source-text equality across multiple type pairs.
+        True when all candidates preserve one identical non-empty exact
+        description-anchor set across multiple statement-type pairs.
     """
 
     expected_candidate_ids = {
@@ -1679,12 +1693,7 @@ def _find_scope_value_conflicts(
 def _group_same_source_occurrence_cross_type_candidates(
     candidates: Sequence[SFIRegistryCandidate],
 ) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
-    """Group probable cross-type copies of one physical source occurrence.
-
-    Candidates are grouped only when they share the same type-independent source
-    occurrence location and have exact equality for normalized description or
-    normalized source text. The grouping is retrieval evidence only; it does not make a
-    merge decision.
+    """Group differently classified candidates with identical exact source anchors.
 
     Parameters
     ----------
@@ -1694,56 +1703,53 @@ def _group_same_source_occurrence_cross_type_candidates(
     Returns
     -------
     list[tuple[tuple[str, ...], tuple[str, ...]]]
-        Candidate-ID tuples paired with the exact-text evidence kinds that connected
-        them. Every group contains at least two distinct statement-type pairs.
+        Candidate-ID tuples paired with the exact-anchor evidence kind. Every group
+        contains at least two distinct statement-type pairs.
     """
 
-    candidates_by_evidence: dict[tuple[str, str, str], list[SFIRegistryCandidate]] = (
-        defaultdict(list)
-    )
+    candidates_by_anchor_signature: dict[
+        tuple[tuple[str, int, str], ...], list[SFIRegistryCandidate]
+    ] = defaultdict(list)
 
     for candidate in candidates:
-        for evidence_kind, normalized_text_value in [
-            ("normalized_description", candidate.normalized_description),
-            ("normalized_source_text", candidate.normalized_source_text),
-        ]:
-            if normalized_text_value:
-                candidates_by_evidence[
-                    (
-                        candidate.source_occurrence_location_key,
-                        evidence_kind,
-                        normalized_text_value,
-                    )
-                ].append(candidate)
+        anchor_signature = source_anchor_set_signature(
+            candidate.description_source_anchors
+        )
 
-    evidence_kinds_by_candidate_ids: dict[tuple[str, ...], set[str]] = defaultdict(set)
+        if anchor_signature:
+            candidates_by_anchor_signature[anchor_signature].append(candidate)
 
-    for (
-        _source_occurrence_location_key,
-        evidence_kind,
-        _normalized_text_value,
-    ), grouped_candidates in sorted(candidates_by_evidence.items()):
+    grouped_candidates: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+
+    for anchor_signature, source_candidates in sorted(
+        candidates_by_anchor_signature.items()
+    ):
         candidate_ids = tuple(
-            sorted(
-                {candidate.registry_candidate_id for candidate in grouped_candidates}
-            )
+            sorted({candidate.registry_candidate_id for candidate in source_candidates})
         )
         type_pairs = {
             (candidate.statement_type, candidate.normalized_statement_type)
-            for candidate in grouped_candidates
+            for candidate in source_candidates
         }
 
         if len(candidate_ids) < 2 or len(type_pairs) < 2:
             continue
 
-        evidence_kinds_by_candidate_ids[candidate_ids].add(evidence_kind)
+        occurrence_keys = {
+            candidate.source_occurrence_location_key for candidate in source_candidates
+        }
 
-    return [
-        (candidate_ids, tuple(sorted(evidence_kinds)))
-        for candidate_ids, evidence_kinds in sorted(
-            evidence_kinds_by_candidate_ids.items()
+        if len(occurrence_keys) != 1:
+            raise ValueError(
+                "Candidates with one exact description-anchor signature must preserve "
+                "one source_occurrence_location_key."
+            )
+
+        grouped_candidates.append(
+            (candidate_ids, ("exact_description_source_anchors",))
         )
-    ]
+
+    return grouped_candidates
 
 
 def _load_complete_existing_merge_report(
@@ -3253,29 +3259,25 @@ def _same_source_occurrence_cross_type_signals(
     Returns
     -------
     list[SFIDedupReviewSignal]
-        One signal per candidate subset sharing an exact source location and exact
-        normalized description or source text across different statement-type pairs.
+        One signal per candidate subset sharing one identical validated
+        description-anchor set across different statement-type pairs.
     """
 
     signals: list[SFIDedupReviewSignal] = []
 
     for (
         candidate_ids,
-        evidence_kinds,
+        _evidence_kinds,
     ) in _group_same_source_occurrence_cross_type_candidates(candidates):
-        evidence_summary = " and ".join(
-            evidence_kind.replace("normalized_", "normalized ").replace("_", " ")
-            for evidence_kind in evidence_kinds
-        )
         signals.append(
             SFIDedupReviewSignal(
                 candidate_ids=list(candidate_ids),
                 signal_type=SAME_SOURCE_OCCURRENCE_CROSS_TYPE_SIGNAL,
                 summary=(
-                    f"These differently classified candidates cite the same physical "
-                    f"source occurrence and have exact internal equality for "
-                    f"{evidence_summary}. Treat this as high-confidence duplicate "
-                    f"retrieval evidence, not an automatic merge decision."
+                    "These differently classified candidates preserve one identical "
+                    "validated set of exact description source anchors. Treat this as "
+                    "high-confidence duplicate retrieval evidence, not an automatic "
+                    "merge decision."
                 ),
                 value=None,
             )

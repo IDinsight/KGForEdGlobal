@@ -37,6 +37,15 @@ SFICodeResolutionMethod = Literal[
 ]
 SFIDedupDecision = Literal["conflict", "keep_separate", "merge", "needs_review"]
 SFIMergeDecision = Literal["conflict", "merged", "needs_review", "singleton"]
+SFISourceUnitKind = Literal[
+    "block_list_item",
+    "block_slice_text",
+    "block_text",
+    "figure_caption",
+    "figure_embedded_text",
+    "table_body_cell",
+    "table_header_cell",
+]
 
 
 def _find_scope_value_conflicts(
@@ -72,7 +81,7 @@ def _find_scope_value_conflicts(
 def _source_refs_share_same_source_occurrence_cross_type_evidence(
     source_refs: Sequence[dict[str, Any]],
 ) -> bool:
-    """Check whether source refs preserve one direct cross-type occurrence signal.
+    """Check whether source refs preserve one exact cross-type occurrence.
 
     Parameters
     ----------
@@ -82,18 +91,13 @@ def _source_refs_share_same_source_occurrence_cross_type_evidence(
     Returns
     -------
     bool
-        True when all refs share one non-empty source-occurrence location, represent
-        multiple statement-type pairs, and have exact normalized description or
-        source-text equality.
+        True when all refs preserve one identical non-empty description-anchor set
+        across multiple statement-type pairs.
     """
 
     if len(source_refs) < 2:
         return False
 
-    occurrence_keys = {
-        str(source_ref.get("source_occurrence_location_key") or "").strip()
-        for source_ref in source_refs
-    }
     type_pairs = {
         (
             str(source_ref.get("statement_type") or "").strip(),
@@ -102,18 +106,31 @@ def _source_refs_share_same_source_occurrence_cross_type_evidence(
         for source_ref in source_refs
     }
 
-    if "" in occurrence_keys or len(occurrence_keys) != 1 or len(type_pairs) < 2:
+    if len(type_pairs) < 2:
         return False
 
-    for field_name in ["normalized_description", "normalized_source_text"]:
-        normalized_values = {
-            str(source_ref.get(field_name) or "").strip() for source_ref in source_refs
-        }
+    anchor_signatures = {
+        tuple(
+            sorted(
+                (
+                    str(anchor.get("source_unit_id") or "").strip(),
+                    int(anchor.get("occurrence_index", -1)),
+                    str(anchor.get("source_text") or ""),
+                )
+                for anchor in source_ref.get("description_source_anchors") or []
+            )
+        )
+        for source_ref in source_refs
+    }
 
-        if "" not in normalized_values and len(normalized_values) == 1:
-            return True
+    if len(anchor_signatures) != 1:
+        return False
 
-    return False
+    only_signature = next(iter(anchor_signatures))
+    return bool(only_signature) and all(
+        source_unit_id and occurrence_index >= 0 and source_text
+        for source_unit_id, occurrence_index, source_text in only_signature
+    )
 
 
 def _validate_iso8601_str(v: Optional[str]) -> Optional[str]:
@@ -759,6 +776,80 @@ class ExtractionWindowTablePayload(BaseSchema):
 
 
 # Schemas for SFI candidate extraction.
+class SFISourceAnchor(BaseSchema):
+    """Exact source excerpt anchored to one stable extraction source unit."""
+
+    occurrence_index: int = Field(
+        description=(
+            "0-based left-to-right non-overlapping occurrence of source_text "
+            "within the complete referenced source unit. This disambiguates "
+            "repeated identical excerpts."
+        ),
+        ge=0,
+    )
+    source_text: str = Field(
+        description="Exact non-empty source-visible excerpt from the source unit.",
+        min_length=1,
+    )
+    source_unit_id: str = Field(
+        description=(
+            "Stable source-unit identifier exposed in the compact extraction window. "
+            "It is independent of extraction-window overlap and candidate type."
+        ),
+        min_length=1,
+    )
+
+    @field_validator("source_text", "source_unit_id", mode="before")
+    @classmethod
+    def strip_required_strings(cls, v: str) -> str:
+        """Strip and require non-empty source-anchor strings.
+
+        Parameters
+        ----------
+        v
+            Raw source-anchor string.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty string.
+
+        Raises
+        ------
+        ValueError
+            If the value is empty.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+
+def _validate_unique_source_anchors(
+    *, anchors: Sequence[SFISourceAnchor], field_name: str
+) -> None:
+    """Validate that one candidate anchor list contains no duplicate references.
+
+    Parameters
+    ----------
+    anchors
+        Candidate source anchors to validate.
+    field_name
+        Human-readable field name for validation errors.
+
+    Raises
+    ------
+    ValueError
+        If duplicate exact anchor references are present.
+    """
+
+    signatures = [
+        (anchor.source_unit_id, anchor.occurrence_index, anchor.source_text)
+        for anchor in anchors
+    ]
+
+    if len(signatures) != len(set(signatures)):
+        raise ValueError(f"{field_name} must not contain duplicate source anchors.")
+
+
 class SFIAuxiliaryCandidate(BaseSchema):
     """Auxiliary source material that should not become an SFI candidate.
 
@@ -821,6 +912,13 @@ class SFICandidate(BaseSchema):
     """Candidate StandardsFrameworkItem extracted from one source window."""
 
     candidate_id: str = Field(description="Window-local stable candidate identifier.")
+    code_source_anchors: list[SFISourceAnchor] = Field(
+        default_factory=list,
+        description=(
+            "Exact source anchors for the separately represented official identifier "
+            "code. Empty when statement_code is null."
+        ),
+    )
     confidence: float = Field(
         default=0.5,
         description="Confidence that this source material should become an SFI candidate.",
@@ -829,6 +927,13 @@ class SFICandidate(BaseSchema):
     )
     description: str = Field(
         description="Candidate SFI description, preserving the source-language meaning.",
+        min_length=1,
+    )
+    description_source_anchors: list[SFISourceAnchor] = Field(
+        description=(
+            "Ordered exact source anchors whose excerpts compose the complete "
+            "candidate description."
+        ),
         min_length=1,
     )
     language: LanguageField = Field(
@@ -944,6 +1049,41 @@ class SFICandidate(BaseSchema):
             raise ValueError("table indexes must be non-negative")
 
         return cleaned
+
+    @model_validator(mode="after")
+    def validate_source_anchor_contract(self) -> Self:
+        """Validate candidate source-anchor presence and code alignment.
+
+        Returns
+        -------
+        Self
+            Validated SFI candidate.
+
+        Raises
+        ------
+        ValueError
+            If anchors are duplicated or code anchors disagree with statement_code.
+        """
+
+        _validate_unique_source_anchors(
+            anchors=self.description_source_anchors,
+            field_name="description_source_anchors",
+        )
+        _validate_unique_source_anchors(
+            anchors=self.code_source_anchors, field_name="code_source_anchors"
+        )
+
+        if self.statement_code is None and self.code_source_anchors:
+            raise ValueError(
+                "code_source_anchors must be empty when statement_code is null."
+            )
+
+        if self.statement_code is not None and not self.code_source_anchors:
+            raise ValueError(
+                "A non-null statement_code requires at least one code_source_anchor."
+            )
+
+        return self
 
 
 class SFIExtractionResult(BaseSchema):
@@ -1469,11 +1609,19 @@ class SFIRegistryCandidate(BaseSchema):
             "scope this candidate's applicable code type."
         )
     )
+    code_source_anchors: list[SFISourceAnchor] = Field(
+        default_factory=list,
+        description="Validated exact code anchors from the extraction candidate.",
+    )
     confidence: float = Field(
         description="Original candidate confidence.", ge=0.0, le=1.0
     )
     description: str = Field(
         description="Original candidate description.", min_length=1
+    )
+    description_source_anchors: list[SFISourceAnchor] = Field(
+        description="Validated exact description anchors from the extraction candidate.",
+        min_length=1,
     )
     identity_scope_key: Optional[str] = Field(
         description=(
@@ -1744,6 +1892,35 @@ class SFIRegistryCandidate(BaseSchema):
 
         return self
 
+    @model_validator(mode="after")
+    def validate_source_anchor_contract(self) -> Self:
+        """Validate registry anchors against the preserved extraction candidate.
+
+        Returns
+        -------
+        Self
+            Validated registry candidate.
+
+        Raises
+        ------
+        ValueError
+            If registry anchor fields differ from the original candidate payload.
+        """
+
+        if self.description_source_anchors != (
+            self.candidate_payload.description_source_anchors
+        ):
+            raise ValueError(
+                "description_source_anchors must exactly preserve candidate_payload."
+            )
+
+        if self.code_source_anchors != self.candidate_payload.code_source_anchors:
+            raise ValueError(
+                "code_source_anchors must exactly preserve candidate_payload."
+            )
+
+        return self
+
 
 class SFIRegistryDuplicateBucket(BaseSchema):
     """Possible SFI duplicate bucket for LLM-assisted merge review."""
@@ -1957,11 +2134,19 @@ class SFIDedupReviewCandidate(BaseSchema):
     code_scope_values: dict[str, str] = Field(
         description="Canonical configured code-scope values, when applicable."
     )
+    code_source_anchors: list[SFISourceAnchor] = Field(
+        default_factory=list,
+        description="Exact source anchors supporting the candidate code.",
+    )
     context_window_indexes: list[int] = Field(
         description="Shared request-level context windows relevant to this candidate.",
         min_length=1,
     )
     description: str = Field(description="Candidate description.", min_length=1)
+    description_source_anchors: list[SFISourceAnchor] = Field(
+        description="Exact source anchors composing the candidate description.",
+        min_length=1,
+    )
     identity_scope_key: Optional[str] = Field(
         description="Deterministic configured semantic identity-scope key, when any."
     )
@@ -1979,6 +2164,10 @@ class SFIDedupReviewCandidate(BaseSchema):
     resolved_code_type: Optional[str] = Field(
         default=None,
         description="Configured code type resolved from the candidate's source code.",
+    )
+    source_occurrence_location_key: str = Field(
+        description="Exact description-anchor occurrence key from the registry.",
+        min_length=1,
     )
     source_text: str = Field(description="Source-visible evidence text.", min_length=1)
     statement_code: Optional[str] = Field(
@@ -2050,6 +2239,31 @@ class SFIDedupReviewCandidate(BaseSchema):
 
         value = str(v).strip()
         return value or None
+
+    @field_validator(
+        "description",
+        "registry_candidate_id",
+        "source_occurrence_location_key",
+        "source_text",
+        "statement_type",
+        mode="before",
+    )
+    @classmethod
+    def clean_required_strings(cls, v: str) -> str:
+        """Strip required review-candidate strings.
+
+        Parameters
+        ----------
+        v
+            Raw required string.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty string.
+        """
+
+        return strip_and_require_non_empty_str(v)
 
     @field_validator("code_scope_values")
     @classmethod
@@ -2157,6 +2371,41 @@ class SFIDedupReviewCandidate(BaseSchema):
             raise ValueError(
                 "identity_scope_key and identity_scope_values must either both be "
                 "present or both be empty."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_source_anchor_contract(self) -> Self:
+        """Validate review-candidate code and source-anchor consistency.
+
+        Returns
+        -------
+        Self
+            Validated review candidate.
+
+        Raises
+        ------
+        ValueError
+            If code anchors disagree with statement_code or anchors are duplicated.
+        """
+
+        _validate_unique_source_anchors(
+            anchors=self.description_source_anchors,
+            field_name="description_source_anchors",
+        )
+        _validate_unique_source_anchors(
+            anchors=self.code_source_anchors, field_name="code_source_anchors"
+        )
+
+        if self.statement_code is None and self.code_source_anchors:
+            raise ValueError(
+                "code_source_anchors must be empty when statement_code is null."
+            )
+
+        if self.statement_code is not None and not self.code_source_anchors:
+            raise ValueError(
+                "A non-null statement_code requires at least one code_source_anchor."
             )
 
         return self
