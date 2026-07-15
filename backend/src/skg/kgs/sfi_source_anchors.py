@@ -62,6 +62,65 @@ class SFISourceUnit:
         }
 
 
+def _build_block_figure_source_unit(
+    *,
+    fallback_language: str,
+    figure: dict[str, Any],
+    slice_index: int,
+    source_segment_id: str,
+) -> Optional[SFISourceUnit]:
+    """Build the first available source unit for one block figure.
+
+    The figure's embedded text is preferred over its caption; the first field that
+    yields a visible source unit wins.
+
+    Parameters
+    ----------
+    fallback_language
+        Language used when a figure text payload has no language tag.
+    figure
+        Serialized DocumentIR figure payload.
+    slice_index
+        Index of the slice that owns the figure.
+    source_segment_id
+        Stable DocumentIR segment identifier.
+
+    Returns
+    -------
+    Optional[SFISourceUnit]
+        Source unit for the first field with visible text, or `None`.
+    """
+
+    for field_name, source_unit_kind in [
+        ("embedded_text", "figure_embedded_text"),
+        ("caption", "figure_caption"),
+    ]:
+        figure_text_payload = figure.get(field_name)
+
+        if isinstance(figure_text_payload, dict):
+            figure_source_text = str(figure_text_payload.get("text") or "")
+        elif figure_text_payload is None:
+            figure_source_text = ""
+        else:
+            figure_source_text = str(figure_text_payload)
+
+        source_unit = _build_text_source_unit(
+            fallback_language=fallback_language,
+            source_locator={"figure_field": field_name, "slice_index": slice_index},
+            source_order=(0, slice_index, 0, 0),
+            source_segment_id=source_segment_id,
+            source_text=figure_source_text,
+            source_unit_index=slice_index,
+            source_unit_kind=source_unit_kind,
+            text_payload=figure_text_payload,
+        )
+
+        if source_unit is not None:
+            return source_unit
+
+    return None
+
+
 def _build_block_list_item_source_text(item: dict[str, Any]) -> str:
     """Render one serialized list item with its visible marker.
 
@@ -90,6 +149,65 @@ def _build_block_list_item_source_text(item: dict[str, Any]) -> str:
         return text
 
     return " ".join(value for value in [marker, text] if value)
+
+
+def _build_block_slice_source_unit(
+    *,
+    fallback_language: str,
+    slice_index: int,
+    slice_payload: dict[str, Any],
+    source_segment_id: str,
+) -> Optional[SFISourceUnit]:
+    """Build one source unit for a single block slice.
+
+    Slice text is preferred; when absent, the slice's figure text (if any) is used
+    instead.
+
+    Parameters
+    ----------
+    fallback_language
+        Language used when a slice text payload has no language tag.
+    slice_index
+        Index of the slice within the block.
+    slice_payload
+        Serialized DocumentIR slice payload.
+    source_segment_id
+        Stable DocumentIR segment identifier.
+
+    Returns
+    -------
+    Optional[SFISourceUnit]
+        Source unit for the slice, or `None` when it has no visible text.
+    """
+
+    text_payload = slice_payload.get("text")
+
+    if isinstance(text_payload, dict):
+        source_unit = _build_text_source_unit(
+            fallback_language=fallback_language,
+            source_locator={"slice_index": slice_index},
+            source_order=(0, slice_index, 0, 0),
+            source_segment_id=source_segment_id,
+            source_text=str(text_payload.get("text") or ""),
+            source_unit_index=slice_index,
+            source_unit_kind="block_slice_text",
+            text_payload=text_payload,
+        )
+
+        if source_unit is not None:
+            return source_unit
+
+    figure = slice_payload.get("figure")
+
+    if not isinstance(figure, dict):
+        return None
+
+    return _build_block_figure_source_unit(
+        fallback_language=fallback_language,
+        figure=figure,
+        slice_index=slice_index,
+        source_segment_id=source_segment_id,
+    )
 
 
 def _build_text_source_unit(
@@ -209,10 +327,95 @@ def _get_text_unit_language(*, fallback: str, text_payload: Any) -> str:
     return fallback
 
 
+def _iter_block_list_item_source_units(
+    *, fallback_language: str, list_items: list[Any], source_segment_id: str
+) -> list[SFISourceUnit]:
+    """Build source-visible units for a block's list items.
+
+    Parameters
+    ----------
+    fallback_language
+        Language used when a list-item text payload has no language tag.
+    list_items
+        Serialized DocumentIR list-item payloads.
+    source_segment_id
+        Stable DocumentIR segment identifier.
+
+    Returns
+    -------
+    list[SFISourceUnit]
+        Source-visible list-item units in source order.
+    """
+
+    source_units: list[SFISourceUnit] = []
+
+    for item_index, item in enumerate(list_items):
+        if not isinstance(item, dict):
+            continue
+
+        source_unit = _build_text_source_unit(
+            fallback_language=fallback_language,
+            source_locator={"item_index": item_index},
+            source_order=(0, item_index, 0, 0),
+            source_segment_id=source_segment_id,
+            source_text=_build_block_list_item_source_text(item),
+            source_unit_index=item_index,
+            source_unit_kind="block_list_item",
+            text_payload=item.get("text"),
+        )
+
+        if source_unit is not None:
+            source_units.append(source_unit)
+
+    return source_units
+
+
+def _iter_block_slice_source_units(
+    *, fallback_language: str, slices: list[Any], source_segment_id: str
+) -> list[SFISourceUnit]:
+    """Build source-visible units for a block's slices.
+
+    Parameters
+    ----------
+    fallback_language
+        Language used when a slice text payload has no language tag.
+    slices
+        Serialized DocumentIR slice payloads.
+    source_segment_id
+        Stable DocumentIR segment identifier.
+
+    Returns
+    -------
+    list[SFISourceUnit]
+        Source-visible slice units in source order.
+    """
+
+    source_units: list[SFISourceUnit] = []
+
+    for slice_index, slice_payload in enumerate(slices):
+        if not isinstance(slice_payload, dict):
+            continue
+
+        source_unit = _build_block_slice_source_unit(
+            fallback_language=fallback_language,
+            slice_index=slice_index,
+            slice_payload=slice_payload,
+            source_segment_id=source_segment_id,
+        )
+
+        if source_unit is not None:
+            source_units.append(source_unit)
+
+    return source_units
+
+
 def _iter_block_source_units(
     extraction_window: ExtractionWindow,
 ) -> list[SFISourceUnit]:
     """Build stable source-visible units for one block extraction window.
+
+    Units are taken from the first non-empty source among the block's list items, its
+    slices, and finally the whole-block text fallback.
 
     Parameters
     ----------
@@ -233,28 +436,13 @@ def _iter_block_source_units(
     source_segment_id = _get_single_source_segment_id(extraction_window)
     fallback_language = extraction_window.primary_language
     list_items = block.get("list_items")
-    source_units: list[SFISourceUnit] = []
 
     if isinstance(list_items, list) and list_items:
-        for item_index, item in enumerate(list_items):
-            if not isinstance(item, dict):
-                continue
-
-            source_text = _build_block_list_item_source_text(item)
-            text_payload = item.get("text")
-            source_unit = _build_text_source_unit(
-                fallback_language=fallback_language,
-                source_locator={"item_index": item_index},
-                source_order=(0, item_index, 0, 0),
-                source_segment_id=source_segment_id,
-                source_text=source_text,
-                source_unit_index=item_index,
-                source_unit_kind="block_list_item",
-                text_payload=text_payload,
-            )
-
-            if source_unit is not None:
-                source_units.append(source_unit)
+        source_units = _iter_block_list_item_source_units(
+            fallback_language=fallback_language,
+            list_items=list_items,
+            source_segment_id=source_segment_id,
+        )
 
         if source_units:
             return source_units
@@ -262,68 +450,16 @@ def _iter_block_source_units(
     slices = block.get("slices")
 
     if isinstance(slices, list):
-        for slice_index, slice_payload in enumerate(slices):
-            if not isinstance(slice_payload, dict):
-                continue
+        source_units = _iter_block_slice_source_units(
+            fallback_language=fallback_language,
+            slices=slices,
+            source_segment_id=source_segment_id,
+        )
 
-            text_payload = slice_payload.get("text")
+        if source_units:
+            return source_units
 
-            if isinstance(text_payload, dict):
-                source_unit = _build_text_source_unit(
-                    fallback_language=fallback_language,
-                    source_locator={"slice_index": slice_index},
-                    source_order=(0, slice_index, 0, 0),
-                    source_segment_id=source_segment_id,
-                    source_text=str(text_payload.get("text") or ""),
-                    source_unit_index=slice_index,
-                    source_unit_kind="block_slice_text",
-                    text_payload=text_payload,
-                )
-
-                if source_unit is not None:
-                    source_units.append(source_unit)
-                    continue
-
-            figure = slice_payload.get("figure")
-
-            if not isinstance(figure, dict):
-                continue
-
-            for field_name, source_unit_kind in [
-                ("embedded_text", "figure_embedded_text"),
-                ("caption", "figure_caption"),
-            ]:
-                figure_text_payload = figure.get(field_name)
-
-                if isinstance(figure_text_payload, dict):
-                    figure_source_text = str(figure_text_payload.get("text") or "")
-                elif figure_text_payload is None:
-                    figure_source_text = ""
-                else:
-                    figure_source_text = str(figure_text_payload)
-
-                source_unit = _build_text_source_unit(
-                    fallback_language=fallback_language,
-                    source_locator={
-                        "figure_field": field_name,
-                        "slice_index": slice_index,
-                    },
-                    source_order=(0, slice_index, 0, 0),
-                    source_segment_id=source_segment_id,
-                    source_text=figure_source_text,
-                    source_unit_index=slice_index,
-                    source_unit_kind=source_unit_kind,
-                    text_payload=figure_text_payload,
-                )
-
-                if source_unit is not None:
-                    source_units.append(source_unit)
-                    break
-
-    if source_units:
-        return source_units
-
-    source_unit = _build_text_source_unit(
+    fallback_source_unit = _build_text_source_unit(
         fallback_language=fallback_language,
         source_locator={"block_unit_index": 0},
         source_order=(0, 0, 0, 0),
@@ -333,7 +469,7 @@ def _iter_block_source_units(
         source_unit_kind="block_text",
         text_payload=block.get("text"),
     )
-    return [source_unit] if source_unit is not None else []
+    return [fallback_source_unit] if fallback_source_unit is not None else []
 
 
 def _iter_table_body_source_units(

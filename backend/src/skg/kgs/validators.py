@@ -714,6 +714,62 @@ def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
 
 
+def _resolve_candidate_source_anchors(
+    *, candidate: SFICandidate, source_unit_map: dict[str, SFISourceUnit]
+) -> list[tuple[tuple[tuple[int, int, int, int], int, int], str]]:
+    """Resolve every candidate anchor to its ordered source position and text.
+
+    Parameters
+    ----------
+    candidate
+        Candidate whose description and code anchors are being resolved.
+    source_unit_map
+        Stable source units available in the extraction window.
+
+    Returns
+    -------
+    list[tuple[tuple[tuple[int, int, int, int], int, int], str]]
+        One `((source_order, start_char, end_char), source_text)` entry per description
+        and code anchor, in the candidate's anchor order.
+
+    Raises
+    ------
+    QualityError
+        If an anchor references an unknown source unit or points to a nonexistent
+        excerpt occurrence.
+    """
+
+    resolved_anchors: list[tuple[tuple[tuple[int, int, int, int], int, int], str]] = []
+
+    for anchor in [
+        *candidate.description_source_anchors,
+        *candidate.code_source_anchors,
+    ]:
+        source_unit = source_unit_map.get(anchor.source_unit_id)
+
+        if source_unit is None:
+            raise QualityError(
+                f"Candidate {candidate.candidate_id!r} references unknown source_unit_id "
+                f"{anchor.source_unit_id!r}."
+            )
+
+        try:
+            start_char, end_char = find_source_anchor_span(
+                anchor=anchor, source_unit=source_unit
+            )
+        except ValueError as exc:
+            raise QualityError(
+                f"Candidate {candidate.candidate_id!r} has an invalid source anchor: "
+                f"{exc}"
+            ) from exc
+
+        resolved_anchors.append(
+            ((source_unit.source_order, start_char, end_char), anchor.source_text)
+        )
+
+    return resolved_anchors
+
+
 def _text_contains_fragments_in_order(
     *, container_text: str, fragments: Sequence[str]
 ) -> bool:
@@ -856,6 +912,90 @@ def _validate_candidate_code(
         )
 
 
+def _validate_candidate_code_evidence(
+    *, candidate: SFICandidate, window: ExtractionWindow
+) -> None:
+    """Validate that code anchors cite exact configured code evidence.
+
+    Candidates without a `statement_code` require no code evidence and pass without
+    further checks.
+
+    Parameters
+    ----------
+    candidate
+        Candidate whose code anchors are being validated.
+    window
+        Source extraction window supplying configured code matches.
+
+    Raises
+    ------
+    QualityError
+        If the candidate declares a `statement_code` but its code_source_anchors do not
+        cite the exact raw configured code evidence for that code.
+    """
+
+    if candidate.statement_code is None:
+        return
+
+    matching_raw_values = {
+        code_match.raw_value
+        for code_match in window.code_matches
+        if code_match.normalized_value == candidate.statement_code
+    }
+    anchored_code_values = {
+        anchor.source_text for anchor in candidate.code_source_anchors
+    }
+
+    if not anchored_code_values.intersection(matching_raw_values):
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} code_source_anchors do not cite "
+            f"the exact raw configured code evidence for statement_code="
+            f"{candidate.statement_code!r}."
+        )
+
+
+def _validate_candidate_description_language(
+    *,
+    candidate: SFICandidate,
+    description_languages: Sequence[str],
+    window: ExtractionWindow,
+) -> None:
+    """Validate that the candidate language matches its description anchors.
+
+    Parameters
+    ----------
+    candidate
+        Candidate whose declared language is being validated.
+    description_languages
+        Source-unit languages for the candidate's description anchors, in anchor
+        order.
+    window
+        Source extraction window supplying the fallback primary language.
+
+    Raises
+    ------
+    QualityError
+        If the candidate language does not match the language implied by its exact
+        description source anchors.
+    """
+
+    nonempty_languages = sorted(
+        {language.strip() for language in description_languages if language.strip()}
+    )
+    expected_language = (
+        nonempty_languages[0]
+        if len(nonempty_languages) == 1
+        else "mul" if len(nonempty_languages) > 1 else window.primary_language
+    )
+
+    if candidate.language != expected_language:
+        raise QualityError(
+            f"Candidate {candidate.candidate_id!r} language must match its exact "
+            f"description source anchors. Expected {expected_language!r}; got "
+            f"{candidate.language!r}."
+        )
+
+
 def _validate_candidate_ids(result: SFIExtractionResult) -> None:
     """Validate sequential source-window candidate identifiers.
 
@@ -908,35 +1048,11 @@ def _validate_candidate_source_anchors(
         support the candidate's code and language.
     """
 
+    resolved_anchors = _resolve_candidate_source_anchors(
+        candidate=candidate, source_unit_map=source_unit_map
+    )
+
     description_languages: list[str] = []
-    resolved_anchors: list[tuple[tuple[tuple[int, int, int, int], int, int], str]] = []
-
-    for anchor in [
-        *candidate.description_source_anchors,
-        *candidate.code_source_anchors,
-    ]:
-        source_unit = source_unit_map.get(anchor.source_unit_id)
-
-        if source_unit is None:
-            raise QualityError(
-                f"Candidate {candidate.candidate_id!r} references unknown source_unit_id "
-                f"{anchor.source_unit_id!r}."
-            )
-
-        try:
-            start_char, end_char = find_source_anchor_span(
-                anchor=anchor, source_unit=source_unit
-            )
-        except ValueError as exc:
-            raise QualityError(
-                f"Candidate {candidate.candidate_id!r} has an invalid source anchor: "
-                f"{exc}"
-            ) from exc
-
-        resolved_anchors.append(
-            ((source_unit.source_order, start_char, end_char), anchor.source_text)
-        )
-
     description_positions: list[tuple[tuple[int, int, int, int], int, int]] = []
     resolved_description_anchors: list[tuple[SFISourceUnit, int, int]] = []
 
@@ -956,8 +1072,7 @@ def _validate_candidate_source_anchors(
         )
 
     _validate_description_anchor_span_contiguity(
-        candidate=candidate,
-        resolved_description_anchors=resolved_description_anchors,
+        candidate=candidate, resolved_description_anchors=resolved_description_anchors
     )
 
     if not _text_equals_anchor_fragments(
@@ -983,40 +1098,10 @@ def _validate_candidate_source_anchors(
             f"and description anchor excerpts in source order."
         )
 
-    nonempty_languages = sorted(
-        {language.strip() for language in description_languages if language.strip()}
+    _validate_candidate_description_language(
+        candidate=candidate, description_languages=description_languages, window=window
     )
-    expected_language = (
-        nonempty_languages[0]
-        if len(nonempty_languages) == 1
-        else "mul" if len(nonempty_languages) > 1 else window.primary_language
-    )
-
-    if candidate.language != expected_language:
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} language must match its exact "
-            f"description source anchors. Expected {expected_language!r}; got "
-            f"{candidate.language!r}."
-        )
-
-    if candidate.statement_code is None:
-        return
-
-    matching_raw_values = {
-        code_match.raw_value
-        for code_match in window.code_matches
-        if code_match.normalized_value == candidate.statement_code
-    }
-    anchored_code_values = {
-        anchor.source_text for anchor in candidate.code_source_anchors
-    }
-
-    if not anchored_code_values.intersection(matching_raw_values):
-        raise QualityError(
-            f"Candidate {candidate.candidate_id!r} code_source_anchors do not cite "
-            f"the exact raw configured code evidence for statement_code="
-            f"{candidate.statement_code!r}."
-        )
+    _validate_candidate_code_evidence(candidate=candidate, window=window)
 
 
 def _validate_candidate_source_exists(
