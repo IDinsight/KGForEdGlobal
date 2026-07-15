@@ -37,7 +37,6 @@ from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 
 ACTIVE_OUTLINE_STACK_PARENT_REASON = "active_outline_stack_parent"
-CANONICAL_SCOPE_PARENT_MATCH_REASON = "canonical_scope_parent_match"
 CODE_PARENT_HINT_REASON = "code_parent_hint"
 LOCAL_ACTIVE_OUTLINE_DIRECT_PARENT_REASON = "local_active_outline_direct_parent"
 MATCHED_SECTION_PATH_LABEL_REASON = "matched_section_path_label"
@@ -66,7 +65,6 @@ CARRY_FORWARD_PARENT_REASONS = frozenset(
 )
 HARD_LOCAL_DIRECT_PARENT_REASONS = frozenset(
     {
-        CANONICAL_SCOPE_PARENT_MATCH_REASON,
         CODE_PARENT_HINT_REASON,
         LOCAL_ACTIVE_OUTLINE_DIRECT_PARENT_REASON,
         SOURCE_LOCAL_CONTROLLED_PARENT_SCOPE_REASON,
@@ -221,9 +219,9 @@ def _candidate_has_hard_local_direct_parent_evidence(
     Returns
     -------
     bool
-        True when the candidate has code-local, canonical-scope, local active-outline,
-        source-local controlled parent scope, same-table, source-scope, or direct
-        code-prefix evidence.
+        True when the candidate has code-local, local active-outline, source-local
+        controlled parent scope, same-table, source-scope, or direct code-prefix
+        evidence.
     """
 
     if candidate.is_root:

@@ -189,7 +189,12 @@ def _detect_sfi_cycles(relationships: Sequence[Relationship]) -> list[list[str]]
 
 
 def _extract_grade_levels(record: SFIFinalRecord) -> list[str]:
-    """Recover stable grade-level labels when they are explicit in SFI metadata.
+    """Recover explicit grade labels from final SFI identity-scope metadata.
+
+    The export uses structured identity-scope values rather than parsing a serialized
+    hierarchy key. A final SFI whose own statement type is `Grade` contributes its
+    source-facing description. Final-record and candidate-level identity scopes may
+    additionally contribute canonical values under the `Grade` statement type.
 
     Parameters
     ----------
@@ -199,37 +204,39 @@ def _extract_grade_levels(record: SFIFinalRecord) -> list[str]:
     Returns
     -------
     list[str]
-        Stable grade-level labels, or an empty list when no grade is explicit.
+        Stable grade-level labels in first-seen order, or an empty list when no grade
+        is explicit.
     """
 
-    # NB: dict is being used as an ordered set here (values are irrelevant) since sets
-    # don't preserve insertion order.
+    # NB: Dict keys provide deterministic insertion-ordered de-duplication.
     unique_grades: dict[str, None] = {}
 
-    # 1. Check direct statement type.
-    if record.statement_type and record.statement_type.casefold() == "grade":
-        val_clean = str(record.description or "").strip()
+    if record.statement_type.casefold() == "grade":
+        description = record.description.strip()
 
-        if val_clean:
-            unique_grades[val_clean] = None
+        if description:
+            unique_grades[description] = None
 
-    # 2. Gather all scope keys to parse (canonical and candidate sources).
-    scope_keys = [str(record.canonical_statement_scope_key or "")] + [
-        str(ref.get("canonical_statement_scope_key") or "")
-        for ref in record.candidate_source_refs
-    ]
+    scope_value_maps: list[dict[str, Any]] = [dict(record.identity_scope_values)]
 
-    # 3. Parse all gathered scope keys for grade labels.
-    for scope_key in scope_keys:
-        for raw_part in scope_key.split("|"):
-            if ":" in raw_part:
-                label, value = raw_part.split(":", 1)
+    for source_ref in record.candidate_source_refs:
+        if not isinstance(source_ref, dict):
+            continue
 
-                if label.strip().casefold() == "grade":
-                    val_clean = str(value or "").strip()
+        identity_scope_values = source_ref.get("identity_scope_values")
 
-                    if val_clean:
-                        unique_grades[val_clean] = None
+        if isinstance(identity_scope_values, dict):
+            scope_value_maps.append(identity_scope_values)
+
+    for scope_values in scope_value_maps:
+        for statement_type, value in scope_values.items():
+            if str(statement_type).strip().casefold() != "grade":
+                continue
+
+            grade_value = str(value or "").strip()
+
+            if grade_value:
+                unique_grades[grade_value] = None
 
     return list(unique_grades)
 
@@ -1291,7 +1298,6 @@ def compile_academic_standards_kg(
                 "candidate_descriptions": record.candidate_descriptions,
                 "candidate_source_refs": record.candidate_source_refs,
                 "candidate_source_texts": record.candidate_source_texts,
-                "canonical_statement_scope_key": record.canonical_statement_scope_key,
                 "canonical_statement_value": record.canonical_statement_value,
                 "canonical_statement_value_key": record.canonical_statement_value_key,
                 "confidence_max": record.confidence_max,
@@ -1299,6 +1305,8 @@ def compile_academic_standards_kg(
                 "final_sfi_uuid": str(record.final_sfi_uuid),
                 "identity": record.metadata.get("identity", {}),
                 "identity_key": record.identity_key,
+                "identity_scope_key": record.identity_scope_key,
+                "identity_scope_values": record.identity_scope_values,
                 "language": record.language,
                 "merge_decision": record.merge_decision,
                 "merge_group_id": record.merge_group_id,
