@@ -175,26 +175,24 @@ def _build_compact_extraction_window_payload(
                 context.model_dump(mode="json")
                 for context in extraction_window.source_context_before
             ],
-            "section_path": [
-                {
-                    "item_index": section_ref.get("item_index"),
-                    "page_index": section_ref.get("page_index"),
-                    "source_visibility": "context_only",
-                    "text": section_ref.get("text"),
-                }
-                for section_ref in extraction_window.source_section_path
-            ],
+            "section_path_recent_first": _build_recent_first_section_context(
+                extraction_window
+            ),
             "source_context_policy": (
-                "Use section_path and the bounded preceding/following same-page headings "
-                "only to interpret document scope, visual reading-order inversions, and "
-                "the source role of the target block/table content. Neighbor headings "
-                "are source-visible but context_only: they are not part of the target "
-                "source unit, cannot create candidates, and cannot be cited in candidate "
-                "anchors, descriptions, or source_text unless the same wording is also "
-                "visible in the target block or table. A following heading does not "
-                "automatically govern the target; apply runtime instructions and the "
-                "local page structure. Section paths remain fallible context rather than "
-                "an inferred KG ancestor chain."
+                "The current visible block/table content is authoritative. "
+                "section_path_recent_first is ordered from nearest preceding context "
+                "to farthest, and recency_rank=0 identifies the nearest entry. For each "
+                "configured scope dimension not explicit in the current source, use "
+                "the first compatible heading in section_path_recent_first. Do not "
+                "skip a nearer compatible heading for an older one unless the current "
+                "visible source or authoritative runtime policy directly contradicts "
+                "it. Use bounded preceding/following same-page headings to interpret "
+                "local page structure and visual reading-order inversions. A following "
+                "heading does not automatically govern the target. All source_context "
+                "content is context_only: it cannot create candidates or be cited in "
+                "candidate anchors, descriptions, or source_text unless the same "
+                "wording is also visible in the target block or table. These fields are "
+                "fallible context, not an inferred KG ancestor chain."
             ),
         },
         "window_id": extraction_window.window_id,
@@ -737,6 +735,41 @@ def _build_filldown_context_rows(
     return context_rows
 
 
+def _build_recent_first_section_context(
+    extraction_window: ExtractionWindow,
+) -> list[dict[str, Any]]:
+    """Build prompt-facing section context from nearest to farthest.
+
+    The persisted extraction window retains `source_section_path` in source order. This
+    function reverses only the prompt-facing view and adds a zero-based recency rank.
+    It does not classify headings, resolve scope, or infer hierarchy in Python.
+
+    Parameters
+    ----------
+    extraction_window
+        Source-faithful extraction window carrying cumulative section context.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Context-only section references ordered nearest-first, where `recency_rank=0`
+        identifies the nearest preceding context entry.
+    """
+
+    return [
+        {
+            "item_index": section_ref.get("item_index"),
+            "page_index": section_ref.get("page_index"),
+            "recency_rank": recency_rank,
+            "source_visibility": "context_only",
+            "text": section_ref.get("text"),
+        }
+        for recency_rank, section_ref in enumerate(
+            reversed(extraction_window.source_section_path)
+        )
+    ]
+
+
 def _build_rowspan_context_rows(
     *,
     grid_rows: list[dict[str, Any]],
@@ -856,7 +889,7 @@ def extract_sfi_candidates_from_window(
 
 ## Scope
 - Extract candidate SFIs only from the provided compact source window.
-- Use source_context.section_path and bounded preceding/following same-page headings to determine document scope, resolve visual reading-order inversions, and identify the source role of the visible target block/table content when the runtime config depends on context. Treat all source_context fields as context only, not as candidate evidence or an inferred hierarchy.
+- Use source_context.section_path_recent_first and bounded preceding/following same-page headings to determine document scope, resolve visual reading-order inversions, and identify the source role of the visible target block/table content when the runtime config depends on context. Treat all source_context fields as context only, not as candidate evidence or an inferred hierarchy.
 - Return zero SFI candidates when the window contains front matter, examples only, teacher guidance only, activities only, resources only, assessment suggestions only, or unrelated content.
 - Do not infer hierarchy or relationships in this step. Extract only SFI candidates directly visible in this compact source window; final hasChild relationships are resolved later from finalized SFIs and source provenance.
 - Extract grouping SFIs only when the grouping label itself is visible in target block or table source content. Do not emit a grouping solely because it appears anywhere in source_context, and do not add absent grade, strand, sub-strand, or parent candidates from context-only headings.
@@ -1110,6 +1143,7 @@ Use exactly one decision for each decision group:
 - A mixed-type subset covered by one same_source_occurrence_cross_type signal may preserve different identity-scope shapes caused by its competing statement-type policies. Merge it only when every candidate preserves one identical non-empty description_source_anchors set and every scope dimension shared by two or more candidates has the same source-backed value. The selected canonical type source supplies the merged item's identity scope.
 - Outside that narrow mixed-type same-occurrence case, different identity scope requires keep_separate, conflict, or needs_review.
 - Do not reinterpret, rewrite, or infer missing identity-scope values. Use the supplied canonical values exactly.
+- For uncoded same-type candidates, identical canonical_statement_value_key and identical identity scope define the same prospective no-code logical identity. This match is not automatic merge evidence, but do not return multiple eligible final groups with that exact identity when the runtime policy identifies one editorial duplication or one logical organizer. Apply the specific runtime rule and select one representative. When the source evidence instead supports genuinely distinct items but the supplied identity contract cannot distinguish them, use conflict or needs_review rather than silently producing colliding singleton groups.
 
 ## Compact evidence model
 - review_signals are deterministic retrieval evidence. Each signal applies only to its listed candidate_ids; never assume it applies to the entire connected review set.
@@ -1220,7 +1254,8 @@ Independently determine the correct partition and decision for every supplied ca
 13. For every same-type merge, verify exact identity_scope_key and identity_scope_values equality. For a mixed-type subset, permit classification-derived scope-shape differences only when every candidate has one identical non-empty description_source_anchors set and shared scope dimensions agree; the selected canonical type source supplies final identity scope.
 14. Reject relaxed mixed-type code or identity-scope treatment when the candidates do not preserve one identical exact description-source-anchor set, even if a coarse review signal, shared row, shared segment, matching code, or identical wording suggests similarity.
 15. Treat representative_candidate_id, canonical_type_source_candidate_id, and canonical_code_source_candidate_id as independent selections; they may identify different candidates.
-16. Use needs_review only when the bounded evidence remains genuinely insufficient after applying the runtime instructions.
+16. For uncoded same-type candidates with identical canonical_statement_value_key and identical identity scope, verify that the draft does not leave multiple eligible final groups with one indistinguishable logical identity. Matching fields do not force a merge, but a runtime-defined editorial duplication must be merged; if the source supports distinct items and the supplied identity contract cannot distinguish them, require conflict or needs_review.
+17. Use needs_review only when the bounded evidence remains genuinely insufficient after applying the runtime instructions.
 
 ## Universal response contract
 - Copy review_set_id exactly from the request.
@@ -1401,7 +1436,7 @@ correcting the draft.
 - Treat different source_unit_id values or different occurrence_index values as
   different physical source occurrences, even when candidates share a row, block, code,
   or identical wording.
-- Every `source_context` field, including section_path and preceding/following
+- Every `source_context` field, including section_path_recent_first and preceding/following
   same-page headings, is context only unless the same wording is visible in raw target
   block/header/body content. Canonical headers and filldown helper values are also
   context only.
