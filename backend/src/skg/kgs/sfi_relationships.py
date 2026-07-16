@@ -2183,7 +2183,7 @@ def _load_extraction_windows(kg_dirs: KGDirs) -> list[ExtractionWindow]:
     """
 
     extraction_windows: list[ExtractionWindow] = []
-    extraction_windows_fp = kg_dirs.root / "extraction_windows.jsonl"
+    extraction_windows_fp = kg_dirs.root / "sfi_extraction_windows.jsonl"
 
     with extraction_windows_fp.open("r", encoding="utf-8") as f:
         for line_number, line in enumerate(f, start=1):
