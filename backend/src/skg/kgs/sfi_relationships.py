@@ -116,6 +116,65 @@ class _ParentEvidence:
         self.evidence_summary = list(self.candidate.evidence_summary)
 
 
+def _add_identity_scope_match_evidence(
+    *,
+    evidence_by_endpoint_id: dict[str, _ParentEvidence],
+    parent_context: SFIFinalContext,
+    scope_comparison: SFIHasChildScopeComparison,
+) -> None:
+    """Add finalized identity-scope match evidence for one parent candidate.
+
+    A complete structured-scope match and a single-value direct-parent match are
+    mutually exclusive positive channels, so at most one is recorded. Matching ancestor
+    scope dimensions are recorded independently because they can co-occur with either
+    channel.
+
+    Parameters
+    ----------
+    evidence_by_endpoint_id
+        Mutable parent evidence records keyed by selectable endpoint ID.
+    parent_context
+        Candidate parent final SFI context.
+    scope_comparison
+        Exact structured-scope comparison between the child and the candidate parent.
+    """
+
+    if scope_comparison.complete_match:
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason=IDENTITY_SCOPE_COMPLETE_PARENT_MATCH_REASON,
+            evidence_summary=(
+                "Candidate's canonical parent value and every available ancestor "
+                "scope dimension match the child's finalized identity scope."
+            ),
+            parent_context=parent_context,
+            scope_comparison=scope_comparison,
+        )
+    elif scope_comparison.direct_parent_value_match is True:
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason=IDENTITY_SCOPE_DIRECT_PARENT_MATCH_REASON,
+            evidence_summary=(
+                "Candidate's canonical value matches the child's finalized scope "
+                "value for this direct parent statement type."
+            ),
+            parent_context=parent_context,
+            scope_comparison=scope_comparison,
+        )
+
+    if scope_comparison.matching_ancestor_statement_types:
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason=IDENTITY_SCOPE_ANCESTOR_MATCH_REASON,
+            evidence_summary=(
+                f"Candidate and child have matching finalized ancestor scope "
+                f"dimensions: {scope_comparison.matching_ancestor_statement_types}."
+            ),
+            parent_context=parent_context,
+            scope_comparison=scope_comparison,
+        )
+
+
 def _add_local_active_outline_direct_parent_evidence(
     *,
     child_context: SFIFinalContext,
@@ -173,6 +232,89 @@ def _add_local_active_outline_direct_parent_evidence(
         ),
         parent_context=parent_context,
     )
+
+
+def _add_parent_conflict_evidence(
+    *,
+    evidence_by_endpoint_id: dict[str, _ParentEvidence],
+    parent_context: SFIFinalContext,
+    scope_comparison: SFIHasChildScopeComparison,
+    source_local_parent_scope_value_keys_by_type: dict[str, set[str]],
+) -> None:
+    """Attach structured-scope and typed source-label conflicts to a parent candidate.
+
+    Conflicts are recorded only for candidates that already carry at least one positive
+    retrieval signal, so a candidate is never introduced by conflict evidence alone.
+    Conflicts lower retrieval rank but never remove a candidate that has other positive
+    evidence.
+
+    Parameters
+    ----------
+    evidence_by_endpoint_id
+        Mutable parent evidence records keyed by selectable endpoint ID.
+    parent_context
+        Candidate parent final SFI context.
+    scope_comparison
+        Exact structured-scope comparison between the child and the candidate parent.
+    source_local_parent_scope_value_keys_by_type
+        All controlled parent values recognized in typed local source labels.
+    """
+
+    endpoint_id = str(parent_context.final_sfi_uuid)
+
+    if endpoint_id not in evidence_by_endpoint_id:
+        return
+
+    if scope_comparison.direct_parent_value_match is False:
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason=IDENTITY_SCOPE_DIRECT_PARENT_CONFLICT_REASON,
+            evidence_summary=(
+                "Candidate's canonical value conflicts with the child's finalized "
+                "scope value for this direct parent statement type."
+            ),
+            parent_context=parent_context,
+            scope_comparison=scope_comparison,
+        )
+
+    if scope_comparison.conflicting_ancestor_statement_types:
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason=IDENTITY_SCOPE_ANCESTOR_CONFLICT_REASON,
+            evidence_summary=(
+                f"Candidate and child have conflicting finalized ancestor scope "
+                f"dimensions: {scope_comparison.conflicting_ancestor_statement_types}."
+            ),
+            parent_context=parent_context,
+            scope_comparison=scope_comparison,
+        )
+
+    expected_local_value_keys = source_local_parent_scope_value_keys_by_type.get(
+        parent_context.statement_type, set()
+    )
+
+    parent_value_key = _normalize_controlled_value_key(
+        parent_context.canonical_statement_value_key
+        or parent_context.canonical_statement_value
+        or parent_context.description
+    )
+
+    if (
+        expected_local_value_keys
+        and parent_value_key
+        and parent_value_key not in expected_local_value_keys
+    ):
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason=SOURCE_LOCAL_CONTROLLED_PARENT_SCOPE_CONFLICT_REASON,
+            evidence_summary=(
+                "Candidate canonical value does not match any controlled value "
+                "recognized in the child's typed bounded source-local labels. These "
+                "labels may be cumulative or stale and require semantic review."
+            ),
+            parent_context=parent_context,
+            scope_comparison=scope_comparison,
+        )
 
 
 def _add_parent_evidence(
@@ -240,6 +382,65 @@ def _add_parent_evidence(
     if scope_comparison is not None:
         evidence.candidate = evidence.candidate.model_copy(
             update={"scope_comparison": scope_comparison}
+        )
+
+
+def _add_preceding_grouping_evidence(
+    *,
+    child_context: SFIFinalContext,
+    evidence_by_endpoint_id: dict[str, _ParentEvidence],
+    parent_context: SFIFinalContext,
+    scope_comparison: SFIHasChildScopeComparison,
+) -> None:
+    """Add preceding Standard Grouping evidence bounded by source-order distance.
+
+    A nearer preceding grouping earns stronger nearest-grouping evidence, and a
+    slightly more distant preceding grouping still earns compatible-statement-type
+    evidence. The function is a no-op unless the candidate is a Standard Grouping that
+    precedes the child in source order.
+
+    Parameters
+    ----------
+    child_context
+        Final SFI context for the child.
+    evidence_by_endpoint_id
+        Mutable parent evidence records keyed by selectable endpoint ID.
+    parent_context
+        Candidate parent final SFI context.
+    scope_comparison
+        Exact structured-scope comparison between the child and the candidate parent.
+    """
+
+    if not (
+        parent_context.normalized_statement_type == "Standard Grouping"
+        and parent_context.source_order < child_context.source_order
+    ):
+        return
+
+    distance = child_context.source_order - parent_context.source_order
+
+    if distance <= 8:
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason=NEAREST_PRECEDING_GROUPING_REASON,
+            evidence_summary=(
+                f"Parent is a preceding Standard Grouping within {distance} "
+                f"source-order units."
+            ),
+            parent_context=parent_context,
+            scope_comparison=scope_comparison,
+        )
+
+    if distance <= 12:
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason=STATEMENT_TYPE_COMPATIBLE_REASON,
+            evidence_summary=(
+                "Parent is a preceding Standard Grouping of an allowed direct "
+                "parent statement type."
+            ),
+            parent_context=parent_context,
+            scope_comparison=scope_comparison,
         )
 
 
@@ -1382,40 +1583,11 @@ def _evaluate_parent_child_relationship(
         child_context=child_context, parent_context=parent_context
     )
 
-    if scope_comparison.complete_match:
-        _add_parent_evidence(
-            evidence_by_endpoint_id=evidence_by_endpoint_id,
-            evidence_reason=IDENTITY_SCOPE_COMPLETE_PARENT_MATCH_REASON,
-            evidence_summary=(
-                "Candidate's canonical parent value and every available ancestor "
-                "scope dimension match the child's finalized identity scope."
-            ),
-            parent_context=parent_context,
-            scope_comparison=scope_comparison,
-        )
-    elif scope_comparison.direct_parent_value_match is True:
-        _add_parent_evidence(
-            evidence_by_endpoint_id=evidence_by_endpoint_id,
-            evidence_reason=IDENTITY_SCOPE_DIRECT_PARENT_MATCH_REASON,
-            evidence_summary=(
-                "Candidate's canonical value matches the child's finalized scope "
-                "value for this direct parent statement type."
-            ),
-            parent_context=parent_context,
-            scope_comparison=scope_comparison,
-        )
-
-    if scope_comparison.matching_ancestor_statement_types:
-        _add_parent_evidence(
-            evidence_by_endpoint_id=evidence_by_endpoint_id,
-            evidence_reason=IDENTITY_SCOPE_ANCESTOR_MATCH_REASON,
-            evidence_summary=(
-                "Candidate and child have matching finalized ancestor scope "
-                f"dimensions: {scope_comparison.matching_ancestor_statement_types}."
-            ),
-            parent_context=parent_context,
-            scope_comparison=scope_comparison,
-        )
+    _add_identity_scope_match_evidence(
+        evidence_by_endpoint_id=evidence_by_endpoint_id,
+        parent_context=parent_context,
+        scope_comparison=scope_comparison,
+    )
 
     simple_rules: tuple[tuple[bool, str, str], ...] = (
         (
@@ -1496,35 +1668,12 @@ def _evaluate_parent_child_relationship(
             scope_comparison=scope_comparison,
         )
 
-    if (
-        parent_context.normalized_statement_type == "Standard Grouping"
-        and parent_context.source_order < child_context.source_order
-    ):
-        distance = child_context.source_order - parent_context.source_order
-
-        if distance <= 8:
-            _add_parent_evidence(
-                evidence_by_endpoint_id=evidence_by_endpoint_id,
-                evidence_reason=NEAREST_PRECEDING_GROUPING_REASON,
-                evidence_summary=(
-                    f"Parent is a preceding Standard Grouping within {distance} "
-                    f"source-order units."
-                ),
-                parent_context=parent_context,
-                scope_comparison=scope_comparison,
-            )
-
-        if distance <= 12:
-            _add_parent_evidence(
-                evidence_by_endpoint_id=evidence_by_endpoint_id,
-                evidence_reason=STATEMENT_TYPE_COMPATIBLE_REASON,
-                evidence_summary=(
-                    "Parent is a preceding Standard Grouping of an allowed direct "
-                    "parent statement type."
-                ),
-                parent_context=parent_context,
-                scope_comparison=scope_comparison,
-            )
+    _add_preceding_grouping_evidence(
+        child_context=child_context,
+        evidence_by_endpoint_id=evidence_by_endpoint_id,
+        parent_context=parent_context,
+        scope_comparison=scope_comparison,
+    )
 
     _add_source_visible_direct_parent_evidence(
         evidence_by_endpoint_id=evidence_by_endpoint_id,
@@ -1532,61 +1681,14 @@ def _evaluate_parent_child_relationship(
         source_scope_grouping=source_scope_grouping,
     )
 
-    endpoint_id = str(parent_context.final_sfi_uuid)
-
-    if endpoint_id not in evidence_by_endpoint_id:
-        return
-
-    if scope_comparison.direct_parent_value_match is False:
-        _add_parent_evidence(
-            evidence_by_endpoint_id=evidence_by_endpoint_id,
-            evidence_reason=IDENTITY_SCOPE_DIRECT_PARENT_CONFLICT_REASON,
-            evidence_summary=(
-                "Candidate's canonical value conflicts with the child's finalized "
-                "scope value for this direct parent statement type."
-            ),
-            parent_context=parent_context,
-            scope_comparison=scope_comparison,
-        )
-
-    if scope_comparison.conflicting_ancestor_statement_types:
-        _add_parent_evidence(
-            evidence_by_endpoint_id=evidence_by_endpoint_id,
-            evidence_reason=IDENTITY_SCOPE_ANCESTOR_CONFLICT_REASON,
-            evidence_summary=(
-                f"Candidate and child have conflicting finalized ancestor scope "
-                f"dimensions: {scope_comparison.conflicting_ancestor_statement_types}."
-            ),
-            parent_context=parent_context,
-            scope_comparison=scope_comparison,
-        )
-
-    expected_local_value_keys = source_local_parent_scope_value_keys_by_type.get(
-        parent_context.statement_type, set()
+    _add_parent_conflict_evidence(
+        evidence_by_endpoint_id=evidence_by_endpoint_id,
+        parent_context=parent_context,
+        scope_comparison=scope_comparison,
+        source_local_parent_scope_value_keys_by_type=(
+            source_local_parent_scope_value_keys_by_type
+        ),
     )
-
-    parent_value_key = _normalize_controlled_value_key(
-        parent_context.canonical_statement_value_key
-        or parent_context.canonical_statement_value
-        or parent_context.description
-    )
-
-    if (
-        expected_local_value_keys
-        and parent_value_key
-        and parent_value_key not in expected_local_value_keys
-    ):
-        _add_parent_evidence(
-            evidence_by_endpoint_id=evidence_by_endpoint_id,
-            evidence_reason=SOURCE_LOCAL_CONTROLLED_PARENT_SCOPE_CONFLICT_REASON,
-            evidence_summary=(
-                "Candidate canonical value does not match any controlled value "
-                "recognized in the child's typed bounded source-local labels. These "
-                "labels may be cumulative or stale and require semantic review."
-            ),
-            parent_context=parent_context,
-            scope_comparison=scope_comparison,
-        )
 
 
 def _evidence_has_decisive_direct_parent_support(evidence_reasons: set[str]) -> bool:
@@ -2444,40 +2546,39 @@ def _parent_candidate_evidence_tier(
     if candidate.is_root or ROOT_EVIDENCE_REASON in evidence_reasons:
         return 90
 
-    if IDENTITY_SCOPE_COMPLETE_PARENT_MATCH_REASON in evidence_reasons:
-        return 0
+    shares_local_source_container = bool(
+        evidence_reasons
+        & {
+            SAME_SOURCE_CONTEXT_KEY_REASON,
+            SAME_SOURCE_SEGMENT_REASON,
+            SAME_SOURCE_WINDOW_REASON,
+        }
+    )
 
-    if _evidence_has_decisive_direct_parent_support(evidence_reasons):
-        return 1
+    # Ordered retrieval tiers: the first matching predicate wins, so lower (stronger)
+    # tiers must precede higher (weaker) ones.
+    tier_rules: tuple[tuple[bool, int], ...] = (
+        (IDENTITY_SCOPE_COMPLETE_PARENT_MATCH_REASON in evidence_reasons, 0),
+        (_evidence_has_decisive_direct_parent_support(evidence_reasons), 1),
+        (
+            IDENTITY_SCOPE_DIRECT_PARENT_MATCH_REASON in evidence_reasons
+            or SOURCE_VISIBLE_DIRECT_PARENT_REASON in evidence_reasons,
+            2,
+        ),
+        (_evidence_has_strong_local_ranking_support(evidence_reasons), 3),
+        (
+            ACTIVE_OUTLINE_STACK_PARENT_REASON in evidence_reasons
+            and shares_local_source_container,
+            4,
+        ),
+        (_evidence_has_soft_carry_forward_support(evidence_reasons), 5),
+        (shares_local_source_container, 6),
+        (bool(evidence_reasons & CARRY_FORWARD_PARENT_REASONS), 7),
+    )
 
-    if (
-        IDENTITY_SCOPE_DIRECT_PARENT_MATCH_REASON in evidence_reasons
-        or SOURCE_VISIBLE_DIRECT_PARENT_REASON in evidence_reasons
-    ):
-        return 2
-
-    if _evidence_has_strong_local_ranking_support(evidence_reasons):
-        return 3
-
-    if ACTIVE_OUTLINE_STACK_PARENT_REASON in evidence_reasons and (
-        SAME_SOURCE_CONTEXT_KEY_REASON in evidence_reasons
-        or SAME_SOURCE_SEGMENT_REASON in evidence_reasons
-        or SAME_SOURCE_WINDOW_REASON in evidence_reasons
-    ):
-        return 4
-
-    if _evidence_has_soft_carry_forward_support(evidence_reasons):
-        return 5
-
-    if (
-        SAME_SOURCE_CONTEXT_KEY_REASON in evidence_reasons
-        or SAME_SOURCE_SEGMENT_REASON in evidence_reasons
-        or SAME_SOURCE_WINDOW_REASON in evidence_reasons
-    ):
-        return 6
-
-    if evidence_reasons & CARRY_FORWARD_PARENT_REASONS:
-        return 7
+    for matched, tier in tier_rules:
+        if matched:
+            return tier
 
     return 8
 
