@@ -12,9 +12,9 @@ import hashlib
 import json
 import uuid
 
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Literal, Sequence
 
 # Third Party Library
 from loguru import logger
@@ -31,10 +31,17 @@ from skg.kgs.schemas import (
     SFIRegistryArtifact,
     SFIRegistryCandidate,
 )
+from skg.kgs.sfi_source_anchors import source_anchor_set_signature
 from skg.kgs.utils import KGDirs, normalize_text, unique_nonempty
 from skg.schemas import CreateKGConfig, normalize_controlled_value_key
 from skg.utils.general import make_dir, write_to_json
 
+_CODE_DISAMBIGUATION_METHOD_PARTITION: Literal["dedup_partition_membership"] = (
+    "dedup_partition_membership"
+)
+_CODE_DISAMBIGUATION_METHOD_SOURCE: Literal["source_semantic_basis"] = (
+    "source_semantic_basis"
+)
 _IDENTITY_SECTION_PATH_FALLBACK_LIMIT = 8
 _SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG = "same_code_different_content"
 _SUPPORTED_SYNTHETIC_IDENTITY_FIELDS = frozenset(
@@ -59,6 +66,37 @@ _SUPPORTED_SYNTHETIC_IDENTITY_FIELDS = frozenset(
         "subject",
     }
 )
+_CodedIdentityDisambiguationMethod = Literal[
+    "dedup_partition_membership", "source_semantic_basis"
+]
+
+
+@dataclass(frozen=True)
+class _CodedIdentityDisambiguation:
+    """Resolved identity disambiguation for one coded merge group.
+
+    Attributes
+    ----------
+    disambiguation_method
+        Method used to distinguish the group within its coded identity family, or
+        `None` when the family contains only one mintable group.
+    disambiguator
+        Full SHA-256 digest appended to the coded identity key, or `None` when no
+        disambiguation is required.
+    family_group_count
+        Number of mintable merge groups sharing the coded identity family.
+    family_key
+        Canonical serialized coded identity family key.
+    source_semantic_basis_key
+        Full SHA-256 digest of the group's source-semantic basis. This is retained for
+        audit even when partition membership is required as the final discriminator.
+    """
+
+    disambiguation_method: _CodedIdentityDisambiguationMethod | None
+    disambiguator: str | None
+    family_group_count: int
+    family_key: str
+    source_semantic_basis_key: str
 
 
 @dataclass(frozen=True)
@@ -67,9 +105,17 @@ class _IdentityBuildResult:
 
     Attributes
     ----------
+    code_identity_disambiguation_method
+        Method used to distinguish this coded group from other mintable groups in the
+        same coded identity family.
+    code_identity_disambiguation_source_basis_key
+        SHA-256 key for the source-semantic basis considered before any partition
+        membership fallback.
     code_identity_disambiguator
-        Stable text-based disambiguator appended for an audited coded collision, if
-        required by the configured synthetic identity fields.
+        Stable group discriminator appended when multiple mintable groups share one
+        coded identity family.
+    code_identity_family_group_count
+        Number of mintable groups in the coded identity family, when coded.
     code_identity_family_key
         Serialized configured identity material for a coded SFI, when applicable.
     identity_key
@@ -84,13 +130,16 @@ class _IdentityBuildResult:
     synthetic_key_values
         Normalized identity values resolved for the configured fields.
     uses_code_disambiguator
-        Whether a stable audited coded-text disambiguator was appended.
+        Whether a stable dedup-group discriminator was appended.
     uses_no_code_disambiguator
         Always false; no-code identity collisions must be fixed through configuration
         or deduplication rather than provenance-derived suffixes.
     """
 
+    code_identity_disambiguation_method: _CodedIdentityDisambiguationMethod | None
+    code_identity_disambiguation_source_basis_key: str | None
     code_identity_disambiguator: str | None
+    code_identity_family_group_count: int | None
     code_identity_family_key: str | None
     identity_key: str
     no_code_identity_disambiguator: str | None
@@ -99,6 +148,272 @@ class _IdentityBuildResult:
     synthetic_key_values: dict[str, str]
     uses_code_disambiguator: bool
     uses_no_code_disambiguator: bool
+
+
+def _build_coded_identity_disambiguations(
+    *,
+    eligible_merge_groups: Sequence[SFIMergeGroup],
+    sfi_candidates_by_id: dict[str, SFIRegistryCandidate],
+) -> dict[str, _CodedIdentityDisambiguation]:
+    """Resolve collision-free identity discriminators for coded merge groups.
+
+    The dedup partition is authoritative: distinct mintable merge groups must remain
+    distinct even when a curriculum reuses the same scoped code and visible wording. A
+    coded family containing one mintable group keeps its base coded identity. Every
+    group in a multi-group family receives a discriminator derived first from stable
+    source-semantic evidence. When two groups have the same source-semantic basis, the
+    group's exact dedup partition membership is added as the guaranteed fallback.
+
+    Parameters
+    ----------
+    eligible_merge_groups
+        Merge groups eligible for final SFI minting.
+    sfi_candidates_by_id
+        Current registry candidates keyed by registry candidate ID.
+
+    Returns
+    -------
+    dict[str, _CodedIdentityDisambiguation]
+        Coded merge-group IDs mapped to their resolved family and discriminator data.
+
+    Raises
+    ------
+    ValueError
+        If merge-group IDs are duplicated, source candidates cannot be resolved, or the
+        resolved discriminators are not unique within a multi-group coded family.
+    """
+
+    merge_group_id_counts = Counter(
+        group.merge_group_id for group in eligible_merge_groups
+    )
+    duplicate_ids = sorted(
+        group_id for group_id, count in merge_group_id_counts.items() if count > 1
+    )
+
+    if duplicate_ids:
+        raise ValueError(
+            f"Eligible SFI merge groups contain duplicate merge_group_id values: "
+            f"{duplicate_ids}."
+        )
+
+    groups_by_family_key: dict[str, list[SFIMergeGroup]] = defaultdict(list)
+
+    for merge_group in eligible_merge_groups:
+        family_key = _build_coded_identity_family_key(merge_group)
+
+        if family_key is not None:
+            groups_by_family_key[family_key].append(merge_group)
+
+    resolved: dict[str, _CodedIdentityDisambiguation] = {}
+
+    for family_key, family_groups in sorted(groups_by_family_key.items()):
+        ordered_groups = sorted(family_groups, key=lambda group: group.merge_group_id)
+        family_group_count = len(ordered_groups)
+        source_bases = {
+            group.merge_group_id: _build_coded_source_semantic_basis(
+                merge_group=group, sfi_candidates_by_id=sfi_candidates_by_id
+            )
+            for group in ordered_groups
+        }
+        source_basis_counts = Counter(source_bases.values())
+
+        for merge_group in ordered_groups:
+            source_semantic_basis = source_bases[merge_group.merge_group_id]
+            source_semantic_basis_key = _hash_identity_basis(source_semantic_basis)
+
+            if family_group_count == 1:
+                disambiguation_method: Any = None
+                disambiguator = None
+            elif source_basis_counts[source_semantic_basis] == 1:
+                disambiguation_method = _CODE_DISAMBIGUATION_METHOD_SOURCE
+                disambiguator = source_semantic_basis_key
+            else:
+                disambiguation_method = _CODE_DISAMBIGUATION_METHOD_PARTITION
+                partition_basis = _build_partition_disambiguation_basis(
+                    merge_group=merge_group, source_semantic_basis=source_semantic_basis
+                )
+                disambiguator = _hash_identity_basis(partition_basis)
+
+            resolved[merge_group.merge_group_id] = _CodedIdentityDisambiguation(
+                disambiguation_method=disambiguation_method,
+                disambiguator=disambiguator,
+                family_group_count=family_group_count,
+                family_key=family_key,
+                source_semantic_basis_key=source_semantic_basis_key,
+            )
+
+        if family_group_count <= 1:
+            continue
+
+        family_disambiguation_keys = [
+            (
+                resolved[group.merge_group_id].disambiguation_method,
+                resolved[group.merge_group_id].disambiguator,
+            )
+            for group in ordered_groups
+        ]
+
+        if any(
+            method is None or disambiguator is None
+            for method, disambiguator in family_disambiguation_keys
+        ):
+            raise ValueError(
+                "Every mintable merge group in a multi-group coded identity family "
+                "must receive a complete disambiguation method and value."
+            )
+
+        if len(family_disambiguation_keys) != len(set(family_disambiguation_keys)):
+            collision_groups = [
+                {
+                    "disambiguation_method": (
+                        resolved[group.merge_group_id].disambiguation_method
+                    ),
+                    "disambiguator": resolved[group.merge_group_id].disambiguator,
+                    "merge_group_id": group.merge_group_id,
+                    "registry_candidate_ids": group.registry_candidate_ids,
+                }
+                for group in ordered_groups
+            ]
+            raise ValueError(
+                "Coded identity disambiguators are not unique within one mintable "
+                f"coded family. Family={family_key!r}; groups={collision_groups}."
+            )
+
+    return resolved
+
+
+def _build_coded_identity_family_key(merge_group: SFIMergeGroup) -> str | None:
+    """Build the canonical identity-family key for one coded merge group.
+
+    Parameters
+    ----------
+    merge_group
+        Merge group whose canonical code identity should be serialized.
+
+    Returns
+    -------
+    str | None
+        Canonical JSON family key, or `None` when the group is uncoded.
+
+    Raises
+    ------
+    ValueError
+        If a coded merge group lacks a canonical code type.
+    """
+
+    canonical_normalized_code = merge_group.canonical_normalized_statement_code
+
+    if canonical_normalized_code is None:
+        return None
+
+    canonical_code_type = merge_group.canonical_code_type
+
+    if canonical_code_type is None:
+        raise ValueError(
+            f"Coded merge group {merge_group.merge_group_id!r} has no canonical_code_type."
+        )
+
+    return json.dumps(
+        {
+            "code_scope": [
+                [
+                    normalize_controlled_value_key(statement_type),
+                    normalize_controlled_value_key(value),
+                ]
+                for statement_type, value in sorted(
+                    merge_group.code_scope_values.items()
+                )
+            ],
+            "code_type": normalize_text(canonical_code_type),
+            "identity_kind": "coded",
+            "normalized_statement_code": normalize_text(canonical_normalized_code),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _build_coded_source_semantic_basis(
+    *, merge_group: SFIMergeGroup, sfi_candidates_by_id: dict[str, SFIRegistryCandidate]
+) -> str:
+    """Build stable source-semantic identity evidence for one coded merge group.
+
+    The basis excludes extraction-window overlap and representative selection. Exact
+    description-anchor sets are deduplicated so repeated extraction of one physical
+    occurrence does not alter identity. The basis is intended to distinguish separate
+    coded groups whenever the source itself exposes a stable semantic difference.
+
+    Parameters
+    ----------
+    merge_group
+        Coded merge group whose source-semantic basis should be built.
+    sfi_candidates_by_id
+        Current registry candidates keyed by registry candidate ID.
+
+    Returns
+    -------
+    str
+        Canonical JSON source-semantic basis.
+
+    Raises
+    ------
+    ValueError
+        If the group references an unknown registry candidate or contains no exact
+        description-anchor evidence.
+    """
+
+    source_occurrences: set[tuple[tuple[str, int, str], ...]] = set()
+
+    for candidate_id in merge_group.registry_candidate_ids:
+        candidate = sfi_candidates_by_id.get(candidate_id)
+
+        if candidate is None:
+            raise ValueError(
+                f"Merge group {merge_group.merge_group_id!r} references unknown "
+                f"registry candidate {candidate_id!r} while building coded identity."
+            )
+
+        occurrence_signature = source_anchor_set_signature(
+            candidate.description_source_anchors
+        )
+
+        if not occurrence_signature:
+            raise ValueError(
+                f"Registry candidate {candidate_id!r} has no exact description "
+                f"anchors for coded identity disambiguation."
+            )
+
+        source_occurrences.add(occurrence_signature)
+
+    return json.dumps(
+        {
+            "canonical_normalized_statement_type": normalize_text(
+                _canonical_normalized_statement_type(merge_group)
+            ),
+            "canonical_statement_type": normalize_text(
+                _canonical_statement_type(merge_group)
+            ),
+            "canonical_statement_value": normalize_controlled_value_key(
+                merge_group.canonical_statement_value_key
+                or merge_group.canonical_statement_value
+                or ""
+            ),
+            "identity_scope": [
+                [
+                    normalize_controlled_value_key(statement_type),
+                    normalize_controlled_value_key(value),
+                ]
+                for statement_type, value in sorted(
+                    merge_group.identity_scope_values.items()
+                )
+            ],
+            "source_occurrences": sorted(source_occurrences),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 def _build_controlled_value_alias_maps(
@@ -331,6 +646,7 @@ def _build_hierarchy_context_identity_value(
 
 def _build_identity_key(
     *,
+    coded_identity_disambiguation: _CodedIdentityDisambiguation | None,
     document_ir: DocumentIR,
     kg_config: CreateKGConfig,
     merge_group: SFIMergeGroup,
@@ -339,13 +655,16 @@ def _build_identity_key(
 ) -> _IdentityBuildResult:
     """Build a stable coded or synthetic identity string for UUIDv5 minting.
 
-    Coded SFIs always use a structural identity family built from the document key,
-    canonical code type, canonical configured scope, and canonical normalized code.
-    Uncoded SFIs use the configured synthetic identity fields. Audited
-    same-code/different-content groups receive a stable normalized-text disambiguator.
+    Coded SFIs use a structural identity family built from the document key, canonical
+    code type, canonical configured scope, and canonical normalized code. When more
+    than one mintable merge group shares that family, the precomputed dedup-group
+    discriminator is appended. Uncoded SFIs use the configured synthetic fields.
 
     Parameters
     ----------
+    coded_identity_disambiguation
+        Precomputed coded-family and dedup-group identity details, or `None` for an
+        uncoded merge group.
     document_ir
         Source DocumentIR whose document key scopes the identity namespace.
     kg_config
@@ -365,8 +684,8 @@ def _build_identity_key(
     Raises
     ------
     ValueError
-        If configured synthetic fields are unsupported, a coded group lacks a canonical
-        code type, or audited coded content lacks stable normalized text.
+        If configured synthetic fields are unsupported or coded-family identity data is
+        missing or inconsistent with the merge group.
     """
 
     synthetic_key_fields = tuple(
@@ -382,67 +701,65 @@ def _build_identity_key(
     canonical_normalized_code = merge_group.canonical_normalized_statement_code
 
     if canonical_normalized_code is not None:
-        canonical_code_type = merge_group.canonical_code_type
+        identity_family_key = _build_coded_identity_family_key(merge_group)
 
-        if canonical_code_type is None:
+        if identity_family_key is None:
             raise ValueError(
-                f"Coded merge group {merge_group.merge_group_id!r} has no "
-                f"canonical_code_type."
+                f"Coded merge group {merge_group.merge_group_id!r} did not produce "
+                f"a coded identity family key."
             )
 
-        identity_family_key = json.dumps(
-            {
-                "code_scope": [
-                    [
-                        normalize_controlled_value_key(statement_type),
-                        normalize_controlled_value_key(value),
-                    ]
-                    for statement_type, value in sorted(
-                        merge_group.code_scope_values.items()
-                    )
-                ],
-                "code_type": normalize_text(canonical_code_type),
-                "identity_kind": "coded",
-                "normalized_statement_code": normalize_text(canonical_normalized_code),
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
+        if coded_identity_disambiguation is None:
+            raise ValueError(
+                f"Coded merge group {merge_group.merge_group_id!r} has no resolved "
+                f"coded identity disambiguation record."
+            )
+
+        if coded_identity_disambiguation.family_key != identity_family_key:
+            raise ValueError(
+                f"Coded merge group {merge_group.merge_group_id!r} identity family "
+                f"does not match its precomputed disambiguation record."
+            )
+
+        uses_code_disambiguator = (
+            coded_identity_disambiguation.disambiguator is not None
         )
+
+        if uses_code_disambiguator != (
+            coded_identity_disambiguation.family_group_count > 1
+        ):
+            raise ValueError(
+                f"Coded merge group {merge_group.merge_group_id!r} has inconsistent "
+                f"coded-family size and disambiguator presence."
+            )
+
         identity_key = f"lc:curriculum:{document_ir.doc_key}:sfi:{identity_family_key}"
-        uses_code_disambiguator = bool(
-            _SAME_CODE_DIFFERENT_CONTENT_AUDIT_FLAG in merge_group.audit_flags
-        )
-        code_identity_disambiguator = None
 
         if uses_code_disambiguator:
-            normalized_values = sorted(
-                {
-                    normalized_value
-                    for value in [
-                        *merge_group.candidate_descriptions,
-                        *merge_group.candidate_source_texts,
-                    ]
-                    if (normalized_value := normalize_text(value))
-                }
-            )
-            disambiguator_value = "\n".join(normalized_values)
+            disambiguation_method = coded_identity_disambiguation.disambiguation_method
+            disambiguator = coded_identity_disambiguation.disambiguator
 
-            if not disambiguator_value:
+            if not disambiguation_method or not disambiguator:
                 raise ValueError(
-                    f"Merge group {merge_group.merge_group_id!r} is audited as "
-                    f"same-code/different-content but has no stable source-visible "
-                    f"content for identity disambiguation."
+                    f"Coded merge group {merge_group.merge_group_id!r} requires a "
+                    f"complete coded identity disambiguation method and value."
                 )
 
-            code_identity_disambiguator = _hash_text(
-                n_hex=20, value=disambiguator_value
-            )
             identity_key = (
-                f"{identity_key}:same-code-text:{code_identity_disambiguator}"
+                f"{identity_key}:dedup-group:{disambiguation_method}:{disambiguator}"
             )
 
         return _IdentityBuildResult(
-            code_identity_disambiguator=code_identity_disambiguator,
+            code_identity_disambiguation_method=(
+                coded_identity_disambiguation.disambiguation_method
+            ),
+            code_identity_disambiguation_source_basis_key=(
+                coded_identity_disambiguation.source_semantic_basis_key
+            ),
+            code_identity_disambiguator=(coded_identity_disambiguation.disambiguator),
+            code_identity_family_group_count=(
+                coded_identity_disambiguation.family_group_count
+            ),
             code_identity_family_key=identity_family_key,
             identity_key=identity_key,
             no_code_identity_disambiguator=None,
@@ -453,13 +770,19 @@ def _build_identity_key(
             uses_no_code_disambiguator=False,
         )
 
+    if coded_identity_disambiguation is not None:
+        raise ValueError(
+            f"Uncoded merge group {merge_group.merge_group_id!r} unexpectedly has "
+            f"coded identity disambiguation data."
+        )
+
     unsupported_fields = sorted(
         set(synthetic_key_fields) - _SUPPORTED_SYNTHETIC_IDENTITY_FIELDS
     )
 
     if unsupported_fields:
         raise ValueError(
-            "Unsupported synthetic_merge_key_fields for no-code SFI finalization: "
+            f"Unsupported synthetic_merge_key_fields for no-code SFI finalization: "
             f"{unsupported_fields}. Supported fields are "
             f"{sorted(_SUPPORTED_SYNTHETIC_IDENTITY_FIELDS)}."
         )
@@ -526,7 +849,10 @@ def _build_identity_key(
     identity_key = f"lc:curriculum:{document_ir.doc_key}:sfi:{identity_family_key}"
 
     return _IdentityBuildResult(
+        code_identity_disambiguation_method=None,
+        code_identity_disambiguation_source_basis_key=None,
         code_identity_disambiguator=None,
+        code_identity_family_group_count=None,
         code_identity_family_key=None,
         identity_key=identity_key,
         no_code_identity_disambiguator=None,
@@ -535,6 +861,52 @@ def _build_identity_key(
         synthetic_key_values=synthetic_key_values,
         uses_code_disambiguator=False,
         uses_no_code_disambiguator=False,
+    )
+
+
+def _build_partition_disambiguation_basis(
+    *, merge_group: SFIMergeGroup, source_semantic_basis: str
+) -> str:
+    """Add exact dedup partition membership to a source-semantic basis.
+
+    This fallback is used only when separate mintable groups in one coded family have
+    identical source-semantic evidence. Exact merge-group membership is then the only
+    structured signal that expresses the dedup stage's decision to keep them separate.
+
+    Parameters
+    ----------
+    merge_group
+        Merge group whose exact candidate membership should be included.
+    source_semantic_basis
+        Canonical source-semantic basis shared with another group.
+
+    Returns
+    -------
+    str
+        Canonical JSON basis containing source evidence and partition membership.
+
+    Raises
+    ------
+    ValueError
+        If the merge group has no registry candidate membership.
+    """
+
+    registry_candidate_ids = sorted(set(merge_group.registry_candidate_ids))
+
+    if not registry_candidate_ids:
+        raise ValueError(
+            f"Merge group {merge_group.merge_group_id!r} has no registry candidate "
+            f"membership for coded identity disambiguation."
+        )
+
+    return json.dumps(
+        {
+            "dedup_partition_members": registry_candidate_ids,
+            "source_semantic_basis": source_semantic_basis,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
     )
 
 
@@ -645,6 +1017,7 @@ def _build_sfi_final_contexts(
 
 def _build_sfi_final_record(
     *,
+    coded_identity_disambiguation: _CodedIdentityDisambiguation | None,
     document_ir: DocumentIR,
     kg_config: CreateKGConfig,
     merge_group: SFIMergeGroup,
@@ -655,6 +1028,9 @@ def _build_sfi_final_record(
 
     Parameters
     ----------
+    coded_identity_disambiguation
+        Precomputed coded-family discriminator details, or `None` for an uncoded merge
+        group.
     document_ir
         Source DocumentIR used for identity and source provenance recovery.
     kg_config
@@ -676,6 +1052,7 @@ def _build_sfi_final_record(
         merge_group=merge_group, sfi_candidates_by_id=sfi_candidates_by_id
     )
     identity_result = _build_identity_key(
+        coded_identity_disambiguation=coded_identity_disambiguation,
         document_ir=document_ir,
         kg_config=kg_config,
         merge_group=merge_group,
@@ -754,8 +1131,17 @@ def _build_sfi_final_record(
             "doc_key": document_ir.doc_key,
             "framework_title": kg_config.metadata.framework_title,
             "identity": {
+                "code_identity_disambiguation_method": (
+                    identity_result.code_identity_disambiguation_method
+                ),
+                "code_identity_disambiguation_source_basis_key": (
+                    identity_result.code_identity_disambiguation_source_basis_key
+                ),
                 "code_identity_disambiguator": (
                     identity_result.code_identity_disambiguator
+                ),
+                "code_identity_family_group_count": (
+                    identity_result.code_identity_family_group_count
                 ),
                 "code_identity_family_key": identity_result.code_identity_family_key,
                 "namespace_uuid": str(Settings.LC_CANONICAL_NAMESPACE_UUID),
@@ -1226,24 +1612,21 @@ def _get_representative_candidate(
     return representative_candidate
 
 
-def _hash_text(*, n_hex: int, value: str) -> str:
-    """Hash normalized text with a stable SHA-256 digest.
+def _hash_identity_basis(value: str) -> str:
+    """Hash one canonical identity basis with a full SHA-256 digest.
 
     Parameters
     ----------
-    n_hex
-        Number of hexadecimal digest characters to return.
     value
-        Raw text to hash.
+        Canonical serialized identity basis to hash exactly as supplied.
 
     Returns
     -------
     str
-        Truncated hexadecimal digest.
+        Full hexadecimal SHA-256 digest.
     """
 
-    normalized = normalize_text(value)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:n_hex]
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _recover_merge_group_section_paths(
@@ -2095,10 +2478,17 @@ def mint_final_sfi_ids(
         eligible_merge_groups=eligible_merge_groups,
         sfi_candidates_by_id=sfi_candidates_by_id,
     )
+    coded_identity_disambiguations = _build_coded_identity_disambiguations(
+        eligible_merge_groups=eligible_merge_groups,
+        sfi_candidates_by_id=sfi_candidates_by_id,
+    )
     segments_by_id = {segment.segment_id: segment for segment in document_ir.segments}
 
     sfi_final_records = [
         _build_sfi_final_record(
+            coded_identity_disambiguation=coded_identity_disambiguations.get(
+                merge_group.merge_group_id
+            ),
             document_ir=document_ir,
             kg_config=kg_config,
             merge_group=merge_group,
