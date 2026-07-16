@@ -183,11 +183,12 @@ def _build_coded_identity_disambiguations(
         resolved discriminators are not unique within a multi-group coded family.
     """
 
-    merge_group_id_counts = Counter(
-        group.merge_group_id for group in eligible_merge_groups
-    )
     duplicate_ids = sorted(
-        group_id for group_id, count in merge_group_id_counts.items() if count > 1
+        group_id
+        for group_id, count in Counter(
+            group.merge_group_id for group in eligible_merge_groups
+        ).items()
+        if count > 1
     )
 
     if duplicate_ids:
@@ -220,19 +221,31 @@ def _build_coded_identity_disambiguations(
         for merge_group in ordered_groups:
             source_semantic_basis = source_bases[merge_group.merge_group_id]
             source_semantic_basis_key = _hash_identity_basis(source_semantic_basis)
+            unique_source_basis = source_basis_counts[source_semantic_basis] == 1
 
-            if family_group_count == 1:
-                disambiguation_method: Any = None
-                disambiguator = None
-            elif source_basis_counts[source_semantic_basis] == 1:
-                disambiguation_method = _CODE_DISAMBIGUATION_METHOD_SOURCE
-                disambiguator = source_semantic_basis_key
-            else:
-                disambiguation_method = _CODE_DISAMBIGUATION_METHOD_PARTITION
-                partition_basis = _build_partition_disambiguation_basis(
-                    merge_group=merge_group, source_semantic_basis=source_semantic_basis
+            disambiguation_method: Any = (
+                None
+                if family_group_count == 1
+                else (
+                    _CODE_DISAMBIGUATION_METHOD_SOURCE
+                    if unique_source_basis
+                    else _CODE_DISAMBIGUATION_METHOD_PARTITION
                 )
-                disambiguator = _hash_identity_basis(partition_basis)
+            )
+            disambiguator = (
+                None
+                if family_group_count == 1
+                else (
+                    source_semantic_basis_key
+                    if unique_source_basis
+                    else _hash_identity_basis(
+                        _build_partition_disambiguation_basis(
+                            merge_group=merge_group,
+                            source_semantic_basis=source_semantic_basis,
+                        )
+                    )
+                )
+            )
 
             resolved[merge_group.merge_group_id] = _CodedIdentityDisambiguation(
                 disambiguation_method=disambiguation_method,
@@ -252,30 +265,28 @@ def _build_coded_identity_disambiguations(
             )
             for group in ordered_groups
         ]
+        collision_groups = [
+            {
+                "disambiguation_method": (
+                    resolved[group.merge_group_id].disambiguation_method
+                ),
+                "disambiguator": resolved[group.merge_group_id].disambiguator,
+                "merge_group_id": group.merge_group_id,
+                "registry_candidate_ids": group.registry_candidate_ids,
+            }
+            for group in ordered_groups
+        ]
 
-        if any(
-            method is None or disambiguator is None
-            for method, disambiguator in family_disambiguation_keys
-        ):
+        if None in {value for pair in family_disambiguation_keys for value in pair}:
             raise ValueError(
-                "Every mintable merge group in a multi-group coded identity family "
-                "must receive a complete disambiguation method and value."
+                f"Every mintable merge group in a multi-group coded identity family "
+                f"must receive a complete disambiguation method and value. "
+                f"Family={family_key!r}; groups={collision_groups}."
             )
 
         if len(family_disambiguation_keys) != len(set(family_disambiguation_keys)):
-            collision_groups = [
-                {
-                    "disambiguation_method": (
-                        resolved[group.merge_group_id].disambiguation_method
-                    ),
-                    "disambiguator": resolved[group.merge_group_id].disambiguator,
-                    "merge_group_id": group.merge_group_id,
-                    "registry_candidate_ids": group.registry_candidate_ids,
-                }
-                for group in ordered_groups
-            ]
             raise ValueError(
-                "Coded identity disambiguators are not unique within one mintable "
+                f"Coded identity disambiguators are not unique within one mintable "
                 f"coded family. Family={family_key!r}; groups={collision_groups}."
             )
 
