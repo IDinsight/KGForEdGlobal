@@ -1974,6 +1974,7 @@ class AcademicStandardsValidationReport(BaseSchema):
 
 
 # Schemas for Learning Component generation.
+LCAncestorPathStatus = Literal["resolved", "unresolved_ancestor_path"]
 LCExclusionReason = Literal[
     "empty_text",
     "grouping_node",
@@ -1982,6 +1983,14 @@ LCExclusionReason = Literal[
     "unresolved_ancestor_path",
 ]
 LCSelectionMode = Literal["explicit_allowlist", "leaf_default"]
+
+
+class LCContextSFI(BaseSchema):
+    """One ancestor or sibling SFI carried as disambiguation-only LC context."""
+
+    case_identifier_uuid: UUID
+    description: str = Field(min_length=1)
+    statement_type: str = Field(min_length=1)
 
 
 class LCEligibilityReport(BaseSchema):
@@ -2037,6 +2046,65 @@ class LCExcludedSFI(BaseSchema):
     normalized_statement_type: NormalizedStatementType
     reason: LCExclusionReason
     statement_type: str
+
+
+class LCFrameworkContext(BaseSchema):
+    """Framework context attached once per LC generation request."""
+
+    academic_subject: str = Field(min_length=1)
+    in_language: LanguageField
+    jurisdiction: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+
+
+class LCGenerationRequest(BaseSchema):
+    """Prompt payload for LLM decomposition of LC-source SFIs (step 13).
+
+    Requests never carry `statement_code` as decomposition input: source PDFs
+    can contain malformed or mismatched codes. The SFI text plus ancestor
+    context is the semantic source of truth; codes remain metadata.
+    """
+
+    framework_context: LCFrameworkContext
+    request_id: str = Field(description="Deterministic request ID.", min_length=1)
+    sfis: list[LCRequestSFI] = Field(min_length=1)
+
+
+class LCRequestSFI(BaseSchema):
+    """One LC-source SFI in a generation request, with its prompt context."""
+
+    ancestor_path: list[LCContextSFI] = Field(
+        default_factory=list,
+        description=(
+            "Resolved hasChild ancestors ordered framework root first, direct "
+            "parent last. Disambiguation-only context and the authoritative "
+            "source of grade/curriculum scope."
+        ),
+    )
+    ancestor_path_status: LCAncestorPathStatus = Field(
+        default="resolved",
+        description=(
+            "'unresolved_ancestor_path' when the seed's ancestor path crosses "
+            "an unresolved root-fallback edge (only possible when the manual-"
+            "review override admits such seeds); its ancestor_path is then "
+            "incomplete and must not be used to derive curriculum scope."
+        ),
+    )
+    description: str = Field(
+        description="Final source-backed SFI description text.", min_length=1
+    )
+    final_sfi_uuid: UUID
+    language: str = Field(
+        description="Source language tag chosen for the final SFI.", min_length=1
+    )
+    siblings: list[LCContextSFI] = Field(
+        default_factory=list,
+        description=(
+            "Sibling SFIs under the same hasChild parent, populated only when "
+            "lc_include_sibling_context is configured. Disambiguation-only."
+        ),
+    )
+    statement_type: str = Field(min_length=1)
 
 
 # Schemas for nodes.

@@ -1729,6 +1729,14 @@ class _CreateKGLearningComponentsConfig(BaseSchema):
     """Learning Components configuration for KG creation."""
 
     generation_instructions: str
+    lc_include_sibling_context: bool = Field(
+        default=False,
+        description=(
+            "Include sibling SFIs under the same hasChild parent in each LC "
+            "generation request as disambiguation-only context. Off by "
+            "default; the prompt forbids deriving skill content from siblings."
+        ),
+    )
     lc_manual_review_overrides: Optional[dict[str, Any]] = Field(
         default=None,
         description=(
@@ -1741,6 +1749,15 @@ class _CreateKGLearningComponentsConfig(BaseSchema):
             "ancestor path passes through an unresolved root-fallback edge. "
             "Recorded verbatim in the LC generation summary."
         ),
+    )
+    lc_request_batch_size: int = Field(
+        default=1,
+        description=(
+            "Number of LC-source SFIs per generation request. Default 1 (one "
+            "SFI per request, hasChild parity) scopes retries and resume to a "
+            "single SFI; raising it is a throughput knob, not a schema change."
+        ),
+        ge=1,
     )
     lc_source_statement_types: Optional[list[str]] = Field(
         default=None,

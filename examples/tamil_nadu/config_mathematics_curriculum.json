@@ -222,7 +222,9 @@
     },
     "lc": {
       "generation_instructions": "Decompose each final Tamil Nadu Mathematics Standard SFI into one or more atomic mathematical skills or concepts. Preserve English source meaning and terminology. Do not create activities, examples, or assessment tasks as LearningComponents.",
+      "lc_include_sibling_context": false,
       "lc_manual_review_overrides": null,
+      "lc_request_batch_size": 1,
       "lc_source_statement_types": null
     }
   }

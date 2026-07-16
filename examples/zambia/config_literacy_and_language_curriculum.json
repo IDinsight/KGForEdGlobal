@@ -158,7 +158,9 @@
 		},
 		"lc": {
 			"generation_instructions": "Create LearningComponents primarily from leaf Specific Competence SFIs. Use the source English text as-is. Prefer a 1-to-1 component when the competence is already atomic. Split only when one specific competence clearly contains multiple distinct language skills. Do not create LearningComponents from Topic or Sub-topic grouping nodes, Learning Activities, Expected Standard benchmarks, methodology prose, or the Key Competences table unless a later profile explicitly marks them as LC sources.",
+			"lc_include_sibling_context": false,
 			"lc_manual_review_overrides": null,
+			"lc_request_batch_size": 1,
 			"lc_source_statement_types": null
 		},
 		"metadata": {
