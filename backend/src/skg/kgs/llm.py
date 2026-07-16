@@ -217,7 +217,8 @@ def extract_sfi_candidates(
     Returns
     -------
     SFIExtractionResult
-        Final integrity-checked result accepted or corrected by the validation LLM.
+        Final semantic result accepted or corrected by the checker and validated for
+        universal integrity.
     """
 
     prompts = extract_sfi_candidates_from_window(

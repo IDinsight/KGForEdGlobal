@@ -18,8 +18,6 @@ from skg.kgs.schemas import (
     SFIExtractionSummary,
 )
 from skg.kgs.utils import append_jsonl_model
-from skg.kgs.validators import verify_sfi_extraction_integrity
-from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, write_to_json
 
@@ -79,9 +77,9 @@ def _build_sfi_extraction_summary(
 def _load_existing_sfi_extraction_results(save_fp: Path) -> list[SFIExtractionResult]:
     """Load existing SFI extraction results from a JSONL artifact.
 
-    Blank lines are ignored. Every non-empty line must validate as an
-    `SFIExtractionResult` so resumed runs cannot silently continue from malformed
-    output.
+    Blank lines are ignored. Every non-empty line must parse as an
+    `SFIExtractionResult` under the current structured response schema so resumed runs
+    cannot silently continue from malformed output.
 
     Parameters
     ----------
@@ -91,12 +89,12 @@ def _load_existing_sfi_extraction_results(save_fp: Path) -> list[SFIExtractionRe
     Returns
     -------
     list[SFIExtractionResult]
-        Existing validated extraction results in file order.
+        Existing parsed extraction results in file order.
 
     Raises
     ------
     ValueError
-        If any non-empty JSONL line cannot be parsed or validated.
+        If any non-empty JSONL line cannot be parsed under the current schema.
     """
 
     if not save_fp.exists():
@@ -132,7 +130,7 @@ def _persist_sfi_extraction_summary(
     Parameters
     ----------
     results
-        Final validation-LLM-reviewed extraction results to summarize.
+        Final producer/checker-reviewed extraction results to summarize.
     summary_fp
         File path for the aggregate summary JSON artifact.
 
@@ -151,31 +149,26 @@ def _persist_sfi_extraction_summary(
 def _validate_existing_sfi_extraction_results(
     *,
     extraction_windows: Sequence[ExtractionWindow],
-    kg_config: CreateKGConfig,
     results: Sequence[SFIExtractionResult],
 ) -> None:
-    """Validate that existing SFI results are a quality-checked current prefix.
+    """Validate that existing extraction results form a current ordered prefix.
 
-    Resumability assumes this module wrote prior results in extraction-window order.
-    This check prevents a resumed run from mixing outputs from a stale or different
-    extraction-window artifact with the current run, and re-runs current universal
-    integrity validation on persisted final results.
+    Resumability trusts the producer/checker semantic result but still requires each
+    persisted record to parse under the current schema and align positionally with the
+    current extraction-window artifact.
 
     Parameters
     ----------
     extraction_windows
         Ordered source-faithful extraction windows for the current run.
-    kg_config
-        Country/document-specific KG extraction configuration.
     results
         Existing extraction results loaded from the JSONL artifact.
 
     Raises
     ------
     ValueError
-        If existing results are longer than the current window list, do not match the
-        corresponding window IDs/indexes/source segment IDs, or fail current quality
-        validation.
+        If existing results are longer than the current window list or do not match the
+        corresponding window IDs, indexes, or source segment IDs.
     """
 
     if len(results) > len(extraction_windows):
@@ -210,16 +203,6 @@ def _validate_existing_sfi_extraction_results(
                 f"source_segment_ids={extraction_window.source_segment_ids!r}."
             )
 
-        try:
-            verify_sfi_extraction_integrity(
-                extraction_result=result, kg_config=kg_config, window=extraction_window
-            )
-        except QualityError as e:
-            raise ValueError(
-                f"Existing SFI extraction result at position {result_index} failed "
-                f"current integrity validation: {e}"
-            ) from e
-
 
 def extract_sfi_candidates_from_windows(
     *,
@@ -250,8 +233,8 @@ def extract_sfi_candidates_from_windows(
         Country/document-specific KG extraction configuration.
     overwrite
         Whether to discard existing SFI extraction artifacts and restart extraction
-        from the first window. When False, existing validated prefix results are reused
-        and extraction resumes until all windows are complete.
+        from the first window. When False, existing schema-valid and window-aligned
+        prefix results are reused until all windows are complete.
     save_fp
         File path for the JSONL extraction-result artifact.
     summary_fp
@@ -262,7 +245,7 @@ def extract_sfi_candidates_from_windows(
     Returns
     -------
     list[SFIExtractionResult]
-        Final validation-LLM-reviewed extraction results in window order.
+        Final producer/checker-reviewed extraction results in window order.
 
     Raises
     ------
@@ -294,9 +277,7 @@ def extract_sfi_candidates_from_windows(
     else:
         sfi_extraction_results = _load_existing_sfi_extraction_results(save_fp)
         _validate_existing_sfi_extraction_results(
-            extraction_windows=extraction_windows,
-            kg_config=kg_config,
-            results=sfi_extraction_results,
+            extraction_windows=extraction_windows, results=sfi_extraction_results
         )
 
         _persist_sfi_extraction_summary(

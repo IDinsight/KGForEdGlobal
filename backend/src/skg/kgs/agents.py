@@ -18,7 +18,6 @@ from skg.kgs.schemas import (
     SFIHasChildResolutionRequest,
     SFIHasChildResolutionResponse,
 )
-from skg.kgs.validators import canonicalize_sfi_extraction_result
 from skg.model_registry import ModelConfig
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig
@@ -232,22 +231,21 @@ def create_sfi_extraction_agent(
     verify_integrity_fn: Callable[..., None],
     window: ExtractionWindow,
 ) -> Agent:
-    """Create an Agent configured for SFI candidate extraction.
+    """Create an integrity-checked SFI extraction producer agent.
 
-    The returned agent canonicalizes anchor-derived evidence text, candidate source
-    order, IDs, and auxiliary references before applying universal Python integrity
-    checks. Semantic review and curriculum-specific correction are performed by a
-    separate validation LLM after this draft result is produced. Integrity failures
-    raise `ModelRetry` so the model can repair malformed or unsupported references.
+    The producer LLM owns curriculum-semantic decisions. Its parsed result is returned
+    unchanged after Python verifies only exact source references, runtime-configured
+    contracts, and cross-object integrity. Integrity failures raise `ModelRetry` so the
+    producer can repair malformed structured output without Python rewriting semantics.
 
     Parameters
     ----------
     instructions
         System-level SFI extraction instructions.
     kg_config
-        Runtime KG configuration used for universal policy validation.
+        Runtime KG configuration used for deterministic contract validation.
     max_retries
-        Maximum number of integrity-error retries.
+        Maximum number of structured-output or integrity retries.
     model_config
         Model configuration containing the model name and model settings helpers.
     verify_integrity_fn
@@ -259,7 +257,7 @@ def create_sfi_extraction_agent(
     Returns
     -------
     Agent
-        Configured SFI extraction agent.
+        Configured SFI extraction producer agent.
     """
 
     attempt_counter: dict[str, int] = {"value": 0}
@@ -272,55 +270,54 @@ def create_sfi_extraction_agent(
     )
 
     @agent.output_validator
-    def validate_sfi_extraction_quality(
+    def validate_sfi_extraction_integrity(
         output: SFIExtractionResult,
     ) -> SFIExtractionResult:
-        """Validate universal integrity of a draft SFI extraction output.
+        """Validate universal integrity without rewriting producer semantics.
 
         Parameters
         ----------
         output
-            Parsed SFI extraction result from the model.
+            Parsed SFI extraction result from the producer LLM.
 
         Returns
         -------
         SFIExtractionResult
-            Integrity-validated draft extraction result.
+            Unmodified integrity-validated extraction result.
 
         Raises
         ------
         ModelRetry
-            If output fails universal integrity checks and should be corrected.
+            If the result violates a universal integrity constraint.
         """
 
         attempt = attempt_counter["value"]
 
         try:
-            canonical_output = canonicalize_sfi_extraction_result(
-                extraction_result=output, window=window
-            )
             verify_integrity_fn(
-                extraction_result=canonical_output, kg_config=kg_config, window=window
+                extraction_result=output, kg_config=kg_config, window=window
             )
-        except QualityError as e:
-            truncated_msg = str(e)[:500]
+        except QualityError as exc:
+            truncated_message = str(exc)[:500]
 
             logger.error(
                 f"SFI extraction integrity check failed for window "
-                f"{window.window_index} attempt {attempt + 1}: {truncated_msg}"
+                f"{window.window_index} attempt {attempt + 1}: "
+                f"{truncated_message}"
             )
 
             attempt_counter["value"] += 1
             raise ModelRetry(
-                f"Your structured SFI extraction output violates a universal integrity rule and must "
-                f"be corrected.\n"
-                f"ERROR: {str(e)}\n\n"
-                f"Return a complete SFIExtractionResult that fixes the issue while "
-                f"preserving source fidelity."
-            ) from e
+                f"Your structured SFI extraction output violates a universal "
+                f"integrity rule and must be corrected.\n"
+                f"ERROR: {str(exc)}\n\n"
+                f"Return a complete SFIExtractionResult that fixes the reference or "
+                f"configuration-contract error without changing source semantics "
+                f"unless the source evidence requires it."
+            ) from exc
 
         attempt_counter["value"] += 1
-        return canonical_output
+        return output
 
     return agent
 
@@ -335,37 +332,35 @@ def create_sfi_extraction_validation_agent(
     verify_integrity_fn: Callable[..., None],
     window: ExtractionWindow,
 ) -> Agent:
-    """Create an Agent that reviews and corrects a draft SFI extraction result.
+    """Create an integrity-checked SFI extraction checker agent.
 
-    The validation agent receives the same compact source window as the extraction
-    agent plus the complete draft result. It applies generic checker instructions and
-    curriculum-specific runtime guidance, then either accepts the draft or returns a
-    complete corrected `SFIExtractionResult`. Python canonicalizes any corrected result
-    from its exact anchors before validating universal integrity constraints.
+    The checker independently accepts or corrects producer semantics. Python returns
+    the verdict unchanged after validating only exact references, configured scope and
+    type contracts, verdict consistency, and cross-object integrity.
 
     Parameters
     ----------
     draft_result
-        First-stage SFI extraction result to review.
+        First-stage extraction result reviewed by the checker.
     instructions
         System-level SFI validation instructions.
     kg_config
-        Runtime KG configuration used for universal integrity validation.
+        Runtime KG configuration used for deterministic contract validation.
     max_retries
-        Maximum number of integrity-error retries.
+        Maximum number of structured-output or integrity retries.
     model_config
         Model configuration containing the model name and settings helpers.
     verify_integrity_fn
         Callable with signature
         `(*, draft_result, kg_config, validation_verdict, window)` that raises
-        `QualityError` on failure.
+        `QualityError` when a universal integrity constraint fails.
     window
         Source extraction window reviewed by both LLM stages.
 
     Returns
     -------
     Agent
-        Configured SFI extraction validation agent.
+        Configured SFI extraction checker agent.
     """
 
     attempt_counter: dict[str, int] = {"value": 0}
@@ -381,7 +376,7 @@ def create_sfi_extraction_validation_agent(
     def validate_sfi_extraction_validation_integrity(
         output: SFIExtractionValidationVerdict,
     ) -> SFIExtractionValidationVerdict:
-        """Validate universal integrity of a validation verdict and correction.
+        """Validate checker-verdict integrity without rewriting its correction.
 
         Parameters
         ----------
@@ -391,53 +386,45 @@ def create_sfi_extraction_validation_agent(
         Returns
         -------
         SFIExtractionValidationVerdict
-            Integrity-validated validation verdict.
+            Unmodified integrity-validated checker verdict.
 
         Raises
         ------
         ModelRetry
-            If the verdict or corrected result violates a universal integrity rule.
+            If the verdict or selected extraction result violates universal integrity.
         """
 
         attempt = attempt_counter["value"]
 
         try:
-            canonical_output = output
-
-            if output.corrected_result is not None:
-                canonical_corrected_result = canonicalize_sfi_extraction_result(
-                    extraction_result=output.corrected_result, window=window
-                )
-                canonical_output = output.model_copy(
-                    deep=True, update={"corrected_result": canonical_corrected_result}
-                )
-
             verify_integrity_fn(
                 draft_result=draft_result,
                 kg_config=kg_config,
-                validation_verdict=canonical_output,
+                validation_verdict=output,
                 window=window,
             )
-        except QualityError as e:
-            truncated_msg = str(e)[:500]
+        except QualityError as exc:
+            truncated_message = str(exc)[:500]
 
             logger.error(
                 f"SFI validation integrity check failed for window "
-                f"{window.window_index} attempt {attempt + 1}: {truncated_msg}"
+                f"{window.window_index} attempt {attempt + 1}: "
+                f"{truncated_message}"
             )
 
             attempt_counter["value"] += 1
             raise ModelRetry(
                 f"Your SFI validation output violates a universal integrity rule and "
                 f"must be corrected.\n"
-                f"ERROR: {str(e)}\n\n"
-                f"Return a complete SFIExtractionValidationVerdict. When passed=false, "
-                f"corrected_result must be a complete source-grounded "
-                f"SFIExtractionResult with exact window identity and valid references."
-            ) from e
+                f"ERROR: {str(exc)}\n\n"
+                f"Return a complete SFIExtractionValidationVerdict. When "
+                f"passed=false, corrected_result must be a complete source-grounded "
+                f"SFIExtractionResult with exact window identity, configured scope "
+                f"contracts, and valid references."
+            ) from exc
 
         attempt_counter["value"] += 1
-        return canonical_output
+        return output
 
     return agent
 

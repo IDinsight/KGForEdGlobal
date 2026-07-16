@@ -6,7 +6,9 @@ The windowing strategy is intentionally simple:
 1. Walk stitched DocumentIR segments in source order.
 2. Plan one block window for every block segment with extractable source text.
 3. Plan table windows only for table segments selected by KG config table rules.
-4. Build LLM-ready payloads that preserve source text, table structure, optional table
+4. Add bounded preceding and following same-page heading context as context-only
+    evidence when PDF reading order differs from visual layout.
+5. Build LLM-ready payloads that preserve source text, table structure, optional table
     helper views, provenance, code hints, and the later SFI extraction contract.
 
 Python does not decide whether block text is semantically relevant to the standards
@@ -21,7 +23,7 @@ import unicodedata
 import uuid
 
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Literal, Optional, Sequence
 
 # Third Party Library
 from pydantic import BaseModel
@@ -32,6 +34,7 @@ from skg.kgs.schemas import (
     CodeMatch,
     CodeParentHint,
     ExtractionWindow,
+    ExtractionWindowContextEvidence,
     ExtractionWindowPlanArtifact,
     ExtractionWindowPlanItem,
     ExtractionWindowTablePayload,
@@ -45,6 +48,8 @@ from skg.kgs.utils import (
 )
 from skg.schemas import CreateKGConfig
 from skg.utils.general import make_dir, write_to_json
+
+_MAX_NEIGHBOR_HEADING_CONTEXT_PER_DIRECTION = 2
 
 
 def _build_block_windows(
@@ -97,14 +102,44 @@ def _build_block_windows(
                 source_segment_ids=[segment.segment_id],
                 source_text=source_text,
                 table=None,
-                window_id=_deterministic_uuid(
-                    f"lc:curriculum:{document_ir.doc_key}:extraction_window:block:{segment.segment_id}"
-                ),
                 window_index=window_start_index,
                 window_notes=["block_window_full_segment_source"],
             )
         ]
     )
+
+
+def _build_context_evidence_key(
+    context_evidence: Sequence[ExtractionWindowContextEvidence],
+) -> str:
+    """Build a stable source-context key component from neighboring headings.
+
+    Parameters
+    ----------
+    context_evidence
+        Ordered neighboring context evidence records.
+
+    Returns
+    -------
+    str
+        Stable context string containing direction, source position, pages, segment ID,
+        and normalized visible text.
+    """
+
+    key_parts: list[str] = []
+
+    for context in context_evidence:
+        normalized_text = unicodedata.normalize("NFKC", context.source_text).casefold()
+        normalized_text = re.sub(r"\s+", " ", normalized_text).strip()
+        page_key = ",".join(
+            str(page_index) for page_index in context.source_page_indexes
+        )
+        key_parts.append(
+            f"{context.context_direction}:{context.document_segment_index}:"
+            f"{page_key}:{context.source_segment_id}:{normalized_text}"
+        )
+
+    return ">".join(key_parts)
 
 
 def _build_extraction_window(
@@ -121,7 +156,6 @@ def _build_extraction_window(
     source_segment_ids: list[str],
     source_text: str,
     table: Optional[ExtractionWindowTablePayload],
-    window_id: str,
     window_index: int,
     window_notes: list[str],
 ) -> ExtractionWindow:
@@ -154,8 +188,6 @@ def _build_extraction_window(
         Human-readable source text for prompt review.
     table
         Optional table payload for table windows.
-    window_id
-        Deterministic window identifier.
     window_index
         0-based window index.
     window_notes
@@ -183,15 +215,30 @@ def _build_extraction_window(
     code_parent_hints = _collect_code_parent_hints(
         code_matches=code_matches, kg_config=kg_config
     )
+    target_page_indexes = _resolve_window_source_page_indexes(
+        source_provenance=source_provenance, table=table
+    )
+    source_context_before, source_context_after = (
+        _build_neighbor_heading_context_evidence(
+            document_ir=document_ir,
+            source_segment_id=plan_item.segment_id,
+            target_page_indexes=target_page_indexes,
+        )
+    )
     canonical_context = "|".join(
         [
             document_ir.doc_key,
             plan_item.segment_kind,
             plan_item.segment_id,
             _build_source_section_path_key(source_section_path),
+            _build_context_evidence_key(source_context_before),
+            _build_context_evidence_key(source_context_after),
             row_range_label or "",
             re.sub(r"\s+", " ", source_text or "").strip().casefold(),
         ]
+    )
+    window_id = _deterministic_uuid(
+        f"lc:curriculum:{document_ir.doc_key}:extraction_window:{canonical_context}"
     )
     return ExtractionWindow(
         block=block,
@@ -220,6 +267,8 @@ def _build_extraction_window(
         pdf_name=document_ir.pdf_name,
         primary_language=kg_config.metadata.primary_language,
         segment_kind=segment_kind,
+        source_context_after=source_context_after,
+        source_context_before=source_context_before,
         source_provenance=source_provenance,
         source_section_path=source_section_path,
         source_segment_ids=source_segment_ids,
@@ -228,8 +277,152 @@ def _build_extraction_window(
         table=table,
         window_id=window_id,
         window_index=window_index,
-        window_notes=window_notes,
+        window_notes=[
+            *window_notes,
+            *(
+                ["same_page_neighbor_heading_context_included"]
+                if source_context_before or source_context_after
+                else []
+            ),
+        ],
     )
+
+
+def _build_neighbor_heading_context_evidence(
+    *,
+    document_ir: DocumentIR,
+    source_segment_id: str,
+    target_page_indexes: Sequence[int],
+) -> tuple[
+    list[ExtractionWindowContextEvidence], list[ExtractionWindowContextEvidence]
+]:
+    """Build bounded preceding and following same-page heading context.
+
+    The function exposes nearby source-visible headings without treating them as part
+    of the target extraction source. Only block segments typed as headings are
+    eligible. Context is restricted to headings sharing at least one source page with
+    the target segment, and the nearest bounded headings are retained in document
+    source order.
+
+    Parameters
+    ----------
+    document_ir
+        Validated stitched DocumentIR containing the target and neighboring segments.
+    source_segment_id
+        Segment ID of the target extraction source unit.
+    target_page_indexes
+        Source pages represented by the specific extraction window. For table chunks,
+        these should come from the selected rows rather than the whole stitched table.
+
+    Returns
+    -------
+    tuple[list[ExtractionWindowContextEvidence], list[ExtractionWindowContextEvidence]]
+        Preceding and following context evidence lists, each in document source order.
+
+    Raises
+    ------
+    ValueError
+        If the target segment ID is missing from DocumentIR or the target window has no
+        source pages.
+    """
+
+    target_segment_index = next(
+        (
+            segment_index
+            for segment_index, segment in enumerate(document_ir.segments)
+            if segment.segment_id == source_segment_id
+        ),
+        None,
+    )
+
+    if target_segment_index is None:
+        raise ValueError(
+            f"Could not build neighboring context for unknown segment_id: "
+            f"{source_segment_id!r}."
+        )
+
+    target_page_index_set = {int(page_index) for page_index in target_page_indexes}
+
+    if not target_page_index_set:
+        raise ValueError(
+            f"Could not build neighboring context without target source pages for "
+            f"segment_id={source_segment_id!r}."
+        )
+
+    def _collect_context(
+        *,
+        context_direction: Literal["following", "preceding"],
+        segment_indexes: Sequence[int],
+    ) -> list[ExtractionWindowContextEvidence]:
+        """Collect one direction of eligible neighboring heading context.
+
+        Parameters
+        ----------
+        context_direction
+            Whether the scanned segments precede or follow the target.
+        segment_indexes
+            DocumentIR segment indexes to inspect in nearest-first order.
+
+        Returns
+        -------
+        list[ExtractionWindowContextEvidence]
+            Bounded context records in nearest-first scan order.
+        """
+
+        context_evidence: list[ExtractionWindowContextEvidence] = []
+
+        for document_segment_index in segment_indexes:
+            context_segment = document_ir.segments[document_segment_index]
+
+            if context_segment.kind != "block":
+                continue
+
+            if context_segment.block_type.value != "heading":
+                continue
+
+            context_page_indexes = sorted(
+                {
+                    int(provenance.page_index)
+                    for provenance in context_segment.segment_provenance
+                }
+            )
+
+            if not target_page_index_set.intersection(context_page_indexes):
+                continue
+
+            context_source_text = extract_block_source_text(
+                context_segment.model_dump(mode="json")
+            )
+
+            if not context_source_text:
+                continue
+
+            context_evidence.append(
+                ExtractionWindowContextEvidence(
+                    block_type=context_segment.block_type.value,
+                    context_direction=context_direction,
+                    document_segment_index=document_segment_index,
+                    source_page_indexes=context_page_indexes,
+                    source_segment_id=context_segment.segment_id,
+                    source_text=context_source_text,
+                )
+            )
+
+            if len(context_evidence) >= _MAX_NEIGHBOR_HEADING_CONTEXT_PER_DIRECTION:
+                break
+
+        return context_evidence
+
+    preceding_context = _collect_context(
+        context_direction="preceding",
+        segment_indexes=range(target_segment_index - 1, -1, -1),
+    )
+    following_context = _collect_context(
+        context_direction="following",
+        segment_indexes=range(target_segment_index + 1, len(document_ir.segments)),
+    )
+    preceding_context.reverse()
+    return preceding_context, following_context
 
 
 def _build_source_section_path_key(
@@ -447,9 +640,6 @@ def _build_table_window_for_row_indexes(
         source_segment_ids=[segment.segment_id],
         source_text=source_text,
         table=table_payload,
-        window_id=_deterministic_uuid(
-            f"lc:curriculum:{document_ir.doc_key}:extraction_window:table:{segment.segment_id}:{row_range_label}"
-        ),
         window_index=window_index,
         window_notes=window_notes,
     )
@@ -817,6 +1007,52 @@ def _optional_model_dump_by_indexes(
         return None
 
     return _model_dump_by_indexes(indexes=indexes, values=values)
+
+
+def _resolve_window_source_page_indexes(
+    *,
+    source_provenance: Sequence[dict[str, Any]],
+    table: Optional[ExtractionWindowTablePayload],
+) -> list[int]:
+    """Resolve source pages represented by one extraction window.
+
+    Table segments may span several pages while one extraction window contains only a
+    subset of body rows. When aligned row provenance is available, the selected rows'
+    pages are authoritative for neighboring context selection. Block windows and table
+    windows without aligned row provenance fall back to segment-level provenance.
+
+    Parameters
+    ----------
+    source_provenance
+        Serialized segment-level provenance records.
+    table
+        Optional table payload for the current extraction window.
+
+    Returns
+    -------
+    list[int]
+        Sorted unique 0-based source page indexes represented by the window.
+    """
+
+    row_page_indexes: set[int] = set()
+
+    if table is not None:
+        row_page_indexes = {
+            int(row_provenance["page_index"])
+            for row_provenance in (table.row_provenance or [])
+            if "page_index" in row_provenance
+        }
+
+    if row_page_indexes:
+        return sorted(row_page_indexes)
+
+    return sorted(
+        {
+            int(provenance["page_index"])
+            for provenance in source_provenance
+            if "page_index" in provenance
+        }
+    )
 
 
 def _validate_extraction_window_coverage(

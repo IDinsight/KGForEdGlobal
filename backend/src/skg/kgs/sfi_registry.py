@@ -1,10 +1,10 @@
 """This module contains functionalities for building a global registry of extracted SFI
 candidates.
 
-It flattens validated window-local SFI extraction results into document-level candidate
-records, computes lightweight code/text keys, emits possible duplicate buckets for
-later LLM-assisted merge review, and packages compact shared source-window context
-without claiming inferred hierarchy as canonical.
+It flattens checker-approved window-local SFI extraction results into document-level
+candidate records, computes lightweight code/text keys, emits possible duplicate
+buckets for later LLM-assisted merge review, and packages compact shared source-window
+context without claiming inferred hierarchy as canonical.
 """
 
 # Standard Library
@@ -36,8 +36,6 @@ from skg.kgs.schemas import (
 )
 from skg.kgs.sfi_source_anchors import source_anchor_set_signature
 from skg.kgs.utils import normalize_code, normalize_text, resolve_candidate_code
-from skg.kgs.validators import verify_sfi_extraction_integrity
-from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig, normalize_controlled_value_key
 from skg.utils.general import make_dir, write_to_json
 
@@ -176,91 +174,6 @@ def _build_canonical_statement_value(
             return canonical_value, normalize_controlled_value_key(canonical_value)
 
     return None, None
-
-
-def _build_configured_scope(
-    *,
-    candidate: SFICandidate,
-    extraction_window: ExtractionWindow,
-    scope_label: str,
-    scope_statement_types: Sequence[str],
-    statement_value_policies: dict[str, _StatementValuePolicy],
-) -> tuple[Optional[str], dict[str, str]]:
-    """Resolve one configured semantic scope from source-visible candidate context.
-
-    Parameters
-    ----------
-    candidate
-        Window-local candidate whose source context may expose scope values.
-    extraction_window
-        Source extraction window containing candidate-local and section context.
-    scope_label
-        Human-readable scope label used in validation errors.
-    scope_statement_types
-        Ordered source-facing statement types that define the semantic scope.
-    statement_value_policies
-        Controlled-value policies keyed by canonical statement type.
-
-    Returns
-    -------
-    tuple[Optional[str], dict[str, str]]
-        Deterministic ordered scope key and canonical scope values. Both are empty when
-        no scope statement types are configured.
-
-    Raises
-    ------
-    ValueError
-        If a configured scope value cannot be resolved from source-derived context.
-    """
-
-    if not scope_statement_types:
-        return None, {}
-
-    evidence_values = _build_scope_evidence_values(
-        candidate=candidate, extraction_window=extraction_window
-    )
-    scope_values: dict[str, str] = {}
-
-    for scope_statement_type in scope_statement_types:
-        policy = statement_value_policies.get(scope_statement_type)
-
-        if policy is None:
-            raise ValueError(
-                f"{scope_label} requires scope statement_type "
-                f"{scope_statement_type!r}, but no controlled-value policy is "
-                f"available."
-            )
-
-        canonical_value = next(
-            (
-                matched_value
-                for evidence_value in evidence_values
-                if (
-                    matched_value := _match_controlled_value(
-                        allow_contained=True, policy=policy, value=evidence_value
-                    )
-                )
-            ),
-            None,
-        )
-
-        if canonical_value is None:
-            raise ValueError(
-                f"Could not resolve configured {scope_label} value "
-                f"{scope_statement_type!r} for candidate {candidate.candidate_id!r} "
-                f"in extraction window {extraction_window.window_id!r}."
-            )
-
-        scope_values[scope_statement_type] = canonical_value
-
-    scope_key = _join_bucket_key(
-        *(
-            f"{normalize_controlled_value_key(statement_type)}="
-            f"{normalize_controlled_value_key(canonical_value)}"
-            for statement_type, canonical_value in scope_values.items()
-        )
-    )
-    return scope_key, scope_values
 
 
 def _build_dedup_context_windows(
@@ -457,7 +370,7 @@ def _build_registry_candidate(
     extraction_window
         Source extraction window that produced the candidate.
     identity_scope_statement_types
-        Ordered semantic identity-scope labels keyed by candidate statement type.
+        Ordered accepted-scope dimensions keyed by candidate statement type.
     source_window_candidate_index
         0-based candidate position within the extraction result.
     statement_type_code_types
@@ -468,7 +381,8 @@ def _build_registry_candidate(
     Returns
     -------
     SFIRegistryCandidate
-        Registry candidate with normalized code and literal text bucket keys.
+        Registry candidate with normalized code, accepted identity scope, and literal
+        text bucket keys.
 
     Raises
     ------
@@ -510,14 +424,15 @@ def _build_registry_candidate(
         applicable_code_type=applicable_code_type,
         candidate=candidate,
         code_scope_statement_types=code_scope_statement_types,
-        extraction_window=extraction_window,
-        require_complete=resolved_code_type is not None,
         statement_value_policies=statement_value_policies,
     )
-    identity_scope_key, identity_scope_values = _resolve_identity_scope(
-        candidate=candidate,
-        extraction_window=extraction_window,
-        identity_scope_statement_types=identity_scope_statement_types,
+    identity_scope_key, identity_scope_values = _canonicalize_configured_scope(
+        candidate_id=candidate.candidate_id,
+        provided_scope_values=candidate.identity_scope_values,
+        scope_label=f"identity scope for statement type {candidate.statement_type!r}",
+        scope_statement_types=identity_scope_statement_types.get(
+            candidate.statement_type, []
+        ),
         statement_value_policies=statement_value_policies,
     )
     # Generate deterministic temporary registry candidate ID.
@@ -747,77 +662,6 @@ def _build_registry_warnings(
     ]
 
 
-def _build_scope_evidence_values(
-    *, candidate: SFICandidate, extraction_window: ExtractionWindow
-) -> list[str]:
-    """Build ordered source-derived evidence values for semantic scope resolution.
-
-    Candidate-local table helper rows are considered before raw rows, headers, and
-    nearest-first section labels. This lets configured scopes resolve from row-span or
-    filldown context while ensuring a current section label outranks stale cumulative
-    path entries. Candidate text is retained only as a final fallback.
-
-    Parameters
-    ----------
-    candidate
-        Window-local candidate with table row/header references.
-    extraction_window
-        Source extraction window containing structural and section context.
-
-    Returns
-    -------
-    list[str]
-        Unique non-empty source-derived evidence values in resolution priority order.
-    """
-
-    evidence_values: list[str] = []
-    table = extraction_window.table
-
-    if table is not None:
-        row_position_by_index = {
-            row_index: position for position, row_index in enumerate(table.row_indexes)
-        }
-
-        for row_index in candidate.table_row_indexes:
-            row_position = row_position_by_index.get(row_index)
-
-            if row_position is None:
-                continue
-
-            for rows in (table.rows_filldown, table.rows_grid, table.rows):
-                row_text = (
-                    _extract_table_row_text(rows[row_position])
-                    if rows is not None and row_position < len(rows)
-                    else ""
-                )
-
-                if row_text:
-                    evidence_values.append(row_text)
-
-        for header_index in candidate.table_header_indexes:
-            if 0 <= header_index < len(table.header_rows):
-                header_text = _extract_table_row_text(table.header_rows[header_index])
-
-                if header_text:
-                    evidence_values.append(header_text)
-
-    evidence_values.extend(
-        reversed(_extract_section_texts(extraction_window.source_section_path))
-    )
-
-    if extraction_window.block is not None:
-        evidence_values.extend(
-            reversed(
-                _extract_section_texts(
-                    extraction_window.block.get("section_path") or []
-                )
-            )
-        )
-
-    evidence_values.extend([candidate.source_text, candidate.description])
-    return _unique_limited(evidence_values, limit=64)
-
-
 def _build_source_occurrence_location_key(
     *, candidate: SFICandidate, doc_key: str
 ) -> str:
@@ -1008,7 +852,7 @@ def _build_text_bucket_key(
 
     Coded candidates use configured deterministic code scope, statement type, and
     visible text as a secondary review signal because official code evidence is carried
-    separately. No-code candidates use configured semantic identity scope when
+    separately. No-code candidates use checker-approved semantic identity scope when
     available and otherwise fall back to deterministic source context. Controlled-value
     matches are exposed separately as same-canonical-value review edges, not as
     canonical bucket identity.
@@ -1018,7 +862,7 @@ def _build_text_bucket_key(
     code_scope_key
         Deterministic configured code scope for accepted coded candidates.
     identity_scope_key
-        Deterministic configured semantic identity scope for the candidate.
+        Deterministic normalized key derived from checker-approved semantic scope.
     normalized_statement_code
         Registry-normalized official statement code, when one was accepted.
     normalized_text
@@ -1042,6 +886,102 @@ def _build_text_bucket_key(
 
     no_code_scope_key = identity_scope_key or source_context_key
     return _join_bucket_key(statement_type_key, no_code_scope_key, normalized_text)
+
+
+def _canonicalize_configured_scope(
+    *,
+    candidate_id: str,
+    provided_scope_values: dict[str, str],
+    scope_label: str,
+    scope_statement_types: Sequence[str],
+    statement_value_policies: dict[str, _StatementValuePolicy],
+) -> tuple[Optional[str], dict[str, str]]:
+    """Validate and canonicalize one checker-approved semantic scope mapping.
+
+    The model chooses the semantic values. Python enforces only the runtime-configured
+    shape and mechanically maps configured aliases to canonical values. No source text
+    is searched and no missing value is inferred.
+
+    Parameters
+    ----------
+    candidate_id
+        Window-local candidate identifier used in validation errors.
+    provided_scope_values
+        Checker-approved scope mapping returned by the extraction flow.
+    scope_label
+        Human-readable scope label used in validation errors.
+    scope_statement_types
+        Ordered configured dimensions required for this scope.
+    statement_value_policies
+        Controlled-value policies keyed by canonical statement type.
+
+    Returns
+    -------
+    tuple[Optional[str], dict[str, str]]
+        Deterministic normalized scope key and canonical ordered values.
+
+    Raises
+    ------
+    ValueError
+        If dimensions are missing, extra, or contain unknown values.
+    """
+
+    expected_scope_statement_types = list(scope_statement_types)
+    actual_scope_statement_types = list(provided_scope_values)
+
+    if set(actual_scope_statement_types) != set(expected_scope_statement_types):
+        raise ValueError(
+            f"Candidate {candidate_id!r} {scope_label} keys must exactly match the "
+            f"configured dimensions {expected_scope_statement_types!r}; got "
+            f"{actual_scope_statement_types!r}."
+        )
+
+    if not expected_scope_statement_types:
+        return None, {}
+
+    canonical_scope_values: dict[str, str] = {}
+
+    for scope_statement_type in expected_scope_statement_types:
+        policy = statement_value_policies.get(scope_statement_type)
+
+        if policy is None:
+            raise ValueError(
+                f"{scope_label} requires scope statement_type "
+                f"{scope_statement_type!r}, but no controlled-value policy is "
+                f"available."
+            )
+
+        supplied_value = provided_scope_values[scope_statement_type]
+        supplied_value_key = normalize_controlled_value_key(supplied_value)
+        canonical_value = policy.alias_to_canonical.get(supplied_value_key)
+
+        if canonical_value is None:
+            raise ValueError(
+                f"Candidate {candidate_id!r} supplied unknown {scope_label} value "
+                f"{supplied_value!r} for {scope_statement_type!r}."
+            )
+
+        canonical_scope_values[scope_statement_type] = canonical_value
+
+    scope_key = (
+        None
+        if not canonical_scope_values
+        else _join_bucket_key(
+            *(
+                f"{normalize_controlled_value_key(statement_type)}="
+                f"{normalize_controlled_value_key(scope_value)}"
+                for statement_type, scope_value in canonical_scope_values.items()
+            )
+        )
+    )
+
+    if scope_key is None:
+        raise ValueError(
+            f"Candidate {candidate_id!r} produced an empty normalized {scope_label} "
+            f"key from non-empty configured values."
+        )
+
+    return scope_key, canonical_scope_values
 
 
 def _deterministic_bucket_id(*, bucket_key: str, bucket_type: str) -> str:
@@ -1327,111 +1267,57 @@ def _resolve_applicable_code_scope(
     applicable_code_type: Optional[str],
     candidate: SFICandidate,
     code_scope_statement_types: dict[str, list[str]],
-    extraction_window: ExtractionWindow,
-    require_complete: bool,
     statement_value_policies: dict[str, _StatementValuePolicy],
 ) -> tuple[Optional[str], dict[str, str]]:
-    """Resolve source-derived scope for a candidate's applicable code type.
+    """Canonicalize checker-approved scope for a candidate's official code.
 
-    Coded candidates require complete configured scope because their accepted code
-    cannot be safely bucketed or finalized without it. Uncoded candidates whose
-    statement type declares a code type are allowed to retain unresolved code scope;
-    semantic identity scope is resolved independently and remains authoritative for
-    uncoded final identity.
+    Python does not infer code scope from rows, headings, section paths, or candidate
+    wording. A coded candidate must provide exactly the configured scope dimensions for
+    its resolved code type. Uncoded candidates and document-global code types must
+    provide an empty mapping.
 
     Parameters
     ----------
     applicable_code_type
         Resolved or statement-type-derived code type applicable to the candidate.
     candidate
-        Window-local SFI candidate whose source context may expose scope values.
+        Checker-approved extraction candidate.
     code_scope_statement_types
-        Ordered scope statement types keyed by configured code type.
-    extraction_window
-        Source extraction window containing row and section context.
-    require_complete
-        Whether missing configured code scope must raise rather than remain unresolved.
+        Ordered code-scope statement types keyed by configured code type.
     statement_value_policies
-        Controlled-value policies keyed by statement type.
+        Controlled-value policies keyed by canonical statement type.
 
     Returns
     -------
     tuple[Optional[str], dict[str, str]]
-        Resolved code-scope key and values, or an empty unresolved scope.
+        Deterministic code-scope key and canonical values, or an empty scope.
 
     Raises
     ------
     ValueError
-        If complete code scope is required and source scope cannot be resolved.
+        If the candidate provides missing, extra, out-of-order, or unknown scope data.
     """
+
+    if candidate.statement_code is None:
+        if candidate.code_scope_values:
+            raise ValueError(
+                f"Uncoded candidate {candidate.candidate_id!r} must provide empty "
+                f"code_scope_values."
+            )
+
+        return None, {}
 
     if applicable_code_type is None:
-        return None, {}
-
-    scope_statement_types = code_scope_statement_types.get(applicable_code_type, [])
-
-    try:
-        return _build_configured_scope(
-            candidate=candidate,
-            extraction_window=extraction_window,
-            scope_label=f"code scope for code type {applicable_code_type!r}",
-            scope_statement_types=scope_statement_types,
-            statement_value_policies=statement_value_policies,
+        raise ValueError(
+            f"Coded candidate {candidate.candidate_id!r} has no resolved applicable "
+            f"code type."
         )
-    except ValueError:
-        if require_complete:
-            raise
 
-        logger.warning(
-            f"Could not resolve optional configured code scope for uncoded candidate "
-            f"{candidate.candidate_id!r} in extraction window "
-            f"{extraction_window.window_id!r}; preserving the candidate with "
-            f"applicable_code_type={applicable_code_type!r} and unresolved code scope."
-        )
-        return None, {}
-
-
-def _resolve_identity_scope(
-    *,
-    candidate: SFICandidate,
-    extraction_window: ExtractionWindow,
-    identity_scope_statement_types: dict[str, list[str]],
-    statement_value_policies: dict[str, _StatementValuePolicy],
-) -> tuple[Optional[str], dict[str, str]]:
-    """Resolve configured semantic identity scope for one candidate statement type.
-
-    Parameters
-    ----------
-    candidate
-        Window-local candidate whose logical identity may require semantic scope.
-    extraction_window
-        Source extraction window containing row, header, and section evidence.
-    identity_scope_statement_types
-        Ordered identity-scope statement types keyed by candidate statement type.
-    statement_value_policies
-        Controlled-value policies keyed by statement type.
-
-    Returns
-    -------
-    tuple[Optional[str], dict[str, str]]
-        Resolved semantic identity-scope key and values, or empty values when the
-        candidate statement type has no configured identity scope.
-
-    Raises
-    ------
-    ValueError
-        If configured identity scope cannot be completely resolved from source-visible
-        context.
-    """
-
-    scope_statement_types = identity_scope_statement_types.get(
-        candidate.statement_type, []
-    )
-    return _build_configured_scope(
-        candidate=candidate,
-        extraction_window=extraction_window,
-        scope_label=f"identity scope for statement_type {candidate.statement_type!r}",
-        scope_statement_types=scope_statement_types,
+    return _canonicalize_configured_scope(
+        candidate_id=candidate.candidate_id,
+        provided_scope_values=candidate.code_scope_values,
+        scope_label=f"code scope for code type {applicable_code_type!r}",
+        scope_statement_types=code_scope_statement_types.get(applicable_code_type, []),
         statement_value_policies=statement_value_policies,
     )
 
@@ -1583,10 +1469,9 @@ def _validate_result_window_alignment(
     *,
     extraction_result: SFIExtractionResult,
     extraction_window: ExtractionWindow,
-    kg_config: CreateKGConfig,
     result_index: int,
 ) -> None:
-    """Validate that one extraction result aligns to one extraction window.
+    """Validate positional identity alignment for one result and window.
 
     Parameters
     ----------
@@ -1594,15 +1479,13 @@ def _validate_result_window_alignment(
         SFI extraction result to validate.
     extraction_window
         Extraction window expected at the same position.
-    kg_config
-        Runtime KG config used for quality validation.
     result_index
-        0-based extraction-result position.
+        Zero-based extraction-result position.
 
     Raises
     ------
     ValueError
-        If alignment or current quality validation fails.
+        If the result does not copy the matching window identity fields exactly.
     """
 
     if extraction_result.window_id != extraction_window.window_id:
@@ -1629,17 +1512,6 @@ def _validate_result_window_alignment(
             f"extraction window has source segment IDs "
             f"{extraction_window.source_segment_ids!r}."
         )
-
-    try:
-        verify_sfi_extraction_integrity(
-            extraction_result=extraction_result,
-            kg_config=kg_config,
-            window=extraction_window,
-        )
-    except QualityError as e:
-        raise ValueError(
-            f"SFI extraction result {result_index} failed current quality validation: {e}"
-        ) from e
 
 
 def _validate_statement_type_code_types(
@@ -2090,7 +1962,6 @@ def build_candidate_registry(
         _validate_result_window_alignment(
             extraction_result=extraction_result,
             extraction_window=extraction_window,
-            kg_config=kg_config,
             result_index=result_index,
         )
         _validate_unique_window_candidate_ids(

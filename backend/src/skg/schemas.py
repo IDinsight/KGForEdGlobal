@@ -756,10 +756,12 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
     code_scope_statement_types: dict[str, list[str]] = Field(
         default_factory=dict,
         description=(
-            "Ordered source-facing Standard Grouping statement types that scope each "
-            "configured code type. A candidate code is unique only within the resolved "
-            "combination of these controlled grouping values. Omit a code type from "
-            "this mapping when its codes are document-global."
+            "Ordered source-facing Standard Grouping statement types that the SFI "
+            "producer/checker must return in a coded candidate's code_scope_values. "
+            "A candidate code is unique only within this reviewed semantic scope. "
+            "The registry validates and canonicalizes the supplied values but does not "
+            "infer code scope from row text, section paths, or candidate wording. Omit "
+            "a code type from this mapping when its codes are document-global."
         ),
     )
     excluded_table_columns_signatures: list[str] = Field(
@@ -780,10 +782,11 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
     identity_scope_statement_types: dict[str, list[str]] = Field(
         default_factory=dict,
         description=(
-            "Ordered source-facing Standard Grouping statement types that form the "
-            "semantic identity scope for each candidate statement_type. These scopes "
-            "are resolved from source-visible row, header, and section context even "
-            "when the curriculum has no official codes."
+            "Ordered source-facing Standard Grouping statement types that the SFI "
+            "producer/checker must return in each candidate's identity_scope_values. "
+            "The registry validates the exact configured dimensions, mechanically "
+            "canonicalizes configured aliases, and constructs a deterministic key; it "
+            "does not independently infer semantic scope."
         ),
     )
     included_table_columns_signatures: list[str] = Field(
@@ -1843,7 +1846,7 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
                     )
 
     def _validate_identity_scope_policy(self) -> None:
-        """Validate semantic identity-scope references and identity-key usage.
+        """Validate checker-selected identity-scope policy and identity-key usage.
 
         Raises
         ------
@@ -1889,7 +1892,8 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
                     raise ValueError(
                         f"CreateKGConfig.as.identity_scope_statement_types scope "
                         f"statement_type {scope_statement_type!r} must define "
-                        f"controlled_values for deterministic resolution."
+                        f"controlled_values so producer/checker outputs can use "
+                        f"configured canonical scope values."
                     )
 
         if (
@@ -2397,9 +2401,9 @@ class VerificationConfig(BaseSchema):
     )
     min_confidence_to_patch: float = Field(
         0.75,
+        description="Only apply compiled continuity decisions/repeats_header patches when verdict.confidence >= this threshold.",
         ge=0.0,
         le=1.0,
-        description="Only apply compiled continuity decisions/repeats_header patches when verdict.confidence >= this threshold.",
     )
     min_confidence_to_select_positive: float = Field(
         0.50,

@@ -174,6 +174,33 @@ def _validate_iso8601_str(v: Optional[str]) -> Optional[str]:
     return v2
 
 
+def _validate_unique_source_anchors(
+    *, anchors: Sequence[SFISourceAnchor], field_name: str
+) -> None:
+    """Validate that one candidate anchor list contains no duplicate references.
+
+    Parameters
+    ----------
+    anchors
+        Candidate source anchors to validate.
+    field_name
+        Human-readable field name for validation errors.
+
+    Raises
+    ------
+    ValueError
+        If duplicate exact anchor references are present.
+    """
+
+    signatures = [
+        (anchor.source_unit_id, anchor.occurrence_index, anchor.source_text)
+        for anchor in anchors
+    ]
+
+    if len(signatures) != len(set(signatures)):
+        raise ValueError(f"{field_name} must not contain duplicate source anchors.")
+
+
 def clean_scope_values(*, field_name: str, values: dict[str, str]) -> dict[str, str]:
     """Clean and validate an ordered semantic scope-value mapping.
 
@@ -459,6 +486,20 @@ class ExtractionWindow(BaseSchema):
     pdf_name: Optional[str] = Field(default=None, description="Source PDF filename.")
     primary_language: str = Field(description="KG config primary language.")
     segment_kind: Literal["block", "table"] = Field(description="Source segment kind.")
+    source_context_after: list[ExtractionWindowContextEvidence] = Field(
+        default_factory=list,
+        description=(
+            "Bounded following same-page heading context. Context-only and not "
+            "candidate evidence."
+        ),
+    )
+    source_context_before: list[ExtractionWindowContextEvidence] = Field(
+        default_factory=list,
+        description=(
+            "Bounded preceding same-page heading context. Context-only and not "
+            "candidate evidence."
+        ),
+    )
     source_provenance: list[dict[str, Any]] = Field(
         default_factory=list, description="Segment/page provenance for the source."
     )
@@ -514,7 +555,61 @@ class ExtractionWindow(BaseSchema):
         if self.segment_kind == "table" and self.block is not None:
             raise ValueError("Table extraction windows must not include block payload.")
 
+        if any(
+            context.context_direction != "following"
+            for context in self.source_context_after
+        ):
+            raise ValueError(
+                "source_context_after entries must have context_direction='following'."
+            )
+
+        if any(
+            context.context_direction != "preceding"
+            for context in self.source_context_before
+        ):
+            raise ValueError(
+                "source_context_before entries must have context_direction='preceding'."
+            )
+
         return self
+
+
+class ExtractionWindowContextEvidence(BaseSchema):
+    """One neighboring same-page heading supplied only as extraction context.
+
+    The text in this model is source-visible, but it is not part of the target source
+    unit for the extraction window. It may guide semantic scope interpretation when PDF
+    reading order differs from visual layout, but it cannot be used for candidate
+    anchors, candidate descriptions, or candidate source text unless the same wording
+    is also visible in the target block or table payload.
+    """
+
+    block_type: str = Field(
+        description="Source block type for the neighboring context segment."
+    )
+    context_direction: Literal["following", "preceding"] = Field(
+        description="Whether the context segment follows or precedes the target segment."
+    )
+    document_segment_index: int = Field(
+        description="0-based position of the context segment in DocumentIR.segments.",
+        ge=0,
+    )
+    source_page_indexes: list[int] = Field(
+        description="Sorted unique 0-based pages containing the context segment.",
+        min_length=1,
+    )
+    source_segment_id: str = Field(
+        description="DocumentIR segment_id for the context-only heading.",
+        min_length=1,
+    )
+    source_text: str = Field(
+        description="Exact source-visible text of the neighboring heading segment.",
+        min_length=1,
+    )
+    source_visibility: Literal["context_only"] = Field(
+        default="context_only",
+        description="Fixed marker that prevents this text from becoming candidate evidence.",
+    )
 
 
 class ExtractionWindowPlanArtifact(BaseSchema):
@@ -823,33 +918,6 @@ class SFISourceAnchor(BaseSchema):
         return strip_and_require_non_empty_str(v)
 
 
-def _validate_unique_source_anchors(
-    *, anchors: Sequence[SFISourceAnchor], field_name: str
-) -> None:
-    """Validate that one candidate anchor list contains no duplicate references.
-
-    Parameters
-    ----------
-    anchors
-        Candidate source anchors to validate.
-    field_name
-        Human-readable field name for validation errors.
-
-    Raises
-    ------
-    ValueError
-        If duplicate exact anchor references are present.
-    """
-
-    signatures = [
-        (anchor.source_unit_id, anchor.occurrence_index, anchor.source_text)
-        for anchor in anchors
-    ]
-
-    if len(signatures) != len(set(signatures)):
-        raise ValueError(f"{field_name} must not contain duplicate source anchors.")
-
-
 class SFIAuxiliaryCandidate(BaseSchema):
     """Auxiliary source material that should not become an SFI candidate.
 
@@ -912,6 +980,14 @@ class SFICandidate(BaseSchema):
     """Candidate StandardsFrameworkItem extracted from one source window."""
 
     candidate_id: str = Field(description="Window-local stable candidate identifier.")
+    code_scope_values: dict[str, str] = Field(
+        description=(
+            "Checker-approved semantic scope for the candidate's official code, keyed "
+            "by the configured code-scope statement types in configured order. Use an "
+            "empty mapping when statement_code is null or its code type has no "
+            "configured scope."
+        )
+    )
     code_source_anchors: list[SFISourceAnchor] = Field(
         default_factory=list,
         description=(
@@ -931,10 +1007,19 @@ class SFICandidate(BaseSchema):
     )
     description_source_anchors: list[SFISourceAnchor] = Field(
         description=(
-            "Ordered exact source anchors whose excerpts compose the complete "
-            "candidate description."
+            "Ordered exact source anchors supporting the complete semantic candidate "
+            "description. Runtime policy may permit noncontiguous fragments, such as "
+            "a shared normative stem and one later list item."
         ),
         min_length=1,
+    )
+    identity_scope_values: dict[str, str] = Field(
+        description=(
+            "Checker-approved semantic identity scope for this candidate, keyed by "
+            "the configured source-facing scope statement types in configured order. "
+            "Use an empty mapping when the candidate statement type has no configured "
+            "identity scope."
+        )
     )
     language: LanguageField = Field(
         description="Language tag for description/source_text."
@@ -944,9 +1029,9 @@ class SFICandidate(BaseSchema):
     )
     source_text: str = Field(
         description=(
-            "Deterministic evidence rendering composed from the candidate's exact "
-            "description and code source anchors in source order. Python canonicalizes "
-            "this field before integrity validation and persistence."
+            "Checker-approved bounded source-visible evidence for this candidate. "
+            "This field is selected by the producer/checker and is persisted without "
+            "Python reconstruction from description or code anchors."
         ),
         min_length=1,
     )
@@ -1005,6 +1090,26 @@ class SFICandidate(BaseSchema):
 
         return v2
 
+    @field_validator("code_scope_values", "identity_scope_values")
+    @classmethod
+    def validate_scope_values(cls, v: dict[str, str], info: Any) -> dict[str, str]:
+        """Clean a checker-approved semantic scope mapping.
+
+        Parameters
+        ----------
+        v
+            Raw statement-type-to-scope-value mapping returned by the LLM.
+        info
+            Pydantic validation metadata identifying the scope field.
+
+        Returns
+        -------
+        dict[str, str]
+            Cleaned mapping preserving the model-supplied order.
+        """
+
+        return clean_scope_values(field_name=info.field_name, values=v)
+
     @field_validator("statement_code", mode="before")
     @classmethod
     def strip_statement_code(cls, v: Optional[str]) -> Optional[str]:
@@ -1056,38 +1161,27 @@ class SFICandidate(BaseSchema):
         return cleaned
 
     @model_validator(mode="after")
-    def validate_source_anchor_contract(self) -> Self:
-        """Validate candidate source-anchor presence and code alignment.
+    def validate_source_anchor_uniqueness(self) -> Self:
+        """Validate that candidate anchor lists do not contain exact duplicates.
 
         Returns
         -------
         Self
-            Validated SFI candidate.
+            Candidate with structurally unique description and code anchors.
 
         Raises
         ------
         ValueError
-            If anchors are duplicated or code anchors disagree with statement_code.
+            If either anchor list contains an exact duplicate anchor.
         """
 
+        _validate_unique_source_anchors(
+            anchors=self.code_source_anchors, field_name="code_source_anchors"
+        )
         _validate_unique_source_anchors(
             anchors=self.description_source_anchors,
             field_name="description_source_anchors",
         )
-        _validate_unique_source_anchors(
-            anchors=self.code_source_anchors, field_name="code_source_anchors"
-        )
-
-        if self.statement_code is None and self.code_source_anchors:
-            raise ValueError(
-                "code_source_anchors must be empty when statement_code is null."
-            )
-
-        if self.statement_code is not None and not self.code_source_anchors:
-            raise ValueError(
-                "A non-null statement_code requires at least one code_source_anchor."
-            )
-
         return self
 
 
@@ -1616,7 +1710,7 @@ class SFIRegistryCandidate(BaseSchema):
     )
     code_source_anchors: list[SFISourceAnchor] = Field(
         default_factory=list,
-        description="Validated exact code anchors from the extraction candidate.",
+        description="Exact code anchors preserved from the checker-approved candidate.",
     )
     confidence: float = Field(
         description="Original candidate confidence.", ge=0.0, le=1.0
@@ -1625,7 +1719,9 @@ class SFIRegistryCandidate(BaseSchema):
         description="Original candidate description.", min_length=1
     )
     description_source_anchors: list[SFISourceAnchor] = Field(
-        description="Validated exact description anchors from the extraction candidate.",
+        description=(
+            "Exact description anchors preserved from the checker-approved candidate."
+        ),
         min_length=1,
     )
     identity_scope_key: Optional[str] = Field(
