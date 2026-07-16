@@ -885,6 +885,14 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
             "statement_type_policy order is used."
         ),
     )
+    sfi_has_child_validation_instructions: str = Field(
+        description=(
+            "Curriculum-specific instructions for the independent hasChild checker, "
+            "including known source-order anomalies, repeated-label distinctions, "
+            "scope conflicts, and unresolved-parent policy that require semantic "
+            "review beyond universal Python integrity checks."
+        )
+    )
     statement_type_policy: list[_AcademicStandardStatementTypePolicyItem] = Field(
         description=(
             "Canonical curriculum-specific statement_type labels allowed in "
@@ -1100,6 +1108,7 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         "sfi_extraction_instructions",
         "sfi_extraction_validation_instructions",
         "sfi_has_child_instructions",
+        "sfi_has_child_validation_instructions",
         mode="before",
     )
     @classmethod

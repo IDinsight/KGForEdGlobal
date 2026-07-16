@@ -2,8 +2,8 @@
 hasChild relationships.
 
 This module consumes finalized SFI records, recovers source context, builds bounded
-source-grounded parent candidate sets, asks the LLM to choose direct hasChild parents
-from those bounded sets, validates the resulting graph, and persists
+source-grounded parent candidate sets, runs independent producer/checker LLM parent
+resolution, validates universal response and graph contracts, and persists complete
 relationship-resolution artifacts.
 """
 
@@ -15,7 +15,7 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Sequence, TypeVar
 
 # Third Party Library
 from loguru import logger
@@ -36,6 +36,8 @@ from skg.kgs.schemas import (
     SFIHasChildResolutionRequest,
     SFIHasChildResolutionResponse,
     SFIHasChildResolutionSummary,
+    SFIHasChildScopeComparison,
+    SFIHasChildValidationVerdict,
 )
 from skg.kgs.utils import (
     KGDirs,
@@ -53,6 +55,11 @@ from skg.kgs.validators import (
     CARRY_FORWARD_PARENT_REASONS,
     CODE_PARENT_HINT_REASON,
     DECISIVE_DIRECT_PARENT_REASONS,
+    IDENTITY_SCOPE_ANCESTOR_CONFLICT_REASON,
+    IDENTITY_SCOPE_ANCESTOR_MATCH_REASON,
+    IDENTITY_SCOPE_COMPLETE_PARENT_MATCH_REASON,
+    IDENTITY_SCOPE_DIRECT_PARENT_CONFLICT_REASON,
+    IDENTITY_SCOPE_DIRECT_PARENT_MATCH_REASON,
     LOCAL_ACTIVE_OUTLINE_DIRECT_PARENT_REASON,
     MATCHED_SECTION_PATH_LABEL_REASON,
     NEARBY_SOURCE_CONTEXT_KEY_REASON,
@@ -62,16 +69,20 @@ from skg.kgs.validators import (
     SAME_SOURCE_SEGMENT_REASON,
     SAME_SOURCE_WINDOW_REASON,
     SAME_TABLE_CONTEXT_REASON,
+    SOURCE_LOCAL_CONTROLLED_PARENT_SCOPE_CONFLICT_REASON,
     SOURCE_LOCAL_CONTROLLED_PARENT_SCOPE_REASON,
     SOURCE_SCOPE_GROUPING_REASON,
     SOURCE_VISIBLE_DIRECT_PARENT_REASON,
     STATEMENT_TYPE_COMPATIBLE_REASON,
     STRONG_LOCAL_RANKING_PARENT_REASONS,
-    verify_sfi_has_child_resolution_quality,
+    verify_sfi_has_child_resolution_integrity,
+    verify_sfi_has_child_validation_integrity,
 )
 from skg.page_ir_extraction.validators import QualityError
-from skg.schemas import CreateKGConfig
+from skg.schemas import CreateKGConfig, normalize_controlled_value_key
 from skg.utils.general import make_dir, open_json_type, write_to_json
+
+ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
 @dataclass(frozen=True)
@@ -79,6 +90,15 @@ class _ControlledValueMatchPolicy:
     """Normalized controlled-value aliases for one configured statement type."""
 
     alias_to_value_key: dict[str, str]
+
+
+@dataclass(frozen=True)
+class _ResolutionProgress:
+    """Reusable producer/checker progress for hasChild resolution."""
+
+    draft_responses: list[SFIHasChildResolutionResponse]
+    final_responses: list[SFIHasChildResolutionResponse]
+    validation_verdicts: list[SFIHasChildValidationVerdict]
 
 
 @dataclass
@@ -161,91 +181,22 @@ def _add_parent_evidence(
     evidence_reason: str,
     evidence_summary: str,
     parent_context: SFIFinalContext,
+    scope_comparison: SFIHasChildScopeComparison | None = None,
 ) -> None:
-    """Add or update one non-root SFI parent candidate evidence record.
-
-    Examples
-    --------
-
-    1. A parent candidate is created the first time evidence is added for its endpoint.
-
-    Suppose `topic_context` represents the finalized SFI:
-
-    final_sfi_uuid=<topic-uuid>
-    description="1.1 CONVERSATION"
-    normalized_statement_type="Standard Grouping"
-    statement_type="Topic"
-    normalized_statement_code="1.1"
-    statement_code="1.1"
-
-    And the evidence accumulator is initially empty:
-
-    evidence_by_endpoint_id = {}
-
-    Calling:
-
-    _add_parent_evidence(
-        evidence_by_endpoint_id=evidence_by_endpoint_id,
-        evidence_reason=_SAME_TABLE_CONTEXT_REASON,
-        evidence_summary="Child and parent share cited table row/header context.",
-        parent_context=topic_context,
-    )
-
-    creates one `_ParentEvidence` entry keyed by the parent endpoint UUID. The stored
-    candidate has:
-
-    endpoint_id=str(topic_context.final_sfi_uuid)
-    endpoint_kind="StandardsFrameworkItem"
-    description="1.1 CONVERSATION"
-    evidence_reasons=[_SAME_TABLE_CONTEXT_REASON]
-    evidence_summary=[
-        "Child and parent share cited table row/header context."
-    ]
-
-    Adding more evidence for the same parent updates the existing entry instead of
-    creating a duplicate parent candidate.
-
-    For example, a later evidence channel may call:
-
-    _add_parent_evidence(
-        evidence_by_endpoint_id=evidence_by_endpoint_id,
-        evidence_reason=_CODE_PARENT_HINT_REASON,
-        evidence_summary=(
-            "Configured code-parent hint maps child code '1.1.1' "
-            "to parent code '1.1'."
-        ),
-        parent_context=topic_context,
-    )
-
-    The accumulator still contains only one entry for `topic_context`, but that entry
-    now has both evidence reasons:
-
-    evidence_reasons={
-        _SAME_TABLE_CONTEXT_REASON,
-        _CODE_PARENT_HINT_REASON,
-    }
-
-    and both evidence summaries:
-
-    evidence_summary=[
-        "Child and parent share cited table row/header context.",
-        "Configured code-parent hint maps child code '1.1.1' to parent code '1.1'.",
-    ]
-
-    This lets multiple retrieval signals support the same parent candidate without
-    duplicating the candidate in the bounded parent-candidate set. Final schema
-    conversion later sorts the evidence reasons and preserves unique evidence summaries.
+    """Add or update one non-root parent candidate evidence record.
 
     Parameters
     ----------
     evidence_by_endpoint_id
         Mutable parent evidence records keyed by selectable endpoint ID.
     evidence_reason
-        Machine-readable evidence channel reason.
+        Machine-readable deterministic evidence channel.
     evidence_summary
         Human-readable evidence summary.
     parent_context
-        Final SFI context for the candidate parent.
+        Finalized context for the candidate parent.
+    scope_comparison
+        Optional exact structured-scope comparison with the current child.
     """
 
     endpoint_id = str(parent_context.final_sfi_uuid)
@@ -254,17 +205,23 @@ def _add_parent_evidence(
         evidence_by_endpoint_id[endpoint_id] = _ParentEvidence(
             SFIHasChildParentCandidate(
                 canonical_statement_value=parent_context.canonical_statement_value,
-                canonical_statement_value_key=parent_context.canonical_statement_value_key,
+                canonical_statement_value_key=(
+                    parent_context.canonical_statement_value_key
+                ),
                 description=parent_context.description,
                 endpoint_id=endpoint_id,
                 endpoint_kind="StandardsFrameworkItem",
                 evidence_reasons=[evidence_reason],
                 evidence_summary=[evidence_summary],
                 final_sfi_uuid=parent_context.final_sfi_uuid,
+                identity_scope_key=parent_context.identity_scope_key,
+                identity_scope_values=parent_context.identity_scope_values,
                 is_root=False,
                 normalized_statement_code=parent_context.normalized_statement_code,
                 normalized_statement_type=parent_context.normalized_statement_type,
+                scope_comparison=(scope_comparison or SFIHasChildScopeComparison()),
                 source_context_keys=parent_context.source_context_keys,
+                source_order=parent_context.source_order,
                 source_page_indexes=parent_context.source_page_indexes,
                 source_segment_ids=parent_context.source_segment_ids,
                 source_window_indexes=parent_context.source_window_indexes,
@@ -280,20 +237,23 @@ def _add_parent_evidence(
     if evidence_summary and evidence_summary not in evidence.evidence_summary:
         evidence.evidence_summary.append(evidence_summary)
 
+    if scope_comparison is not None:
+        evidence.candidate = evidence.candidate.model_copy(
+            update={"scope_comparison": scope_comparison}
+        )
+
 
 def _add_source_visible_direct_parent_evidence(
     *,
     evidence_by_endpoint_id: dict[str, _ParentEvidence],
     parent_context: SFIFinalContext,
-    source_local_controlled_parent_scope_match: bool,
     source_scope_grouping: bool,
 ) -> None:
-    """Add source-visible evidence only for corroborated hierarchy structure.
+    """Add explicit source-visible grouping evidence for one parent candidate.
 
-    Same-table, same-window, and active-outline proximity remain useful retrieval and
-    ranking evidence, but they do not independently prove direct parentage. This signal
-    is added only when typed source-local controlled scope identifies the parent or
-    source structure explicitly presents the parent as a grouping/header for the child.
+    Typed controlled-value recognition is recorded separately because cumulative or
+    stale hierarchy labels do not independently prove direct parentage. This stronger
+    evidence label is reserved for an explicit source-scope grouping/header relation.
 
     Parameters
     ----------
@@ -301,14 +261,12 @@ def _add_source_visible_direct_parent_evidence(
         Mutable parent evidence records keyed by selectable endpoint ID.
     parent_context
         Candidate parent final SFI context.
-    source_local_controlled_parent_scope_match
-        Whether a typed source-local controlled value identifies this parent.
     source_scope_grouping
-        Whether the parent is a source-scope grouping/header for row-derived child
-        content in the same source segment/window.
+        Whether source structure explicitly presents the parent as a grouping/header
+        for row-derived child content.
     """
 
-    if not (source_local_controlled_parent_scope_match or source_scope_grouping):
+    if not source_scope_grouping:
         return
 
     endpoint_id = str(parent_context.final_sfi_uuid)
@@ -320,9 +278,8 @@ def _add_source_visible_direct_parent_evidence(
         evidence_by_endpoint_id=evidence_by_endpoint_id,
         evidence_reason=SOURCE_VISIBLE_DIRECT_PARENT_REASON,
         evidence_summary=(
-            "Parent has corroborated source-visible hierarchy evidence as a direct "
-            "parent candidate, based on typed source-local scope or an explicit "
-            "source-scope grouping/header relationship."
+            "Parent has explicit source-visible grouping/header evidence for the "
+            "child's local source structure."
         ),
         parent_context=parent_context,
     )
@@ -335,101 +292,36 @@ def _bound_parent_candidates(
     kg_config: CreateKGConfig,
     non_root_candidates: Sequence[SFIHasChildParentCandidate],
 ) -> tuple[list[SFIHasChildParentCandidate], list[str], bool]:
-    """Rerank and truncate (non-root) parent candidates while preserving one slot for
-    the StandardsFramework root fallback.
+    """Rank and bound non-root candidates while preserving a root fallback slot.
 
-    Examples
-    --------
-
-    1. Suppose the runtime config allows at most four parent candidates:
-
-    kg_config.academic_standards.max_has_child_parent_candidates = 4
-
-    And a child has five non-root parent candidates before bounding:
-
-    topic:
-        endpoint_id="<topic-uuid>"
-        evidence_reasons=[_CODE_PARENT_HINT_REASON, _SAME_TABLE_CONTEXT_REASON]
-
-    strand:
-        endpoint_id="<strand-uuid>"
-        evidence_reasons=[_MATCHED_SECTION_PATH_LABEL_REASON]
-
-    grade:
-        endpoint_id="<grade-uuid>"
-        evidence_reasons=[_NEAREST_PRECEDING_GROUPING_REASON]
-
-    nearby_group:
-        endpoint_id="<nearby-group-uuid>"
-        evidence_reasons=[_NEARBY_SOURCE_CONTEXT_KEY_REASON]
-
-    weak_group:
-        endpoint_id="<weak-group-uuid>"
-        evidence_reasons=[_STATEMENT_TYPE_COMPATIBLE_REASON]
-
-    Calling:
-
-    parent_candidates, truncation_notes, was_truncated = _bound_parent_candidates(
-        child_context=<child-context>,
-        framework_uuid=<framework-uuid>,
-        kg_config=kg_config,
-        non_root_candidates=[
-            topic,
-            strand,
-            grade,
-            nearby_group,
-            weak_group,
-        ],
-    )
-
-    first ranks the non-root candidates by evidence tier. Corroborated evidence such as
-    `code_parent_hint` and `same_table_context` is preserved before soft carry-forward
-    evidence such as `matched_section_path_label` or nearby preceding grouping. Because
-    one slot is reserved for the StandardsFramework root, only three non-root
-    candidates can be returned.
-
-    A possible returned list is:
-
-    [
-        topic,          # corroborated signal: code_parent_hint
-        strand,         # carry-forward signal: matched_section_path_label
-        grade,          # next strongest remaining candidate
-        root_candidate, # always included
-    ]
-
-    The function also reports that truncation occurred:
-
-    was_truncated == True
-    truncation_notes == [
-        "Truncated parent candidates from 6 to 4, preserving StandardsFramework root fallback."
-    ]
-
-    2. The root candidate is always appended to the returned list, even when no
-        non-root candidate exists. For example, if `non_root_candidates=[]`, the result
-        is:
-
-    parent_candidates == [root_candidate]
-    was_truncated == False
-    truncation_notes == []
-
-    This guarantees that every child has at least one selectable parent endpoint, while
-    still letting the LLM prefer a source-supported SFI parent when one is present.
+    Candidate bounding is deterministic retrieval, not semantic parent selection.
+    Candidates with exact complete structured-scope matches, locally compatible
+    configured code-parent hints, or explicit source-scope grouping evidence are never
+    silently truncated. When those indispensable retrieval candidates alone exceed the
+    configured bound, the function fails so the runtime bound can be increased instead
+    of hiding evidence from the producer/checker LLMs.
 
     Parameters
     ----------
     child_context
-        Final SFI source context for the child whose parents are being bounded.
+        Finalized child context.
     framework_uuid
         Deterministic StandardsFramework root UUID.
     kg_config
-        Runtime KG configuration containing parent-candidate set maximum.
+        Runtime configuration containing the candidate-set maximum.
     non_root_candidates
-        Non-root parent candidates before bounding.
+        Retrieved non-root parent candidates before bounding.
 
     Returns
     -------
     tuple[list[SFIHasChildParentCandidate], list[str], bool]
-        Bounded parent candidates, truncation notes, and whether truncation occurred.
+        Bounded candidates including root fallback, truncation notes, and truncation
+        status.
+
+    Raises
+    ------
+    ValueError
+        If indispensable retrieval candidates exceed the available non-root slots.
     """
 
     root_candidate = SFIHasChildParentCandidate(
@@ -441,44 +333,48 @@ def _bound_parent_candidates(
         evidence_reasons=[ROOT_EVIDENCE_REASON],
         evidence_summary=["StandardsFramework root fallback is always available."],
         final_sfi_uuid=None,
+        identity_scope_key=None,
+        identity_scope_values={},
         is_root=True,
         normalized_statement_code=None,
         normalized_statement_type=None,
+        scope_comparison=SFIHasChildScopeComparison(),
         source_context_keys=[],
+        source_order=None,
         source_page_indexes=[],
         source_segment_ids=[],
         source_window_indexes=[],
         statement_code=None,
         statement_type=None,
     )
-    sorted_candidates = sorted(non_root_candidates, key=_parent_candidate_rank)
-    high_signal_candidates = [
-        candidate
-        for candidate in sorted_candidates
-        if _parent_candidate_evidence_tier(candidate) <= 1
-    ]
-    carry_forward_candidates = [
-        candidate
-        for candidate in sorted_candidates
-        if (
-            candidate not in high_signal_candidates
-            and _parent_candidate_evidence_tier(candidate) <= 3
-        )
-    ]
-    other_candidates = [
-        candidate
-        for candidate in sorted_candidates
-        if (
-            candidate not in high_signal_candidates
-            and candidate not in carry_forward_candidates
-        )
-    ]
     max_parent_candidates = kg_config.academic_standards.max_has_child_parent_candidates
     slots_for_non_root = max_parent_candidates - 1
-    selected_non_root = high_signal_candidates[:slots_for_non_root]
+    sorted_candidates = sorted(non_root_candidates, key=_parent_candidate_rank)
+    indispensable_reasons = {
+        CODE_PARENT_HINT_REASON,
+        IDENTITY_SCOPE_COMPLETE_PARENT_MATCH_REASON,
+        SOURCE_SCOPE_GROUPING_REASON,
+    }
+    indispensable_candidates = [
+        candidate
+        for candidate in sorted_candidates
+        if set(candidate.evidence_reasons) & indispensable_reasons
+    ]
+
+    if len(indispensable_candidates) > slots_for_non_root:
+        raise ValueError(
+            f"Child {child_context.final_sfi_uuid} has "
+            f"{len(indispensable_candidates)} indispensable non-root parent "
+            f"candidates, but max_has_child_parent_candidates="
+            f"{max_parent_candidates} leaves only {slots_for_non_root} non-root "
+            f"slots. Increase the runtime bound rather than truncating exact "
+            f"structured-scope, code-parent, or source-grouping evidence."
+        )
+
+    selected_non_root = list(indispensable_candidates)
     selected_ids = {candidate.endpoint_id for candidate in selected_non_root}
 
-    for candidate in [*carry_forward_candidates, *other_candidates]:
+    for candidate in sorted_candidates:
         if len(selected_non_root) >= slots_for_non_root:
             break
 
@@ -488,14 +384,15 @@ def _bound_parent_candidates(
         selected_non_root.append(candidate)
         selected_ids.add(candidate.endpoint_id)
 
-    was_truncated = len(non_root_candidates) + 1 > max_parent_candidates
-    truncation_notes = []
+    was_truncated = len(non_root_candidates) > len(selected_non_root)
+    truncation_notes: list[str] = []
 
     if was_truncated:
         truncation_notes.append(
             f"Truncated parent candidates from {len(non_root_candidates) + 1} to "
             f"{max_parent_candidates} for child {child_context.final_sfi_uuid} "
-            f"({child_context.statement_type}), preserving StandardsFramework root fallback."
+            f"({child_context.statement_type}), preserving indispensable retrieval "
+            f"evidence and the StandardsFramework root fallback."
         )
 
     return [*selected_non_root, root_candidate], truncation_notes, was_truncated
@@ -688,7 +585,7 @@ def _build_candidate_parent_sets(
         child_table_keys = table_keys_by_uuid[child_context.final_sfi_uuid]
         evidence_by_endpoint_id: dict[str, _ParentEvidence] = {}
         source_local_parent_scope_value_keys_by_type = (
-            _infer_source_local_parent_scope_value_keys(
+            _collect_source_local_parent_scope_value_keys(
                 child_context=child_context,
                 kg_config=kg_config,
                 parent_statement_types=parent_statement_types_by_child_type.get(
@@ -698,42 +595,36 @@ def _build_candidate_parent_sets(
             )
         )
 
-        # Add high-signal evidence from the active finalized-SFI outline stack.
-        #
-        # NB: The active outline stack is a source-order heuristic used only to keep a
-        # plausible immediate parent in the bounded candidate set. It does not emit
-        # final edges. The LLM must still choose or reject the candidate from the
-        # complete source-grounded evidence menu. Typed source-local scope conflicts
-        # prevent stale outline state from entering the bounded parent menu.
+        # The active outline stack is a source-order retrieval heuristic. A typed
+        # source-local conflict is exposed later as evidence and never removes this
+        # candidate before producer/checker review.
         if outline_parent_context := outline_parent_by_child_uuid.get(
             child_context.final_sfi_uuid
         ):
-            if not _source_local_parent_scope_conflicts_parent(
-                parent_context=outline_parent_context,
-                source_local_parent_scope_value_keys_by_type=(
-                    source_local_parent_scope_value_keys_by_type
+            _add_parent_evidence(
+                evidence_by_endpoint_id=evidence_by_endpoint_id,
+                evidence_reason=ACTIVE_OUTLINE_STACK_PARENT_REASON,
+                evidence_summary=(
+                    "Parent is the active preceding finalized SFI of the configured "
+                    "immediate parent statement type in source order. This is "
+                    "retrieval evidence only; the producer/checker must confirm the "
+                    "direct hasChild parent."
                 ),
-            ):
-                _add_parent_evidence(
-                    evidence_by_endpoint_id=evidence_by_endpoint_id,
-                    evidence_reason=ACTIVE_OUTLINE_STACK_PARENT_REASON,
-                    evidence_summary=(
-                        "Parent is the active preceding finalized SFI of the configured "
-                        "immediate parent statement type in source order. This is "
-                        "retrieval evidence only; the LLM must confirm the direct "
-                        "hasChild parent."
-                    ),
-                    parent_context=outline_parent_context,
-                )
-                _add_local_active_outline_direct_parent_evidence(
+                parent_context=outline_parent_context,
+                scope_comparison=_build_parent_scope_comparison(
                     child_context=child_context,
-                    child_table_keys=child_table_keys,
-                    evidence_by_endpoint_id=evidence_by_endpoint_id,
                     parent_context=outline_parent_context,
-                    parent_table_keys=table_keys_by_uuid[
-                        outline_parent_context.final_sfi_uuid
-                    ],
-                )
+                ),
+            )
+            _add_local_active_outline_direct_parent_evidence(
+                child_context=child_context,
+                child_table_keys=child_table_keys,
+                evidence_by_endpoint_id=evidence_by_endpoint_id,
+                parent_context=outline_parent_context,
+                parent_table_keys=table_keys_by_uuid[
+                    outline_parent_context.final_sfi_uuid
+                ],
+            )
 
         for parent_context in contexts:
             if parent_context.final_sfi_uuid == child_context.final_sfi_uuid:
@@ -855,42 +746,49 @@ def _build_direct_parent_statement_types(
 
 def _build_edge(
     *,
+    checker_passed: bool,
+    checker_rationale: str,
     child_context: SFIFinalContext,
     confidence: float,
     document_ir: DocumentIR,
     framework_uuid: uuid.UUID,
     llm_reason: str,
     parent_candidate: SFIHasChildParentCandidate,
+    resolution_origin: str,
+    resolution_request_id: str,
     unresolved_root_fallback: bool,
 ) -> SFIHasChildEdge:
-    """Build one deterministic final hasChild edge.
+    """Build one deterministic final hasChild edge with checker provenance.
 
     Parameters
     ----------
+    checker_passed
+        Whether the independent checker accepted the producer response unchanged.
+    checker_rationale
+        Checker assessment for the complete request.
     child_context
-        Child final SFI context.
+        Finalized child context.
     confidence
-        LLM confidence for the child parent decision.
+        Confidence from the accepted producer or checker-corrected response.
     document_ir
-        Source DocumentIR used to scope relationship IDs.
+        Source DocumentIR used to scope relationship identity.
     framework_uuid
         StandardsFramework root UUID.
     llm_reason
-        LLM parent-selection reason.
+        Source-grounded reason from the accepted response.
     parent_candidate
-        Selected parent candidate endpoint.
+        Selected bounded parent candidate.
+    resolution_origin
+        `producer_accepted` or `checker_corrected`.
+    resolution_request_id
+        Deterministic request ID.
     unresolved_root_fallback
-        Whether this root edge was added because the child was unresolved.
+        Whether the edge is an unresolved root fallback.
 
     Returns
     -------
     SFIHasChildEdge
-        Final hasChild edge artifact.
-
-    Raises
-    ------
-    ValueError
-        If a non-root candidate has no UUID.
+        Deterministic hasChild edge artifact.
     """
 
     source_entity_uuid = (
@@ -914,11 +812,19 @@ def _build_edge(
         is_root_edge=parent_candidate.is_root,
         llm_reason=llm_reason,
         metadata={
+            "checker_passed": checker_passed,
+            "checker_rationale": checker_rationale,
             "doc_key": document_ir.doc_key,
             "parent_evidence_summary": parent_candidate.evidence_summary,
+            "parent_scope_comparison": parent_candidate.scope_comparison.model_dump(
+                mode="json"
+            ),
             "relationship_identity_key": relationship_key,
+            "resolution_origin": resolution_origin,
+            "resolution_request_id": resolution_request_id,
             "source_hierarchy_audit": _relationship_code_anomaly_metadata(
-                child_context=child_context, parent_candidate=parent_candidate
+                child_context=child_context,
+                parent_candidate=parent_candidate,
             ),
         },
         parent_endpoint_id=parent_candidate.endpoint_id,
@@ -941,139 +847,45 @@ def _build_edges_from_responses(
     *,
     document_ir: DocumentIR,
     framework_uuid: uuid.UUID,
-    kg_config: CreateKGConfig,
     parent_sets: Sequence[SFIHasChildCandidateParentSet],
+    requests: Sequence[SFIHasChildResolutionRequest],
     responses: Sequence[SFIHasChildResolutionResponse],
+    validation_verdicts: Sequence[SFIHasChildValidationVerdict],
 ) -> list[SFIHasChildEdge]:
-    """Convert validated LLM responses into deterministic hasChild edges.
-
-    Examples
-    --------
-
-    1. Suppose the bounded parent set for one child contains:
-
-    child_context:
-        final_sfi_uuid=<child-uuid>
-        description="1.1.1 Use appropriate expressions in conversation"
-
-    parent_candidates=[
-        SFIHasChildParentCandidate(
-            endpoint_id="<topic-uuid>",
-            endpoint_kind="StandardsFrameworkItem",
-            description="1.1 CONVERSATION",
-            final_sfi_uuid=<topic-uuid>,
-            is_root=False,
-            evidence_reasons=[_CODE_PARENT_HINT_REASON, _SAME_TABLE_CONTEXT_REASON],
-            evidence_summary=[
-                "Configured code-parent hint maps child code '1.1.1' to parent code '1.1'.",
-                "Child and parent share cited table row/header context.",
-            ],
-            ...
-        ),
-        SFIHasChildParentCandidate(
-            endpoint_id="<framework-uuid>",
-            endpoint_kind="StandardsFramework",
-            description="StandardsFramework root",
-            final_sfi_uuid=None,
-            is_root=True,
-            evidence_reasons=["root_fallback"],
-            evidence_summary=[
-                "StandardsFramework root fallback is always available."
-            ],
-            ...
-        ),
-    ]
-
-    And the validated LLM response says the topic is the direct parent:
-
-    SFIHasChildResolutionResponse(
-        request_id="has_child_request_abc123",
-        child_resolutions=[
-            SFIHasChildChildResolution(
-                child_final_sfi_uuid=<child-uuid>,
-                selected_parent_endpoint_ids=["<topic-uuid>"],
-                unresolved=False,
-                confidence=0.91,
-                reason="The specific competence is directly organized under the visible topic.",
-            )
-        ],
-    )
-
-    Then this function looks up "<topic-uuid>" in the child-specific parent-candidate
-    set and builds one edge:
-
-    SFIHasChildEdge(
-        source_entity="StandardsFrameworkItem",
-        source_entity_uuid=<topic-uuid>,
-        target_entity="StandardsFrameworkItem",
-        target_sfi_uuid=<child-uuid>,
-        parent_endpoint_id="<topic-uuid>",
-        parent_final_sfi_uuid=<topic-uuid>,
-        child_final_sfi_uuid=<child-uuid>,
-        relationship_type="hasChild",
-        evidence_reasons=[CODE_PARENT_HINT_REASON, SAME_TABLE_CONTEXT_REASON],
-        llm_reason="The specific competence is directly organized under the visible topic.",
-        unresolved_root_fallback=False,
-        ...
-    )
-
-    The relationship ID is minted deterministically from the document key, relationship
-    type, parent UUID, and child UUID inside `_build_edge(...)`.
-
-    2. When the LLM marks a child as unresolved, the function creates a
-        StandardsFramework root fallback edge.
-
-    Suppose the LLM response for a child is:
-
-    SFIHasChildChildResolution(
-        child_final_sfi_uuid=<child-uuid>,
-        selected_parent_endpoint_ids=[],
-        unresolved=True,
-        confidence=0.42,
-        reason="No supplied SFI parent candidate is clearly source-supported.",
-    )
-
-    Then this function does not use any non-root parent candidate. Instead, it creates
-    a root candidate with `_root_parent_candidate(...)` and builds one fallback edge:
-
-    SFIHasChildEdge(
-        source_entity="StandardsFramework",
-        source_entity_uuid=<framework-uuid>,
-        target_entity="StandardsFrameworkItem",
-        target_sfi_uuid=<child-uuid>,
-        parent_endpoint_id="<framework-uuid>",
-        parent_final_sfi_uuid=None,
-        child_final_sfi_uuid=<child-uuid>,
-        relationship_type="hasChild",
-        evidence_reasons=["root_fallback"],
-        llm_reason="No supplied SFI parent candidate is clearly source-supported.",
-        is_root_edge=True,
-        unresolved_root_fallback=True,
-        ...
-    )
-
-    This guarantees that every finalized SFI can remain reachable from the framework
-    root even when the direct SFI parent cannot be resolved from the bounded candidate
-    set.
+    """Convert accepted producer/checker responses into deterministic edges.
 
     Parameters
     ----------
     document_ir
-        Source DocumentIR used to scope relationship IDs.
+        Source DocumentIR used for relationship identity.
     framework_uuid
-        Deterministic StandardsFramework root UUID.
-    kg_config
-        Runtime KG configuration containing controlled-value and parent-scope policy.
+        StandardsFramework root UUID.
     parent_sets
-        Bounded parent candidate sets supplied to the LLM.
+        Bounded parent candidate sets.
+    requests
+        Original deterministic producer/checker requests.
     responses
-        Validated hasChild resolution responses.
+        Final accepted or checker-corrected responses.
+    validation_verdicts
+        Independent checker verdicts aligned to requests and responses.
 
     Returns
     -------
     list[SFIHasChildEdge]
-        Final hasChild edge records.
+        Final deterministic hasChild edges.
+
+    Raises
+    ------
+    ValueError
+        If request, response, and verdict counts are not aligned.
     """
+
+    if not len(requests) == len(responses) == len(validation_verdicts):
+        raise ValueError(
+            f"hasChild request, final response, and checker verdict counts must align: "
+            f"requests={len(requests)}, responses={len(responses)}, "
+            f"verdicts={len(validation_verdicts)}."
+        )
 
     child_context_by_id = {
         str(parent_set.child_context.final_sfi_uuid): parent_set.child_context
@@ -1088,13 +900,19 @@ def _build_edges_from_responses(
     }
     edges: list[SFIHasChildEdge] = []
 
-    for response in responses:
+    for request, response, validation_verdict in zip(
+        requests, responses, validation_verdicts, strict=True
+    ):
+        checker_passed = validation_verdict.passed
+        resolution_origin = (
+            "producer_accepted" if checker_passed else "checker_corrected"
+        )
+
         for child_resolution in response.child_resolutions:
             child_id = str(child_resolution.child_final_sfi_uuid)
             child_context = child_context_by_id[child_id]
             parent_candidates = parent_candidates_by_child_id[child_id]
 
-            # Build unresolved edge to root.
             if child_resolution.unresolved:
                 root_candidate = SFIHasChildParentCandidate(
                     canonical_statement_value=None,
@@ -1107,10 +925,14 @@ def _build_edges_from_responses(
                         "StandardsFramework root fallback is always available."
                     ],
                     final_sfi_uuid=None,
+                    identity_scope_key=None,
+                    identity_scope_values={},
                     is_root=True,
                     normalized_statement_code=None,
                     normalized_statement_type=None,
+                    scope_comparison=SFIHasChildScopeComparison(),
                     source_context_keys=[],
+                    source_order=None,
                     source_page_indexes=[],
                     source_segment_ids=[],
                     source_window_indexes=[],
@@ -1119,33 +941,35 @@ def _build_edges_from_responses(
                 )
                 edges.append(
                     _build_edge(
+                        checker_passed=checker_passed,
+                        checker_rationale=validation_verdict.rationale,
                         child_context=child_context,
                         confidence=child_resolution.confidence,
                         document_ir=document_ir,
                         framework_uuid=framework_uuid,
                         llm_reason=child_resolution.reason,
                         parent_candidate=root_candidate,
+                        resolution_origin=resolution_origin,
+                        resolution_request_id=request.request_id,
                         unresolved_root_fallback=True,
                     )
                 )
                 continue
 
-            # Build resolved edges.
             for parent_endpoint_id in child_resolution.selected_parent_endpoint_ids:
                 parent_candidate = parent_candidates[parent_endpoint_id]
-                _validate_selected_parent_candidate_against_source_local_scope(
-                    child_context=child_context,
-                    kg_config=kg_config,
-                    parent_candidate=parent_candidate,
-                )
                 edges.append(
                     _build_edge(
+                        checker_passed=checker_passed,
+                        checker_rationale=validation_verdict.rationale,
                         child_context=child_context,
                         confidence=child_resolution.confidence,
                         document_ir=document_ir,
                         framework_uuid=framework_uuid,
                         llm_reason=child_resolution.reason,
                         parent_candidate=parent_candidate,
+                        resolution_origin=resolution_origin,
+                        resolution_request_id=request.request_id,
                         unresolved_root_fallback=False,
                     )
                 )
@@ -1154,6 +978,141 @@ def _build_edges_from_responses(
         key=lambda edge: (str(edge.target_sfi_uuid), str(edge.source_entity_uuid))
     )
     return edges
+
+
+def _build_parent_scope_comparison(
+    *, child_context: SFIFinalContext, parent_context: SFIFinalContext
+) -> SFIHasChildScopeComparison:
+    """Compare finalized child scope with one candidate parent's value and scope.
+
+    The comparison is deterministic and curriculum-neutral. It records exact structured
+    matches, conflicts, and missing dimensions without deciding whether the candidate
+    is the semantic direct parent.
+
+    Parameters
+    ----------
+    child_context
+        Finalized child context.
+    parent_context
+        Candidate parent context.
+
+    Returns
+    -------
+    SFIHasChildScopeComparison
+        Structured comparison exposed to the producer and checker LLMs.
+    """
+
+    child_parent_value = _scope_value_for_statement_type(
+        scope_values=child_context.identity_scope_values,
+        statement_type=parent_context.statement_type,
+    )
+    parent_value_key = (
+        parent_context.canonical_statement_value_key
+        or _normalize_controlled_value_key(
+            parent_context.canonical_statement_value or parent_context.description
+        )
+    )
+    child_parent_value_key = _normalize_controlled_value_key(child_parent_value)
+    direct_parent_value_match: bool | None = None
+
+    if child_parent_value_key and parent_value_key:
+        direct_parent_value_match = child_parent_value_key == parent_value_key
+
+    conflicting_ancestor_statement_types: list[str] = []
+    matching_ancestor_statement_types: list[str] = []
+    missing_child_ancestor_statement_types: list[str] = []
+
+    for ancestor_statement_type, parent_scope_value in sorted(
+        parent_context.identity_scope_values.items(),
+        key=lambda item: item[0].casefold(),
+    ):
+        child_scope_value = _scope_value_for_statement_type(
+            scope_values=child_context.identity_scope_values,
+            statement_type=ancestor_statement_type,
+        )
+
+        if child_scope_value is None:
+            missing_child_ancestor_statement_types.append(ancestor_statement_type)
+            continue
+
+        child_scope_value_key = _normalize_controlled_value_key(child_scope_value)
+        parent_scope_value_key = _normalize_controlled_value_key(parent_scope_value)
+
+        if child_scope_value_key and child_scope_value_key == parent_scope_value_key:
+            matching_ancestor_statement_types.append(ancestor_statement_type)
+        else:
+            conflicting_ancestor_statement_types.append(ancestor_statement_type)
+
+    complete_match = bool(
+        direct_parent_value_match is True
+        and not conflicting_ancestor_statement_types
+        and not missing_child_ancestor_statement_types
+    )
+    return SFIHasChildScopeComparison(
+        complete_match=complete_match,
+        conflicting_ancestor_statement_types=conflicting_ancestor_statement_types,
+        direct_parent_statement_type=parent_context.statement_type,
+        direct_parent_value_match=direct_parent_value_match,
+        matching_ancestor_statement_types=matching_ancestor_statement_types,
+        missing_child_ancestor_statement_types=missing_child_ancestor_statement_types,
+    )
+
+
+def _collect_source_local_parent_scope_value_keys(
+    *,
+    child_context: SFIFinalContext,
+    kg_config: CreateKGConfig,
+    parent_statement_types: set[str],
+    value_match_policies: dict[str, _ControlledValueMatchPolicy],
+) -> dict[str, set[str]]:
+    """Collect controlled parent values recognized in typed local source labels.
+
+    The function preserves every recognized value from bounded hierarchy-bearing
+    labels. It does not select the active value or treat nearest-first label order as
+    an asserted hierarchy stack. The producer/checker LLMs receive matches and
+    conflicts as evidence and make the semantic parent decision.
+
+    Parameters
+    ----------
+    child_context
+        Finalized child context whose typed local labels are inspected.
+    kg_config
+        Runtime configuration containing statement-type aliases.
+    parent_statement_types
+        Allowed direct parent statement types for the child.
+    value_match_policies
+        Controlled-value recognition policies keyed by statement type.
+
+    Returns
+    -------
+    dict[str, set[str]]
+        All recognized controlled value keys keyed by parent statement type.
+    """
+
+    collected_value_keys_by_type: dict[str, set[str]] = {}
+    local_texts_by_parent_type = _typed_source_local_parent_texts_by_type(
+        child_context=child_context,
+        kg_config=kg_config,
+        parent_statement_types=parent_statement_types,
+    )
+
+    for parent_statement_type in sorted(parent_statement_types):
+        policy = value_match_policies.get(parent_statement_type)
+
+        if policy is None:
+            continue
+
+        value_keys: set[str] = set()
+
+        for local_text in local_texts_by_parent_type.get(parent_statement_type, []):
+            value_keys.update(
+                _controlled_value_keys_in_text(policy=policy, text=local_text)
+            )
+
+        if value_keys:
+            collected_value_keys_by_type[parent_statement_type] = value_keys
+
+    return collected_value_keys_by_type
 
 
 def _context_matches_section_path(
@@ -1357,70 +1316,33 @@ def _evaluate_parent_child_relationship(
     parent_table_keys: set[str],
     source_local_parent_scope_value_keys_by_type: dict[str, set[str]],
 ) -> None:
-    """Evaluate relationship between a child and parent context to record evidence.
+    """Collect deterministic retrieval evidence for one possible parent.
 
-    Examples
-    -=------
-
-    1. Code-parent hints from extraction windows become high-signal parent evidence.
-
-    Suppose an extraction window contains this code-parent hint:
-
-    child_code="1.1.1"
-    parent_code="1.1"
-
-    And the finalized SFI contexts include:
-
-    parent:
-        description="1.1 CONVERSATION"
-        normalized_statement_code="1.1"
-        normalized_statement_type="Standard Grouping"
-
-    child:
-        description="1.1.1 Use appropriate expressions in conversation"
-        normalized_statement_code="1.1.1"
-        normalized_statement_type="Standard"
-
-    During `_build_candidate_parent_sets(...)`, code values are normalized and the
-    pair:
-
-    ("1.1.1", "1.1")
-
-    is added to `code_parent_pairs`.
-
-    When this function is compares the child to the parent, it finds that the child's
-    normalized code maps to the parent's normalized code. The parent candidate receives
-    evidence like:
-
-    evidence_reasons=[_CODE_PARENT_HINT_REASON]
-    evidence_summary=[
-        "Configured code-parent hint maps child code '1.1.1' to parent code '1.1'."
-    ]
-
-    Because `code_parent_hint` is a high-signal reason, `_bound_parent_candidates()`
-    tries to preserve this parent candidate even when the candidate list must be
-    truncated.
+    The function compares configured statement types, finalized structured scope,
+    source locality, table context, code-parent hints, and source order. It never
+    selects or rejects a semantic parent. Conflicts are attached only to candidates
+    that have at least one positive retrieval signal.
 
     Parameters
     ----------
     child_code
-        Normalized code of the child context.
+        Normalized child code, when available.
     child_context
-        Final SFI source context for the child.
+        Finalized child context.
     child_table_keys
-        Table context keys for the child.
+        Paired table-local context keys for the child.
     code_parent_pairs
-        Set of valid code-parent relationships extracted from windows.
+        Locally extracted normalized child-code to parent-code hints.
     evidence_by_endpoint_id
-        Dictionary of accumulated parent evidence to update.
+        Mutable evidence accumulator.
     parent_context
-        Final SFI source context for the potential parent.
+        Candidate parent context.
     parent_statement_types_by_child_type
-        Allowed direct parent statement types keyed by child statement_type.
+        Allowed direct parent statement types keyed by child statement type.
     parent_table_keys
-        Table context keys for the potential parent.
+        Paired table-local context keys for the candidate parent.
     source_local_parent_scope_value_keys_by_type
-        Inferred local controlled parent value keys keyed by parent statement_type.
+        All controlled parent values recognized in typed local source labels.
     """
 
     if parent_context.statement_type not in parent_statement_types_by_child_type.get(
@@ -1428,14 +1350,9 @@ def _evaluate_parent_child_relationship(
     ):
         return
 
-    if _source_local_parent_scope_conflicts_parent(
-        parent_context=parent_context,
-        source_local_parent_scope_value_keys_by_type=(
-            source_local_parent_scope_value_keys_by_type
-        ),
-    ):
-        return
-
+    scope_comparison = _build_parent_scope_comparison(
+        child_context=child_context, parent_context=parent_context
+    )
     parent_code = normalize_code(parent_context.normalized_statement_code)
     source_local_controlled_parent_scope_match = (
         _source_local_parent_scope_matches_parent(
@@ -1465,17 +1382,48 @@ def _evaluate_parent_child_relationship(
         child_context=child_context, parent_context=parent_context
     )
 
-    # Simple, independent non-code evidence channels expressed as
-    # (predicate, reason, summary). Code-parent hints are gated separately below so
-    # globally repeated or audit-disambiguated codes cannot become high-signal parent
-    # evidence without compatible local source support.
+    if scope_comparison.complete_match:
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason=IDENTITY_SCOPE_COMPLETE_PARENT_MATCH_REASON,
+            evidence_summary=(
+                "Candidate's canonical parent value and every available ancestor "
+                "scope dimension match the child's finalized identity scope."
+            ),
+            parent_context=parent_context,
+            scope_comparison=scope_comparison,
+        )
+    elif scope_comparison.direct_parent_value_match is True:
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason=IDENTITY_SCOPE_DIRECT_PARENT_MATCH_REASON,
+            evidence_summary=(
+                "Candidate's canonical value matches the child's finalized scope "
+                "value for this direct parent statement type."
+            ),
+            parent_context=parent_context,
+            scope_comparison=scope_comparison,
+        )
+
+    if scope_comparison.matching_ancestor_statement_types:
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason=IDENTITY_SCOPE_ANCESTOR_MATCH_REASON,
+            evidence_summary=(
+                "Candidate and child have matching finalized ancestor scope "
+                f"dimensions: {scope_comparison.matching_ancestor_statement_types}."
+            ),
+            parent_context=parent_context,
+            scope_comparison=scope_comparison,
+        )
+
     simple_rules: tuple[tuple[bool, str, str], ...] = (
         (
             source_local_controlled_parent_scope_match,
             SOURCE_LOCAL_CONTROLLED_PARENT_SCOPE_REASON,
             (
-                "Parent controlled value matches the child's nearest source-local "
-                "label for the configured direct parent statement type."
+                "Candidate controlled value appears in at least one typed bounded "
+                "source-local label for the configured direct parent type."
             ),
         ),
         (
@@ -1502,8 +1450,8 @@ def _evaluate_parent_child_relationship(
             source_scope_grouping,
             SOURCE_SCOPE_GROUPING_REASON,
             (
-                "Parent is a source-scope grouping/header for row-derived child "
-                "content in the same source segment/window."
+                "Parent is an explicit source-scope grouping/header for row-derived "
+                "child content in the same source segment/window."
             ),
         ),
         (
@@ -1514,7 +1462,7 @@ def _evaluate_parent_child_relationship(
         (
             nearby_source_window,
             NEARBY_SOURCE_CONTEXT_KEY_REASON,
-            "Parent appears in a nearby preceding source window.",
+            "Parent appears in a nearby source window.",
         ),
     )
 
@@ -1525,6 +1473,7 @@ def _evaluate_parent_child_relationship(
                 evidence_reason=reason,
                 evidence_summary=summary,
                 parent_context=parent_context,
+                scope_comparison=scope_comparison,
             )
 
     if _should_add_code_parent_hint_evidence(
@@ -1540,21 +1489,19 @@ def _evaluate_parent_child_relationship(
             evidence_by_endpoint_id=evidence_by_endpoint_id,
             evidence_reason=CODE_PARENT_HINT_REASON,
             evidence_summary=(
-                f"Configured code-parent hint maps child code {child_code!r} "
-                f"to parent code {parent_code!r}, with compatible local source "
-                f"evidence."
+                f"Configured code-parent hint maps child code {child_code!r} to "
+                f"parent code {parent_code!r}, with compatible local source evidence."
             ),
             parent_context=parent_context,
+            scope_comparison=scope_comparison,
         )
 
-    # Evaluate distance-banded preceding-grouping evidence.
     if (
         parent_context.normalized_statement_type == "Standard Grouping"
         and parent_context.source_order < child_context.source_order
     ):
         distance = child_context.source_order - parent_context.source_order
 
-        # Distance thresholds, evaluated ordered widest-last.
         if distance <= 8:
             _add_parent_evidence(
                 evidence_by_endpoint_id=evidence_by_endpoint_id,
@@ -1564,6 +1511,7 @@ def _evaluate_parent_child_relationship(
                     f"source-order units."
                 ),
                 parent_context=parent_context,
+                scope_comparison=scope_comparison,
             )
 
         if distance <= 12:
@@ -1571,20 +1519,74 @@ def _evaluate_parent_child_relationship(
                 evidence_by_endpoint_id=evidence_by_endpoint_id,
                 evidence_reason=STATEMENT_TYPE_COMPATIBLE_REASON,
                 evidence_summary=(
-                    "Parent is a preceding Standard Grouping compatible with "
-                    "hasChild hierarchy instructions."
+                    "Parent is a preceding Standard Grouping of an allowed direct "
+                    "parent statement type."
                 ),
                 parent_context=parent_context,
+                scope_comparison=scope_comparison,
             )
 
     _add_source_visible_direct_parent_evidence(
         evidence_by_endpoint_id=evidence_by_endpoint_id,
         parent_context=parent_context,
-        source_local_controlled_parent_scope_match=(
-            source_local_controlled_parent_scope_match
-        ),
         source_scope_grouping=source_scope_grouping,
     )
+
+    endpoint_id = str(parent_context.final_sfi_uuid)
+
+    if endpoint_id not in evidence_by_endpoint_id:
+        return
+
+    if scope_comparison.direct_parent_value_match is False:
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason=IDENTITY_SCOPE_DIRECT_PARENT_CONFLICT_REASON,
+            evidence_summary=(
+                "Candidate's canonical value conflicts with the child's finalized "
+                "scope value for this direct parent statement type."
+            ),
+            parent_context=parent_context,
+            scope_comparison=scope_comparison,
+        )
+
+    if scope_comparison.conflicting_ancestor_statement_types:
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason=IDENTITY_SCOPE_ANCESTOR_CONFLICT_REASON,
+            evidence_summary=(
+                f"Candidate and child have conflicting finalized ancestor scope "
+                f"dimensions: {scope_comparison.conflicting_ancestor_statement_types}."
+            ),
+            parent_context=parent_context,
+            scope_comparison=scope_comparison,
+        )
+
+    expected_local_value_keys = source_local_parent_scope_value_keys_by_type.get(
+        parent_context.statement_type, set()
+    )
+
+    parent_value_key = _normalize_controlled_value_key(
+        parent_context.canonical_statement_value_key
+        or parent_context.canonical_statement_value
+        or parent_context.description
+    )
+
+    if (
+        expected_local_value_keys
+        and parent_value_key
+        and parent_value_key not in expected_local_value_keys
+    ):
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason=SOURCE_LOCAL_CONTROLLED_PARENT_SCOPE_CONFLICT_REASON,
+            evidence_summary=(
+                "Candidate canonical value does not match any controlled value "
+                "recognized in the child's typed bounded source-local labels. These "
+                "labels may be cumulative or stale and require semantic review."
+            ),
+            parent_context=parent_context,
+            scope_comparison=scope_comparison,
+        )
 
 
 def _evidence_has_decisive_direct_parent_support(evidence_reasons: set[str]) -> bool:
@@ -1801,63 +1803,6 @@ def _get_hierarchy_statement_types(kg_config: CreateKGConfig) -> list[str]:
     return [item.statement_type for item in standards.statement_type_policy]
 
 
-def _infer_source_local_parent_scope_value_keys(
-    *,
-    child_context: SFIFinalContext,
-    kg_config: CreateKGConfig,
-    parent_statement_types: set[str],
-    value_match_policies: dict[str, _ControlledValueMatchPolicy],
-) -> dict[str, set[str]]:
-    """Infer typed source-local controlled parent values for one child SFI.
-
-    The inference is intentionally label-aware: it reads only typed hierarchy-bearing
-    source labels, such as section-path labels and source-context labels that
-    explicitly name configured statement types. It avoids scanning the child SFI's
-    own description, table-row text, objective/content text, activities, resources,
-    or evaluation prompts. This prevents an untyped child phrase from being mistaken
-    for a parent controlled value when the same phrase appears elsewhere as a valid
-    organizer.
-
-    Parameters
-    ----------
-    child_context
-        Final SFI context whose typed local source labels are inspected.
-    kg_config
-        Runtime KG configuration containing statement-type aliases.
-    parent_statement_types
-        Allowed direct parent statement types for the child.
-    value_match_policies
-        Controlled-value match policies keyed by statement_type.
-
-    Returns
-    -------
-    dict[str, set[str]]
-        Inferred local controlled parent value keys keyed by parent statement_type.
-    """
-
-    inferred_value_keys_by_type: dict[str, set[str]] = {}
-    local_texts_by_parent_type = _typed_source_local_parent_texts_by_type(
-        child_context=child_context,
-        kg_config=kg_config,
-        parent_statement_types=parent_statement_types,
-    )
-
-    for parent_statement_type in sorted(parent_statement_types):
-        policy = value_match_policies.get(parent_statement_type)
-
-        if policy is None:
-            continue
-
-        for local_text in local_texts_by_parent_type.get(parent_statement_type, []):
-            value_keys = _controlled_value_keys_in_text(policy=policy, text=local_text)
-
-            if value_keys:
-                inferred_value_keys_by_type[parent_statement_type] = value_keys
-                break
-
-    return inferred_value_keys_by_type
-
-
 def _label_matches_statement_type(
     *,
     label: str,
@@ -1982,59 +1927,61 @@ def _load_and_validate_existing_relationship_artifacts(
     contexts: Sequence[SFIFinalContext],
     contexts_fp: Path,
     document_ir: DocumentIR,
+    draft_responses_fp: Path,
     edges_fp: Path,
+    final_responses_fp: Path,
     framework_uuid: uuid.UUID,
     kg_config: CreateKGConfig,
     parent_sets: Sequence[SFIHasChildCandidateParentSet],
     parent_sets_fp: Path,
     requests: Sequence[SFIHasChildResolutionRequest],
     requests_fp: Path,
-    responses_fp: Path,
     sfi_final_records: Sequence[SFIFinalRecord],
     summary_fp: Path,
     unresolved_edges_fp: Path,
+    validation_verdicts_fp: Path,
 ) -> list[SFIHasChildEdge] | None:
-    """Load existing artifacts, or return None to resume.
-
-    Existing artifacts are reusable only when every persisted artifact is present,
-    parseable, exactly aligned with the current deterministic context, parent-set, and
-    request payloads, and rebuilds to the same validated graph.
+    """Reuse complete current producer/checker and relationship artifacts.
 
     Parameters
     ----------
     contexts
-        Current recovered final SFI contexts.
+        Current finalized SFI contexts.
     contexts_fp
-        JSON path for persisted final SFI contexts.
+        Persisted context artifact path.
     document_ir
-        Source DocumentIR used to scope relationship IDs.
+        Source DocumentIR.
+    draft_responses_fp
+        Producer draft response JSONL path.
     edges_fp
-        JSON path for final hasChild edges.
+        Final edge JSON path.
+    final_responses_fp
+        Accepted or corrected response JSONL path.
     framework_uuid
-        Deterministic StandardsFramework UUID.
+        StandardsFramework root UUID.
     kg_config
-        Runtime KG configuration containing direct parent type policy.
+        Runtime configuration used for graph statement-type policy.
     parent_sets
-        Current bounded parent-candidate sets.
+        Current bounded parent candidate sets.
     parent_sets_fp
-        JSONL path for persisted parent-candidate sets.
+        Persisted parent-set JSONL path.
     requests
-        Current hasChild resolution requests.
+        Current deterministic requests.
     requests_fp
-        JSONL path for persisted hasChild resolution requests.
-    responses_fp
-        JSONL path for persisted hasChild resolution responses.
+        Persisted request JSONL path.
     sfi_final_records
-        Final SFI records that must be covered by the graph.
+        Final SFI universe.
     summary_fp
-        JSON path for persisted hasChild resolution summary.
+        Persisted resolution summary path.
     unresolved_edges_fp
-        JSON path for unresolved root-fallback edges.
+        Persisted unresolved-edge path.
+    validation_verdicts_fp
+        Checker verdict JSONL path.
 
     Returns
     -------
     list[SFIHasChildEdge] | None
-        Reusable final hasChild edges, or None when artifacts are incomplete or stale.
+        Reusable edge sequence, or `None` when artifacts are missing or stale.
     """
 
     try:
@@ -2046,7 +1993,6 @@ def _load_and_validate_existing_relationship_artifacts(
             artifact_label="sfi_final_contexts.json",
             expected=contexts,
         )
-
         loaded_parent_sets = _load_jsonl_models(
             allow_partial_prefix=False,
             fp=parent_sets_fp,
@@ -2057,7 +2003,6 @@ def _load_and_validate_existing_relationship_artifacts(
             artifact_label="has_child_candidate_parent_sets.jsonl",
             expected=parent_sets,
         )
-
         loaded_requests = _load_jsonl_models(
             allow_partial_prefix=False,
             fp=requests_fp,
@@ -2068,28 +2013,41 @@ def _load_and_validate_existing_relationship_artifacts(
             artifact_label="has_child_resolution_requests.jsonl",
             expected=requests,
         )
-
-        loaded_responses = _load_jsonl_models(
+        loaded_draft_responses = _load_jsonl_models(
             allow_partial_prefix=False,
-            fp=responses_fp,
+            fp=draft_responses_fp,
             model_type=SFIHasChildResolutionResponse,
         )
-        _validate_resolution_response_prefix(
-            requests=requests, responses=loaded_responses
+        loaded_final_responses = _load_jsonl_models(
+            allow_partial_prefix=False,
+            fp=final_responses_fp,
+            model_type=SFIHasChildResolutionResponse,
+        )
+        loaded_validation_verdicts = _load_jsonl_models(
+            allow_partial_prefix=False,
+            fp=validation_verdicts_fp,
+            model_type=SFIHasChildValidationVerdict,
+        )
+        _validate_resolution_artifact_prefix(
+            draft_responses=loaded_draft_responses,
+            final_responses=loaded_final_responses,
+            requests=requests,
+            validation_verdicts=loaded_validation_verdicts,
         )
 
-        if len(loaded_responses) != len(requests):
+        if len(loaded_final_responses) != len(requests):
             raise ValueError(
-                f"has_child_resolution_responses.jsonl has {len(loaded_responses)} "
-                f"records, but expected {len(requests)} records."
+                f"Complete hasChild artifacts contain {len(loaded_final_responses)} "
+                f"responses, but {len(requests)} requests are planned."
             )
 
         expected_edges = _build_edges_from_responses(
             document_ir=document_ir,
             framework_uuid=framework_uuid,
-            kg_config=kg_config,
             parent_sets=parent_sets,
-            responses=loaded_responses,
+            requests=requests,
+            responses=loaded_final_responses,
+            validation_verdicts=loaded_validation_verdicts,
         )
         _validate_graph(
             edges=expected_edges,
@@ -2097,13 +2055,17 @@ def _load_and_validate_existing_relationship_artifacts(
             kg_config=kg_config,
             sfi_final_records=sfi_final_records,
         )
-
         expected_summary = SFIHasChildResolutionSummary(
             candidate_parent_set_count=len(parent_sets),
+            checker_corrected_response_count=sum(
+                1 for verdict in loaded_validation_verdicts if not verdict.passed
+            ),
+            checker_request_count=len(requests),
+            checker_verdict_count=len(loaded_validation_verdicts),
             edge_count=len(expected_edges),
             final_sfi_count=len(parent_sets),
-            llm_request_count=len(requests),
-            llm_response_count=len(loaded_responses),
+            generator_request_count=len(requests),
+            generator_response_count=len(loaded_draft_responses),
             root_edge_count=sum(1 for edge in expected_edges if edge.is_root_edge),
             sfi_to_sfi_edge_count=sum(
                 1 for edge in expected_edges if not edge.is_root_edge
@@ -2118,7 +2080,6 @@ def _load_and_validate_existing_relationship_artifacts(
         expected_unresolved_edges = [
             edge for edge in expected_edges if edge.unresolved_root_fallback
         ]
-
         loaded_edges = _load_json_model_sequence(
             fp=edges_fp, model_type=SFIHasChildEdge
         )
@@ -2127,7 +2088,6 @@ def _load_and_validate_existing_relationship_artifacts(
             artifact_label="has_child_edges_final.json",
             expected=expected_edges,
         )
-
         loaded_unresolved_edges = _load_json_model_sequence(
             fp=unresolved_edges_fp, model_type=SFIHasChildEdge
         )
@@ -2136,30 +2096,26 @@ def _load_and_validate_existing_relationship_artifacts(
             artifact_label="has_child_unresolved_edges.json",
             expected=expected_unresolved_edges,
         )
-
         loaded_summary = SFIHasChildResolutionSummary.model_validate(
             open_json_type(summary_fp)
         )
 
         if model_dump_key(loaded_summary) != model_dump_key(expected_summary):
             raise ValueError(
-                "has_child_resolution_summary.json does not match the current planned "
-                "SFI hasChild resolution payload."
+                "has_child_resolution_summary.json does not match current "
+                "producer/checker output."
             )
-
-    except Exception as e:  # pylint: disable=W0718
+    except Exception as exc:  # pylint: disable=W0718
         logger.warning(
             f"Existing hasChild artifacts are incomplete, missing, or stale; "
-            f"resuming SFI hasChild resolution: {e}"
+            f"resuming producer/checker resolution: {exc}"
         )
-
         return None
 
     logger.info(
         f"Loading complete existing hasChild artifacts because overwrite=False: "
         f"{edges_fp}"
     )
-
     return loaded_edges
 
 
@@ -2269,8 +2225,8 @@ def _load_json_model_sequence(*, fp: Path, model_type: BaseModel) -> list[BaseMo
 
 
 def _load_jsonl_models(
-    *, allow_partial_prefix: bool, fp: Path, model_type: BaseModel
-) -> list[BaseModel]:
+    *, allow_partial_prefix: bool, fp: Path, model_type: type[ModelT]
+) -> list[ModelT]:
     """Load a JSONL artifact into a typed Pydantic model sequence.
 
     Parameters
@@ -2284,7 +2240,7 @@ def _load_jsonl_models(
 
     Returns
     -------
-    list[BaseModel]
+    list[ModelT]
         Parsed and validated model sequence.
 
     Raises
@@ -2299,7 +2255,7 @@ def _load_jsonl_models(
 
         raise ValueError(f"Missing SFI hasChild resolution JSONL artifact: {fp}")
 
-    models: list[BaseModel] = []
+    models: list[ModelT] = []
 
     with fp.open("r", encoding="utf-8") as f:
         for line_number, line in enumerate(f, start=1):
@@ -2330,66 +2286,99 @@ def _load_jsonl_models(
 
 def _load_resumable_resolution_progress(
     *,
+    draft_responses_fp: Path,
+    final_responses_fp: Path,
     requests: Sequence[SFIHasChildResolutionRequest],
     requests_fp: Path,
-    responses_fp: Path,
-) -> list[SFIHasChildResolutionResponse]:
-    """Load a valid completed hasChild response prefix for resuming SFI hasChild
-    resolution.
-
-    A completed response prefix is reusable only when each response validates against
-    the current planned request at the same position and the saved request payloads for
-    that completed prefix exactly match the current request payloads.
+    validation_verdicts_fp: Path,
+) -> _ResolutionProgress:
+    """Load the longest aligned producer/checker prefix safe for resume.
 
     Parameters
     ----------
+    draft_responses_fp
+        JSONL path for producer draft responses.
+    final_responses_fp
+        JSONL path for accepted or corrected final responses.
     requests
-        Current deterministic hasChild resolution requests.
+        Current deterministic request sequence.
     requests_fp
-        JSONL path for persisted hasChild resolution requests.
-    responses_fp
-        JSONL path for persisted hasChild resolution responses.
+        JSONL path for persisted requests.
+    validation_verdicts_fp
+        JSONL path for checker verdicts.
 
     Returns
     -------
-    list[SFIHasChildResolutionResponse]
-        Valid completed response prefix, or an empty list when no reusable progress
-        exists.
+    _ResolutionProgress
+        Valid aligned progress prefix, or empty progress when reuse is unsafe.
     """
 
+    empty_progress = _ResolutionProgress(
+        draft_responses=[], final_responses=[], validation_verdicts=[]
+    )
+
     try:
-        responses = _load_jsonl_models(
+        draft_responses = _load_jsonl_models(
             allow_partial_prefix=True,
-            fp=responses_fp,
+            fp=draft_responses_fp,
             model_type=SFIHasChildResolutionResponse,
         )
-        _validate_resolution_response_prefix(requests=requests, responses=responses)
-
-        if responses:
-            saved_requests = _load_jsonl_models(
-                allow_partial_prefix=False,
-                fp=requests_fp,
-                model_type=SFIHasChildResolutionRequest,
-            )
-            _validate_resolution_request_prefix(
-                requests=requests,
-                saved_requests=saved_requests,
-                trusted_prefix_length=len(responses),
-            )
-
-            logger.info(
-                f"Resuming hasChild resolution from {len(responses)} completed "
-                f"responses in {responses_fp}."
-            )
-
-            return responses
-    except Exception as e:  # pylint: disable=W0718
-        logger.warning(
-            f"Ignoring existing hasChild JSONL progress because the saved "
-            f"request/response prefix does not match the current plan: {e}"
+        final_responses = _load_jsonl_models(
+            allow_partial_prefix=True,
+            fp=final_responses_fp,
+            model_type=SFIHasChildResolutionResponse,
+        )
+        validation_verdicts = _load_jsonl_models(
+            allow_partial_prefix=True,
+            fp=validation_verdicts_fp,
+            model_type=SFIHasChildValidationVerdict,
+        )
+        trusted_prefix_length = min(
+            len(draft_responses),
+            len(final_responses),
+            len(validation_verdicts),
         )
 
-    return []
+        if trusted_prefix_length == 0:
+            return empty_progress
+
+        draft_prefix = draft_responses[:trusted_prefix_length]
+        final_prefix = final_responses[:trusted_prefix_length]
+        verdict_prefix = validation_verdicts[:trusted_prefix_length]
+        _validate_resolution_artifact_prefix(
+            draft_responses=draft_prefix,
+            final_responses=final_prefix,
+            requests=requests,
+            validation_verdicts=verdict_prefix,
+        )
+        saved_requests = _load_jsonl_models(
+            allow_partial_prefix=False,
+            fp=requests_fp,
+            model_type=SFIHasChildResolutionRequest,
+        )
+        _validate_resolution_request_prefix(
+            requests=requests,
+            saved_requests=saved_requests,
+            trusted_prefix_length=trusted_prefix_length,
+        )
+
+        logger.info(
+            f"Resuming hasChild producer/checker resolution from "
+            f"{trusted_prefix_length} completed requests."
+        )
+
+        return _ResolutionProgress(
+            draft_responses=draft_prefix,
+            final_responses=final_prefix,
+            validation_verdicts=verdict_prefix,
+        )
+    except Exception as exc:  # pylint: disable=W0718
+        logger.warning(
+            f"Ignoring existing hasChild producer/checker progress because the "
+            f"saved prefix does not match the current plan: {exc}"
+        )
+
+    return empty_progress
 
 
 def _load_sfi_final_summary(kg_dirs: KGDirs) -> SFIFinalSummary | None:
@@ -2415,7 +2404,7 @@ def _load_sfi_final_summary(kg_dirs: KGDirs) -> SFIFinalSummary | None:
 
 
 def _normalize_controlled_value_key(value: object) -> str:
-    """Normalize controlled-value text for alias and scope comparison.
+    """Normalize controlled-value text for multilingual scope comparison.
 
     Parameters
     ----------
@@ -2425,31 +2414,29 @@ def _normalize_controlled_value_key(value: object) -> str:
     Returns
     -------
     str
-        Casefolded key with non-alphanumeric runs collapsed to spaces.
+        Unicode-aware canonical comparison key.
     """
 
-    return re.sub(r"[^0-9a-z]+", " ", str(value or "").casefold()).strip()
+    return normalize_controlled_value_key(str(value or ""))
 
 
-def _parent_candidate_evidence_tier(  # pylint: disable=R0911
+def _parent_candidate_evidence_tier(
     candidate: SFIHasChildParentCandidate,
 ) -> int:
-    """Assign a deterministic evidence tier for parent candidate ranking.
+    """Assign a deterministic retrieval tier for one parent candidate.
 
-    Lower tiers rank earlier. Corroborated direct-parent evidence is strongest.
-    Same-table and local-outline signals remain preferred retrieval evidence without
-    being treated as conclusive proof of parentage.
+    Lower tiers are preserved first during bounding. The tier is a retrieval ordering,
+    not a semantic parent decision.
 
     Parameters
     ----------
     candidate
-        Parent candidate to classify.
+        Parent candidate to rank.
 
     Returns
     -------
     int
-        Evidence tier, where zero and one are corroborated direct-parent support,
-        larger values are retrieval/ranking evidence, and root fallback is weakest.
+        Deterministic retrieval tier.
     """
 
     evidence_reasons = set(candidate.evidence_reasons or [])
@@ -2457,45 +2444,52 @@ def _parent_candidate_evidence_tier(  # pylint: disable=R0911
     if candidate.is_root or ROOT_EVIDENCE_REASON in evidence_reasons:
         return 90
 
-    if SOURCE_VISIBLE_DIRECT_PARENT_REASON in evidence_reasons:
+    if IDENTITY_SCOPE_COMPLETE_PARENT_MATCH_REASON in evidence_reasons:
         return 0
 
     if _evidence_has_decisive_direct_parent_support(evidence_reasons):
         return 1
 
-    if _evidence_has_strong_local_ranking_support(evidence_reasons):
+    if (
+        IDENTITY_SCOPE_DIRECT_PARENT_MATCH_REASON in evidence_reasons
+        or SOURCE_VISIBLE_DIRECT_PARENT_REASON in evidence_reasons
+    ):
         return 2
+
+    if _evidence_has_strong_local_ranking_support(evidence_reasons):
+        return 3
 
     if ACTIVE_OUTLINE_STACK_PARENT_REASON in evidence_reasons and (
         SAME_SOURCE_CONTEXT_KEY_REASON in evidence_reasons
         or SAME_SOURCE_SEGMENT_REASON in evidence_reasons
         or SAME_SOURCE_WINDOW_REASON in evidence_reasons
     ):
-        return 3
+        return 4
 
     if _evidence_has_soft_carry_forward_support(evidence_reasons):
-        return 4
+        return 5
 
     if (
         SAME_SOURCE_CONTEXT_KEY_REASON in evidence_reasons
         or SAME_SOURCE_SEGMENT_REASON in evidence_reasons
         or SAME_SOURCE_WINDOW_REASON in evidence_reasons
     ):
-        return 5
-
-    if evidence_reasons & CARRY_FORWARD_PARENT_REASONS:
         return 6
 
-    return 7
+    if evidence_reasons & CARRY_FORWARD_PARENT_REASONS:
+        return 7
+
+    return 8
 
 
 def _parent_candidate_rank(
     candidate: SFIHasChildParentCandidate,
 ) -> tuple[int, int, str]:
-    """Build deterministic sorting key for parent candidates.
+    """Build a deterministic retrieval sort key for parent candidates.
 
-    Ranking is tiered before weighted scoring so that several weak proximity or
-    carry-forward signals cannot outrank corroborated direct-parent evidence.
+    Positive exact and source-local evidence improves rank. Structured-scope and typed
+    source-label conflicts lower rank but never remove a candidate that has another
+    positive retrieval signal.
 
     Parameters
     ----------
@@ -2505,25 +2499,31 @@ def _parent_candidate_rank(
     Returns
     -------
     tuple[int, int, str]
-        Sort key where lower values rank earlier.
+        Evidence tier, negative weighted score, and stable endpoint ID.
     """
 
     weights = {
-        SOURCE_VISIBLE_DIRECT_PARENT_REASON: 130,
-        SOURCE_LOCAL_CONTROLLED_PARENT_SCOPE_REASON: 120,
-        CODE_PARENT_HINT_REASON: 100,
-        LOCAL_ACTIVE_OUTLINE_DIRECT_PARENT_REASON: 100,
-        SOURCE_SCOPE_GROUPING_REASON: 95,
-        MATCHED_SECTION_PATH_LABEL_REASON: 90,
-        SAME_TABLE_CONTEXT_REASON: 80,
-        SAME_SOURCE_CONTEXT_KEY_REASON: 75,
         ACTIVE_OUTLINE_STACK_PARENT_REASON: 70,
-        SAME_SOURCE_SEGMENT_REASON: 65,
-        SAME_SOURCE_WINDOW_REASON: 60,
-        NEARBY_SOURCE_CONTEXT_KEY_REASON: 40,
-        NEAREST_PRECEDING_GROUPING_REASON: 35,
-        STATEMENT_TYPE_COMPATIBLE_REASON: 15,
+        CODE_PARENT_HINT_REASON: 125,
+        IDENTITY_SCOPE_ANCESTOR_CONFLICT_REASON: -110,
+        IDENTITY_SCOPE_ANCESTOR_MATCH_REASON: 80,
+        IDENTITY_SCOPE_COMPLETE_PARENT_MATCH_REASON: 180,
+        IDENTITY_SCOPE_DIRECT_PARENT_CONFLICT_REASON: -140,
+        IDENTITY_SCOPE_DIRECT_PARENT_MATCH_REASON: 120,
+        LOCAL_ACTIVE_OUTLINE_DIRECT_PARENT_REASON: 100,
+        MATCHED_SECTION_PATH_LABEL_REASON: 60,
+        NEARBY_SOURCE_CONTEXT_KEY_REASON: 35,
+        NEAREST_PRECEDING_GROUPING_REASON: 30,
         ROOT_EVIDENCE_REASON: 0,
+        SAME_SOURCE_CONTEXT_KEY_REASON: 70,
+        SAME_SOURCE_SEGMENT_REASON: 60,
+        SAME_SOURCE_WINDOW_REASON: 55,
+        SAME_TABLE_CONTEXT_REASON: 85,
+        SOURCE_LOCAL_CONTROLLED_PARENT_SCOPE_CONFLICT_REASON: -45,
+        SOURCE_LOCAL_CONTROLLED_PARENT_SCOPE_REASON: 75,
+        SOURCE_SCOPE_GROUPING_REASON: 120,
+        SOURCE_VISIBLE_DIRECT_PARENT_REASON: 125,
+        STATEMENT_TYPE_COMPATIBLE_REASON: 10,
     }
     score = sum(weights.get(reason, 0) for reason in candidate.evidence_reasons)
     return _parent_candidate_evidence_tier(candidate), -score, candidate.endpoint_id
@@ -2629,100 +2629,174 @@ def _relationship_code_anomaly_metadata(
 
 def _rewrite_resolution_progress_files(
     *,
+    completed_draft_responses: Sequence[SFIHasChildResolutionResponse],
+    completed_final_responses: Sequence[SFIHasChildResolutionResponse],
     completed_requests: Sequence[SFIHasChildResolutionRequest],
-    completed_responses: Sequence[SFIHasChildResolutionResponse],
+    completed_validation_verdicts: Sequence[SFIHasChildValidationVerdict],
+    draft_responses_fp: Path,
+    final_responses_fp: Path,
     requests_fp: Path,
-    responses_fp: Path,
+    validation_verdicts_fp: Path,
 ) -> None:
-    """Rewrite hasChild request/response JSONL artifacts to a clean prefix.
+    """Rewrite producer/checker JSONL artifacts to one clean aligned prefix.
 
     Parameters
     ----------
+    completed_draft_responses
+        Producer drafts to preserve.
+    completed_final_responses
+        Accepted or corrected final responses to preserve.
     completed_requests
-        Planned requests corresponding to completed responses.
-    completed_responses
-        Completed responses to preserve for resume.
+        Deterministic requests corresponding to the completed prefix.
+    completed_validation_verdicts
+        Checker verdicts to preserve.
+    draft_responses_fp
+        JSONL path for producer drafts.
+    final_responses_fp
+        JSONL path for final responses.
     requests_fp
-        JSONL path for hasChild resolution requests.
-    responses_fp
-        JSONL path for hasChild resolution responses.
+        JSONL path for requests.
+    validation_verdicts_fp
+        JSONL path for checker verdicts.
     """
 
-    make_dir(requests_fp.parent)
-    make_dir(responses_fp.parent)
-    requests_fp.write_text("", encoding="utf-8")
-    responses_fp.write_text("", encoding="utf-8")
+    paths = [
+        draft_responses_fp,
+        final_responses_fp,
+        requests_fp,
+        validation_verdicts_fp,
+    ]
+
+    for path in paths:
+        make_dir(path.parent)
+        path.write_text("", encoding="utf-8")
 
     for request in completed_requests:
         append_jsonl_model(fp=requests_fp, model=request)
 
-    for response in completed_responses:
-        append_jsonl_model(fp=responses_fp, model=response)
+    for draft_response in completed_draft_responses:
+        append_jsonl_model(fp=draft_responses_fp, model=draft_response)
+
+    for validation_verdict in completed_validation_verdicts:
+        append_jsonl_model(fp=validation_verdicts_fp, model=validation_verdict)
+
+    for final_response in completed_final_responses:
+        append_jsonl_model(fp=final_responses_fp, model=final_response)
 
 
 def _run_resolution_requests(
     *,
-    completed_responses: Sequence[SFIHasChildResolutionResponse],
+    completed_progress: _ResolutionProgress,
+    draft_responses_fp: Path,
+    final_responses_fp: Path,
     requests: Sequence[SFIHasChildResolutionRequest],
     requests_fp: Path,
-    responses_fp: Path,
     usage_tracker: KGUsageTracker,
-) -> list[SFIHasChildResolutionResponse]:
-    """Run remaining LLM hasChild requests and persist progress incrementally.
+    validation_verdicts_fp: Path,
+) -> _ResolutionProgress:
+    """Run remaining producer/checker requests and persist each completed stage.
 
     Parameters
     ----------
-    completed_responses
-        Valid response prefix already completed in a previous partial run.
+    completed_progress
+        Valid aligned prefix from a previous partial run.
+    draft_responses_fp
+        JSONL path for producer drafts.
+    final_responses_fp
+        JSONL path for accepted or checker-corrected responses.
     requests
-        Full planned hasChild resolution request sequence.
+        Full deterministic request sequence.
     requests_fp
-        JSONL path for persisted requests.
-    responses_fp
-        JSONL path for persisted responses.
+        JSONL path for requests.
     usage_tracker
-        LLM usage tracker.
+        Producer/checker usage tracker.
+    validation_verdicts_fp
+        JSONL path for checker verdicts.
 
     Returns
     -------
-    list[SFIHasChildResolutionResponse]
-        Completed responses in request order, including the resumed prefix.
+    _ResolutionProgress
+        Complete aligned producer/checker artifacts in request order.
 
     Raises
     ------
-    ValueError
-        If the completed response prefix is longer than the planned requests.
+    ValueERror If the completed hasChild record has an issue.
     """
 
-    responses = list(completed_responses)
+    draft_responses = list(completed_progress.draft_responses)
+    final_responses = list(completed_progress.final_responses)
+    validation_verdicts = list(completed_progress.validation_verdicts)
+    completed_count = len(final_responses)
 
-    if len(responses) > len(requests):
+    if not len(draft_responses) == completed_count == len(validation_verdicts):
+        raise ValueError("Completed hasChild producer/checker progress is not aligned.")
+
+    if completed_count > len(requests):
         raise ValueError(
-            f"Completed hasChild response prefix has {len(responses)} records, but "
-            f"only {len(requests)} requests are planned."
+            f"Completed hasChild prefix has {completed_count} records, but only "
+            f"{len(requests)} requests are planned."
         )
 
-    if requests:
-        make_dir(requests_fp.parent)
-        make_dir(responses_fp.parent)
+    for path in [
+        draft_responses_fp,
+        final_responses_fp,
+        requests_fp,
+        validation_verdicts_fp,
+    ]:
+        make_dir(path.parent)
 
-    for request_index in range(len(responses), len(requests)):
-        current_request_number = request_index + 1
+    for request_index in range(completed_count, len(requests)):
         request = requests[request_index]
-
         logger.info(
-            f"Running hasChild resolution {current_request_number}/{len(requests)}: "
-            f"request_id={request.request_id}."
+            f"Running hasChild producer/checker request "
+            f"{request_index + 1}/{len(requests)}: request_id={request.request_id}."
         )
-
         append_jsonl_model(fp=requests_fp, model=request)
-        response = resolve_sfi_has_child_parent_request(
+        resolution_run = resolve_sfi_has_child_parent_request(
             resolution_request=request, usage_tracker=usage_tracker
         )
-        append_jsonl_model(fp=responses_fp, model=response)
-        responses.append(response)
+        append_jsonl_model(fp=draft_responses_fp, model=resolution_run.draft_response)
+        append_jsonl_model(
+            fp=validation_verdicts_fp, model=resolution_run.validation_verdict
+        )
+        append_jsonl_model(fp=final_responses_fp, model=resolution_run.final_response)
+        draft_responses.append(resolution_run.draft_response)
+        final_responses.append(resolution_run.final_response)
+        validation_verdicts.append(resolution_run.validation_verdict)
 
-    return responses
+    return _ResolutionProgress(
+        draft_responses=draft_responses,
+        final_responses=final_responses,
+        validation_verdicts=validation_verdicts,
+    )
+
+
+def _scope_value_for_statement_type(
+    *, scope_values: dict[str, str], statement_type: str
+) -> str | None:
+    """Return one scope value using case-insensitive statement-type matching.
+
+    Parameters
+    ----------
+    scope_values
+        Finalized identity-scope values keyed by source-facing statement type.
+    statement_type
+        Configured statement type to retrieve.
+
+    Returns
+    -------
+    str | None
+        Matching scope value, or `None` when the dimension is absent.
+    """
+
+    statement_type_key = statement_type.strip().casefold()
+
+    for scope_statement_type, scope_value in scope_values.items():
+        if str(scope_statement_type).strip().casefold() == statement_type_key:
+            value = str(scope_value or "").strip()
+            return value or None
+
+    return None
 
 
 def _should_add_code_parent_hint_evidence(
@@ -2874,37 +2948,6 @@ def _source_label_statement_type(
     return None
 
 
-def _source_local_parent_scope_conflicts_parent(
-    *,
-    parent_context: SFIFinalContext,
-    source_local_parent_scope_value_keys_by_type: dict[str, set[str]],
-) -> bool:
-    """Check whether a parent conflicts with a child's local controlled scope.
-
-    Parameters
-    ----------
-    parent_context
-        Candidate parent final SFI context.
-    source_local_parent_scope_value_keys_by_type
-        Inferred local controlled parent value keys keyed by parent statement_type.
-
-    Returns
-    -------
-    bool
-        True when the child locally names a value for this parent type and the
-        candidate parent has a different canonical value key.
-    """
-
-    expected_value_keys = source_local_parent_scope_value_keys_by_type.get(
-        parent_context.statement_type, set()
-    )
-
-    if not expected_value_keys or not parent_context.canonical_statement_value_key:
-        return False
-
-    return parent_context.canonical_statement_value_key not in expected_value_keys
-
-
 def _source_local_parent_scope_matches_parent(
     *,
     parent_context: SFIFinalContext,
@@ -2930,10 +2973,82 @@ def _source_local_parent_scope_matches_parent(
         parent_context.statement_type, set()
     )
 
-    if not expected_value_keys or not parent_context.canonical_statement_value_key:
+    parent_value_key = _normalize_controlled_value_key(
+        parent_context.canonical_statement_value_key
+        or parent_context.canonical_statement_value
+        or parent_context.description
+    )
+
+    if not expected_value_keys or not parent_value_key:
         return False
 
-    return parent_context.canonical_statement_value_key in expected_value_keys
+    return parent_value_key in expected_value_keys
+
+
+def _source_ref_int_list(*, key: str, source_ref: dict[str, object]) -> list[int]:
+    """Collect sorted integer values from one candidate source-ref field.
+
+    Parameters
+    ----------
+    key
+        Source-ref field to read, such as `table_row_indexes` or `table_header_indexes`.
+    source_ref
+        Candidate source-ref dictionary from a final SFI record.
+
+    Returns
+    -------
+    list[int]
+        Sorted unique integer values. Invalid or empty values are ignored.
+    """
+
+    raw_values = source_ref.get(key)
+
+    if raw_values is None:
+        return []
+
+    if isinstance(raw_values, (str, bytes)) or not isinstance(raw_values, Sequence):
+        values_iterable: Any = [raw_values]
+    else:
+        values_iterable = raw_values
+
+    values: set[int] = set()
+
+    for value in values_iterable:
+        try:
+            values.add(int(value))
+        except Exception:  # pylint: disable=W0718
+            continue
+
+    return sorted(values)
+
+
+def _source_ref_segment_ids(source_ref: dict[str, object]) -> list[str]:
+    """Collect source segment IDs from one candidate source-ref record.
+
+    Parameters
+    ----------
+    source_ref
+        Candidate source-ref dictionary from a final SFI record.
+
+    Returns
+    -------
+    list[str]
+        Unique non-empty source segment IDs in source-ref order.
+    """
+
+    raw_segment_ids = source_ref.get("source_segment_ids")
+
+    if raw_segment_ids is None:
+        return []
+
+    if isinstance(raw_segment_ids, (str, bytes)) or not isinstance(
+        raw_segment_ids, Sequence
+    ):
+        segment_ids_iterable: Any = [raw_segment_ids]
+    else:
+        segment_ids_iterable = raw_segment_ids
+
+    return unique_nonempty(str(segment_id) for segment_id in segment_ids_iterable)
 
 
 def _source_ref_text_list(*, key: str, source_ref: dict[str, object]) -> list[str]:
@@ -3058,133 +3173,6 @@ def _split_typed_source_hierarchy_segments(
     return typed_segments
 
 
-def _typed_source_local_parent_texts_by_type(
-    *,
-    child_context: SFIFinalContext,
-    kg_config: CreateKGConfig,
-    parent_statement_types: set[str],
-) -> dict[str, list[str]]:
-    """Collect typed hierarchy-bearing local source texts for parent types.
-
-    Only typed source hierarchy labels are eligible for source-local parent-scope
-    inference. This intentionally excludes untyped table rows, Topic titles,
-    Performance Objective text, Content text, activities, resources, and evaluation
-    prompts. Those untyped fields may contain words that are also valid controlled
-    organizer values elsewhere, but they do not prove the child's direct parent.
-
-    Parameters
-    ----------
-    child_context
-        Final SFI context whose hierarchy-bearing source labels should be parsed.
-    kg_config
-        Runtime KG configuration containing statement-type aliases.
-    parent_statement_types
-        Allowed direct parent statement types for the child.
-
-    Returns
-    -------
-    dict[str, list[str]]
-        Ordered typed source-local value texts keyed by parent statement_type.
-    """
-
-    child_statement_type = child_context.statement_type
-    statement_type_aliases_by_type = _statement_type_aliases_by_type(kg_config)
-    texts_by_type: dict[str, list[str]] = {
-        parent_statement_type: [] for parent_statement_type in parent_statement_types
-    }
-    hierarchy_labels = [
-        *child_context.section_path_labels,
-        *child_context.source_context_labels,
-    ]
-
-    for hierarchy_label in hierarchy_labels:
-        for (
-            segment_statement_type,
-            segment_value,
-        ) in _split_typed_source_hierarchy_segments(
-            raw_text=hierarchy_label,
-            statement_type_aliases_by_type=statement_type_aliases_by_type,
-        ):
-            if segment_statement_type == child_statement_type:
-                continue
-
-            if segment_statement_type not in parent_statement_types:
-                continue
-
-            texts_by_type[segment_statement_type].append(segment_value)
-
-    return {
-        parent_statement_type: unique_nonempty(texts)
-        for parent_statement_type, texts in texts_by_type.items()
-    }
-
-
-def _source_ref_int_list(*, key: str, source_ref: dict[str, object]) -> list[int]:
-    """Collect sorted integer values from one candidate source-ref field.
-
-    Parameters
-    ----------
-    key
-        Source-ref field to read, such as `table_row_indexes` or `table_header_indexes`.
-    source_ref
-        Candidate source-ref dictionary from a final SFI record.
-
-    Returns
-    -------
-    list[int]
-        Sorted unique integer values. Invalid or empty values are ignored.
-    """
-
-    raw_values = source_ref.get(key)
-
-    if raw_values is None:
-        return []
-
-    if isinstance(raw_values, (str, bytes)) or not isinstance(raw_values, Sequence):
-        values_iterable: Any = [raw_values]
-    else:
-        values_iterable = raw_values
-
-    values: set[int] = set()
-
-    for value in values_iterable:
-        try:
-            values.add(int(value))
-        except Exception:  # pylint: disable=W0718
-            continue
-
-    return sorted(values)
-
-
-def _source_ref_segment_ids(source_ref: dict[str, object]) -> list[str]:
-    """Collect source segment IDs from one candidate source-ref record.
-
-    Parameters
-    ----------
-    source_ref
-        Candidate source-ref dictionary from a final SFI record.
-
-    Returns
-    -------
-    list[str]
-        Unique non-empty source segment IDs in source-ref order.
-    """
-
-    raw_segment_ids = source_ref.get("source_segment_ids")
-
-    if raw_segment_ids is None:
-        return []
-
-    if isinstance(raw_segment_ids, (str, bytes)) or not isinstance(
-        raw_segment_ids, Sequence
-    ):
-        segment_ids_iterable: Any = [raw_segment_ids]
-    else:
-        segment_ids_iterable = raw_segment_ids
-
-    return unique_nonempty(str(segment_id) for segment_id in segment_ids_iterable)
-
-
 def _statement_type_aliases_by_type(kg_config: CreateKGConfig) -> dict[str, set[str]]:
     """Build normalized statement-type aliases from runtime config.
 
@@ -3273,6 +3261,67 @@ def _table_context_keys_from_source_refs(record: SFIFinalRecord) -> set[str]:
                 keys.add(f"segment:{source_segment_id}:header:{header_index}")
 
     return keys
+
+
+def _typed_source_local_parent_texts_by_type(
+    *,
+    child_context: SFIFinalContext,
+    kg_config: CreateKGConfig,
+    parent_statement_types: set[str],
+) -> dict[str, list[str]]:
+    """Collect typed hierarchy-bearing local source texts for parent types.
+
+    Only typed source hierarchy labels are eligible for source-local parent-scope
+    inference. This intentionally excludes untyped table rows, Topic titles,
+    Performance Objective text, Content text, activities, resources, and evaluation
+    prompts. Those untyped fields may contain words that are also valid controlled
+    organizer values elsewhere, but they do not prove the child's direct parent.
+
+    Parameters
+    ----------
+    child_context
+        Final SFI context whose hierarchy-bearing source labels should be parsed.
+    kg_config
+        Runtime KG configuration containing statement-type aliases.
+    parent_statement_types
+        Allowed direct parent statement types for the child.
+
+    Returns
+    -------
+    dict[str, list[str]]
+        Ordered typed source-local value texts keyed by parent statement_type.
+    """
+
+    child_statement_type = child_context.statement_type
+    statement_type_aliases_by_type = _statement_type_aliases_by_type(kg_config)
+    texts_by_type: dict[str, list[str]] = {
+        parent_statement_type: [] for parent_statement_type in parent_statement_types
+    }
+    hierarchy_labels = [
+        *child_context.section_path_labels,
+        *child_context.source_context_labels,
+    ]
+
+    for hierarchy_label in hierarchy_labels:
+        for (
+            segment_statement_type,
+            segment_value,
+        ) in _split_typed_source_hierarchy_segments(
+            raw_text=hierarchy_label,
+            statement_type_aliases_by_type=statement_type_aliases_by_type,
+        ):
+            if segment_statement_type == child_statement_type:
+                continue
+
+            if segment_statement_type not in parent_statement_types:
+                continue
+
+            texts_by_type[segment_statement_type].append(segment_value)
+
+    return {
+        parent_statement_type: unique_nonempty(texts)
+        for parent_statement_type, texts in texts_by_type.items()
+    }
 
 
 def _validate_final_contexts_align_with_records(
@@ -3411,93 +3460,6 @@ def _validate_final_contexts_align_with_records(
                 f"sfi_final_contexts.json context for final SFI "
                 f"{context.final_sfi_uuid} does not align with the current final "
                 f"record fields: {mismatched_fields}."
-            )
-
-
-def _validate_has_child_statement_type_policy(
-    *,
-    edges: Sequence[SFIHasChildEdge],
-    framework_uuid: uuid.UUID,
-    kg_config: CreateKGConfig,
-    sfi_final_records: Sequence[SFIFinalRecord],
-) -> None:
-    """Validate final hasChild edges against configured direct parent types.
-
-    Structural graph checks can pass even when a resolved non-root child is attached to
-    the StandardsFramework root or a child is attached to a broader non-direct
-    grouping. This validation enforces the configured semantic parent policy after
-    response conversion and before relationship artifacts are accepted.
-
-    Unresolved root-fallback edges are intentionally allowed for any statement type.
-    They are reachability-preserving audit edges created only when the bounded
-    parent-selection response marks a child unresolved and selects no SFI parent.
-
-    Parameters
-    ----------
-    edges
-        Final hasChild edges to validate.
-    framework_uuid
-        StandardsFramework root UUID.
-    kg_config
-        Runtime KG configuration containing direct parent type policy.
-    sfi_final_records
-        Final SFI records whose statement_type labels are checked.
-
-    Raises
-    ------
-    ValueError
-        If a resolved root or SFI parent violates the configured direct parent policy.
-    """
-
-    parent_statement_types_by_child_type = _build_direct_parent_statement_types(
-        kg_config
-    )
-    root_child_statement_types = {
-        child_type
-        for child_type, parent_types in parent_statement_types_by_child_type.items()
-        if not parent_types
-    }
-    records_by_id = {str(record.final_sfi_uuid): record for record in sfi_final_records}
-
-    for edge in edges:
-        child_record = records_by_id[str(edge.target_sfi_uuid)]
-
-        if edge.is_root_edge or str(edge.source_entity_uuid) == str(framework_uuid):
-            if edge.unresolved_root_fallback:
-                continue
-
-            if child_record.statement_type not in root_child_statement_types:
-                raise ValueError(
-                    f"hasChild root edge violates configured statement-type policy: "
-                    f"child {child_record.final_sfi_uuid} has statement_type "
-                    f"{child_record.statement_type!r}; root-level child types are "
-                    f"{sorted(root_child_statement_types)}. Use an unresolved "
-                    f"root-fallback edge only when no supplied SFI parent candidate "
-                    f"is source-supported."
-                )
-
-            continue
-
-        if edge.unresolved_root_fallback:
-            raise ValueError(
-                f"hasChild edge for child {child_record.final_sfi_uuid} is marked "
-                f"as an unresolved root fallback, but its parent endpoint is not the "
-                f"StandardsFramework root."
-            )
-
-        parent_record = records_by_id[str(edge.source_entity_uuid)]
-        allowed_parent_types = parent_statement_types_by_child_type.get(
-            child_record.statement_type, set()
-        )
-
-        if parent_record.statement_type not in allowed_parent_types:
-            raise ValueError(
-                f"hasChild SFI edge violates configured statement-type policy: "
-                f"parent {parent_record.final_sfi_uuid} has statement_type "
-                f"{parent_record.statement_type!r}; child "
-                f"{child_record.final_sfi_uuid} has statement_type "
-                f"{child_record.statement_type!r}; allowed parent types are "
-                f"{sorted(allowed_parent_types)}."
             )
 
 
@@ -3712,6 +3674,177 @@ def _validate_graph(
         )
 
 
+def _validate_has_child_statement_type_policy(
+    *,
+    edges: Sequence[SFIHasChildEdge],
+    framework_uuid: uuid.UUID,
+    kg_config: CreateKGConfig,
+    sfi_final_records: Sequence[SFIFinalRecord],
+) -> None:
+    """Validate final hasChild edges against configured direct parent types.
+
+    Structural graph checks can pass even when a resolved non-root child is attached to
+    the StandardsFramework root or a child is attached to a broader non-direct
+    grouping. This validation enforces the configured semantic parent policy after
+    response conversion and before relationship artifacts are accepted.
+
+    Unresolved root-fallback edges are intentionally allowed for any statement type.
+    They are reachability-preserving audit edges created only when the bounded
+    parent-selection response marks a child unresolved and selects no SFI parent.
+
+    Parameters
+    ----------
+    edges
+        Final hasChild edges to validate.
+    framework_uuid
+        StandardsFramework root UUID.
+    kg_config
+        Runtime KG configuration containing direct parent type policy.
+    sfi_final_records
+        Final SFI records whose statement_type labels are checked.
+
+    Raises
+    ------
+    ValueError
+        If a resolved root or SFI parent violates the configured direct parent policy.
+    """
+
+    parent_statement_types_by_child_type = _build_direct_parent_statement_types(
+        kg_config
+    )
+    root_child_statement_types = {
+        child_type
+        for child_type, parent_types in parent_statement_types_by_child_type.items()
+        if not parent_types
+    }
+    records_by_id = {str(record.final_sfi_uuid): record for record in sfi_final_records}
+
+    for edge in edges:
+        child_record = records_by_id[str(edge.target_sfi_uuid)]
+
+        if edge.is_root_edge or str(edge.source_entity_uuid) == str(framework_uuid):
+            if edge.unresolved_root_fallback:
+                continue
+
+            if child_record.statement_type not in root_child_statement_types:
+                raise ValueError(
+                    f"hasChild root edge violates configured statement-type policy: "
+                    f"child {child_record.final_sfi_uuid} has statement_type "
+                    f"{child_record.statement_type!r}; root-level child types are "
+                    f"{sorted(root_child_statement_types)}. Use an unresolved "
+                    f"root-fallback edge only when no supplied SFI parent candidate "
+                    f"is source-supported."
+                )
+
+            continue
+
+        if edge.unresolved_root_fallback:
+            raise ValueError(
+                f"hasChild edge for child {child_record.final_sfi_uuid} is marked "
+                f"as an unresolved root fallback, but its parent endpoint is not the "
+                f"StandardsFramework root."
+            )
+
+        parent_record = records_by_id[str(edge.source_entity_uuid)]
+        allowed_parent_types = parent_statement_types_by_child_type.get(
+            child_record.statement_type, set()
+        )
+
+        if parent_record.statement_type not in allowed_parent_types:
+            raise ValueError(
+                f"hasChild SFI edge violates configured statement-type policy: "
+                f"parent {parent_record.final_sfi_uuid} has statement_type "
+                f"{parent_record.statement_type!r}; child "
+                f"{child_record.final_sfi_uuid} has statement_type "
+                f"{child_record.statement_type!r}; allowed parent types are "
+                f"{sorted(allowed_parent_types)}."
+            )
+
+
+def _validate_resolution_artifact_prefix(
+    *,
+    draft_responses: Sequence[SFIHasChildResolutionResponse],
+    final_responses: Sequence[SFIHasChildResolutionResponse],
+    requests: Sequence[SFIHasChildResolutionRequest],
+    validation_verdicts: Sequence[SFIHasChildValidationVerdict],
+) -> None:
+    """Validate an aligned producer/checker artifact prefix.
+
+    Parameters
+    ----------
+    draft_responses
+        Producer draft responses.
+    final_responses
+        Accepted or checker-corrected final responses.
+    requests
+        Current deterministic requests.
+    validation_verdicts
+        Independent checker verdicts.
+
+    Raises
+    ------
+    QualityError
+        If any draft, verdict, or final response violates universal integrity.
+    ValueError
+        If artifact counts or final-response selection are inconsistent.
+    """
+
+    prefix_length = len(final_responses)
+
+    if not len(draft_responses) == prefix_length == len(validation_verdicts):
+        raise ValueError(
+            f"hasChild producer/checker artifact prefix counts must match: "
+            f"drafts={len(draft_responses)}, finals={len(final_responses)}, "
+            f"verdicts={len(validation_verdicts)}."
+        )
+
+    if prefix_length > len(requests):
+        raise ValueError(
+            f"Found {prefix_length} completed hasChild artifacts, but only "
+            f"{len(requests)} requests are planned."
+        )
+
+    for response_index in range(prefix_length):
+        draft_response = draft_responses[response_index]
+        final_response = final_responses[response_index]
+        request = requests[response_index]
+        validation_verdict = validation_verdicts[response_index]
+
+        try:
+            verify_sfi_has_child_resolution_integrity(
+                resolution_request=request,
+                resolution_response=draft_response,
+            )
+            verify_sfi_has_child_validation_integrity(
+                draft_response=draft_response,
+                resolution_request=request,
+                validation_verdict=validation_verdict,
+            )
+        except QualityError as exc:
+            raise QualityError(
+                f"Saved hasChild producer/checker artifacts at position "
+                f"{response_index + 1} do not match the current request: {exc}"
+            ) from exc
+
+        expected_final_response = (
+            draft_response
+            if validation_verdict.passed
+            else validation_verdict.corrected_response
+        )
+
+        if expected_final_response is None:
+            raise ValueError(
+                f"Failing checker verdict at position {response_index + 1} has no "
+                f"corrected response."
+            )
+
+        if model_dump_key(final_response) != model_dump_key(expected_final_response):
+            raise ValueError(
+                f"Saved final hasChild response at position {response_index + 1} "
+                f"does not equal the producer-accepted or checker-corrected response."
+            )
+
+
 def _validate_resolution_request_prefix(
     *,
     requests: Sequence[SFIHasChildResolutionRequest],
@@ -3758,100 +3891,6 @@ def _validate_resolution_request_prefix(
         actual=saved_requests[:trusted_prefix_length],
         artifact_label="saved hasChild request completed-response prefix",
         expected=requests[:trusted_prefix_length],
-    )
-
-
-def _validate_resolution_response_prefix(
-    *,
-    requests: Sequence[SFIHasChildResolutionRequest],
-    responses: Sequence[SFIHasChildResolutionResponse],
-) -> None:
-    """Validate completed hasChild responses against the current request prefix.
-
-    Parameters
-    ----------
-    requests
-        Current deterministic hasChild resolution requests.
-    responses
-        Saved or newly produced hasChild resolution responses.
-
-    Raises
-    ------
-    QualityError
-        If any response fails verification.
-    """
-
-    if len(responses) > len(requests):
-        raise ValueError(
-            f"Found {len(responses)} hasChild responses, but only "
-            f"{len(requests)} requests are planned."
-        )
-
-    for response_index, response in enumerate(responses):
-        request = requests[response_index]
-
-        try:
-            verify_sfi_has_child_resolution_quality(
-                resolution_request=request, resolution_response=response
-            )
-        except QualityError as e:
-            raise QualityError(
-                f"Saved hasChild response {response_index + 1} does not match the "
-                f"current planned request: {e}"
-            ) from e
-
-
-def _validate_selected_parent_candidate_against_source_local_scope(
-    *,
-    child_context: SFIFinalContext,
-    kg_config: CreateKGConfig,
-    parent_candidate: SFIHasChildParentCandidate,
-) -> None:
-    """Reject selected parents that conflict with typed source-local scope.
-
-    Parameters
-    ----------
-    child_context
-        Final SFI context for the resolved child.
-    kg_config
-        Runtime KG configuration containing controlled-value policy.
-    parent_candidate
-        Parent candidate selected by relationship resolution.
-
-    Raises
-    ------
-    ValueError
-        If typed local source labels name a controlled value for the selected parent
-        statement type and the selected parent has a different canonical value.
-    """
-
-    if parent_candidate.is_root or not parent_candidate.statement_type:
-        return
-
-    source_local_parent_scope_value_keys_by_type = (
-        _infer_source_local_parent_scope_value_keys(
-            child_context=child_context,
-            kg_config=kg_config,
-            parent_statement_types={parent_candidate.statement_type},
-            value_match_policies=_build_controlled_value_match_policies(kg_config),
-        )
-    )
-    expected_value_keys = source_local_parent_scope_value_keys_by_type.get(
-        parent_candidate.statement_type, set()
-    )
-
-    if not expected_value_keys or not parent_candidate.canonical_statement_value_key:
-        return
-
-    if parent_candidate.canonical_statement_value_key in expected_value_keys:
-        return
-
-    raise ValueError(
-        f"Resolved hasChild parent conflicts with typed source-local scope for "
-        f"child {child_context.final_sfi_uuid}: parent endpoint "
-        f"{parent_candidate.endpoint_id} has {parent_candidate.statement_type!r} "
-        f"canonical value key {parent_candidate.canonical_statement_value_key!r}, "
-        f"but local source labels imply one of {sorted(expected_value_keys)!r}."
     )
 
 
@@ -3963,53 +4002,49 @@ def resolve_has_child_edges(
     sfi_final_records: Sequence[SFIFinalRecord],
     usage_tracker: KGUsageTracker,
 ) -> list[SFIHasChildEdge]:
-    """Resolve final hasChild edges for finalized SFI records.
+    """Resolve finalized SFI hasChild edges through a producer/checker flow.
 
-    When `overwrite` is true, all artifacts are regenerated from scratch. When
-    `overwrite` is false, complete current artifacts are reused, and incomplete
-    artifacts resume from the longest validated request/response JSONL prefix.
+    Deterministic Python retrieves and bounds candidates, packages exact evidence,
+    validates universal response and graph contracts, and persists artifacts. The
+    producer/checker LLMs own direct-parent semantics and unresolved decisions.
 
     Parameters
     ----------
     document_ir
         Source DocumentIR.
     kg_config
-        Runtime KG configuration containing hasChild instructions and candidate-set
-        bounds.
+        Runtime configuration containing producer/checker hierarchy instructions.
     kg_dirs
         KG artifact directory wrapper.
     overwrite
-        Whether to discard existing artifacts and restart from the first hasChild
-        resolution request.
+        Whether to discard all relationship-stage artifacts and restart.
     sfi_final_records
         Finalized SFI records.
     usage_tracker
-        LLM usage tracker.
+        Producer/checker usage tracker.
 
     Returns
     -------
     list[SFIHasChildEdge]
-        Final hasChild edge records.
+        Validated final hasChild edges.
     """
 
     _validate_sfi_final_records_and_summary(
         kg_dirs=kg_dirs, sfi_final_records=sfi_final_records
     )
-
     make_dir(kg_dirs.root)
     contexts_fp = kg_dirs.root / "sfi_final_contexts.json"
+    draft_responses_fp = kg_dirs.root / "has_child_resolution_draft_responses.jsonl"
     edges_fp = kg_dirs.root / "has_child_edges_final.json"
+    final_responses_fp = kg_dirs.root / "has_child_resolution_responses.jsonl"
     parent_sets_fp = kg_dirs.root / "has_child_candidate_parent_sets.jsonl"
     requests_fp = kg_dirs.root / "has_child_resolution_requests.jsonl"
-    responses_fp = kg_dirs.root / "has_child_resolution_responses.jsonl"
     summary_fp = kg_dirs.root / "has_child_resolution_summary.json"
     unresolved_edges_fp = kg_dirs.root / "has_child_unresolved_edges.json"
-
-    # Create the framework UUID.
+    validation_verdicts_fp = (
+        kg_dirs.root / "has_child_resolution_validation_verdicts.jsonl"
+    )
     framework_uuid = build_standards_framework_uuid(document_ir.doc_key)
-
-    # Load extraction windows and the SFI finalization context artifact, then build
-    # parent sets for hasChild resolution requests.
     extraction_windows = _load_extraction_windows(kg_dirs)
     contexts = _load_final_contexts(contexts_fp)
     _validate_final_contexts_align_with_records(
@@ -4037,50 +4072,68 @@ def resolve_has_child_edges(
                     )
                 ).hexdigest()[:16]
             ),
-            sfi_has_child_instructions=kg_config.academic_standards.sfi_has_child_instructions,
+            sfi_has_child_instructions=(
+                kg_config.academic_standards.sfi_has_child_instructions
+            ),
+            sfi_has_child_validation_instructions=(
+                kg_config.academic_standards.sfi_has_child_validation_instructions
+            ),
         )
         for parent_set in parent_sets
     ]
 
     if overwrite:
         logger.info(
-            "Starting SFI hasChild resolution from scratch because overwrite=True."
+            "Starting SFI hasChild producer/checker resolution from scratch because "
+            "overwrite=True."
         )
 
         reset_output_files(
             output_fps=[
+                draft_responses_fp,
                 edges_fp,
+                final_responses_fp,
                 parent_sets_fp,
                 requests_fp,
-                responses_fp,
                 summary_fp,
                 unresolved_edges_fp,
+                validation_verdicts_fp,
             ]
         )
-        completed_responses: list[SFIHasChildResolutionResponse] = []
+        completed_progress = _ResolutionProgress(
+            draft_responses=[],
+            final_responses=[],
+            validation_verdicts=[],
+        )
     else:
         existing_edges = _load_and_validate_existing_relationship_artifacts(
             contexts=contexts,
             contexts_fp=contexts_fp,
             document_ir=document_ir,
+            draft_responses_fp=draft_responses_fp,
             edges_fp=edges_fp,
+            final_responses_fp=final_responses_fp,
             framework_uuid=framework_uuid,
             kg_config=kg_config,
             parent_sets=parent_sets,
             parent_sets_fp=parent_sets_fp,
             requests=requests,
             requests_fp=requests_fp,
-            responses_fp=responses_fp,
             sfi_final_records=sfi_final_records,
             summary_fp=summary_fp,
             unresolved_edges_fp=unresolved_edges_fp,
+            validation_verdicts_fp=validation_verdicts_fp,
         )
 
         if existing_edges is not None:
             return existing_edges
 
-        completed_responses = _load_resumable_resolution_progress(
-            requests=requests, requests_fp=requests_fp, responses_fp=responses_fp
+        completed_progress = _load_resumable_resolution_progress(
+            draft_responses_fp=draft_responses_fp,
+            final_responses_fp=final_responses_fp,
+            requests=requests,
+            requests_fp=requests_fp,
+            validation_verdicts_fp=validation_verdicts_fp,
         )
         reset_output_files(
             output_fps=[
@@ -4090,27 +4143,38 @@ def resolve_has_child_edges(
                 unresolved_edges_fp,
             ]
         )
+        completed_count = len(completed_progress.final_responses)
         _rewrite_resolution_progress_files(
-            completed_requests=requests[: len(completed_responses)],
-            completed_responses=completed_responses,
+            completed_draft_responses=completed_progress.draft_responses,
+            completed_final_responses=completed_progress.final_responses,
+            completed_requests=requests[:completed_count],
+            completed_validation_verdicts=(completed_progress.validation_verdicts),
+            draft_responses_fp=draft_responses_fp,
+            final_responses_fp=final_responses_fp,
             requests_fp=requests_fp,
-            responses_fp=responses_fp,
+            validation_verdicts_fp=validation_verdicts_fp,
         )
 
-    _write_parent_set_artifacts(parent_sets=parent_sets, parent_sets_fp=parent_sets_fp)
-    responses = _run_resolution_requests(
-        completed_responses=completed_responses,
+    _write_parent_set_artifacts(
+        parent_sets=parent_sets,
+        parent_sets_fp=parent_sets_fp,
+    )
+    progress = _run_resolution_requests(
+        completed_progress=completed_progress,
+        draft_responses_fp=draft_responses_fp,
+        final_responses_fp=final_responses_fp,
         requests=requests,
         requests_fp=requests_fp,
-        responses_fp=responses_fp,
         usage_tracker=usage_tracker,
+        validation_verdicts_fp=validation_verdicts_fp,
     )
     edges = _build_edges_from_responses(
         document_ir=document_ir,
         framework_uuid=framework_uuid,
-        kg_config=kg_config,
         parent_sets=parent_sets,
-        responses=responses,
+        requests=requests,
+        responses=progress.final_responses,
+        validation_verdicts=progress.validation_verdicts,
     )
     _validate_graph(
         edges=edges,
@@ -4118,13 +4182,17 @@ def resolve_has_child_edges(
         kg_config=kg_config,
         sfi_final_records=sfi_final_records,
     )
-
     summary = SFIHasChildResolutionSummary(
         candidate_parent_set_count=len(parent_sets),
+        checker_corrected_response_count=sum(
+            1 for verdict in progress.validation_verdicts if not verdict.passed
+        ),
+        checker_request_count=len(requests),
+        checker_verdict_count=len(progress.validation_verdicts),
         edge_count=len(edges),
         final_sfi_count=len(parent_sets),
-        llm_request_count=len(requests),
-        llm_response_count=len(responses),
+        generator_request_count=len(requests),
+        generator_response_count=len(progress.draft_responses),
         root_edge_count=sum(1 for edge in edges if edge.is_root_edge),
         sfi_to_sfi_edge_count=sum(1 for edge in edges if not edge.is_root_edge),
         truncated_candidate_parent_set_count=sum(
@@ -4143,8 +4211,8 @@ def resolve_has_child_edges(
     )
 
     logger.success(
-        f"Resolved final hasChild edges: "
-        f"edges={len(edges)}; "
+        f"Resolved final hasChild edges: edges={len(edges)}; "
+        f"checker_corrections={summary.checker_corrected_response_count}; "
         f"root_edges={summary.root_edge_count}; "
         f"unresolved={summary.unresolved_child_count}."
     )

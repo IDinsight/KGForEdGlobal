@@ -17,6 +17,7 @@ from skg.kgs.schemas import (
     SFIExtractionValidationVerdict,
     SFIHasChildResolutionRequest,
     SFIHasChildResolutionResponse,
+    SFIHasChildValidationVerdict,
 )
 from skg.model_registry import ModelConfig
 from skg.page_ir_extraction.validators import QualityError
@@ -435,33 +436,32 @@ def create_sfi_has_child_agent(
     max_retries: int = 3,
     model_config: ModelConfig,
     resolution_request: SFIHasChildResolutionRequest,
-    verify_quality_fn: Callable[..., None],
+    verify_integrity_fn: Callable[..., None],
 ) -> Agent:
-    """Create an Agent configured for `hasChild` parent selection.
+    """Create an integrity-checked hasChild parent-selection producer agent.
 
-    The returned agent validates parsed LLM output against the supplied bounded
-    parent-selection request. Quality failures raise `ModelRetry` so pydantic-ai can
-    ask the model to repair its structured response before final hasChild edges are
-    minted.
+    The producer owns the semantic direct-parent decision within each supplied bounded
+    candidate set. Python validates only universal response identity, child coverage,
+    candidate membership, selection shape, and self-loop constraints.
 
     Parameters
     ----------
     instructions
         System-level hasChild parent-selection instructions.
     max_retries
-        Maximum number of quality-error retries.
+        Maximum number of universal-integrity retries.
     model_config
         Model configuration containing the model name and model settings helpers.
     resolution_request
         Bounded hasChild parent-selection request being processed.
-    verify_quality_fn
+    verify_integrity_fn
         Callable with signature `(*, resolution_request, resolution_response)` that
-        raises `QualityError` on failure.
+        raises `QualityError` when a universal integrity constraint fails.
 
     Returns
     -------
     Agent
-        Configured hasChild parent-selection agent.
+        Configured hasChild producer agent.
     """
 
     attempt_counter: dict[str, int] = {"value": 0}
@@ -474,51 +474,155 @@ def create_sfi_has_child_agent(
     )
 
     @agent.output_validator
-    def validate_sfi_has_child_quality(
+    def validate_sfi_has_child_integrity(
         output: SFIHasChildResolutionResponse,
     ) -> SFIHasChildResolutionResponse:
-        """Validate parsed hasChild parent-selection output.
+        """Validate universal integrity of a producer hasChild response.
 
         Parameters
         ----------
         output
-            Parsed hasChild resolution response from the model.
+            Parsed producer response.
 
         Returns
         -------
         SFIHasChildResolutionResponse
-            Validated hasChild resolution response.
+            Integrity-validated producer response.
 
         Raises
         ------
         ModelRetry
-            If output fails quality checks and should be corrected by the model.
+            If the response violates a universal integrity rule.
         """
 
         attempt = attempt_counter["value"]
 
         try:
-            verify_quality_fn(
+            verify_integrity_fn(
                 resolution_request=resolution_request, resolution_response=output
             )
-        except QualityError as e:
-            truncated_msg = str(e)[:500]
+        except QualityError as exc:
+            truncated_msg = str(exc)[:500]
 
             logger.error(
-                f"SFI hasChild quality check failed for request "
+                f"SFI hasChild producer integrity check failed for request "
                 f"{resolution_request.request_id} attempt {attempt + 1}: "
                 f"{truncated_msg}"
             )
 
             attempt_counter["value"] += 1
             raise ModelRetry(
-                f"Your structured SFI hasChild output has quality issues and must "
-                f"be corrected.\n"
-                f"ERROR: {str(e)}\n\n"
-                f"Return a complete SFIHasChildResolutionResponse that covers every "
-                f"child exactly once and only selects parents from the provided "
-                f"candidate sets."
-            ) from e
+                f"Your structured SFI hasChild response violates a universal "
+                f"integrity rule and must be corrected.\n"
+                f"ERROR: {str(exc)}\n\n"
+                f"Return a complete SFIHasChildResolutionResponse that copies the "
+                f"exact request_id, covers every child exactly once, and selects "
+                f"only endpoints from each child's supplied candidate set."
+            ) from exc
+
+        attempt_counter["value"] += 1
+        return output
+
+    return agent
+
+
+def create_sfi_has_child_validation_agent(
+    *,
+    draft_response: SFIHasChildResolutionResponse,
+    instructions: str,
+    max_retries: int = 3,
+    model_config: ModelConfig,
+    resolution_request: SFIHasChildResolutionRequest,
+    verify_integrity_fn: Callable[..., None],
+) -> Agent:
+    """Create an independent checker for one draft hasChild response.
+
+    The checker receives the original bounded request and the producer's complete
+    draft. It independently applies generic semantic review guidance and runtime
+    validation instructions, then accepts the draft or returns a complete corrected
+    response. Python validates only the universal verdict and response contracts.
+
+    Parameters
+    ----------
+    draft_response
+        Producer response to audit.
+    instructions
+        System-level checker instructions.
+    max_retries
+        Maximum number of universal-integrity retries.
+    model_config
+        Model configuration containing the model name and model settings helpers.
+    resolution_request
+        Original bounded hasChild request.
+    verify_integrity_fn
+        Callable with signature
+        `(*, draft_response, resolution_request, validation_verdict)` that raises
+        `QualityError` when a universal integrity constraint fails.
+
+    Returns
+    -------
+    Agent
+        Configured independent hasChild checker agent.
+    """
+
+    attempt_counter: dict[str, int] = {"value": 0}
+    agent = Agent(
+        model_config.model,
+        instructions=instructions,
+        model_settings=model_config.kgs_settings("sfi_has_child"),
+        output_retries=max_retries,
+        output_type=model_config.wrap_output_type(SFIHasChildValidationVerdict),
+    )
+
+    @agent.output_validator
+    def validate_sfi_has_child_validation_integrity(
+        output: SFIHasChildValidationVerdict,
+    ) -> SFIHasChildValidationVerdict:
+        """Validate universal integrity of a hasChild checker verdict.
+
+        Parameters
+        ----------
+        output
+            Parsed checker verdict.
+
+        Returns
+        -------
+        SFIHasChildValidationVerdict
+            Integrity-validated checker verdict.
+
+        Raises
+        ------
+        ModelRetry
+            If the verdict or corrected response violates a universal integrity rule.
+        """
+
+        attempt = attempt_counter["value"]
+
+        try:
+            verify_integrity_fn(
+                draft_response=draft_response,
+                resolution_request=resolution_request,
+                validation_verdict=output,
+            )
+        except QualityError as exc:
+            truncated_msg = str(exc)[:500]
+
+            logger.error(
+                f"SFI hasChild checker integrity check failed for request "
+                f"{resolution_request.request_id} attempt {attempt + 1}: "
+                f"{truncated_msg}"
+            )
+
+            attempt_counter["value"] += 1
+            raise ModelRetry(
+                f"Your SFI hasChild checker verdict violates a universal integrity "
+                f"rule and must be corrected.\n"
+                f"ERROR: {str(exc)}\n\n"
+                f"Return a complete SFIHasChildValidationVerdict. When passed=false, "
+                f"corrected_response must be a complete response that copies the "
+                f"exact request_id, covers every child exactly once, and selects "
+                f"only supplied parent endpoints."
+            ) from exc
 
         attempt_counter["value"] += 1
         return output

@@ -5114,12 +5114,60 @@ class SFIHasChildEdge(BaseSchema):
     unresolved_root_fallback: bool = Field(default=False)
 
 
+class SFIHasChildScopeComparison(BaseSchema):
+    """Deterministic structured-scope comparison for one parent candidate."""
+
+    complete_match: bool = Field(
+        default=False,
+        description=(
+            "Whether the candidate's own parent value and every available ancestor "
+            "scope dimension match the child's finalized identity scope."
+        ),
+    )
+    conflicting_ancestor_statement_types: list[str] = Field(default_factory=list)
+    direct_parent_statement_type: Optional[str] = Field(default=None)
+    direct_parent_value_match: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Exact comparison between the child's scope value for the candidate "
+            "statement type and the candidate's canonical controlled value. Null "
+            "means one side was unavailable."
+        ),
+    )
+    matching_ancestor_statement_types: list[str] = Field(default_factory=list)
+    missing_child_ancestor_statement_types: list[str] = Field(default_factory=list)
+
+    @field_validator(
+        "conflicting_ancestor_statement_types",
+        "matching_ancestor_statement_types",
+        "missing_child_ancestor_statement_types",
+    )
+    @classmethod
+    def clean_scope_statement_types(cls, v: list[str]) -> list[str]:
+        """Clean structured-scope statement-type lists.
+
+        Parameters
+        ----------
+        v
+            Raw scope statement-type labels.
+
+        Returns
+        -------
+        list[str]
+            Cleaned unique statement-type labels.
+        """
+
+        return unique_clean_strings(v)
+
+
 class SFIHasChildParentCandidate(BaseSchema):
     """One bounded parent endpoint candidate for a finalized child SFI."""
 
     canonical_statement_value: Optional[str] = Field(
         default=None,
-        description="Parent candidate canonical controlled statement value, when available.",
+        description=(
+            "Parent candidate canonical controlled statement value, when available."
+        ),
     )
     canonical_statement_value_key: Optional[str] = Field(
         default=None,
@@ -5137,10 +5185,16 @@ class SFIHasChildParentCandidate(BaseSchema):
     )
     evidence_summary: list[str] = Field(default_factory=list)
     final_sfi_uuid: Optional[UUID] = Field(default=None)
+    identity_scope_key: Optional[str] = Field(default=None)
+    identity_scope_values: dict[str, str] = Field(default_factory=dict)
     is_root: bool = Field(default=False)
     normalized_statement_code: Optional[str] = Field(default=None)
     normalized_statement_type: Optional[NormalizedStatementType] = Field(default=None)
+    scope_comparison: SFIHasChildScopeComparison = Field(
+        default_factory=SFIHasChildScopeComparison
+    )
     source_context_keys: list[str] = Field(default_factory=list)
+    source_order: Optional[int] = Field(default=None, ge=0)
     source_page_indexes: list[int] = Field(default_factory=list)
     source_segment_ids: list[str] = Field(default_factory=list)
     source_window_indexes: list[int] = Field(default_factory=list)
@@ -5149,12 +5203,19 @@ class SFIHasChildParentCandidate(BaseSchema):
 
 
 class SFIHasChildResolutionRequest(BaseSchema):
-    """Prompt payload for LLM selection of direct hasChild parents."""
+    """Prompt payload for producer/checker selection of direct hasChild parents."""
 
     child_parent_sets: list[SFIHasChildCandidateParentSet] = Field(min_length=1)
     request_id: str = Field(description="Deterministic request ID.", min_length=1)
     sfi_has_child_instructions: str = Field(
-        description="Curriculum-specific hasChild instructions.", min_length=1
+        description="Curriculum-specific hasChild producer instructions.", min_length=1
+    )
+    sfi_has_child_validation_instructions: str = Field(
+        description=(
+            "Curriculum-specific semantic audit instructions for the independent "
+            "hasChild checker."
+        ),
+        min_length=1,
     )
 
 
@@ -5168,17 +5229,153 @@ class SFIHasChildResolutionResponse(BaseSchema):
 
 
 class SFIHasChildResolutionSummary(BaseSchema):
-    """Aggregate summary for hasChild relationship resolution."""
+    """Aggregate summary for producer/checker hasChild relationship resolution."""
 
     candidate_parent_set_count: int = Field(default=0, ge=0)
+    checker_corrected_response_count: int = Field(default=0, ge=0)
+    checker_request_count: int = Field(default=0, ge=0)
+    checker_verdict_count: int = Field(default=0, ge=0)
     edge_count: int = Field(default=0, ge=0)
     final_sfi_count: int = Field(default=0, ge=0)
-    llm_request_count: int = Field(default=0, ge=0)
-    llm_response_count: int = Field(default=0, ge=0)
+    generator_request_count: int = Field(default=0, ge=0)
+    generator_response_count: int = Field(default=0, ge=0)
     root_edge_count: int = Field(default=0, ge=0)
     sfi_to_sfi_edge_count: int = Field(default=0, ge=0)
     truncated_candidate_parent_set_count: int = Field(default=0, ge=0)
     unresolved_child_count: int = Field(default=0, ge=0)
+
+
+class SFIHasChildValidationIssue(BaseSchema):
+    """One source-grounded issue found by the hasChild checker LLM."""
+
+    child_final_sfi_uuid: Optional[UUID] = Field(default=None)
+    issue_type: str = Field(
+        description="Short general issue category, such as wrong_scope or omission.",
+        min_length=1,
+    )
+    message: str = Field(
+        description="Specific source-grounded description of the issue.", min_length=1
+    )
+    parent_endpoint_ids: list[str] = Field(default_factory=list)
+    severity: Literal["error", "warning"] = Field(
+        description="Whether the issue requires correction or is advisory only."
+    )
+
+    @field_validator("issue_type", "message", mode="before")
+    @classmethod
+    def clean_required_issue_strings(cls, v: str) -> str:
+        """Strip and require non-empty checker issue text.
+
+        Parameters
+        ----------
+        v
+            Raw issue text.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty issue text.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+    @field_validator("parent_endpoint_ids")
+    @classmethod
+    def clean_parent_endpoint_ids(cls, v: list[str]) -> list[str]:
+        """Clean parent endpoint IDs referenced by a checker issue.
+
+        Parameters
+        ----------
+        v
+            Raw parent endpoint IDs.
+
+        Returns
+        -------
+        list[str]
+            Cleaned unique parent endpoint IDs.
+        """
+
+        return unique_clean_strings(v)
+
+
+class SFIHasChildValidationVerdict(BaseSchema):
+    """Independent checker verdict for one draft hasChild response."""
+
+    corrected_response: Optional[SFIHasChildResolutionResponse] = Field(
+        default=None,
+        description=(
+            "Complete corrected hasChild response when passed is false; null when "
+            "the producer draft is accepted unchanged."
+        ),
+    )
+    issues: list[SFIHasChildValidationIssue] = Field(default_factory=list)
+    passed: bool = Field(
+        description="True when the producer draft requires no material correction."
+    )
+    rationale: str = Field(
+        description="Concise overall assessment of the producer draft.", min_length=20
+    )
+    request_id: str = Field(
+        description="Request ID copied from the original request.", min_length=1
+    )
+
+    @field_validator("rationale", "request_id", mode="before")
+    @classmethod
+    def clean_required_verdict_strings(cls, v: str) -> str:
+        """Strip and require non-empty checker verdict text.
+
+        Parameters
+        ----------
+        v
+            Raw verdict text.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty verdict text.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+    @model_validator(mode="after")
+    def validate_verdict_contract(self) -> Self:
+        """Validate pass/fail agreement with issues and corrected output.
+
+        Returns
+        -------
+        Self
+            Validated checker verdict.
+
+        Raises
+        ------
+        ValueError
+            If pass/fail state disagrees with corrected_response or error issues.
+        """
+
+        error_issues = [issue for issue in self.issues if issue.severity == "error"]
+
+        if self.passed:
+            if self.corrected_response is not None:
+                raise ValueError(
+                    "corrected_response must be null when validation passed is true."
+                )
+
+            if error_issues:
+                raise ValueError(
+                    "A passing validation verdict must not contain error issues."
+                )
+        else:
+            if self.corrected_response is None:
+                raise ValueError(
+                    "corrected_response is required when validation passed is false."
+                )
+
+            if not error_issues:
+                raise ValueError(
+                    "A failing validation verdict must include at least one error issue."
+                )
+
+        return self
 
 
 # Schemas for Academic Standards.

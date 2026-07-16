@@ -12,6 +12,7 @@ from skg.kgs.schemas import (
     SFIDedupReviewResponse,
     SFIExtractionResult,
     SFIHasChildResolutionRequest,
+    SFIHasChildResolutionResponse,
     SFISourceUnitKind,
 )
 from skg.kgs.sfi_source_anchors import (
@@ -1008,7 +1009,7 @@ Do not emit auxiliary candidates for routine front matter, ordinary examples, or
 def resolve_sfi_has_child_parents(
     resolution_request: SFIHasChildResolutionRequest,
 ) -> PromptPair:
-    """Generate prompts for direct hasChild parent selection.
+    """Generate producer prompts for direct hasChild parent selection.
 
     Parameters
     ----------
@@ -1019,12 +1020,14 @@ def resolve_sfi_has_child_parents(
     Returns
     -------
     PromptPair
-        System and user messages for the hasChild parent-selection agent.
+        System and user messages for the hasChild producer agent.
     """
 
-    user_payload = resolution_request.model_dump(mode="json")
+    user_payload = resolution_request.model_dump(
+        exclude={"sfi_has_child_validation_instructions"}, mode="json"
+    )
     system_message = dedent(
-        """You are an Academic Standards hierarchy-resolution agent for a Learning Commons-shaped Knowledge Graph. Inspect finalized StandardsFrameworkItem children and their bounded parent candidate sets, then choose direct hasChild parent endpoints.
+        """You are the producer for Academic Standards hierarchy resolution in a Learning Commons-shaped Knowledge Graph. Inspect finalized StandardsFrameworkItem children and their bounded parent candidate sets, then choose direct hasChild parent endpoints.
 
 ## Task boundary
 - Choose only direct hasChild parents for the supplied finalized child SFIs.
@@ -1032,33 +1035,26 @@ def resolve_sfi_has_child_parents(
 - Do not invent parent nodes, source codes, headings, registry candidates, merge groups, or relationships.
 - Do not choose endpoints outside the bounded candidate set.
 - Do not infer LearningComponents, supports, buildsTowards, relatesTo, or any relationship other than hasChild.
-- A child may have one or more direct parents when the source evidence supports multiple direct hierarchy memberships.
+- A child may have one or more direct parents when source semantics support multiple direct hierarchy memberships.
 - If none of the supplied candidates is source-supported as a direct parent, set unresolved=true and select no parents.
 
 ## Runtime hierarchy instructions
-- The request payload includes `sfi_has_child_instructions`. Treat that field as the authoritative document-specific hierarchy policy for this request.
-- If `sfi_has_child_instructions` conflicts with these generic instructions, follow `sfi_has_child_instructions` unless doing so would require selecting a parent outside the child's supplied `parent_candidates`, inventing an endpoint, or violating the output contract.
+- The request payload includes `sfi_has_child_instructions`. Treat that field as the authoritative document-specific semantic hierarchy policy for this request.
+- If those instructions conflict with these generic instructions, follow the runtime instructions unless doing so would require inventing an endpoint, selecting outside the bounded candidate set, or violating the output contract.
 
-## Parent-selection policy
-- Prefer the most direct source-grounded parent, not merely the broadest or most nearby candidate.
-- Treat code-parent hints, active outline-stack parents, matched section labels, same table context, same source context, and nearest preceding grouping evidence as retrieval evidence, not as automatic truth.
-- The StandardsFramework root is a valid direct parent only when the child is a top-level framework item or no source-supported SFI parent is available.
-- Do not select the StandardsFramework root merely to guarantee reachability when one or more semantic SFI parents are selected.
-- Do not choose a parent by source code alone. Same-code/different-content audit flags mean endpoints must remain distinct.
-- When multiple parent candidates share the same normalized code or otherwise look plausible by topic, use source-local hierarchy evidence before semantic similarity. Actual source rows/spans, active local outline, source context keys, source segments/windows, and table context help rank candidates, but shared locality alone does not prove direct parentage.
-- For table-derived children, table row/span context is strong retrieval evidence. Treat it as direct-parent evidence only when it is corroborated by an explicit grouping/header relationship, a locally compatible code-parent hint, typed source-local controlled scope, or other source-visible hierarchy evidence. A parallel or misaligned table row may contain an allowed parent type without establishing a hasChild relationship.
-- Treat topical or semantic similarity as weaker than source-local table/context evidence when resolving duplicate-code or repeated-label candidates.
-- Page overlap alone is weak evidence and must not override stronger source hierarchy evidence.
-- DocumentIR section-path labels are evidence, not a guaranteed clean ancestor chain.
-- In each child_context, `section_path_labels` is ordered from most recent/local source context to older/broader context after bounded truncation. Earlier labels in that list are usually more useful for direct parent selection; later labels may be stale carryover and should be treated cautiously.
-- `same_table_context`, `active_outline_stack_parent`, `nearest_preceding_grouping`, `nearby_source_context_key`, and `matched_section_path_label` are retrieval/ranking signals, not automatic truth. Corroborated direct-parent evidence includes a locally compatible `code_parent_hint`, typed source-local controlled scope, or an explicit `source_scope_grouping` relationship.
-- `active_outline_stack_parent` evidence means source-order scanning of finalized SFIs found the candidate as the active immediate parent type under the configured statement-type hierarchy. This is a strong candidate-preservation signal for same-page or same-window headings, but it is still not automatic truth; confirm against the child context, parent context, runtime hierarchy instructions, codes, and source locality.
-- Source-visible hierarchy outranks inferred code hierarchy when they conflict. Codes are strong evidence, but source-visible table rows/spans, continuation rows, active local outline headings, and local section-path evidence are stronger when they identify a direct parent of the correct type.
-- `source_visible_direct_parent` is a strong source-local signal, not an absolute veto. It should normally beat root fallback, same-topic fallback, page/window proximity, broad semantic similarity, and stale carry-forward evidence.
-- A uniquely corroborated non-root direct parent should normally be selected. However, unresolved remains appropriate when runtime hierarchy instructions or source/code evidence materially contradict that candidate; explain the conflict rather than forcing an edge.
-- For table-derived children, same-row, row-spanned, or continued-row evidence should rank a candidate above distant or merely semantic candidates, but it must not force selection when code, typed scope, source labels, or runtime hierarchy instructions contradict that candidate.
-- For coded children, use only supplied `code_parent_hint` evidence as a strong code-parent signal. Do not infer that a textual dot-prefix is universally hierarchical; code systems may be scoped, reused, partially hierarchical, or non-hierarchical. Avoid sibling fallback based only on code or topic, and explain any source/code conflict.
-- If a source-visible direct parent is supplied and selected over code inference, explain the source/code conflict briefly in the reason instead of inventing a missing parent.
+## Evidence interpretation
+- Python has only retrieved, compared, packaged, and bounded candidates. It has not selected the semantic parent.
+- `identity_scope_values` on the child and each non-root parent candidate are finalized structured scope fields. Use them to distinguish repeated labels and repeated codes across grades, stages, strands, domains, units, or other configured hierarchy dimensions.
+- `scope_comparison` is a deterministic comparison, not a semantic verdict. `direct_parent_value_match` compares the child's scope value for the candidate statement type with the candidate's own canonical value. Matching, conflicting, or missing ancestor statement types compare only structured finalized scope values.
+- `identity_scope_complete_parent_match`, `identity_scope_direct_parent_match`, `identity_scope_ancestor_match`, and `identity_scope_ancestor_conflict` are deterministic evidence labels. A complete match is usually strong retrieval evidence, while a conflict requires careful source review; neither label authorizes an automatic edge.
+- Typed source-local controlled-value matches and conflicts are recognition evidence from bounded hierarchy-bearing labels. Those labels can be cumulative, repeated, stale, or emitted in unusual reading order, so they are not an asserted hierarchy stack.
+- Treat code-parent hints, source-scope groupings, active outline evidence, section-path matches, same table context, same source context, and source-order proximity as evidence channels rather than automatic truth.
+- Prefer the most direct source-grounded parent, not merely the broadest, nearest, most repeated, or highest-ranked candidate.
+- For table-derived children, same-row or continuation context is strong locality evidence, but it proves direct parentage only when the source structure or runtime policy supports that interpretation.
+- Source-visible hierarchy may override code expectations when the bounded source evidence clearly supports it. Do not infer universal hierarchy from textual code prefixes.
+- Repeated labels require scope-sensitive resolution. Compare the candidate's own scope and canonical value with the child's complete finalized scope, then reconcile any conflict with the source-local evidence and runtime instructions.
+- The StandardsFramework root is a valid direct parent only for configured top-level items or when no supplied SFI parent can be resolved safely.
+- Do not select the root together with non-root parents.
 
 ## Output contract
 - Copy request_id exactly.
@@ -1071,7 +1067,7 @@ def resolve_sfi_has_child_parents(
     user_message = dedent(
         f"""Resolve direct hasChild parents for this bounded request.
 
-## Bounded hasChild parent-selection request JSON
+## Bounded hasChild producer request JSON
 {json_dumps(user_payload)}
         """
     )
@@ -1552,6 +1548,75 @@ be corrected when materially wrong or internally inconsistent.
 
 ## Draft SFIExtractionResult JSON
 {draft_result.model_dump_json(exclude_none=True)}
+        """
+    )
+
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
+    )
+
+
+def validate_sfi_has_child_response(
+    *,
+    draft_response: SFIHasChildResolutionResponse,
+    resolution_request: SFIHasChildResolutionRequest,
+) -> PromptPair:
+    """Generate independent checker prompts for a draft hasChild response.
+
+    Parameters
+    ----------
+    draft_response
+        Complete producer response to audit.
+    resolution_request
+        Original bounded parent-selection request.
+
+    Returns
+    -------
+    PromptPair
+        System and user messages for the independent hasChild checker.
+    """
+
+    user_payload = {
+        "draft_response": draft_response.model_dump(mode="json"),
+        "resolution_request": resolution_request.model_dump(mode="json"),
+    }
+    system_message = dedent(
+        """You are the independent checker for Academic Standards hasChild hierarchy resolution. Audit the producer's complete response against the original bounded request, structured scope, source evidence, and runtime checker instructions. Decide independently whether each direct-parent selection is semantically correct.
+
+## Checker boundary
+- Review only the supplied request and producer draft.
+- Do not invent children, parents, source facts, codes, nodes, or relationships.
+- Every corrected parent endpoint must come from that child's supplied parent_candidates.
+- Direct parent selection, repeated-label interpretation, source-order anomalies, scope conflicts, and unresolved decisions are semantic judgments owned by this checker.
+- Python will validate exact identity, coverage, endpoint membership, response shape, self-loops, statement-type policy, graph integrity, and deterministic identifiers after your verdict.
+
+## Runtime checker instructions
+- Apply both `sfi_has_child_instructions` and `sfi_has_child_validation_instructions` from the original request.
+- Treat the validation instructions as the authoritative document-specific audit policy. They may describe expected hierarchy, known reading-order inversions, repeated labels, table continuation behavior, or when unresolved is safer than a forced edge.
+
+## Independent semantic audit
+- Re-evaluate every child rather than merely approving the producer's explanation.
+- Compare the child's complete `identity_scope_values` with each candidate's canonical value and `identity_scope_values`.
+- Use `scope_comparison` as exact comparison evidence, not as an automatic decision rule. Investigate ancestor conflicts, missing dimensions, and repeated labels using the bounded source evidence and runtime instructions.
+- Treat typed source-local labels, active outline, table locality, section paths, code hints, and source proximity as evidence channels that may conflict or be stale.
+- Reject cross-scope or wrong-level parents when the request evidence supports a different supplied direct parent.
+- Reject root fallback when a defensible supplied semantic parent exists, and reject forced semantic parents when the evidence is materially unresolved.
+- Multiple direct parents are valid only when the source and runtime policy genuinely support multiple direct memberships.
+
+## Verdict contract
+- Copy request_id exactly.
+- Set passed=true only when the producer draft needs no material semantic correction. Then corrected_response must be null and there must be no error issues.
+- Set passed=false when any material correction is required. Include at least one error issue and return a complete corrected SFIHasChildResolutionResponse covering every child exactly once.
+- Corrections are complete replacements, not patches.
+- Issue references must use children and parent endpoint IDs from the original request.
+- Give a concise source-grounded rationale.
+        """
+    )
+    user_message = dedent(
+        f"""Audit this hasChild producer draft and return an independent validation verdict.
+
+## Original request and producer draft JSON
+{json_dumps(user_payload)}
         """
     )
 

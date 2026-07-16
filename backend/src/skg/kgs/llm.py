@@ -1,9 +1,10 @@
 """This module contains the LLM orchestration for Academic Standards knowledge graph
 creation.
 
-SFI extraction and SFI deduplication use two-stage producer/checker flows. Each
-producer returns a complete draft result, and an independent validation agent reviews
-the same bounded evidence, accepts the draft, or returns a complete corrected result.
+SFI extraction, SFI deduplication, and hasChild resolution use two-stage
+producer/checker flows. Each producer returns a complete draft result, and an
+independent validation agent reviews the same bounded evidence, accepts the draft, or
+returns a complete corrected result.
 """
 
 # Standard Library
@@ -20,6 +21,7 @@ from skg.kgs.agents import (
     create_sfi_extraction_agent,
     create_sfi_extraction_validation_agent,
     create_sfi_has_child_agent,
+    create_sfi_has_child_validation_agent,
 )
 from skg.kgs.prompts import (
     extract_sfi_candidates_from_window,
@@ -27,6 +29,7 @@ from skg.kgs.prompts import (
     review_sfi_dedup_candidates,
     validate_sfi_dedup_response,
     validate_sfi_extraction_result,
+    validate_sfi_has_child_response,
 )
 from skg.kgs.schemas import (
     ExtractionWindow,
@@ -37,16 +40,27 @@ from skg.kgs.schemas import (
     SFIExtractionValidationVerdict,
     SFIHasChildResolutionRequest,
     SFIHasChildResolutionResponse,
+    SFIHasChildValidationVerdict,
 )
 from skg.kgs.validators import (
     verify_sfi_dedup_review_integrity,
     verify_sfi_dedup_validation_integrity,
     verify_sfi_extraction_integrity,
     verify_sfi_extraction_validation_integrity,
-    verify_sfi_has_child_resolution_quality,
+    verify_sfi_has_child_resolution_integrity,
+    verify_sfi_has_child_validation_integrity,
 )
 from skg.schemas import CreateKGConfig
 from skg.utils.general import AgentUsageBucket
+
+
+@dataclass(frozen=True)
+class SFIHasChildResolutionRun:
+    """Producer/checker outputs for one bounded hasChild request."""
+
+    draft_response: SFIHasChildResolutionResponse
+    final_response: SFIHasChildResolutionResponse
+    validation_verdict: SFIHasChildValidationVerdict
 
 
 @dataclass
@@ -58,6 +72,7 @@ class KGUsageTracker:
     sfi_extraction: AgentUsageBucket
     sfi_extraction_validation: AgentUsageBucket
     sfi_has_child: AgentUsageBucket
+    sfi_has_child_validation: AgentUsageBucket
 
     def __init__(self) -> None:
         """Initialize empty usage buckets for KG LLM agents."""
@@ -69,6 +84,9 @@ class KGUsageTracker:
             agent_name="sfi_extraction_validation"
         )
         self.sfi_has_child = AgentUsageBucket(agent_name="sfi_has_child")
+        self.sfi_has_child_validation = AgentUsageBucket(
+            agent_name="sfi_has_child_validation"
+        )
 
     def to_dict(self) -> dict[str, object]:
         """Serialize usage totals to a JSON-friendly dictionary.
@@ -85,6 +103,7 @@ class KGUsageTracker:
             "sfi_extraction": self.sfi_extraction,
             "sfi_extraction_validation": self.sfi_extraction_validation,
             "sfi_has_child": self.sfi_has_child,
+            "sfi_has_child_validation": self.sfi_has_child_validation,
         }
         totals = {
             "cache_read_tokens": sum(
@@ -197,6 +216,44 @@ def _run_sfi_extraction_validation(
     return result.output
 
 
+def _run_sfi_has_child_validation(
+    *,
+    draft_response: SFIHasChildResolutionResponse,
+    resolution_request: SFIHasChildResolutionRequest,
+    usage_tracker: KGUsageTracker,
+) -> SFIHasChildValidationVerdict:
+    """Run the independent checker for one draft hasChild response.
+
+    Parameters
+    ----------
+    draft_response
+        Producer response to audit.
+    resolution_request
+        Original bounded hasChild request.
+    usage_tracker
+        Usage tracker for checker token accounting.
+
+    Returns
+    -------
+    SFIHasChildValidationVerdict
+        Parsed and integrity-validated checker verdict.
+    """
+
+    prompts = validate_sfi_has_child_response(
+        draft_response=draft_response, resolution_request=resolution_request
+    )
+    agent = create_sfi_has_child_validation_agent(
+        draft_response=draft_response,
+        instructions=prompts.system_message,
+        model_config=Settings.llm_config("kgs"),
+        resolution_request=resolution_request,
+        verify_integrity_fn=verify_sfi_has_child_validation_integrity,
+    )
+    result = agent.run_sync(prompts.user_message)
+    usage_tracker.sfi_has_child_validation.add_run_usage(result.usage())
+    return result.output
+
+
 def extract_sfi_candidates(
     *,
     extraction_window: ExtractionWindow,
@@ -268,20 +325,25 @@ def extract_sfi_candidates(
 
 def resolve_sfi_has_child_parent_request(
     *, resolution_request: SFIHasChildResolutionRequest, usage_tracker: KGUsageTracker
-) -> SFIHasChildResolutionResponse:
-    """Resolve direct hasChild parents for one bounded request using an LLM.
+) -> SFIHasChildResolutionRun:
+    """Produce, independently validate, and finalize one hasChild response.
 
     Parameters
     ----------
     resolution_request
         Bounded hasChild parent-selection request.
     usage_tracker
-        Usage tracker to accumulate token usage.
+        Usage tracker for producer and checker token accounting.
 
     Returns
     -------
-    SFIHasChildResolutionResponse
-        Parsed and quality-validated hasChild resolution response.
+    SFIHasChildResolutionRun
+        Producer draft, checker verdict, and accepted or corrected final response.
+
+    Raises
+    ------
+    ValueError
+        If a failing checker verdict omits its complete corrected response.
     """
 
     prompts = resolve_sfi_has_child_parents(resolution_request)
@@ -289,11 +351,43 @@ def resolve_sfi_has_child_parent_request(
         instructions=prompts.system_message,
         model_config=Settings.llm_config("kgs"),
         resolution_request=resolution_request,
-        verify_quality_fn=verify_sfi_has_child_resolution_quality,
+        verify_integrity_fn=verify_sfi_has_child_resolution_integrity,
     )
-    result = agent.run_sync(prompts.user_message)
-    usage_tracker.sfi_has_child.add_run_usage(result.usage())
-    return result.output
+    producer_run = agent.run_sync(prompts.user_message)
+    usage_tracker.sfi_has_child.add_run_usage(producer_run.usage())
+    draft_response = producer_run.output
+    validation_verdict = _run_sfi_has_child_validation(
+        draft_response=draft_response,
+        resolution_request=resolution_request,
+        usage_tracker=usage_tracker,
+    )
+
+    if validation_verdict.passed:
+        final_response = draft_response
+    else:
+        corrected_response = validation_verdict.corrected_response
+
+        if corrected_response is None:
+            raise ValueError(
+                "A failing hasChild validation verdict must include a complete "
+                "corrected response."
+            )
+
+        final_response = corrected_response
+
+        logger.warning(
+            f"SFI hasChild checker corrected request "
+            f"{resolution_request.request_id}: {validation_verdict.rationale}"
+        )
+
+    verify_sfi_has_child_resolution_integrity(
+        resolution_request=resolution_request, resolution_response=final_response
+    )
+    return SFIHasChildResolutionRun(
+        draft_response=draft_response,
+        final_response=final_response,
+        validation_verdict=validation_verdict,
+    )
 
 
 def review_sfi_dedup_set(
