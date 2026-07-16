@@ -188,36 +188,33 @@ def _detect_sfi_cycles(relationships: Sequence[Relationship]) -> list[list[str]]
     return cycles
 
 
-def _extract_grade_levels(record: SFIFinalRecord) -> list[str]:
-    """Recover explicit grade labels from final SFI identity-scope metadata.
+def _extract_grade_levels(
+    *, grade_level_statement_types: Sequence[str], record: SFIFinalRecord
+) -> list[str]:
+    """Recover configured LC grade-level values from one final SFI record.
 
-    The export uses structured identity-scope values rather than parsing a serialized
-    hierarchy key. A final SFI whose own statement type is `Grade` contributes its
-    source-facing description. Final-record and candidate-level identity scopes may
-    additionally contribute canonical values under the `Grade` statement type.
+    Runtime configuration supplies the curriculum-to-export mapping. For each
+    configured canonical statement type, the function uses the record's own canonical
+    value when the record represents that organizer and the matching final-record
+    identity-scope value. Candidate-level identity scopes are consulted only when
+    neither authoritative source is available. It does not infer grade-like meaning
+    from statement-type wording, hierarchy position, or framework metadata.
 
     Parameters
     ----------
+    grade_level_statement_types
+        Ordered canonical statement_type labels mapped to
+        StandardsFrameworkItem.grade_level.
     record
         Final SFI record to inspect.
 
     Returns
     -------
     list[str]
-        Stable grade-level labels in first-seen order, or an empty list when no grade
-        is explicit.
+        Stable, de-duplicated grade-level values in configured statement-type order.
     """
 
-    # NB: Dict keys provide deterministic insertion-ordered de-duplication.
-    unique_grades: dict[str, None] = {}
-
-    if record.statement_type.casefold() == "grade":
-        description = record.description.strip()
-
-        if description:
-            unique_grades[description] = None
-
-    scope_value_maps: list[dict[str, Any]] = [dict(record.identity_scope_values)]
+    candidate_scope_value_maps: list[dict[str, Any]] = []
 
     for source_ref in record.candidate_source_refs:
         if not isinstance(source_ref, dict):
@@ -226,19 +223,40 @@ def _extract_grade_levels(record: SFIFinalRecord) -> list[str]:
         identity_scope_values = source_ref.get("identity_scope_values")
 
         if isinstance(identity_scope_values, dict):
-            scope_value_maps.append(identity_scope_values)
+            candidate_scope_value_maps.append(identity_scope_values)
 
-    for scope_values in scope_value_maps:
-        for statement_type, value in scope_values.items():
-            if str(statement_type).strip().casefold() != "grade":
-                continue
+    grade_levels: dict[str, None] = {}
 
-            grade_value = str(value or "").strip()
+    for statement_type in grade_level_statement_types:
+        authoritative_values: dict[str, None] = {}
 
-            if grade_value:
-                unique_grades[grade_value] = None
+        if record.statement_type == statement_type:
+            own_value = str(
+                record.canonical_statement_value or record.description or ""
+            ).strip()
 
-    return list(unique_grades)
+            if own_value:
+                authoritative_values[own_value] = None
+
+        final_scope_value = str(
+            record.identity_scope_values.get(statement_type) or ""
+        ).strip()
+
+        if final_scope_value:
+            authoritative_values[final_scope_value] = None
+
+        if not authoritative_values:
+            for scope_values in candidate_scope_value_maps:
+                candidate_scope_value = str(
+                    scope_values.get(statement_type) or ""
+                ).strip()
+
+                if candidate_scope_value:
+                    authoritative_values[candidate_scope_value] = None
+
+        grade_levels.update(authoritative_values)
+
+    return list(grade_levels)
 
 
 def _fingerprint_jsonable(value: Any) -> str:
@@ -619,6 +637,7 @@ def _validate_coverage_and_reachability(
 
 def _validate_export(
     *,
+    grade_level_statement_types: Sequence[str],
     has_child_edges: Sequence[SFIHasChildEdge],
     has_child_resolution_summary: SFIHasChildResolutionSummary,
     has_child_unresolved_edges: Sequence[SFIHasChildEdge],
@@ -633,6 +652,8 @@ def _validate_export(
 
     Parameters
     ----------
+    grade_level_statement_types
+        Ordered canonical statement types mapped to LC grade_level output.
     has_child_edges
         Source hasChild edges.
     has_child_resolution_summary
@@ -680,7 +701,13 @@ def _validate_export(
         )
     )
     errors.extend(_validate_graph_export(relationships=relationships, sf=sf, sfis=sfis))
-    errors.extend(_validate_sfi_exports(sfi_final_records=sfi_final_records, sfis=sfis))
+    errors.extend(
+        _validate_sfi_exports(
+            grade_level_statement_types=grade_level_statement_types,
+            sfi_final_records=sfi_final_records,
+            sfis=sfis,
+        )
+    )
 
     object_counts = {
         "frameworks": 1,
@@ -691,6 +718,7 @@ def _validate_export(
         "unresolved_relationship_edges": len(has_child_unresolved_edges),
     }
     validation_checks = [
+        "configured_grade_level_mapping",
         "schema_validity",
         "single_framework",
         "framework_uuid_matches_root_edges",
@@ -920,6 +948,7 @@ def _validate_relationship_endpoints(
 
 def _validate_sfi_exports(
     *,
+    grade_level_statement_types: Sequence[str],
     sfi_final_records: Sequence[SFIFinalRecord],
     sfis: Sequence[StandardsFrameworkItem],
 ) -> list[str]:
@@ -927,6 +956,8 @@ def _validate_sfi_exports(
 
     Parameters
     ----------
+    grade_level_statement_types
+        Ordered canonical statement types mapped to LC grade_level output.
     sfi_final_records
         Final SFI records.
     sfis
@@ -961,6 +992,17 @@ def _validate_sfi_exports(
         if item.case_identifier_uri != record.case_identifier_uri:
             errors.append(
                 f"SFI {record.final_sfi_uuid} case_identifier_uri was not preserved."
+            )
+
+        expected_grade_levels = _extract_grade_levels(
+            grade_level_statement_types=grade_level_statement_types, record=record
+        )
+
+        if item.grade_level != expected_grade_levels:
+            errors.append(
+                f"SFI {record.final_sfi_uuid} grade_level does not match the "
+                f"configured export mapping; expected={expected_grade_levels!r}, "
+                f"actual={item.grade_level!r}."
             )
 
         if not item.description.strip():
@@ -1238,6 +1280,9 @@ def compile_academic_standards_kg(
         SFIHasChildEdge.model_validate(edge)
         for edge in open_json_type(kg_dirs.root / "has_child_unresolved_edges.json")
     ]
+    grade_level_statement_types = (
+        kg_config.academic_standards.grade_level_statement_types
+    )
     kg_run_manifest = open_json_type(kg_dirs.root / "kg_run_manifest.json")
     metadata = kg_config.metadata
     sf_uuid = build_standards_framework_uuid(document_ir.doc_key)
@@ -1286,7 +1331,9 @@ def compile_academic_standards_kg(
             case_identifier_uri=record.case_identifier_uri,
             case_identifier_uuid=record.case_identifier_uuid,
             description=record.description,
-            grade_level=_extract_grade_levels(record),
+            grade_level=_extract_grade_levels(
+                grade_level_statement_types=grade_level_statement_types, record=record
+            ),
             identifier=record.identifier,
             in_language=record.in_language,
             jurisdiction=record.jurisdiction,
@@ -1382,6 +1429,9 @@ def compile_academic_standards_kg(
 
     # 7.
     input_fingerprints = {
+        "grade_level_statement_types": _fingerprint_jsonable(
+            grade_level_statement_types
+        ),
         "has_child_edges_final": _fingerprint_jsonable(
             [model.model_dump(mode="json") for model in has_child_edges]
         ),
@@ -1402,6 +1452,7 @@ def compile_academic_standards_kg(
 
     # 8.
     validation_report = _validate_export(
+        grade_level_statement_types=grade_level_statement_types,
         has_child_edges=has_child_edges,
         has_child_resolution_summary=has_child_resolution_summary,
         has_child_unresolved_edges=has_child_unresolved_edges,

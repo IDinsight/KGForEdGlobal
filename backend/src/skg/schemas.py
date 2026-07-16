@@ -779,6 +779,14 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
             "eligible."
         ),
     )
+    grade_level_statement_types: list[str] = Field(
+        description=(
+            "Ordered canonical statement_type labels whose own values or identity "
+            "scope values populate StandardsFrameworkItem.grade_level. Supply an "
+            "explicit empty list when the framework has no applicable grade, year, "
+            "class, stage, band, or equivalent item-level dimension."
+        )
+    )
     identity_scope_statement_types: dict[str, list[str]] = Field(
         default_factory=dict,
         description=(
@@ -1255,6 +1263,31 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
                 seen.add(value_clean)
 
         return cleaned
+
+    @field_validator("grade_level_statement_types")
+    @classmethod
+    def validate_grade_level_statement_types(cls, v: list[str]) -> list[str]:
+        """Clean statement types mapped to LC grade-level output.
+
+        Parameters
+        ----------
+        v
+            Ordered canonical statement_type labels configured for grade-level export.
+
+        Returns
+        -------
+        list[str]
+            Stripped, non-blank labels de-duplicated in input order.
+
+        Raises
+        ------
+        TypeError
+            If any configured value is not a string.
+        """
+
+        return cls._clean_selection_string_list(
+            field_name="grade_level_statement_types", values=v
+        )
 
     @field_validator(
         "excluded_table_columns_signatures", "included_table_columns_signatures"
@@ -1944,6 +1977,30 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
                 f"statement_type labels: {sorted(known_statement_types)}"
             )
 
+    def _validate_grade_level_statement_types(self) -> None:
+        """Validate statement types mapped to LC grade-level output.
+
+        Raises
+        ------
+        ValueError
+            If the mapping references a statement_type absent from
+            statement_type_policy.
+        """
+
+        known_statement_types = {
+            item.statement_type for item in self.statement_type_policy
+        }
+        unknown_statement_types = sorted(
+            set(self.grade_level_statement_types) - known_statement_types
+        )
+
+        if unknown_statement_types:
+            raise ValueError(
+                f"CreateKGConfig.as.grade_level_statement_types references unknown "
+                f"statement_type labels: {unknown_statement_types}. Known "
+                f"statement_type labels: {sorted(known_statement_types)}"
+            )
+
     def _validate_has_child_statement_type_policy(self) -> None:
         """Validate hasChild hierarchy and direct-parent labels.
 
@@ -2034,6 +2091,7 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         self._validate_code_parent_rules(known)
         self._validate_code_scope_policy(known)
         self._validate_dedup_context_statement_types()
+        self._validate_grade_level_statement_types()
         self._validate_identity_scope_policy()
         self._validate_has_child_statement_type_policy()
         self._validate_selection_overlap_policy()

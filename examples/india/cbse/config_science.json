@@ -56,6 +56,9 @@
 			},
 			"excluded_table_columns_signatures": [],
 			"excluded_table_section_patterns": [],
+			"grade_level_statement_types": [
+				"Class"
+			],
 			"identity_scope_statement_types": {
 				"Content Domain": [
 					"Class"
