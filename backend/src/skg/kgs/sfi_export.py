@@ -128,6 +128,38 @@ def _build_entity_provenance(
     }
 
 
+def _collect_candidate_scope_value_maps(record: SFIFinalRecord) -> list[dict[str, Any]]:
+    """Collect candidate-level identity-scope value maps from a final SFI record.
+
+    Only dict-shaped `candidate_source_refs` entries that carry a dict
+    `identity_scope_values` payload are retained, preserving source order.
+
+    Parameters
+    ----------
+    record
+        Final SFI record to inspect.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Candidate identity-scope value maps in source order.
+    """
+
+    candidate_scope_value_maps: list[dict[str, Any]] = []
+
+    for source_ref in record.candidate_source_refs:
+        identity_scope_values = (
+            source_ref.get("identity_scope_values")
+            if isinstance(source_ref, dict)
+            else None
+        )
+
+        if isinstance(identity_scope_values, dict):
+            candidate_scope_value_maps.append(identity_scope_values)
+
+    return candidate_scope_value_maps
+
+
 def _detect_sfi_cycles(relationships: Sequence[Relationship]) -> list[list[str]]:
     """Detect directed cycles among SFI-to-SFI hasChild relationships.
 
@@ -214,16 +246,7 @@ def _extract_grade_levels(
         Stable, de-duplicated grade-level values in configured statement-type order.
     """
 
-    candidate_scope_value_maps: list[dict[str, Any]] = []
-
-    for source_ref in record.candidate_source_refs:
-        if not isinstance(source_ref, dict):
-            continue
-
-        identity_scope_values = source_ref.get("identity_scope_values")
-
-        if isinstance(identity_scope_values, dict):
-            candidate_scope_value_maps.append(identity_scope_values)
+    candidate_scope_value_maps = _collect_candidate_scope_value_maps(record)
 
     grade_levels: dict[str, None] = {}
 
@@ -946,6 +969,95 @@ def _validate_relationship_endpoints(
     return errors
 
 
+def _validate_sfi_export_record(
+    *,
+    grade_level_statement_types: Sequence[str],
+    item: StandardsFrameworkItem,
+    record: SFIFinalRecord,
+) -> list[str]:
+    """Validate one matched StandardsFrameworkItem against its final SFI record.
+
+    Check that identifiers and URIs are preserved, that the grade_level matches the
+    configured export mapping, that description text is present, and that source
+    provenance (or no-code identity material) is retained.
+
+    Parameters
+    ----------
+    grade_level_statement_types
+        Ordered canonical statement types mapped to LC grade_level output.
+    item
+        Compiled StandardsFrameworkItem matched to `record`.
+    record
+        Final SFI record backing `item`.
+
+    Returns
+    -------
+    list[str]
+        Validation error messages for this record.
+    """
+
+    errors: list[str] = []
+
+    if item.case_identifier_uuid != record.case_identifier_uuid:
+        errors.append(
+            f"SFI {record.final_sfi_uuid} case_identifier_uuid was not preserved."
+        )
+
+    if item.identifier != record.identifier:
+        errors.append(f"SFI {record.final_sfi_uuid} identifier was not preserved.")
+
+    if item.case_identifier_uri != record.case_identifier_uri:
+        errors.append(
+            f"SFI {record.final_sfi_uuid} case_identifier_uri was not preserved."
+        )
+
+    expected_grade_levels = _extract_grade_levels(
+        grade_level_statement_types=grade_level_statement_types, record=record
+    )
+
+    if item.grade_level != expected_grade_levels:
+        errors.append(
+            f"SFI {record.final_sfi_uuid} grade_level does not match the "
+            f"configured export mapping; expected={expected_grade_levels!r}, "
+            f"actual={item.grade_level!r}."
+        )
+
+    if not item.description.strip():
+        errors.append(f"SFI {record.final_sfi_uuid} has empty description text.")
+
+    has_provenance = bool(
+        record.candidate_source_refs
+        or record.source_page_indexes
+        or record.source_registry_candidate_ids
+        or record.source_segment_ids
+        or record.source_window_ids
+    )
+
+    if not has_provenance:
+        errors.append(
+            f"SFI {record.final_sfi_uuid} lacks source provenance or synthetic "
+            f"provenance explanation."
+        )
+
+    if record.normalized_statement_code is None:
+        identity_metadata = item.metadata.get("identity", {})
+        has_no_code_identity_material = bool(
+            item.metadata.get("identity_key")
+            and (
+                item.metadata.get("source_context_keys")
+                or identity_metadata.get("no_code_identity_family_key")
+            )
+        )
+
+        if not has_no_code_identity_material:
+            errors.append(
+                f"No-code SFI {record.final_sfi_uuid} does not preserve "
+                f"source-context/text identity material."
+            )
+
+    return errors
+
+
 def _validate_sfi_exports(
     *,
     grade_level_statement_types: Sequence[str],
@@ -981,61 +1093,13 @@ def _validate_sfi_exports(
             )
             continue
 
-        if item.case_identifier_uuid != record.case_identifier_uuid:
-            errors.append(
-                f"SFI {record.final_sfi_uuid} case_identifier_uuid was not preserved."
+        errors.extend(
+            _validate_sfi_export_record(
+                grade_level_statement_types=grade_level_statement_types,
+                item=item,
+                record=record,
             )
-
-        if item.identifier != record.identifier:
-            errors.append(f"SFI {record.final_sfi_uuid} identifier was not preserved.")
-
-        if item.case_identifier_uri != record.case_identifier_uri:
-            errors.append(
-                f"SFI {record.final_sfi_uuid} case_identifier_uri was not preserved."
-            )
-
-        expected_grade_levels = _extract_grade_levels(
-            grade_level_statement_types=grade_level_statement_types, record=record
         )
-
-        if item.grade_level != expected_grade_levels:
-            errors.append(
-                f"SFI {record.final_sfi_uuid} grade_level does not match the "
-                f"configured export mapping; expected={expected_grade_levels!r}, "
-                f"actual={item.grade_level!r}."
-            )
-
-        if not item.description.strip():
-            errors.append(f"SFI {record.final_sfi_uuid} has empty description text.")
-
-        has_provenance = bool(
-            record.candidate_source_refs
-            or record.source_page_indexes
-            or record.source_registry_candidate_ids
-            or record.source_segment_ids
-            or record.source_window_ids
-        )
-
-        if not has_provenance:
-            errors.append(
-                f"SFI {record.final_sfi_uuid} lacks source provenance or synthetic "
-                f"provenance explanation."
-            )
-
-        if record.normalized_statement_code is None:
-            identity_metadata = item.metadata.get("identity", {})
-            has_no_code_identity_material = bool(
-                item.metadata.get("identity_key")
-                and (
-                    item.metadata.get("source_context_keys")
-                    or identity_metadata.get("no_code_identity_family_key")
-                )
-            )
-
-            if not has_no_code_identity_material:
-                errors.append(
-                    f"No-code SFI {record.final_sfi_uuid} does not preserve source-context/text identity material."
-                )
 
     return errors
 
