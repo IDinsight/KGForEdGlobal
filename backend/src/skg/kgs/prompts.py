@@ -175,24 +175,34 @@ def _build_compact_extraction_window_payload(
                 context.model_dump(mode="json")
                 for context in extraction_window.source_context_before
             ],
+            "scope_context_candidates": [
+                candidate.model_dump(mode="json")
+                for candidate in extraction_window.scope_context_candidates
+            ],
             "section_path_recent_first": _build_recent_first_section_context(
                 extraction_window
             ),
             "source_context_policy": (
                 "The current visible block/table content is authoritative. "
+                "Resolve each configured identity-scope dimension independently. "
+                "scope_context_candidates contains deterministic controlled-value "
+                "recognition from bounded neighbor headings and section-path context; "
+                "it does not identify the governing value. context_origin and "
+                "origin_rank preserve each candidate's evidence channel and "
+                "nearest-first position within that channel. "
                 "section_path_recent_first is ordered from nearest preceding context "
-                "to farthest, and recency_rank=0 identifies the nearest entry. For each "
-                "configured scope dimension not explicit in the current source, use "
-                "the first compatible heading in section_path_recent_first. Do not "
-                "skip a nearer compatible heading for an older one unless the current "
-                "visible source or authoritative runtime policy directly contradicts "
-                "it. Use bounded preceding/following same-page headings to interpret "
-                "local page structure and visual reading-order inversions. A following "
-                "heading does not automatically govern the target. All source_context "
-                "content is context_only: it cannot create candidates or be cited in "
-                "candidate anchors, descriptions, or source_text unless the same "
-                "wording is also visible in the target block or table. These fields are "
-                "fallible context, not an inferred KG ancestor chain."
+                "to farthest, and recency_rank=0 identifies the nearest entry. When a "
+                "scope dimension is not explicit in the current source, apply clear "
+                "authoritative runtime rules for bounded local neighbor context; "
+                "otherwise use the nearest recognized candidate for that exact scope "
+                "statement type. Do not skip a nearer candidate for an older one merely "
+                "because the older value previously appeared with another repeated "
+                "grouping label. A following heading does not automatically govern the "
+                "target. All source_context content is context_only: it cannot create "
+                "candidates or be cited in candidate anchors, descriptions, or "
+                "source_text unless the same wording is also visible in the target "
+                "block or table. These fields are fallible context, not an inferred KG "
+                "ancestor chain."
             ),
         },
         "window_id": extraction_window.window_id,
@@ -889,7 +899,7 @@ def extract_sfi_candidates_from_window(
 
 ## Scope
 - Extract candidate SFIs only from the provided compact source window.
-- Use source_context.section_path_recent_first and bounded preceding/following same-page headings to determine document scope, resolve visual reading-order inversions, and identify the source role of the visible target block/table content when the runtime config depends on context. Treat all source_context fields as context only, not as candidate evidence or an inferred hierarchy.
+- Use source_context.scope_context_candidates, source_context.section_path_recent_first, and bounded preceding/following same-page headings to determine document scope, resolve visual reading-order inversions, and identify the source role of the visible target block/table content when the runtime config depends on context. Treat all source_context fields as context only, not as candidate evidence or an inferred hierarchy.
 - Return zero SFI candidates when the window contains front matter, examples only, teacher guidance only, activities only, resources only, assessment suggestions only, or unrelated content.
 - Do not infer hierarchy or relationships in this step. Extract only SFI candidates directly visible in this compact source window; final hasChild relationships are resolved later from finalized SFIs and source provenance.
 - Extract grouping SFIs only when the grouping label itself is visible in target block or table source content. Do not emit a grouping solely because it appears anywhere in source_context, and do not add absent grade, strand, sub-strand, or parent candidates from context-only headings.
@@ -915,7 +925,11 @@ def extract_sfi_candidates_from_window(
 ## Semantic identity scope policy
 - The runtime config includes identity_scope_statement_types. For each candidate, look up the ordered scope statement types configured for that candidate's canonical statement_type.
 - Populate identity_scope_values with exactly those configured keys in that order. For each key, output exactly one canonical_value from that scope statement type's controlled_values; use aliases only to recognize the visible source wording. Return an empty mapping when no identity scope is configured for the candidate statement type.
+- Resolve each configured identity-scope dimension independently. Determine Grade from Grade evidence, domain from domain evidence, strand from strand evidence, and so on; do not infer one dimension by searching for an older historical combination of several grouping labels.
+- Apply scope evidence in this order: a controlled value explicit in the current target source; an authoritative runtime rule governing clear bounded local neighbor context; then the nearest recognized source_context.scope_context_candidates entry for that exact scope_statement_type. Use source_context.section_path_recent_first as the underlying recent-first context when no recognized candidate is available.
+- Do not skip a nearer recognized value for an older value merely because the older value previously appeared beside the same repeated grouping wording. Any override of the nearest recognized value must be supported by explicit current-target evidence, clear bounded neighbor evidence, or an authoritative runtime rule.
 - Determine identity scope from the active structural context governing the candidate occurrence, including explicit headings, grouping cells, and source-context structure. Do not choose a scope value merely because its wording appears incidentally inside another statement, example, activity, resource, assessment, or explanatory cell.
+- Do not claim that a page, heading, context direction, source text, or controlled value was supplied unless it is actually present in the compact source window.
 
 ## Semantic code scope policy
 - The runtime config includes code_scope_statement_types. When statement_code is non-null, determine its configured code type from the candidate's canonical statement_type and the candidate-local code_matches evidence, then look up the ordered code-scope statement types for that code type.
@@ -1416,6 +1430,10 @@ correcting the draft.
 - Verify identity_scope_values against identity_scope_statement_types for the candidate's canonical statement_type. The mapping must contain the configured scope dimensions in configured order, and each value must be an existing canonical_value for that scope statement type; use aliases only as recognition evidence. The mapping must be empty when no identity scope is configured.
 - Verify code_scope_values against code_scope_statement_types for the candidate's resolved code type. The mapping must contain the configured dimensions in configured order when statement_code is present, and must be empty when statement_code is null or the code type has no configured scope.
 - Independently determine whether each identity or code scope value reflects the active structural context. Reject scope selected from incidental vocabulary in another statement, example, activity, resource, assessment, or explanatory cell.
+- Resolve every configured identity-scope dimension independently. For each dimension, identify the nearest recognized source_context.scope_context_candidates value for that exact scope_statement_type and compare it with the draft value. Do not infer one dimension by locating an older occurrence of the same combination of other grouping labels.
+- A draft may override the nearest recognized scope candidate only when explicit current-target evidence, clear bounded neighbor evidence, or authoritative runtime policy supports the override. Reject an unexplained jump to an older candidate, including an older value historically paired with repeated neighboring labels.
+- When scope_context_candidates is empty or incomplete for a dimension, inspect source_context.section_path_recent_first directly in nearest-first order and apply the same per-dimension rule.
+- Verify all scope explanations and extraction notes against the actual compact payload. Citing an absent page, heading, context direction, source text, or context candidate is a material factual error.
 - Preserve surprising source placement instead of replacing it with a more intuitive subject-matter classification.
 
 ### 3. Source fidelity
@@ -1468,7 +1486,9 @@ it passes:
   uncoded.
 - `identity_scope_values` contains the correct configured dimensions and values for the
   candidate's active structural context, without being inferred from incidental row or
-  paragraph vocabulary.
+  paragraph vocabulary. For each dimension, compare the draft value with the nearest
+  recognized candidate for that exact scope_statement_type and require source-supported
+  override evidence before accepting any older value.
 - `code_scope_values` contains the exact configured dimensions and values for the coded
   candidate's resolved code type, and is empty when the candidate is uncoded or the code
   type is document-global.

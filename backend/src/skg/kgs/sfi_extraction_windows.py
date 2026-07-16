@@ -8,7 +8,9 @@ The windowing strategy is intentionally simple:
 3. Plan table windows only for table segments selected by KG config table rules.
 4. Add bounded preceding and following same-page heading context as context-only
     evidence when PDF reading order differs from visual layout.
-5. Build LLM-ready payloads that preserve source text, table structure, optional table
+5. Recognize runtime-configured identity-scope controlled values in neighboring and
+    section-path context without selecting the active value in Python.
+6. Build LLM-ready payloads that preserve source text, table structure, optional table
     helper views, provenance, code hints, and the later SFI extraction contract.
 
 Python does not decide whether block text is semantically relevant to the standards
@@ -37,6 +39,7 @@ from skg.kgs.schemas import (
     ExtractionWindowContextEvidence,
     ExtractionWindowPlanArtifact,
     ExtractionWindowPlanItem,
+    ExtractionWindowScopeContextCandidate,
     ExtractionWindowTablePayload,
 )
 from skg.kgs.utils import (
@@ -46,7 +49,7 @@ from skg.kgs.utils import (
     find_configured_code_matches_in_source_units,
     get_table_selection_reasons,
 )
-from skg.schemas import CreateKGConfig
+from skg.schemas import CreateKGConfig, normalize_controlled_value_key
 from skg.utils.general import make_dir, write_to_json
 
 _MAX_NEIGHBOR_HEADING_CONTEXT_PER_DIRECTION = 2
@@ -225,6 +228,12 @@ def _build_extraction_window(
             target_page_indexes=target_page_indexes,
         )
     )
+    scope_context_candidates = _build_scope_context_candidates(
+        kg_config=kg_config,
+        source_context_after=source_context_after,
+        source_context_before=source_context_before,
+        source_section_path=source_section_path,
+    )
     canonical_context = "|".join(
         [
             document_ir.doc_key,
@@ -233,6 +242,7 @@ def _build_extraction_window(
             _build_source_section_path_key(source_section_path),
             _build_context_evidence_key(source_context_before),
             _build_context_evidence_key(source_context_after),
+            _build_scope_context_candidates_key(scope_context_candidates),
             row_range_label or "",
             re.sub(r"\s+", " ", source_text or "").strip().casefold(),
         ]
@@ -266,6 +276,7 @@ def _build_extraction_window(
         kg_extraction_instructions=kg_config.academic_standards.sfi_extraction_instructions,
         pdf_name=document_ir.pdf_name,
         primary_language=kg_config.metadata.primary_language,
+        scope_context_candidates=scope_context_candidates,
         segment_kind=segment_kind,
         source_context_after=source_context_after,
         source_context_before=source_context_before,
@@ -282,6 +293,11 @@ def _build_extraction_window(
             *(
                 ["same_page_neighbor_heading_context_included"]
                 if source_context_before or source_context_after
+                else []
+            ),
+            *(
+                ["scope_context_candidates_included"]
+                if scope_context_candidates
                 else []
             ),
         ],
@@ -423,6 +439,299 @@ def _build_neighbor_heading_context_evidence(
     )
     preceding_context.reverse()
     return preceding_context, following_context
+
+
+def _build_scope_context_candidates(
+    *,
+    kg_config: CreateKGConfig,
+    source_context_after: Sequence[ExtractionWindowContextEvidence],
+    source_context_before: Sequence[ExtractionWindowContextEvidence],
+    source_section_path: Sequence[dict[str, Any]],
+) -> list[ExtractionWindowScopeContextCandidate]:
+    """Recognize configured identity-scope values in context evidence.
+
+    The function performs deterministic controlled-value recognition only. It does not
+    decide which candidate governs the target source occurrence. Neighbor headings and
+    section-path references remain separate context origins so downstream producer and
+    checker agents can apply runtime scope policy without losing provenance.
+
+    Parameters
+    ----------
+    kg_config
+        Runtime KG configuration containing identity-scope statement types and their
+        controlled values.
+    source_context_after
+        Bounded following neighbor-heading evidence in nearest-first order.
+    source_context_before
+        Bounded preceding neighbor-heading evidence in document source order.
+    source_section_path
+        DocumentIR section-path references preserved in source order.
+
+    Returns
+    -------
+    list[ExtractionWindowScopeContextCandidate]
+        Recognized context-only candidates with source origin and nearest-first rank.
+    """
+
+    controlled_value_lookups = _build_scope_controlled_value_lookups(kg_config)
+
+    if not controlled_value_lookups:
+        return []
+
+    candidates: list[ExtractionWindowScopeContextCandidate] = []
+
+    for origin_rank, context in enumerate(reversed(source_context_before)):
+        candidates.extend(
+            _build_scope_context_candidates_for_text(
+                context_direction="preceding",
+                context_origin="neighbor_heading",
+                controlled_value_lookups=controlled_value_lookups,
+                document_segment_index=context.document_segment_index,
+                item_index=None,
+                origin_rank=origin_rank,
+                source_page_indexes=context.source_page_indexes,
+                source_segment_id=context.source_segment_id,
+                source_text=context.source_text,
+            )
+        )
+
+    for origin_rank, context in enumerate(source_context_after):
+        candidates.extend(
+            _build_scope_context_candidates_for_text(
+                context_direction="following",
+                context_origin="neighbor_heading",
+                controlled_value_lookups=controlled_value_lookups,
+                document_segment_index=context.document_segment_index,
+                item_index=None,
+                origin_rank=origin_rank,
+                source_page_indexes=context.source_page_indexes,
+                source_segment_id=context.source_segment_id,
+                source_text=context.source_text,
+            )
+        )
+
+    for origin_rank, section_ref in enumerate(reversed(source_section_path)):
+        source_text = str(section_ref.get("text") or "").strip()
+        page_index = section_ref.get("page_index")
+
+        if not source_text or page_index is None:
+            continue
+
+        item_index = section_ref.get("item_index")
+        candidates.extend(
+            _build_scope_context_candidates_for_text(
+                context_direction="preceding",
+                context_origin="section_path",
+                controlled_value_lookups=controlled_value_lookups,
+                document_segment_index=None,
+                item_index=(int(item_index) if item_index is not None else None),
+                origin_rank=origin_rank,
+                source_page_indexes=[int(page_index)],
+                source_segment_id=None,
+                source_text=source_text,
+            )
+        )
+
+    return candidates
+
+
+def _build_scope_context_candidates_for_text(
+    *,
+    context_direction: Literal["following", "preceding"],
+    context_origin: Literal["neighbor_heading", "section_path"],
+    controlled_value_lookups: dict[str, dict[str, str]],
+    document_segment_index: Optional[int],
+    item_index: Optional[int],
+    origin_rank: int,
+    source_page_indexes: Sequence[int],
+    source_segment_id: Optional[str],
+    source_text: str,
+) -> list[ExtractionWindowScopeContextCandidate]:
+    """Recognize controlled scope values from one context text record.
+
+    Parameters
+    ----------
+    context_direction
+        Source-order direction relative to the target extraction segment.
+    context_origin
+        Context channel supplying the text.
+    controlled_value_lookups
+        Per-scope-statement-type normalized alias-to-canonical mappings.
+    document_segment_index
+        DocumentIR segment index for neighbor-heading evidence.
+    item_index
+        Page item index for section-path evidence when available.
+    origin_rank
+        Zero-based nearest-first rank within the same origin and direction.
+    source_page_indexes
+        Pages associated with the context text.
+    source_segment_id
+        DocumentIR segment ID for neighbor-heading evidence.
+    source_text
+        Complete source-context text to inspect.
+
+    Returns
+    -------
+    list[ExtractionWindowScopeContextCandidate]
+        Controlled values recognized from exact full-text or line-level surfaces.
+    """
+
+    candidates: list[ExtractionWindowScopeContextCandidate] = []
+    emitted_scope_values: set[tuple[str, str]] = set()
+
+    for matched_text in _extract_context_match_surfaces(source_text):
+        matched_key = normalize_controlled_value_key(matched_text)
+
+        if not matched_key:
+            continue
+
+        for scope_statement_type, value_lookup in controlled_value_lookups.items():
+            canonical_value = value_lookup.get(matched_key)
+
+            if canonical_value is None:
+                continue
+
+            emitted_key = (scope_statement_type, canonical_value)
+
+            if emitted_key in emitted_scope_values:
+                continue
+
+            candidates.append(
+                ExtractionWindowScopeContextCandidate(
+                    canonical_value=canonical_value,
+                    context_direction=context_direction,
+                    context_origin=context_origin,
+                    document_segment_index=document_segment_index,
+                    item_index=item_index,
+                    matched_text=matched_text,
+                    origin_rank=origin_rank,
+                    scope_statement_type=scope_statement_type,
+                    source_page_indexes=sorted(
+                        {int(page_index) for page_index in source_page_indexes}
+                    ),
+                    source_segment_id=source_segment_id,
+                    source_text=source_text,
+                )
+            )
+            emitted_scope_values.add(emitted_key)
+
+    return candidates
+
+
+def _build_scope_context_candidates_key(
+    scope_context_candidates: Sequence[ExtractionWindowScopeContextCandidate],
+) -> str:
+    """Build a stable key component from recognized scope-context candidates.
+
+    Parameters
+    ----------
+    scope_context_candidates
+        Ordered deterministic context candidates.
+
+    Returns
+    -------
+    str
+        Stable context string containing scope, origin, rank, provenance, and value.
+    """
+
+    key_parts: list[str] = []
+
+    for candidate in scope_context_candidates:
+        page_key = ",".join(
+            str(page_index) for page_index in candidate.source_page_indexes
+        )
+        matched_key = normalize_controlled_value_key(candidate.matched_text)
+        document_segment_index = (
+            ""
+            if candidate.document_segment_index is None
+            else str(candidate.document_segment_index)
+        )
+        item_index = "" if candidate.item_index is None else str(candidate.item_index)
+        key_parts.append(
+            f"{candidate.scope_statement_type}:{candidate.canonical_value}:"
+            f"{candidate.context_origin}:{candidate.context_direction}:"
+            f"{candidate.origin_rank}:{page_key}:"
+            f"{document_segment_index}:{item_index}:"
+            f"{candidate.source_segment_id or ''}:{matched_key}"
+        )
+
+    return ">".join(key_parts)
+
+
+def _build_scope_controlled_value_lookups(
+    kg_config: CreateKGConfig,
+) -> dict[str, dict[str, str]]:
+    """Build normalized alias lookups for configured identity-scope dimensions.
+
+    Parameters
+    ----------
+    kg_config
+        Runtime KG configuration.
+
+    Returns
+    -------
+    dict[str, dict[str, str]]
+        Ordered statement-type mappings from normalized source surfaces to canonical
+        controlled values.
+
+    Raises
+    ------
+    ValueError
+        If one normalized source surface maps to conflicting canonical values within a
+        configured scope statement type.
+    """
+
+    scope_statement_types: list[str] = []
+    seen_scope_statement_types: set[str] = set()
+
+    for (
+        configured_scope_types
+    ) in kg_config.academic_standards.identity_scope_statement_types.values():
+        for scope_statement_type in configured_scope_types:
+            if scope_statement_type in seen_scope_statement_types:
+                continue
+
+            scope_statement_types.append(scope_statement_type)
+            seen_scope_statement_types.add(scope_statement_type)
+
+    policy_by_statement_type = {
+        policy.statement_type: policy
+        for policy in kg_config.academic_standards.statement_type_policy
+    }
+    lookups: dict[str, dict[str, str]] = {}
+
+    for scope_statement_type in scope_statement_types:
+        policy = policy_by_statement_type.get(scope_statement_type)
+
+        if policy is None or not policy.controlled_values:
+            continue
+
+        value_lookup: dict[str, str] = {}
+
+        for controlled_value in policy.controlled_values:
+            canonical_value = controlled_value.canonical_value
+
+            for surface in [canonical_value, *controlled_value.aliases]:
+                surface_key = normalize_controlled_value_key(surface)
+
+                if not surface_key:
+                    continue
+
+                existing_value = value_lookup.get(surface_key)
+
+                if existing_value is not None and existing_value != canonical_value:
+                    raise ValueError(
+                        "Conflicting controlled-value aliases for identity-scope "
+                        f"statement_type={scope_statement_type!r}: "
+                        f"surface={surface!r}, values={existing_value!r} and "
+                        f"{canonical_value!r}."
+                    )
+
+                value_lookup[surface_key] = canonical_value
+
+        lookups[scope_statement_type] = value_lookup
+
+    return lookups
 
 
 def _build_source_section_path_key(
@@ -823,6 +1132,40 @@ def _deterministic_uuid(canonical_string: str) -> str:
     """
 
     return str(uuid.uuid5(uuid.NAMESPACE_URL, canonical_string))
+
+
+def _extract_context_match_surfaces(source_text: str) -> list[str]:
+    """Return exact full-text and line-level surfaces for controlled-value matching.
+
+    Parameters
+    ----------
+    source_text
+        Complete context source text.
+
+    Returns
+    -------
+    list[str]
+        Non-empty exact surfaces in stable order with normalized duplicates removed.
+    """
+
+    surfaces: list[str] = []
+    seen_surface_keys: set[str] = set()
+
+    candidate_surfaces = [
+        source_text.strip(),
+        *(line.strip() for line in source_text.splitlines()),
+    ]
+
+    for surface in candidate_surfaces:
+        surface_key = normalize_controlled_value_key(surface)
+
+        if not surface or not surface_key or surface_key in seen_surface_keys:
+            continue
+
+        surfaces.append(surface)
+        seen_surface_keys.add(surface_key)
+
+    return surfaces
 
 
 def _extract_table_row_cell_texts(row: dict[str, Any]) -> list[str]:

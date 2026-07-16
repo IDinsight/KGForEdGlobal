@@ -486,6 +486,13 @@ class ExtractionWindow(BaseSchema):
     pdf_name: Optional[str] = Field(default=None, description="Source PDF filename.")
     primary_language: str = Field(description="KG config primary language.")
     segment_kind: Literal["block", "table"] = Field(description="Source segment kind.")
+    scope_context_candidates: list[ExtractionWindowScopeContextCandidate] = Field(
+        default_factory=list,
+        description=(
+            "Runtime-configured controlled scope values recognized from neighboring "
+            "headings and section-path context. Context-only and not a resolved scope."
+        ),
+    )
     source_context_after: list[ExtractionWindowContextEvidence] = Field(
         default_factory=list,
         description=(
@@ -680,6 +687,126 @@ class ExtractionWindowPlanItem(BaseSchema):
             raise ValueError("ExtractionWindowPlanItem requires plan_reasons.")
 
         return cleaned
+
+
+class ExtractionWindowScopeContextCandidate(BaseSchema):
+    """One controlled scope value recognized from extraction context.
+
+    This model preserves deterministic recognition evidence without deciding which
+    value governs the target occurrence. The producer and checker apply runtime policy
+    to select the active value. All text remains context-only and cannot support
+    candidate anchors, descriptions, or source text.
+    """
+
+    canonical_value: str = Field(
+        description="Configured canonical value recognized from the context text.",
+        min_length=1,
+    )
+    context_direction: Literal["following", "preceding"] = Field(
+        description="Source-order direction of the context relative to the target."
+    )
+    context_origin: Literal["neighbor_heading", "section_path"] = Field(
+        description="Deterministic context channel that supplied this candidate."
+    )
+    document_segment_index: Optional[int] = Field(
+        default=None,
+        description=(
+            "0-based DocumentIR segment position for neighbor-heading evidence; null "
+            "for section-path evidence."
+        ),
+        ge=0,
+    )
+    item_index: Optional[int] = Field(
+        default=None,
+        description=(
+            "Source page item index for section-path evidence; null when unavailable."
+        ),
+        ge=0,
+    )
+    matched_text: str = Field(
+        description=(
+            "Exact context-text line or full field matched to the controlled value."
+        ),
+        min_length=1,
+    )
+    origin_rank: int = Field(
+        description=(
+            "Zero-based nearest-first rank within the same context origin and direction."
+        ),
+        ge=0,
+    )
+    scope_statement_type: str = Field(
+        description="Configured statement type used as an identity-scope dimension.",
+        min_length=1,
+    )
+    source_page_indexes: list[int] = Field(
+        description="Sorted unique 0-based pages associated with the context evidence.",
+        min_length=1,
+    )
+    source_segment_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "DocumentIR segment ID for neighbor-heading evidence; null for section-path "
+            "evidence."
+        ),
+    )
+    source_text: str = Field(
+        description="Complete source-context text from which matched_text was selected.",
+        min_length=1,
+    )
+    source_visibility: Literal["context_only"] = Field(
+        default="context_only",
+        description="Fixed marker that prevents this text from becoming candidate evidence.",
+    )
+
+    @model_validator(mode="after")
+    def validate_context_origin_fields(self) -> Self:
+        """Validate origin-specific provenance fields.
+
+        Returns
+        -------
+        Self
+            The validated scope-context candidate.
+
+        Raises
+        ------
+        ValueError
+            If neighbor-heading or section-path provenance fields are inconsistent.
+        """
+
+        if self.context_origin == "neighbor_heading":
+            if self.document_segment_index is None or not self.source_segment_id:
+                raise ValueError(
+                    "neighbor_heading scope context requires document_segment_index "
+                    "and source_segment_id."
+                )
+
+        if self.context_origin == "section_path":
+            if (
+                self.document_segment_index is not None
+                or self.source_segment_id is not None
+            ):
+                raise ValueError(
+                    "section_path scope context must not include document_segment_index "
+                    "or source_segment_id."
+                )
+
+            if self.context_direction != "preceding":
+                raise ValueError(
+                    "section_path scope context must have context_direction='preceding'."
+                )
+
+        if self.source_page_indexes != sorted(set(self.source_page_indexes)):
+            raise ValueError(
+                "scope-context source_page_indexes must be sorted and unique."
+            )
+
+        if self.matched_text not in self.source_text:
+            raise ValueError(
+                "scope-context matched_text must be an exact excerpt of source_text."
+            )
+
+        return self
 
 
 class ExtractionWindowTablePayload(BaseSchema):
