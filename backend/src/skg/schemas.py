@@ -1750,6 +1750,43 @@ class _CreateKGLearningComponentsConfig(BaseSchema):
             "Recorded verbatim in the LC generation summary."
         ),
     )
+    lc_max_failure_rate: float = Field(
+        default=0.05,
+        description=(
+            "Maximum fraction of eligible LC-source SFIs allowed to fail LLM "
+            "decomposition before the run raises. Isolated failures are "
+            "recorded and the run continues; set 1.0 to disable the guard."
+        ),
+        ge=0.0,
+        le=1.0,
+    )
+    lc_max_skill_text_length: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional maximum character length for one atomic skill "
+            "statement; the step-14 validator retries responses that exceed "
+            "it. Unset means no length ceiling."
+        ),
+        ge=1,
+    )
+    lc_max_skills_per_sfi: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional hard ceiling on atomic skills per SFI; the step-14 "
+            "validator asks for a coarser decomposition when exceeded. Unset "
+            "means the prompt contract alone governs skill count."
+        ),
+        ge=1,
+    )
+    lc_min_skill_text_length: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional minimum character length for one atomic skill "
+            "statement; the step-14 validator retries responses that fall "
+            "short. Unset means no length floor."
+        ),
+        ge=1,
+    )
     lc_request_batch_size: int = Field(
         default=1,
         description=(
@@ -1829,6 +1866,33 @@ class _CreateKGLearningComponentsConfig(BaseSchema):
                 "it entirely to use the leaf-node default."
             )
         return cleaned
+
+    @model_validator(mode="after")
+    def _validate_skill_text_length_bounds(self) -> Self:
+        """Validate that skill-text length bounds are consistent when both set.
+
+        Returns
+        -------
+        Self
+            The validated Learning Components configuration.
+
+        Raises
+        ------
+        ValueError
+            If lc_min_skill_text_length exceeds lc_max_skill_text_length.
+        """
+
+        if (
+            self.lc_max_skill_text_length is not None
+            and self.lc_min_skill_text_length is not None
+            and self.lc_min_skill_text_length > self.lc_max_skill_text_length
+        ):
+            raise ValueError(
+                f"lc_min_skill_text_length ({self.lc_min_skill_text_length}) "
+                "must not exceed lc_max_skill_text_length "
+                f"({self.lc_max_skill_text_length})."
+            )
+        return self
 
 
 class _CreateKGMetadata(BaseSchema):

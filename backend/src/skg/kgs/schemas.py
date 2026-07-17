@@ -1985,6 +1985,30 @@ LCExclusionReason = Literal[
 LCSelectionMode = Literal["explicit_allowlist", "leaf_default"]
 
 
+class LCAtomicSkill(BaseSchema):
+    """One atomic teachable skill decomposed from an LC-source SFI (step 14)."""
+
+    confidence: float = Field(
+        description=(
+            "Model confidence that this skill is directly supported by the "
+            "source SFI text."
+        ),
+        ge=0.0,
+        le=1.0,
+    )
+    description: str = Field(
+        description="The atomic teachable skill statement, in the SFI's source language.",
+        min_length=1,
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description=(
+            "2-5 short lowercase keyword tags in the skill's source language. "
+            "Dormant until pass 2 (cross-SFI grouping)."
+        ),
+    )
+
+
 class LCContextSFI(BaseSchema):
     """One ancestor or sibling SFI carried as disambiguation-only LC context."""
 
@@ -2057,6 +2081,15 @@ class LCFrameworkContext(BaseSchema):
     name: str = Field(min_length=1)
 
 
+class LCGenerationFailure(BaseSchema):
+    """One LC generation request that produced no valid decomposition (step 14)."""
+
+    error_message: str = Field(min_length=1)
+    error_type: str = Field(min_length=1)
+    request_id: str = Field(min_length=1)
+    sfi_uuids: list[UUID] = Field(min_length=1)
+
+
 class LCGenerationRequest(BaseSchema):
     """Prompt payload for LLM decomposition of LC-source SFIs (step 13).
 
@@ -2068,6 +2101,19 @@ class LCGenerationRequest(BaseSchema):
     framework_context: LCFrameworkContext
     request_id: str = Field(description="Deterministic request ID.", min_length=1)
     sfis: list[LCRequestSFI] = Field(min_length=1)
+
+
+class LCGenerationResponse(BaseSchema):
+    """Structured LLM output for one LC generation request (step 14).
+
+    Carries raw atomic-skill decompositions, not LearningComponent nodes:
+    step 15 mints LC nodes (deterministic identity, provenance) from these.
+    """
+
+    items: list[LCResponseSFI] = Field(min_length=1)
+    request_id: str = Field(
+        description="Request ID copied from the prompt.", min_length=1
+    )
 
 
 class LCRequestSFI(BaseSchema):
@@ -2105,6 +2151,17 @@ class LCRequestSFI(BaseSchema):
         ),
     )
     statement_type: str = Field(min_length=1)
+
+
+class LCResponseSFI(BaseSchema):
+    """Atomic skills decomposed from one LC-source SFI (step 14).
+
+    A single skill is a valid decomposition: an already-atomic SFI yields
+    exactly one cleanly restated skill.
+    """
+
+    sfi_uuid: UUID = Field(description="Final SFI UUID copied from the request batch.")
+    skills: list[LCAtomicSkill] = Field(min_length=1)
 
 
 # Schemas for nodes.

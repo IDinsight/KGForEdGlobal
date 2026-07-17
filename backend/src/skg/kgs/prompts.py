@@ -7,6 +7,7 @@ from typing import Any, Optional
 # Package Library
 from skg.kgs.schemas import (
     ExtractionWindow,
+    LCGenerationRequest,
     SFIDedupReviewRequest,
     SFIHasChildResolutionRequest,
 )
@@ -519,6 +520,74 @@ def _get_block_language(extraction_window: ExtractionWindow) -> str:
         return language.strip()
 
     return extraction_window.primary_language
+
+
+def build_lc_generation_prompt(
+    *,
+    generation_instructions: str,
+    lc_generation_request: LCGenerationRequest,
+) -> PromptPair:
+    """Generate prompts for LC atomic-skill decomposition (step 14).
+
+    Parameters
+    ----------
+    generation_instructions
+        Reviewed curriculum-specific decomposition instructions from the
+        Learning Components runtime configuration.
+    lc_generation_request
+        Bounded LC generation request containing the LC-source SFIs with
+        their framework and ancestor context.
+
+    Returns
+    -------
+    PromptPair
+        System and user messages for the LC generation agent.
+    """
+
+    user_payload = lc_generation_request.model_dump(mode="json")
+    system_message = dedent(
+        f"""You are a curriculum-decomposition agent for a Learning Commons-shaped Knowledge Graph. Decompose each supplied StandardsFrameworkItem (SFI) into atomic teachable skills.
+
+## Task boundary
+- Each skill must be a single atomic, teachable skill — not an activity, resource, assessment prompt, teacher guidance, a prerequisite skill the standard does not state, or a restatement of the whole standard.
+- Each skill must be smaller and more teachable than the standard and directly supported by the standard's own text.
+- Prefer concise teachable components that could support lesson planning or learning resource tagging.
+- A single skill is a valid decomposition: when an SFI is already atomic, return exactly one cleanly restated skill. Never force a split and never pad the skill count.
+- When you do split an SFI into multiple skills, the split replaces the whole: never additionally emit a summary skill that restates the entire SFI.
+- Do not emit both an "understand/concept of X" skill and an "identify/use X" skill for the same X unless the SFI text states both aspects explicitly; one skill per stated competency.
+- Never add materials, tools, or methods the SFI text does not name (e.g. do not turn "practical work" into "concrete objects").
+- Produce each skill in the SFI's source language (its `language` field), unless the runtime curriculum instructions state otherwise.
+
+## Runtime curriculum instructions
+- Treat the following as the authoritative curriculum-specific decomposition policy for this request. If it conflicts with the generic rules above, follow it unless doing so would violate the output contract.
+{generation_instructions}
+
+## Context policy
+- `ancestor_path` is ordered framework root first and is the authoritative source of grade/curriculum scope. Use it to disambiguate terms and scope only; it must not introduce skills absent from the SFI text unless the runtime curriculum instructions explicitly authorize taking a missing verb or object from a named ancestor type.
+- If `ancestor_path_status` is "unresolved_ancestor_path", the ancestor path is incomplete: treat the SFI text as the sole scope authority and do not state any grade, strand, topic, or unit scope the SFI text itself does not carry.
+- `siblings`, when present, show neighbouring standards under the same parent so you avoid claiming skills those standards own. Never derive skill content from siblings.
+- `framework_context` situates the curriculum (jurisdiction, subject, language); it introduces no skills.
+
+## Output contract
+- Copy request_id exactly.
+- Return exactly one items entry per SFI in the request, with sfi_uuid copied exactly; cover every SFI exactly once and invent none.
+- Every skills list must be non-empty.
+- Set confidence in [0, 1] as your confidence that the skill is directly supported by the SFI text.
+- Give each skill 2-5 short lowercase keyword tags in the skill's source language.
+- Never copy source statement codes or list markers into skill text.
+        """
+    )
+    user_message = dedent(
+        f"""Decompose the LC-source SFIs in this bounded request into atomic teachable skills.
+
+## LC generation request JSON
+{json_dumps(user_payload)}
+        """
+    )
+
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
+    )
 
 
 def extract_sfi_candidates_from_window(

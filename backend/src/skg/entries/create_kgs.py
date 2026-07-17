@@ -28,7 +28,10 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.kgs.lc_generation import build_lc_generation_requests
+from skg.kgs.lc_generation import (
+    build_lc_generation_requests,
+    decompose_lc_source_sfis,
+)
 from skg.kgs.lc_selection import select_lc_source_sfis
 from skg.kgs.llm import KGUsageTracker
 from skg.kgs.sfi_dedup import merge_sfi_candidates
@@ -81,9 +84,11 @@ def build_kgs(
     12. Select eligible LC-source SFIs (profile allowlist or leaf default).
     13. Build deterministic LC generation requests (ancestor paths, framework
         context).
+    14. Decompose LC-source SFIs into atomic skills using an LLM (sequential,
+        resumable).
 
-    LC steps 14-18 (LLM decomposition, LC minting, supports edges, summary,
-    AS+LC bundle merge) are wired in as they are built.
+    LC steps 15-18 (LC minting, supports edges, summary, AS+LC bundle merge)
+    are wired in as they are built.
 
     Parameters
     ----------
@@ -198,16 +203,23 @@ def build_kgs(
         sfi_final_records=sfi_final_records,
     )
 
-    # 13. Later LC steps (14-18) are wired in as they are built; the LLM
-    # decomposition step (14) additionally requires reviewed per-curriculum
-    # generation_instructions before it may run.
-    build_lc_generation_requests(
+    # 13.
+    lc_generation_requests = build_lc_generation_requests(
         academic_standards_bundle=final_bundle,
         has_child_edges=has_child_edges,
         kg_dirs=kg_dirs,
         lc_config=kg_run_inputs.kg_config.learning_components,
         lc_eligible_sfis=lc_eligible_sfis,
         sfi_final_records=sfi_final_records,
+    )
+
+    # 14. Later LC steps (15-18) are wired in as they are built.
+    decompose_lc_source_sfis(
+        kg_dirs=kg_dirs,
+        lc_config=kg_run_inputs.kg_config.learning_components,
+        lc_generation_requests=lc_generation_requests,
+        overwrite=config.overwrite,
+        usage_tracker=usage_tracker,
     )
 
     return kg_run_manifest_fp

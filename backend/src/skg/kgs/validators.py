@@ -14,6 +14,8 @@ from typing import Any
 # Package Library
 from skg.kgs.schemas import (
     ExtractionWindow,
+    LCGenerationRequest,
+    LCGenerationResponse,
     SFICandidate,
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
@@ -23,7 +25,7 @@ from skg.kgs.schemas import (
     SFIHasChildResolutionResponse,
 )
 from skg.page_ir_extraction.validators import QualityError
-from skg.schemas import CreateKGConfig
+from skg.schemas import CreateKGConfig, _CreateKGLearningComponentsConfig
 
 ACTIVE_OUTLINE_STACK_PARENT_REASON = "active_outline_stack_parent"
 CANONICAL_SCOPE_PARENT_MATCH_REASON = "canonical_scope_parent_match"
@@ -2107,6 +2109,147 @@ def strip_leading_enumerated_prefix(value: str) -> str:
             return body
 
     return stripped
+
+
+def _verify_lc_generation_sfi_coverage(
+    *,
+    lc_generation_request: LCGenerationRequest,
+    lc_generation_response: LCGenerationResponse,
+) -> None:
+    """Verify a step-14 response covers every requested SFI exactly once.
+
+    Parameters
+    ----------
+    lc_generation_request
+        The bounded LC generation request that produced the response.
+    lc_generation_response
+        Parsed atomic-skills response from the model.
+
+    Raises
+    ------
+    QualityError
+        If the response ID mismatches the request, or items duplicate, invent,
+        or omit SFIs.
+    """
+
+    if lc_generation_response.request_id != lc_generation_request.request_id:
+        raise QualityError(
+            f"request_id mismatch: expected "
+            f"{lc_generation_request.request_id!r}, got "
+            f"{lc_generation_response.request_id!r}."
+        )
+
+    expected_sfi_uuids = {
+        request_sfi.final_sfi_uuid for request_sfi in lc_generation_request.sfis
+    }
+    returned_sfi_uuids = [item.sfi_uuid for item in lc_generation_response.items]
+    duplicate_sfi_uuids = {
+        sfi_uuid
+        for sfi_uuid in returned_sfi_uuids
+        if returned_sfi_uuids.count(sfi_uuid) > 1
+    }
+    if duplicate_sfi_uuids:
+        raise QualityError(
+            f"duplicate items for SFIs: {sorted(map(str, duplicate_sfi_uuids))}. "
+            "Return exactly one items entry per SFI."
+        )
+    invented_sfi_uuids = set(returned_sfi_uuids) - expected_sfi_uuids
+    if invented_sfi_uuids:
+        raise QualityError(
+            f"items reference SFIs not in the request: "
+            f"{sorted(map(str, invented_sfi_uuids))}."
+        )
+    omitted_sfi_uuids = expected_sfi_uuids - set(returned_sfi_uuids)
+    if omitted_sfi_uuids:
+        raise QualityError(
+            f"items omit SFIs from the request: "
+            f"{sorted(map(str, omitted_sfi_uuids))}. Cover every SFI exactly "
+            "once; an already-atomic SFI still gets one cleanly restated skill."
+        )
+
+
+def _verify_lc_generation_skill_bounds(
+    *,
+    lc_config: _CreateKGLearningComponentsConfig,
+    lc_generation_response: LCGenerationResponse,
+) -> None:
+    """Verify step-14 skills against the configured count and length bounds.
+
+    Parameters
+    ----------
+    lc_config
+        Learning Components runtime configuration (skill count/length knobs).
+    lc_generation_response
+        Parsed atomic-skills response from the model.
+
+    Raises
+    ------
+    QualityError
+        If an SFI exceeds the configured skills-per-SFI cap, or a skill
+        description is blank or outside the configured length bounds.
+    """
+
+    max_skills = lc_config.lc_max_skills_per_sfi
+    max_text_length = lc_config.lc_max_skill_text_length
+    min_text_length = lc_config.lc_min_skill_text_length
+    for item in lc_generation_response.items:
+        if max_skills is not None and len(item.skills) > max_skills:
+            raise QualityError(
+                f"SFI {item.sfi_uuid} has {len(item.skills)} skills, above the "
+                f"configured maximum of {max_skills}. Return a coarser-grain "
+                "decomposition with fewer, broader teachable skills."
+            )
+        for skill in item.skills:
+            skill_text = skill.description.strip()
+            if not skill_text:
+                raise QualityError(
+                    f"SFI {item.sfi_uuid} contains a blank skill description."
+                )
+            if min_text_length is not None and len(skill_text) < min_text_length:
+                raise QualityError(
+                    f"SFI {item.sfi_uuid} has a skill shorter than the "
+                    f"configured minimum of {min_text_length} characters: "
+                    f"{skill_text!r}."
+                )
+            if max_text_length is not None and len(skill_text) > max_text_length:
+                raise QualityError(
+                    f"SFI {item.sfi_uuid} has a skill longer than the "
+                    f"configured maximum of {max_text_length} characters: "
+                    f"{skill_text[:120]!r}..."
+                )
+
+
+def verify_lc_generation_quality(
+    *,
+    lc_config: _CreateKGLearningComponentsConfig,
+    lc_generation_request: LCGenerationRequest,
+    lc_generation_response: LCGenerationResponse,
+) -> None:
+    """Verify one LC generation response against its request (step 14).
+
+    Parameters
+    ----------
+    lc_config
+        Learning Components runtime configuration (skill count/length knobs).
+    lc_generation_request
+        The bounded LC generation request that produced the response.
+    lc_generation_response
+        Parsed atomic-skills response from the model.
+
+    Raises
+    ------
+    QualityError
+        If the response covers the wrong SFIs, exceeds the configured
+        skills-per-SFI cap, or contains blank or out-of-bounds skill text.
+    """
+
+    _verify_lc_generation_sfi_coverage(
+        lc_generation_request=lc_generation_request,
+        lc_generation_response=lc_generation_response,
+    )
+    _verify_lc_generation_skill_bounds(
+        lc_config=lc_config, lc_generation_response=lc_generation_response
+    )
 
 
 def verify_sfi_dedup_review_quality(

@@ -2,8 +2,8 @@
 for KG creation (steps 13-14).
 
 - 13: deterministic LC generation requests (ancestor-path + framework context).
-- 14: LLM decomposition of LC-source SFIs into atomic skills (not yet built;
-  gated on reviewed per-curriculum generation_instructions).
+- 14: sequential, resumable LLM decomposition of LC-source SFIs into atomic
+  skills; isolated failures are recorded and guarded by lc_max_failure_rate.
 
 Sibling LC modules mirror the sfi_* per-step layout: lc_selection.py
 (steps 11-12), lc_finalization.py (steps 15-17), lc_export.py (step 18).
@@ -12,28 +12,43 @@ Sibling LC modules mirror the sfi_* per-step layout: lc_selection.py
 # Standard Library
 import hashlib
 
+from pathlib import Path
 from typing import Optional, Sequence
 from uuid import UUID
 
 # Third Party Library
 from loguru import logger
+from pydantic import ValidationError
 
 # Package Library
+from skg.kgs.llm import KGUsageTracker, generate_learning_components_for_request
 from skg.kgs.schemas import (
     AcademicStandardsKGBundle,
     LCAncestorPathStatus,
     LCContextSFI,
     LCFrameworkContext,
+    LCGenerationFailure,
     LCGenerationRequest,
+    LCGenerationResponse,
     LCRequestSFI,
     SFIFinalRecord,
     SFIHasChildEdge,
 )
-from skg.kgs.utils import KGDirs, make_dir, normalize_text
+from skg.kgs.utils import (
+    KGDirs,
+    append_jsonl_model,
+    make_dir,
+    normalize_text,
+    reset_output_files,
+)
+from skg.kgs.validators import verify_lc_generation_quality
+from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import _CreateKGLearningComponentsConfig
 from skg.utils.general import write_to_json
 
+LC_GENERATION_FAILURES_FN = "lc_generation_failures.json"
 LC_GENERATION_REQUESTS_FN = "lc_generation_requests.jsonl"
+LC_GENERATION_RESPONSES_FN = "lc_generation_responses.jsonl"
 
 
 def _build_ancestor_path(
@@ -189,6 +204,80 @@ def _collect_siblings(
     ]
 
 
+def _load_resumable_lc_generation_responses(
+    *,
+    lc_config: _CreateKGLearningComponentsConfig,
+    lc_generation_requests: Sequence[LCGenerationRequest],
+    responses_fp: Path,
+) -> dict[str, LCGenerationResponse]:
+    """Load completed step-14 responses that remain valid for this run.
+
+    Reads a valid prefix of the responses artifact (a truncated or invalid
+    trailing line is dropped with a warning). Every parsed response must
+    match a current request by ``request_id`` and pass the quality checks
+    against it; any stale, duplicate, or invalid response discards ALL
+    progress with a warning so the run restarts cleanly.
+
+    Parameters
+    ----------
+    lc_config
+        Learning Components runtime configuration.
+    lc_generation_requests
+        Current deterministic step-13 requests.
+    responses_fp
+        Path to the step-14 responses JSONL artifact.
+
+    Returns
+    -------
+    dict[str, LCGenerationResponse]
+        Valid completed responses keyed by request ID (empty when no progress
+        is reusable).
+    """
+
+    if not responses_fp.exists() or responses_fp.stat().st_size == 0:
+        return {}
+
+    requests_by_id = {request.request_id: request for request in lc_generation_requests}
+    completed: dict[str, LCGenerationResponse] = {}
+    with responses_fp.open("r", encoding="utf-8") as f:
+        for line_number, line in enumerate(f, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                response = LCGenerationResponse.model_validate_json(stripped)
+            except ValidationError:
+                logger.warning(
+                    f"Dropping invalid/truncated LC generation response at "
+                    f"{responses_fp}:{line_number}; resuming from the "
+                    f"{len(completed)} valid responses before it."
+                )
+                break
+            request = requests_by_id.get(response.request_id)
+            if request is None or response.request_id in completed:
+                logger.warning(
+                    f"LC generation response at {responses_fp}:{line_number} "
+                    f"has a stale or duplicate request_id "
+                    f"{response.request_id!r}; discarding all saved progress."
+                )
+                return {}
+            try:
+                verify_lc_generation_quality(
+                    lc_config=lc_config,
+                    lc_generation_request=request,
+                    lc_generation_response=response,
+                )
+            except QualityError as e:
+                logger.warning(
+                    f"Saved LC generation response for request "
+                    f"{response.request_id!r} no longer passes quality checks "
+                    f"({str(e)[:200]}); discarding all saved progress."
+                )
+                return {}
+            completed[response.request_id] = response
+    return completed
+
+
 def build_lc_generation_requests(
     *,
     academic_standards_bundle: AcademicStandardsKGBundle,
@@ -321,3 +410,132 @@ def build_lc_generation_requests(
         f"unresolved_ancestor_paths={unresolved_path_count}"
     )
     return requests
+
+
+def decompose_lc_source_sfis(
+    *,
+    kg_dirs: KGDirs,
+    lc_config: _CreateKGLearningComponentsConfig,
+    lc_generation_requests: Sequence[LCGenerationRequest],
+    overwrite: bool,
+    usage_tracker: KGUsageTracker,
+) -> list[LCGenerationResponse]:
+    """Run step 14: decompose LC-source SFIs into atomic skills via LLM.
+
+    Requests run sequentially in request order, one LLM call at a time; each
+    validated response is appended to the responses artifact as it completes,
+    so a stopped run resumes from its completed responses (keyed by
+    request_id; previously failed requests are retried). A request that still
+    fails after model retries is recorded in the failures artifact and the
+    run continues; the run raises only when the failed fraction of LC-source
+    SFIs exceeds ``lc_max_failure_rate``.
+
+    Parameters
+    ----------
+    kg_dirs
+        KG artifact directories; artifacts are written under ``kg_dirs.root``.
+    lc_config
+        Learning Components runtime configuration.
+    lc_generation_requests
+        Deterministic step-13 requests, in request order.
+    overwrite
+        When True, discard saved responses and regenerate from scratch.
+    usage_tracker
+        Tracker to accumulate LLM token usage (``lc_generation`` bucket).
+
+    Returns
+    -------
+    list[LCGenerationResponse]
+        Validated responses for all successfully decomposed requests, in
+        request order.
+
+    Raises
+    ------
+    ValueError
+        If the failed fraction of LC-source SFIs exceeds
+        ``lc_max_failure_rate`` (raised after all artifacts are written).
+    """
+
+    failures_fp = kg_dirs.root / LC_GENERATION_FAILURES_FN
+    responses_fp = kg_dirs.root / LC_GENERATION_RESPONSES_FN
+
+    if overwrite:
+        logger.info("Starting LC generation from scratch because overwrite=True.")
+        reset_output_files(output_fps=[failures_fp, responses_fp])
+        completed: dict[str, LCGenerationResponse] = {}
+    else:
+        completed = _load_resumable_lc_generation_responses(
+            lc_config=lc_config,
+            lc_generation_requests=lc_generation_requests,
+            responses_fp=responses_fp,
+        )
+        reset_output_files(output_fps=[failures_fp, responses_fp])
+        for response in completed.values():
+            append_jsonl_model(fp=responses_fp, model=response)
+
+    failures: list[LCGenerationFailure] = []
+    responses: list[LCGenerationResponse] = []
+    for request in lc_generation_requests:
+        cached_response = completed.get(request.request_id)
+        if cached_response is not None:
+            responses.append(cached_response)
+            continue
+        try:
+            response = generate_learning_components_for_request(
+                lc_config=lc_config,
+                lc_generation_request=request,
+                usage_tracker=usage_tracker,
+            )
+        except Exception as e:  # pylint: disable=broad-except
+            logger.error(
+                f"LC generation failed for request {request.request_id}: "
+                f"{str(e)[:500]}"
+            )
+            failures.append(
+                LCGenerationFailure(
+                    error_message=str(e)[:1000],
+                    error_type=e.__class__.__name__,
+                    request_id=request.request_id,
+                    sfi_uuids=[
+                        request_sfi.final_sfi_uuid for request_sfi in request.sfis
+                    ],
+                )
+            )
+            continue
+        append_jsonl_model(fp=responses_fp, model=response)
+        responses.append(response)
+
+    make_dir(kg_dirs.root)
+    write_to_json(
+        fp=failures_fp,
+        json_info=[failure.model_dump(mode="json") for failure in failures],
+    )
+
+    failed_sfi_count = sum(len(failure.sfi_uuids) for failure in failures)
+    total_sfi_count = sum(len(request.sfis) for request in lc_generation_requests)
+    skill_count = sum(
+        len(item.skills) for response in responses for item in response.items
+    )
+    logger.success(
+        f"Decomposed LC-source SFIs: requests={len(lc_generation_requests)}; "
+        f"resumed={len(completed)}; "
+        f"succeeded={len(responses)}; "
+        f"failed_requests={len(failures)}; "
+        f"failed_sfis={failed_sfi_count}; "
+        f"atomic_skills={skill_count}"
+    )
+
+    if (
+        total_sfi_count
+        and failed_sfi_count / total_sfi_count > lc_config.lc_max_failure_rate
+    ):
+        raise ValueError(
+            f"LC generation failure rate "
+            f"{failed_sfi_count / total_sfi_count:.3f} "
+            f"({failed_sfi_count}/{total_sfi_count} LC-source SFIs) exceeds "
+            f"lc_max_failure_rate={lc_config.lc_max_failure_rate}. See "
+            f"{failures_fp} for per-request errors; re-run without overwrite "
+            "to retry only the failed requests."
+        )
+
+    return responses
