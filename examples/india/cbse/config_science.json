@@ -88,7 +88,7 @@
 			"max_dedup_review_set_candidates": 24,
 			"max_has_child_parent_candidates": 32,
 			"max_has_child_section_path_labels": 8,
-			"max_rows_per_table_window": 6,
+			"max_rows_per_table_window": 4,
 			"row_overlap": 1,
 			"sfi_dedup_context_statement_types": [
 				"Class",
