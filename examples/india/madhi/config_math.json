@@ -1,0 +1,367 @@
+{
+	"page_ir_extraction": {
+		"country": "India",
+		"dpi": 250,
+		"end_page": null,
+		"languages": [
+			"en"
+		],
+		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results/kg_for_ed",
+		"overwrite": false,
+		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/india/madhi/mathematics.pdf",
+		"start_page": 0,
+		"use_extracted_hints": true,
+		"year": 2025
+	},
+	"page_ir_verification": {
+		"end_page": null,
+		"min_confidence_to_patch": 0.5,
+		"min_confidence_to_select_positive": 0.5,
+		"min_confidence_to_stop_negative_search": 0.9,
+		"next_page_crop_padding_px": 120,
+		"overwrite": false,
+		"start_page": 0
+	},
+	"document_ir": {
+		"keep_artifacts": false,
+		"max_section_path_length": 24,
+		"min_link_score": 1.0,
+		"overwrite": true,
+		"repair_hyphenation": true,
+		"sort_items_by_bbox": true,
+		"table_filldown_enabled": true,
+		"table_filldown_group_cols_max": 1,
+		"verification_auto_stitch_confidence": 0.7
+	},
+	"kgs": {
+		"overwrite": false,
+		"as": {
+			"bilingual_pair_policy": null,
+			"code_parent_rules": [
+				{
+					"child": "competency",
+					"parent": "curricular_goal",
+					"method": "regex_substitution",
+					"regex": "^C(?:\\s*[-–—]\\s*|\\s+)(\\d+)\\.\\d+$",
+					"replacement": "CG-\\1"
+				}
+			],
+			"code_patterns": {
+				"curricular_goal": "\\bCG(?:\\s*[-–—]\\s*|\\s+)\\d+\\b",
+				"competency": "\\bC(?:\\s*[-–—]\\s*|\\s+)\\d+\\.\\d+\\b"
+			},
+			"code_scope_statement_types": {},
+			"excluded_table_columns_signatures": [],
+			"excluded_table_section_patterns": [],
+			"grade_level_statement_types": [
+				"Class"
+			],
+			"identity_scope_statement_types": {
+				"Competency": [
+					"Curricular Goal"
+				],
+				"Content": [
+					"Curricular Goal",
+					"Competency",
+					"Class"
+				]
+			},
+			"included_table_columns_signatures": [
+				"cg-1 children make sense of their surroundings through mathematics using numbers, shapes, and measurements. they develop a sense of quantity and its verbal expression.|||||competency|content|||||class-1|class-2",
+				"cg-2 develops fluency with whole numbers expressed as indo-arabic numerals, and the four basic arithmetical operations on them, including number facts and the concept of place value, simple fractions and their comparison.||||||competency|content||||||class-3|class-4|class-5",
+				"cg-3 explores and expresses the attributes and qualities of 2d and 3d shapes, describes and depicts spatial relationships and locations, recognises and constructs symmetrical forms.||||||competency|content||||||class-3|class-4|class-5",
+				"cg-4 learns to measure attributes such as distance, length, weight, area, capacity and time using both standard and non-standard units, relating measure and number.||||||competency|content||||||class-3|class-4|class-5",
+				"cg-5 develops a taste for solving problems posed as puzzles, arithmetical stories and mathematical contexts from everyday life, with opportunities for computational thinking.||||||competency|content||||||class-3|class-4|class-5"
+			],
+			"included_table_section_patterns": [],
+			"max_dedup_review_set_candidates": null,
+			"max_has_child_parent_candidates": 32,
+			"max_has_child_section_path_labels": 12,
+			"max_rows_per_table_window": 3,
+			"row_overlap": 1,
+			"sfi_dedup_context_statement_types": [
+				"Curricular Goal",
+				"Competency"
+			],
+			"sfi_dedup_context_window_radius": 1,
+			"sfi_dedup_instructions": "Deduplicate only repeated extractions of the same logical source occurrence caused by overlapping windows, stitched-table continuation, or duplicate model output. Source equality is evidence, not an automatic merge rule.\n\nCurricular Goal and Competency candidates are coded. Never merge different canonical CG or C codes. Treat the source surface `C 1.5` as the same logical configured competency value `C-1.5`, while preserving the original surface code and anchors in provenance. If one identical code is genuinely attached to materially different source statements, preserve separate/conflict evidence rather than forcing a merge.\n\nContent candidates are uncoded and must be compared using their exact identity scope. Never merge Content across different Curricular Goal, Competency, or Class values, even when wording is identical or similar. Repetition across adjacent classes is often an intentional progression, and repeated topics such as patterns, money, measurement, puzzles, or operations occur under different competencies and goals. Same text, same table row, same source segment, and nearby windows are review signals only.\n\nA continuation fragment and the complete reconstructed bullet may merge only when exact source anchors show that both represent the same physical item; prefer the complete source-faithful representation. Do not merge separate bullets in one cell merely because they share a row or class. Cross-statement-type merging is allowed only to correct duplicate extraction of one exact physical occurrence that was inconsistently classified; otherwise Curricular Goal, Competency, Content, and scope-only Class are semantically distinct.",
+			"sfi_extraction_instructions": "Extract Academic Standards SFIs only from the five selected Proposed Draft Syllabus mathematics tables. The source model is Curricular Goal -> Competency -> Content, with Class as a scope dimension rather than a node. Across the complete document the authored coded inventory is exactly CG-1 through CG-5 and 30 competencies: C-1.1 through C-1.13, C-2.1 through C-2.5, C-3.1 through C-3.4, C-4.1 through C-4.5, and C-5.1 through C-5.3.\n\nEmit one Curricular Goal candidate for the first spanning CG-* header row of each selected table. Preserve its complete source-visible goal statement as description, preserve the literal visible code as statement_code, use code_type curricular_goal, and return empty code_scope_values and identity_scope_values.\n\nEmit one Competency candidate for each nonblank C-* statement in the first column. Preserve the complete source-visible competency statement as description and the literal visible code as statement_code. The PDF/DocumentIR contains a genuine code-format inconsistency: the fifth competency is printed as `C 1.5`, not `C-1.5`. Preserve `C 1.5` in statement_code and its exact source anchors; do not silently rewrite the source. For controlled semantic scope, however, use the configured canonical competency value `C-1.5`. Every Competency must return identity_scope_values with exactly one key, `Curricular Goal`, whose value is the matching canonical CG code, and empty code_scope_values.\n\nEmit Content candidates only from official bullet items in the class content columns. Use the single statement_type `Content` for every class. Each Content candidate must be an uncoded leaf with statement_code null, empty code_scope_values, and identity_scope_values containing exactly `Curricular Goal`, `Competency`, and `Class`. Use canonical scope values such as `CG-2`, `C-2.3`, and `Class-4`. The Class value comes from the physical table column; the class heading itself is not an SFI. A competency spans all of its class columns, so do not duplicate the Competency as one item per class.\n\nPrefer one Content candidate per visible bullet or coherent bullet item. Keep multi-line text belonging to one bullet together. When a bullet is split by a stitched page continuation, compose one candidate from exact ordered source-anchor fragments across the involved rows instead of emitting fragment candidates. Important continuation cases in the latest DocumentIR include C-2.1, C-2.3, and C-4.4: blank first-column cells continue the nearest preceding competency in the same stitched table. Fragments such as `groups`, `digit number`, or `minutes` at the start of a continuation row are not standalone Content items. Cite every visible row/header needed to support the composed description and source_text.\n\nUse `rows`, exact source units, and source anchors as source truth. `rows_grid`, `rows_filldown`, header repetition, and other helper views may clarify column or continuation context but must not be quoted as if they were separately visible source text and must not cause duplicate candidates. Blank class cells are meaningful absences; do not invent content for them. In particular, some competency/class combinations are blank, including the Class-2 cell for C-1.1 and several Class-3 cells under CG-4.\n\nDo not extract the document title, TNSCERT/logo text, introductory rationale, cohort headings, the generic table labels `Competency` or `Content`, class-column headings, page numbers, Pedagogical Approaches, or Assessment Strategies as SFIs. Preserve draft-source wording, spelling, grammar, amounts, units, and mathematical notation. Do not silently repair known source anomalies such as the C-1.7 range inconsistency, the irregular fraction punctuation in C-2.2, or page-break punctuation in C-2.3. Normalized fields and controlled scope values may support identity, but description, source_text, statement_code, and anchors must remain source-faithful.",
+			"sfi_extraction_validation_instructions": "Validate the producer against the authored table semantics, not against an idealized corrected curriculum. Reject any candidate drawn from introductory prose, logos, headings outside the syllabus tables, generic table headers, Pedagogical Approaches, or Assessment Strategies. Reject Class nodes: `Class` is scope-only and no Class candidate should be emitted.\n\nFor each Curricular Goal, require one exact CG code and the complete source-visible goal statement from the first spanning table header. For each Competency, require one exact source-visible C code and the complete first-column statement. Accept the authored `C 1.5` surface as a valid competency code occurrence while preserving that literal code; its canonical identity-scope value for child Content is `C-1.5`.\n\nEnforce exact scope shapes: Curricular Goal has no identity scope; Competency has exactly `Curricular Goal`; Content has exactly `Curricular Goal`, `Competency`, and `Class`. Confirm that these values agree with the table header, active competency row, and physical class column. Content must be uncoded. The words `Competency`, `Content`, and `Class-*` in header rows are labels or scope evidence, not standalone SFIs.\n\nCheck stitched continuation semantics carefully. A blank competency cell continues the nearest preceding nonblank competency within the same stitched table. Do not accept standalone fragment candidates created from page-break residues such as `groups`, `digit number`, or `minutes`; require the fragments to be joined to the bullet they visibly continue using exact ordered anchors. Conversely, do not combine separate bullet markers into one candidate unless the source shows they are one continued bullet. Empty class cells must remain empty.\n\nDo not correct source facts or prose. Preserve the visible `C 1.5` formatting, C-1.7 numerical inconsistency, C-2.2 fraction punctuation, Indian currency and units, and other draft irregularities. A source anomaly may be explained in checker issues, but it is not permission to invent corrected text or codes.",
+			"sfi_has_child_instructions": "Resolve a strict single-parent hierarchy: StandardsFramework -> Curricular Goal -> Competency -> Content. `Class` is a scope dimension and must never be selected as a parent node.\n\nEvery Curricular Goal is a root-level item and must select only the StandardsFramework root. No other statement type may be resolved to the root. Every Competency must select exactly one Curricular Goal whose canonical code matches the leading goal number, for example C-2.3 -> CG-2 and the authored `C 1.5` -> CG-1. Confirm the code relation against the source table header and the child's `Curricular Goal` identity scope.\n\nEvery Content item must select exactly one Competency. Prefer the candidate whose canonical competency value equals the child's `Competency` identity scope and whose Curricular Goal scope also agrees. Use same table row, paired row/header context, stitched continuation context, source segment/window, and active preceding competency as corroboration. A blank first-column continuation row belongs to the nearest preceding nonblank competency in the same stitched table; important cases include continuations of C-2.1, C-2.3, and C-4.4.\n\nClass columns do not introduce hierarchy nodes. Content from Class-1 and Class-2 under one competency are sibling Content items distinguished by `Class` scope. Never attach Content directly to a Curricular Goal when its source-supported Competency is available. Never infer a parent from topic similarity across goals or classes.\n\nSelect the root as a resolved parent only for Curricular Goal children. If a Competency or Content item has no defensible supplied SFI parent, return unresolved=true with no selected parent IDs so the pipeline creates an auditable unresolved root-fallback edge. Do not return a resolved root fallback for a non-root item.",
+			"sfi_has_child_parent_statement_types": {
+				"Curricular Goal": [],
+				"Competency": [
+					"Curricular Goal"
+				],
+				"Content": [
+					"Competency"
+				]
+			},
+			"sfi_has_child_statement_type_hierarchy": [
+				"Curricular Goal",
+				"Competency",
+				"Content"
+			],
+			"sfi_has_child_validation_instructions": "Independently enforce the source-authored single-parent graph. A passed or corrected response must give each child exactly one direct parent unless it is unresolved. Curricular Goal may select only the StandardsFramework root. Competency may select only Curricular Goal. Content may select only Competency. Reject any Class node or Class parent selection.\n\nFor Competency, verify the selected goal from both the code prefix and the source table: C-n.m belongs to CG-n, including the authored surface `C 1.5`, which belongs to CG-1. For Content, verify that the selected Competency equals the child's canonical `Competency` identity-scope value and that goal scope is compatible. Use physical class-column and table-row evidence only as corroboration; class is not a parent level.\n\nTreat blank first-column rows as stitched continuations of the nearest preceding competency within the same table, not as root-level or goal-level content. Reject cross-table, cross-goal, cross-competency, or cross-class semantic shortcuts based only on similar wording or nearby source order.\n\nA non-root child with insufficient evidence must be unresolved=true and select no parents. Reject a resolved root-only response for Competency or Content, even when the root was offered as a fallback candidate. Reject multiple parents, self-parenting, cycles, and any parent that follows from code similarity but conflicts with source-visible table structure or finalized identity scope.",
+			"statement_type_policy": [
+				{
+					"statement_type": "Curricular Goal",
+					"aliases": [
+						"Curriculum Goal",
+						"CG"
+					],
+					"description": "Use only for a source-visible CG-coded goal in the first spanning header row of one syllabus table. The five authored goals CG-1 through CG-5 are top-level Standard Grouping items directly under the StandardsFramework root.",
+					"normalized_statement_type": "Standard Grouping",
+					"code_type": "curricular_goal",
+					"controlled_values": [
+						{
+							"canonical_value": "CG-1",
+							"aliases": []
+						},
+						{
+							"canonical_value": "CG-2",
+							"aliases": []
+						},
+						{
+							"canonical_value": "CG-3",
+							"aliases": []
+						},
+						{
+							"canonical_value": "CG-4",
+							"aliases": []
+						},
+						{
+							"canonical_value": "CG-5",
+							"aliases": []
+						}
+					]
+				},
+				{
+					"statement_type": "Competency",
+					"aliases": [
+						"Competency Statement"
+					],
+					"description": "Use only for a source-visible C-coded competency in the first table column. A competency is shared across the class columns in its row, is a Standard Grouping under exactly one Curricular Goal, and parents the uncoded class-scoped Content items in that competency row and any stitched continuation rows.",
+					"normalized_statement_type": "Standard Grouping",
+					"code_type": "competency",
+					"controlled_values": [
+						{
+							"canonical_value": "C-1.1",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-1.2",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-1.3",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-1.4",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-1.5",
+							"aliases": [
+								"C 1.5"
+							]
+						},
+						{
+							"canonical_value": "C-1.6",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-1.7",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-1.8",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-1.9",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-1.10",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-1.11",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-1.12",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-1.13",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-2.1",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-2.2",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-2.3",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-2.4",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-2.5",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-3.1",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-3.2",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-3.3",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-3.4",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-4.1",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-4.2",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-4.3",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-4.4",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-4.5",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-5.1",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-5.2",
+							"aliases": []
+						},
+						{
+							"canonical_value": "C-5.3",
+							"aliases": []
+						}
+					]
+				},
+				{
+					"statement_type": "Content",
+					"aliases": [
+						"Syllabus Content",
+						"Learning Content"
+					],
+					"description": "Use for an official source-visible bullet or coherent bullet item in a Class-1 through Class-5 content column. Content is an uncoded leaf Standard. Its identity_scope_values must identify the exact Curricular Goal, Competency, and Class column. Do not use this type for the word Content, for a class header, for narrative introduction, pedagogy, assessment text, or helper-only filldown text.",
+					"normalized_statement_type": "Standard",
+					"code_type": null,
+					"controlled_values": []
+				},
+				{
+					"statement_type": "Class",
+					"aliases": [
+						"Grade"
+					],
+					"description": "Scope-only Standard Grouping vocabulary for the authored Class-1 through Class-5 table columns. Never emit a Class SFI candidate: use these controlled values only in Content.identity_scope_values and for StandardsFrameworkItem.grade_level export.",
+					"normalized_statement_type": "Standard Grouping",
+					"code_type": null,
+					"controlled_values": [
+						{
+							"canonical_value": "Class-1",
+							"aliases": [
+								"Class 1",
+								"Grade 1"
+							]
+						},
+						{
+							"canonical_value": "Class-2",
+							"aliases": [
+								"Class 2",
+								"Grade 2"
+							]
+						},
+						{
+							"canonical_value": "Class-3",
+							"aliases": [
+								"Class 3",
+								"Grade 3"
+							]
+						},
+						{
+							"canonical_value": "Class-4",
+							"aliases": [
+								"Class 4",
+								"Grade 4"
+							]
+						},
+						{
+							"canonical_value": "Class-5",
+							"aliases": [
+								"Class 5",
+								"Grade 5"
+							]
+						}
+					]
+				}
+			],
+			"synthetic_merge_key_fields": [
+				"country",
+				"subject",
+				"normalized_statement_type",
+				"statement_type",
+				"identity_scope",
+				"hierarchy_context",
+				"normalized_text"
+			],
+			"table_section_pattern_page_lookback": 1
+		},
+		"lc": {
+			"generation_instructions": "Generate Learning Components only from finalized `Content` SFIs. Do not generate skills from Curricular Goal, Competency, scope-only Class vocabulary, introductory rationale, Pedagogical Approaches, or Assessment Strategies.\n\nEach Content SFI should normally correspond to one source bullet, but a bullet may contain several atomic expectations. Split along independently teachable actions, listed cases, comparisons, units, operations, or conversions while keeping qualifiers, numeric ranges, and measurement units attached to the relevant skill. When a Content item is a bare noun or short topic, use the source-backed parent Competency to supply only the action explicitly licensed by that competency; do not add objectives not supported by the Content and Competency together.\n\nClass applicability is carried in the SFI grade_level/identity scope (`Class-1` through `Class-5`), so do not unnecessarily repeat the class in every skill. Preserve Indian and source-specific terminology, including ₹ and Rs amounts, Indo-Arabic numerals, railway time/24-hour clock, metre/centimetre spellings, hand span, cubit, and simple balance. Do not turn pedagogical method notes, examples, or draft-source errors into additional learning expectations, and do not silently correct source anomalies unless a normalized skill can preserve the same meaning without inventing content. Output skills in English."
+		},
+		"metadata": {
+			"adoption_status": "Proposed Draft",
+			"attribution_statement": "Tamil Nadu Curriculum Framework 2025, Proposed Draft Syllabus, Pedagogical Approaches and Assessment Strategies, Mathematics - Classes 1-5, TNSCERT.",
+			"author": "TNSCERT",
+			"country": "India",
+			"framework_title": "Tamil Nadu Curriculum Framework 2025: Mathematics - Classes 1-5",
+			"grades_or_stages": [
+				"Class-1",
+				"Class-2",
+				"Class-3",
+				"Class-4",
+				"Class-5"
+			],
+			"jurisdiction": "Tamil Nadu, India",
+			"languages": [
+				"en"
+			],
+			"license": "Not specified in source PDF",
+			"primary_language": "en",
+			"provider": "Tamil Nadu State Council of Educational Research and Training (TNSCERT)",
+			"subject": "Mathematics"
+		}
+  }
+}
