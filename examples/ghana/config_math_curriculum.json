@@ -53,6 +53,9 @@
 			"code_scope_statement_types": {},
 			"excluded_table_columns_signatures": [],
 			"excluded_table_section_patterns": [],
+			"grade_level_statement_types": [
+				"Grade"
+			],
 			"identity_scope_statement_types": {
 				"Strand": [
 					"Grade"
