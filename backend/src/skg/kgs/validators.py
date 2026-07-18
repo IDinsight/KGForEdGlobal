@@ -1665,79 +1665,146 @@ def _validate_has_child_parent_selection_policy(
                 f"parent candidate is source-supported."
             )
 
-        if selected_root_parent_ids and selected_non_root_parent_ids:
-            raise QualityError(
-                f"hasChild response for child {child_id!r} selected both the "
-                f"StandardsFramework root {sorted(selected_root_parent_ids)} and "
-                f"one or more SFI parents {sorted(selected_non_root_parent_ids)}. "
-                f"Use the root only as the sole direct parent for top-level items, "
-                f"or set unresolved=true with no selected parents for fallback."
-            )
-
         parent_set = next(
             parent_set
             for parent_set in resolution_request.child_parent_sets
             if str(parent_set.child_context.final_sfi_uuid) == child_id
         )
 
-        if selected_root_parent_ids and parent_set.parent_requirements:
-            raise QualityError(
-                f"hasChild response for resolved child {child_id!r} selected the "
-                f"StandardsFramework root even though its parent policy contains "
-                f"non-root parent types. Select a policy-compliant parent set or mark "
-                f"the child unresolved."
-            )
-
-        selected_parent_type_counts: dict[str, int] = {}
-
-        for parent_id in selected_non_root_parent_ids:
-            candidate = parent_candidates_by_child_id[child_id].get(parent_id)
-
-            if candidate is None or not candidate.statement_type:
-                continue
-
-            selected_parent_type_counts[candidate.statement_type] = (
-                selected_parent_type_counts.get(candidate.statement_type, 0) + 1
-            )
-
-        allowed_parent_types = {
-            requirement.parent_statement_type
-            for requirement in parent_set.parent_requirements
-        }
-        unexpected_parent_types = sorted(
-            set(selected_parent_type_counts) - allowed_parent_types
+        _validate_has_child_resolved_parent_selection(
+            child_id=child_id,
+            parent_candidates_by_endpoint_id=parent_candidates_by_child_id[child_id],
+            parent_requirements=parent_set.parent_requirements,
+            selected_non_root_parent_ids=selected_non_root_parent_ids,
+            selected_root_parent_ids=selected_root_parent_ids,
         )
 
-        if unexpected_parent_types:
+
+def _validate_has_child_parent_type_cardinality(
+    *,
+    child_id: str,
+    parent_requirements: Sequence[Any],
+    selected_parent_type_counts: dict[str, int],
+) -> None:
+    """Validate selected parent-type counts against configured cardinalities.
+
+    Parameters
+    ----------
+    child_id
+        Final SFI UUID of the resolved child, used in validation errors.
+    parent_requirements
+        Configured parent cardinality requirements for the child's parent set.
+    selected_parent_type_counts
+        Count of selected non-root parents keyed by parent statement type.
+
+    Raises
+    ------
+    QualityError
+        If a resolved child selects parent types outside parent_requirements, or if a
+        selected parent-type count violates a configured minimum or maximum.
+    """
+
+    allowed_parent_types = {
+        requirement.parent_statement_type for requirement in parent_requirements
+    }
+    unexpected_parent_types = sorted(
+        set(selected_parent_type_counts) - allowed_parent_types
+    )
+
+    if unexpected_parent_types:
+        raise QualityError(
+            f"hasChild response for resolved child {child_id!r} selected parent "
+            f"types outside parent_requirements: {unexpected_parent_types}."
+        )
+
+    for requirement in parent_requirements:
+        selected_count = selected_parent_type_counts.get(
+            requirement.parent_statement_type, 0
+        )
+
+        if selected_count < requirement.min_count:
             raise QualityError(
-                f"hasChild response for resolved child {child_id!r} selected parent "
-                f"types outside parent_requirements: {unexpected_parent_types}."
+                f"hasChild response for resolved child {child_id!r} selected "
+                f"{selected_count} parent(s) of type "
+                f"{requirement.parent_statement_type!r}; the configured minimum "
+                f"is {requirement.min_count}. Select a complete safe parent set, "
+                f"or set unresolved=true with no selected parents."
             )
 
-        for requirement in parent_set.parent_requirements:
-            selected_count = selected_parent_type_counts.get(
-                requirement.parent_statement_type, 0
+        if requirement.max_count is not None and selected_count > requirement.max_count:
+            raise QualityError(
+                f"hasChild response for resolved child {child_id!r} selected "
+                f"{selected_count} parent(s) of type "
+                f"{requirement.parent_statement_type!r}; the configured maximum "
+                f"is {requirement.max_count}."
             )
 
-            if selected_count < requirement.min_count:
-                raise QualityError(
-                    f"hasChild response for resolved child {child_id!r} selected "
-                    f"{selected_count} parent(s) of type "
-                    f"{requirement.parent_statement_type!r}; the configured minimum "
-                    f"is {requirement.min_count}. Select a complete safe parent set, "
-                    f"or set unresolved=true with no selected parents."
-                )
 
-            if (
-                requirement.max_count is not None
-                and selected_count > requirement.max_count
-            ):
-                raise QualityError(
-                    f"hasChild response for resolved child {child_id!r} selected "
-                    f"{selected_count} parent(s) of type "
-                    f"{requirement.parent_statement_type!r}; the configured maximum "
-                    f"is {requirement.max_count}."
-                )
+def _validate_has_child_resolved_parent_selection(
+    *,
+    child_id: str,
+    parent_candidates_by_endpoint_id: dict[str, Any],
+    parent_requirements: Sequence[Any],
+    selected_non_root_parent_ids: set[str],
+    selected_root_parent_ids: set[str],
+) -> None:
+    """Validate a resolved child's root and non-root parent selection against policy.
+
+    Parameters
+    ----------
+    child_id
+        Final SFI UUID of the resolved child, used in validation errors.
+    parent_candidates_by_endpoint_id
+        Supplied parent candidates for the child keyed by endpoint identifier.
+    parent_requirements
+        Configured parent cardinality requirements for the child's parent set.
+    selected_non_root_parent_ids
+        Selected non-root parent endpoint identifiers.
+    selected_root_parent_ids
+        Selected StandardsFramework root parent endpoint identifiers.
+
+    Raises
+    ------
+    QualityError
+        If a resolved child selects both the StandardsFramework root and one or more SFI
+        parents, if it selects the root despite a non-root parent policy, or if it
+        violates a configured parent-type cardinality.
+    """
+
+    if selected_root_parent_ids and selected_non_root_parent_ids:
+        raise QualityError(
+            f"hasChild response for child {child_id!r} selected both the "
+            f"StandardsFramework root {sorted(selected_root_parent_ids)} and "
+            f"one or more SFI parents {sorted(selected_non_root_parent_ids)}. "
+            f"Use the root only as the sole direct parent for top-level items, "
+            f"or set unresolved=true with no selected parents for fallback."
+        )
+
+    if selected_root_parent_ids and parent_requirements:
+        raise QualityError(
+            f"hasChild response for resolved child {child_id!r} selected the "
+            f"StandardsFramework root even though its parent policy contains "
+            f"non-root parent types. Select a policy-compliant parent set or mark "
+            f"the child unresolved."
+        )
+
+    selected_parent_type_counts: dict[str, int] = {}
+
+    for parent_id in selected_non_root_parent_ids:
+        candidate = parent_candidates_by_endpoint_id.get(parent_id)
+
+        if candidate is None or not candidate.statement_type:
+            continue
+
+        selected_parent_type_counts[candidate.statement_type] = (
+            selected_parent_type_counts.get(candidate.statement_type, 0) + 1
+        )
+
+    _validate_has_child_parent_type_cardinality(
+        child_id=child_id,
+        parent_requirements=parent_requirements,
+        selected_parent_type_counts=selected_parent_type_counts,
+    )
 
 
 def _validate_has_child_validation_issue_references(

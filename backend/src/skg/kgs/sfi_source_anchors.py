@@ -8,12 +8,67 @@ candidate classification, and curriculum-specific semantics.
 """
 
 # Standard Library
+import re
+
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence
+from typing import Any, Optional, Sequence, cast
 
 # Package Library
 from skg.kgs.schemas import ExtractionWindow, SFISourceAnchor, SFISourceUnitKind
 from skg.kgs.utils import text_starts_with_complete_marker
+
+_INDEXED_SOURCE_UNIT_KINDS = frozenset(
+    {
+        "block_list_item",
+        "block_slice_text",
+        "block_text",
+        "figure_caption",
+        "figure_embedded_text",
+    }
+)
+_TABLE_SOURCE_UNIT_KINDS = frozenset({"table_body_cell", "table_header_cell"})
+_SOURCE_UNIT_KIND_PATTERN = "|".join(
+    re.escape(source_unit_kind)
+    for source_unit_kind in sorted(
+        _INDEXED_SOURCE_UNIT_KINDS | _TABLE_SOURCE_UNIT_KINDS
+    )
+)
+_SOURCE_UNIT_ID_PATTERN = re.compile(
+    rf"^(?P<source_segment_id>[^|]+)\|"
+    rf"(?P<source_unit_kind>{_SOURCE_UNIT_KIND_PATTERN})"
+    r"(?:\|unit=(?P<source_unit_index>\d+))?"
+    r"(?:\|row=(?P<row_index>\d+))?"
+    r"(?:\|columns=(?P<column_start_index>\d+):"
+    r"(?P<column_end_index_exclusive>\d+))?$"
+)
+
+
+@dataclass(frozen=True)
+class ParsedSFISourceUnitId:
+    """Structural fields decoded from a stable SFI source-unit identifier.
+
+    Attributes
+    ----------
+    column_end_index_exclusive
+        Exclusive table-grid ending column for a table cell, when applicable.
+    column_start_index
+        Inclusive table-grid starting column for a table cell, when applicable.
+    row_index
+        Source header/body row index for a table cell, when applicable.
+    source_segment_id
+        Stable DocumentIR segment identifier.
+    source_unit_index
+        Stable block list-item, slice, figure, or fallback index, when applicable.
+    source_unit_kind
+        Closed structural kind encoded in the identifier.
+    """
+
+    column_end_index_exclusive: Optional[int]
+    column_start_index: Optional[int]
+    row_index: Optional[int]
+    source_segment_id: str
+    source_unit_index: Optional[int]
+    source_unit_kind: SFISourceUnitKind
 
 
 @dataclass(frozen=True)
@@ -722,6 +777,12 @@ def build_sfi_source_unit_id(
     -------
     str
         Stable source-unit identifier independent of extraction-window identity.
+
+    Raises
+    ------
+    ValueError
+        If the supplied structural fields do not form a valid identifier for the
+        requested source-unit kind.
     """
 
     parts = [source_segment_id, source_unit_kind]
@@ -735,7 +796,9 @@ def build_sfi_source_unit_id(
     if column_start_index is not None and column_end_index_exclusive is not None:
         parts.append(f"columns={column_start_index}:{column_end_index_exclusive}")
 
-    return "|".join(parts)
+    source_unit_id = "|".join(parts)
+    parse_sfi_source_unit_id(source_unit_id)
+    return source_unit_id
 
 
 def build_sfi_source_unit_map(
@@ -891,6 +954,107 @@ def map_raw_row_cells_to_column_ranges(
             )
 
     return mapped_cells
+
+
+def parse_sfi_source_unit_id(source_unit_id: str) -> ParsedSFISourceUnitId:
+    """Parse and validate one stable SFI source-unit identifier.
+
+    Parameters
+    ----------
+    source_unit_id
+        Stable source-unit identifier to decode.
+
+    Returns
+    -------
+    ParsedSFISourceUnitId
+        Validated structural fields recovered from the identifier.
+
+    Raises
+    ------
+    ValueError
+        If the identifier is malformed or its fields are incompatible with the encoded
+        source-unit kind.
+    """
+
+    match = _SOURCE_UNIT_ID_PATTERN.fullmatch(source_unit_id)
+
+    if match is None:
+        raise ValueError(f"Invalid SFI source-unit identifier: {source_unit_id!r}.")
+
+    source_unit_kind = cast(SFISourceUnitKind, match.group("source_unit_kind"))
+    source_unit_index = (
+        int(raw_source_unit_index)
+        if (raw_source_unit_index := match.group("source_unit_index")) is not None
+        else None
+    )
+    row_index = (
+        int(raw_row_index)
+        if (raw_row_index := match.group("row_index")) is not None
+        else None
+    )
+    column_start_index = (
+        int(raw_column_start_index)
+        if (raw_column_start_index := match.group("column_start_index")) is not None
+        else None
+    )
+    column_end_index_exclusive = (
+        int(raw_column_end_index_exclusive)
+        if (raw_column_end_index_exclusive := match.group("column_end_index_exclusive"))
+        is not None
+        else None
+    )
+
+    if source_unit_kind in _TABLE_SOURCE_UNIT_KINDS:
+        if source_unit_index is not None:
+            raise ValueError(
+                f"Table source-unit identifier {source_unit_id!r} cannot contain a "
+                f"unit index."
+            )
+
+        if (
+            row_index is None
+            or column_start_index is None
+            or column_end_index_exclusive is None
+        ):
+            raise ValueError(
+                f"Table source-unit identifier {source_unit_id!r} must contain row "
+                f"and column coordinates."
+            )
+
+        if column_end_index_exclusive <= column_start_index:
+            raise ValueError(
+                f"Invalid table source-unit column range in {source_unit_id!r}."
+            )
+    elif source_unit_kind in _INDEXED_SOURCE_UNIT_KINDS:
+        if source_unit_index is None:
+            raise ValueError(
+                f"Indexed source-unit identifier {source_unit_id!r} must contain a "
+                f"unit index."
+            )
+
+        if (
+            row_index is not None
+            or column_start_index is not None
+            or column_end_index_exclusive is not None
+        ):
+            raise ValueError(
+                f"Indexed source-unit identifier {source_unit_id!r} cannot contain "
+                f"table coordinates."
+            )
+    else:
+        raise ValueError(
+            f"Unsupported source-unit kind {source_unit_kind!r} in "
+            f"{source_unit_id!r}."
+        )
+
+    return ParsedSFISourceUnitId(
+        column_end_index_exclusive=column_end_index_exclusive,
+        column_start_index=column_start_index,
+        row_index=row_index,
+        source_segment_id=match.group("source_segment_id"),
+        source_unit_index=source_unit_index,
+        source_unit_kind=source_unit_kind,
+    )
 
 
 def source_anchor_set_signature(

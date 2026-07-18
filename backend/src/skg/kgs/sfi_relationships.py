@@ -41,7 +41,11 @@ from skg.kgs.schemas import (
     SFIHasChildSourceRelation,
     SFIHasChildValidationVerdict,
 )
-from skg.kgs.sfi_source_anchors import SFISourceUnit, build_sfi_source_unit_map
+from skg.kgs.sfi_source_anchors import (
+    SFISourceUnit,
+    build_sfi_source_unit_map,
+    parse_sfi_source_unit_id,
+)
 from skg.kgs.utils import (
     KGDirs,
     append_jsonl_model,
@@ -89,11 +93,6 @@ from skg.schemas import CreateKGConfig, normalize_controlled_value_key
 from skg.utils.general import make_dir, open_json_type, write_to_json
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
-_TABLE_BODY_SOURCE_UNIT_PATTERN = re.compile(
-    r"^(?P<source_segment_id>[^|]+)\|table_body_cell\|row=(?P<row_index>\d+)"
-    r"\|columns=(?P<column_start_index>\d+):"
-    r"(?P<column_end_index_exclusive>\d+)$"
-)
 
 
 @dataclass(frozen=True)
@@ -3113,44 +3112,48 @@ def _parent_candidate_rank(
 def _parse_table_source_unit(
     *, source_unit: SFISourceUnit, source_unit_id: str
 ) -> _TableSourceUnitRef | None:
-    """Parse one stable table-body source-unit identifier.
+    """Convert one parsed table-body source unit into relationship coordinates.
 
     Parameters
     ----------
     source_unit
         Exact source unit recovered from persisted extraction windows.
     source_unit_id
-        Stable source-unit identifier to parse.
+        Stable source-unit identifier to parse through the shared source-anchor
+        contract.
 
     Returns
     -------
     _TableSourceUnitRef | None
-        Parsed table-body coordinates, or `None` for non-table-body units.
+        Parsed table-body coordinates, or `None` for another valid source-unit kind.
 
     Raises
     ------
     ValueError
-        If parsed column bounds are invalid.
+        If the source-unit identifier is malformed or a table-body identifier lacks
+        required coordinates.
     """
 
-    match = _TABLE_BODY_SOURCE_UNIT_PATTERN.fullmatch(source_unit_id)
+    parsed_source_unit_id = parse_sfi_source_unit_id(source_unit_id)
 
-    if match is None:
+    if parsed_source_unit_id.source_unit_kind != "table_body_cell":
         return None
 
-    column_end_index_exclusive = int(match.group("column_end_index_exclusive"))
-    column_start_index = int(match.group("column_start_index"))
-
-    if column_end_index_exclusive <= column_start_index:
+    if (
+        parsed_source_unit_id.column_end_index_exclusive is None
+        or parsed_source_unit_id.column_start_index is None
+        or parsed_source_unit_id.row_index is None
+    ):
         raise ValueError(
-            f"Invalid table source-unit column range in {source_unit_id!r}."
+            f"Table-body source-unit identifier {source_unit_id!r} lacks required "
+            f"coordinates."
         )
 
     return _TableSourceUnitRef(
-        column_end_index_exclusive=column_end_index_exclusive,
-        column_start_index=column_start_index,
-        row_index=int(match.group("row_index")),
-        source_segment_id=match.group("source_segment_id"),
+        column_end_index_exclusive=(parsed_source_unit_id.column_end_index_exclusive),
+        column_start_index=parsed_source_unit_id.column_start_index,
+        row_index=parsed_source_unit_id.row_index,
+        source_segment_id=parsed_source_unit_id.source_segment_id,
         source_text=source_unit.source_text,
         source_unit_id=source_unit_id,
     )
