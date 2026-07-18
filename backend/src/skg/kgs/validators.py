@@ -48,10 +48,13 @@ LOCAL_ACTIVE_OUTLINE_DIRECT_PARENT_REASON = "local_active_outline_direct_parent"
 MATCHED_SECTION_PATH_LABEL_REASON = "matched_section_path_label"
 NEARBY_SOURCE_CONTEXT_KEY_REASON = "nearby_source_context_key"
 NEAREST_PRECEDING_GROUPING_REASON = "nearest_preceding_grouping"
+PARENT_CELL_APPLIES_TO_CHILD_ROW_REASON = "parent_cell_applies_to_child_row"
 ROOT_EVIDENCE_REASON = "root_fallback"
+SAME_RAW_TABLE_ROW_REASON = "same_raw_table_row"
 SAME_SOURCE_CONTEXT_KEY_REASON = "same_source_context_key"
 SAME_SOURCE_OCCURRENCE_CROSS_TYPE_SIGNAL = "same_source_occurrence_cross_type"
 SAME_SOURCE_SEGMENT_REASON = "same_source_segment"
+SAME_SOURCE_UNIT_REASON = "same_source_unit"
 SAME_SOURCE_WINDOW_REASON = "same_source_window"
 SAME_TABLE_CONTEXT_REASON = "same_table_context"
 SOURCE_LOCAL_CONTROLLED_PARENT_SCOPE_CONFLICT_REASON = (
@@ -75,12 +78,15 @@ DECISIVE_DIRECT_PARENT_REASONS = frozenset(
     {
         CODE_PARENT_HINT_REASON,
         IDENTITY_SCOPE_COMPLETE_PARENT_MATCH_REASON,
+        PARENT_CELL_APPLIES_TO_CHILD_ROW_REASON,
         SOURCE_SCOPE_GROUPING_REASON,
     }
 )
 STRONG_LOCAL_RANKING_PARENT_REASONS = frozenset(
     {
         LOCAL_ACTIVE_OUTLINE_DIRECT_PARENT_REASON,
+        SAME_RAW_TABLE_ROW_REASON,
+        SAME_SOURCE_UNIT_REASON,
         SAME_TABLE_CONTEXT_REASON,
     }
 )
@@ -1615,8 +1621,8 @@ def _validate_has_child_parent_selection_policy(
     ------
     QualityError
         If an unresolved child selects parents, if a resolved child selects no parents,
-        or if a resolved child selects both the StandardsFramework root and one or
-        more SFI parents.
+        if a resolved child selects both the StandardsFramework root and one or more
+        SFI parents, or if a resolved child violates a configured parent cardinality.
     """
 
     parent_candidates_by_child_id = {
@@ -1667,6 +1673,71 @@ def _validate_has_child_parent_selection_policy(
                 f"Use the root only as the sole direct parent for top-level items, "
                 f"or set unresolved=true with no selected parents for fallback."
             )
+
+        parent_set = next(
+            parent_set
+            for parent_set in resolution_request.child_parent_sets
+            if str(parent_set.child_context.final_sfi_uuid) == child_id
+        )
+
+        if selected_root_parent_ids and parent_set.parent_requirements:
+            raise QualityError(
+                f"hasChild response for resolved child {child_id!r} selected the "
+                f"StandardsFramework root even though its parent policy contains "
+                f"non-root parent types. Select a policy-compliant parent set or mark "
+                f"the child unresolved."
+            )
+
+        selected_parent_type_counts: dict[str, int] = {}
+
+        for parent_id in selected_non_root_parent_ids:
+            candidate = parent_candidates_by_child_id[child_id].get(parent_id)
+
+            if candidate is None or not candidate.statement_type:
+                continue
+
+            selected_parent_type_counts[candidate.statement_type] = (
+                selected_parent_type_counts.get(candidate.statement_type, 0) + 1
+            )
+
+        allowed_parent_types = {
+            requirement.parent_statement_type
+            for requirement in parent_set.parent_requirements
+        }
+        unexpected_parent_types = sorted(
+            set(selected_parent_type_counts) - allowed_parent_types
+        )
+
+        if unexpected_parent_types:
+            raise QualityError(
+                f"hasChild response for resolved child {child_id!r} selected parent "
+                f"types outside parent_requirements: {unexpected_parent_types}."
+            )
+
+        for requirement in parent_set.parent_requirements:
+            selected_count = selected_parent_type_counts.get(
+                requirement.parent_statement_type, 0
+            )
+
+            if selected_count < requirement.min_count:
+                raise QualityError(
+                    f"hasChild response for resolved child {child_id!r} selected "
+                    f"{selected_count} parent(s) of type "
+                    f"{requirement.parent_statement_type!r}; the configured minimum "
+                    f"is {requirement.min_count}. Select a complete safe parent set, "
+                    f"or set unresolved=true with no selected parents."
+                )
+
+            if (
+                requirement.max_count is not None
+                and selected_count > requirement.max_count
+            ):
+                raise QualityError(
+                    f"hasChild response for resolved child {child_id!r} selected "
+                    f"{selected_count} parent(s) of type "
+                    f"{requirement.parent_statement_type!r}; the configured maximum "
+                    f"is {requirement.max_count}."
+                )
 
 
 def _validate_has_child_validation_issue_references(
@@ -2133,10 +2204,6 @@ def verify_sfi_has_child_resolution_integrity(
             f"{duplicate_child_ids}."
         )
 
-    _validate_has_child_parent_selection_policy(
-        resolution_request=resolution_request, resolution_response=resolution_response
-    )
-
     for child_resolution in resolution_response.child_resolutions:
         child_id = str(child_resolution.child_final_sfi_uuid)
         allowed_parent_ids = allowed_parent_ids_by_child_id[child_id]
@@ -2158,6 +2225,10 @@ def verify_sfi_has_child_resolution_integrity(
             raise QualityError(
                 f"hasChild response for child {child_id!r} has an empty reason."
             )
+
+    _validate_has_child_parent_selection_policy(
+        resolution_request=resolution_request, resolution_response=resolution_response
+    )
 
 
 def verify_sfi_has_child_validation_integrity(

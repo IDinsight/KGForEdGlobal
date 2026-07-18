@@ -747,6 +747,52 @@ class _ContextSpineConfig(BaseSchema):
         return self
 
 
+class _SFIHasChildParentPolicyEntry(BaseSchema):
+    """Cardinality policy for one allowed direct-parent statement type."""
+
+    max_count: Optional[int] = Field(default=None, ge=1)
+    min_count: int = Field(ge=0)
+    parent_statement_type: str = Field(min_length=1)
+
+    @field_validator("parent_statement_type", mode="before")
+    @classmethod
+    def validate_parent_statement_type(cls, v: str) -> str:
+        """Clean and require the direct-parent statement-type label.
+
+        Parameters
+        ----------
+        v
+            Raw parent statement-type label.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty parent statement-type label.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+    @model_validator(mode="after")
+    def validate_cardinality(self) -> Self:
+        """Validate that the configured maximum is not below the minimum.
+
+        Returns
+        -------
+        Self
+            Validated parent-policy entry.
+
+        Raises
+        ------
+        ValueError
+            If max_count is smaller than min_count.
+        """
+
+        if self.max_count is not None and self.max_count < self.min_count:
+            raise ValueError("max_count must be greater than or equal to min_count.")
+
+        return self
+
+
 class _CreateKGAcademicStandardsConfig(BaseSchema):
     """Academic Standards extraction configuration for KG creation."""
 
@@ -873,24 +919,21 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         )
     )
     sfi_has_child_instructions: str
-    sfi_has_child_parent_statement_types: dict[str, list[str]] = Field(
-        default_factory=dict,
+    sfi_has_child_parent_policy: dict[str, list[_SFIHasChildParentPolicyEntry]] = Field(
         description=(
-            "Optional direct hasChild parent policy keyed by child statement_type. "
-            "Each value is the list of allowed direct parent statement_type labels. "
-            "An empty list means the child statement_type is allowed to attach "
-            "directly to the StandardsFramework root. When omitted, the ordered "
-            "sfi_has_child_statement_type_hierarchy is used to derive one direct "
-            "parent type per child type."
-        ),
+            "Complete direct hasChild parent policy keyed by child statement_type. "
+            "Every listed parent type is allowed; min_count and max_count define "
+            "the cardinality required for a resolved child. An empty list means the "
+            "child statement_type attaches directly to the StandardsFramework root."
+        )
     )
     sfi_has_child_statement_type_hierarchy: list[str] = Field(
         default_factory=list,
         description=(
-            "Optional ordered statement_type hierarchy, broadest parent to narrowest "
-            "child, used to derive direct hasChild parent candidates when "
-            "sfi_has_child_parent_statement_types is not provided. If omitted, "
-            "statement_type_policy order is used."
+            "Optional broad-to-narrow statement_type ordering used only for "
+            "active-outline retrieval and ranking. If omitted, statement_type_policy "
+            "order is used. Direct-parent eligibility and cardinality come exclusively "
+            "from sfi_has_child_parent_policy."
         ),
     )
     sfi_has_child_validation_instructions: str = Field(
@@ -930,115 +973,66 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         ge=0,
     )
 
-    @staticmethod
-    def _clean_has_child_parent_values(
-        parent_statement_types: list[str] | None,
-    ) -> list[str]:
-        """Clean and de-duplicate one child type's allowed parent labels.
-
-        Parameters
-        ----------
-        parent_statement_types
-            Raw list of allowed direct parent statement_type labels for a single child
-            statement_type. `None` is treated as an empty list.
-
-        Returns
-        -------
-        list[str]
-            Stripped, non-blank parent labels de-duplicated in input order.
-
-        Raises
-        ------
-        TypeError
-            If the value is not a list or any parent label is not a string.
-        """
-
-        if parent_statement_types is None:
-            parent_statement_types = []
-
-        if isinstance(parent_statement_types, (str, bytes)) or not isinstance(
-            parent_statement_types, list
-        ):
-            raise TypeError(
-                "CreateKGConfig.as.sfi_has_child_parent_statement_types values "
-                "must be lists of parent statement_type strings."
-            )
-
-        parent_values: list[str] = []
-        seen_parent_values: set[str] = set()
-
-        for parent_statement_type in parent_statement_types:
-            if not isinstance(parent_statement_type, str):
-                raise TypeError(
-                    "CreateKGConfig.as.sfi_has_child_parent_statement_types "
-                    "parent labels must be strings."
-                )
-
-            parent_statement_type_clean = parent_statement_type.strip()
-
-            if (
-                not parent_statement_type_clean
-                or parent_statement_type_clean in seen_parent_values
-            ):
-                continue
-
-            parent_values.append(parent_statement_type_clean)
-            seen_parent_values.add(parent_statement_type_clean)
-
-        return parent_values
-
-    @field_validator("sfi_has_child_parent_statement_types", mode="before")
+    @field_validator("sfi_has_child_parent_policy", mode="before")
     @classmethod
-    def validate_sfi_has_child_parent_statement_types(
-        cls, v: dict[str, list[str]] | None
-    ) -> dict[str, list[str]]:
-        """Clean direct hasChild parent-type policy entries.
+    def validate_sfi_has_child_parent_policy(cls, v: Any) -> dict[str, Any]:
+        """Clean child statement-type keys in the unified parent policy.
 
         Parameters
         ----------
         v
-            Mapping from child statement_type to allowed direct parent
-            statement_type labels. Empty parent lists identify root-level child types.
+            Raw mapping from child statement types to parent-policy entries.
 
         Returns
         -------
-        dict[str, list[str]]
-            Cleaned mapping with blank keys/values removed and parent lists
-            de-duplicated in input order.
+        dict[str, Any]
+            Mapping with stripped non-empty child labels.
 
         Raises
         ------
         TypeError
-            If the mapping, child keys, or parent values have invalid types.
+            If the policy is not a mapping, a child label is not a string, or a child
+            policy is not a list.
+        ValueError
+            If a child label is blank or duplicated after stripping.
         """
-
-        if v is None:
-            return {}
 
         if not isinstance(v, dict):
             raise TypeError(
-                "CreateKGConfig.as.sfi_has_child_parent_statement_types must be "
-                "a mapping from child statement_type to a list of parent "
-                "statement_type labels."
+                "CreateKGConfig.as.sfi_has_child_parent_policy must be a mapping "
+                "from child statement_type labels to parent-policy entry lists."
             )
 
-        cleaned: dict[str, list[str]] = {}
+        cleaned: dict[str, Any] = {}
 
-        for child_statement_type, parent_statement_types in v.items():
+        for child_statement_type, parent_policy_entries in v.items():
             if not isinstance(child_statement_type, str):
                 raise TypeError(
-                    "CreateKGConfig.as.sfi_has_child_parent_statement_types keys "
-                    "must be strings."
+                    "CreateKGConfig.as.sfi_has_child_parent_policy keys must be "
+                    "strings."
                 )
 
             child_statement_type_clean = child_statement_type.strip()
 
             if not child_statement_type_clean:
-                continue
+                raise ValueError(
+                    "CreateKGConfig.as.sfi_has_child_parent_policy keys must be "
+                    "non-empty after stripping."
+                )
 
-            cleaned[child_statement_type_clean] = cls._clean_has_child_parent_values(
-                parent_statement_types
-            )
+            if child_statement_type_clean in cleaned:
+                raise ValueError(
+                    f"CreateKGConfig.as.sfi_has_child_parent_policy contains duplicate "
+                    f"child label {child_statement_type_clean!r} after stripping."
+                )
+
+            if not isinstance(parent_policy_entries, list):
+                raise TypeError(
+                    "CreateKGConfig.as.sfi_has_child_parent_policy values must be "
+                    "lists of parent-policy entries."
+                )
+
+            cleaned[child_statement_type_clean] = parent_policy_entries
 
         return cleaned
 
@@ -2002,13 +1996,14 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
             )
 
     def _validate_has_child_statement_type_policy(self) -> None:
-        """Validate hasChild hierarchy and direct-parent labels.
+        """Validate the unified hasChild parent policy and hierarchy ordering.
 
         Raises
         ------
         ValueError
-            If the explicit hierarchy or direct-parent policy references a
-            statement_type that is not present in statement_type_policy.
+            If the hierarchy or parent policy references unknown statement types, omits
+            a configured child type, duplicates a parent type, or defines no root-level
+            child type.
         """
 
         known_statement_types = {
@@ -2028,27 +2023,65 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
                     f"{sorted(known_statement_types)}"
                 )
 
-        if self.sfi_has_child_parent_statement_types:
-            unknown_child_types = sorted(
-                set(self.sfi_has_child_parent_statement_types) - known_statement_types
-            )
-            unknown_parent_types = sorted(
-                {
-                    parent_type
-                    for parent_types in self.sfi_has_child_parent_statement_types.values()
-                    for parent_type in parent_types
-                }
-                - known_statement_types
+        parent_policy = self.sfi_has_child_parent_policy
+        unknown_child_types = sorted(set(parent_policy) - known_statement_types)
+        missing_child_types = sorted(known_statement_types - set(parent_policy))
+        unknown_parent_types = sorted(
+            {
+                entry.parent_statement_type
+                for entries in parent_policy.values()
+                for entry in entries
+            }
+            - known_statement_types
+        )
+
+        if unknown_child_types or missing_child_types or unknown_parent_types:
+            raise ValueError(
+                f"CreateKGConfig.as.sfi_has_child_parent_policy must cover every "
+                f"configured statement_type exactly once and reference only known "
+                f"statement types. "
+                f"Unknown child labels: {unknown_child_types}; "
+                f"missing child labels: {missing_child_types}; "
+                f"unknown parent labels: {unknown_parent_types}; "
+                f"known statement_type labels: {sorted(known_statement_types)}"
             )
 
-            if unknown_child_types or unknown_parent_types:
-                raise ValueError(
-                    f"CreateKGConfig.as.sfi_has_child_parent_statement_types "
-                    f"references unknown statement_type labels. "
-                    f"Unknown child labels: {unknown_child_types}; "
-                    f"unknown parent labels: {unknown_parent_types}; "
-                    f"known statement_type labels: {sorted(known_statement_types)}"
-                )
+        duplicate_parent_types = {
+            child_type: sorted(
+                {
+                    entry.parent_statement_type
+                    for entry in entries
+                    if sum(
+                        candidate.parent_statement_type == entry.parent_statement_type
+                        for candidate in entries
+                    )
+                    > 1
+                }
+            )
+            for child_type, entries in parent_policy.items()
+        }
+        duplicate_parent_types = {
+            child_type: parent_types
+            for child_type, parent_types in duplicate_parent_types.items()
+            if parent_types
+        }
+
+        if duplicate_parent_types:
+            raise ValueError(
+                f"CreateKGConfig.as.sfi_has_child_parent_policy must not repeat one "
+                f"parent statement_type within a child policy. Duplicate entries: "
+                f"{duplicate_parent_types}."
+            )
+
+        root_child_types = sorted(
+            child_type for child_type, entries in parent_policy.items() if not entries
+        )
+
+        if not root_child_types:
+            raise ValueError(
+                "CreateKGConfig.as.sfi_has_child_parent_policy must include at least "
+                "one root-level child statement_type with an empty policy list."
+            )
 
     def _validate_selection_overlap_policy(self) -> None:
         """Ensure table-selection policy does not include and exclude the same value.

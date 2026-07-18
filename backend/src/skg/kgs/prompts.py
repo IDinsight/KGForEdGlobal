@@ -1046,20 +1046,25 @@ def resolve_sfi_has_child_parents(
 - Python has only retrieved, compared, packaged, and bounded candidates. It has not selected the semantic parent.
 - `identity_scope_values` on the child and each non-root parent candidate are finalized structured scope fields. Use them to distinguish repeated labels and repeated codes across grades, stages, strands, domains, units, or other configured hierarchy dimensions.
 - `scope_comparison` is a deterministic comparison, not a semantic verdict. `direct_parent_value_match` compares the child's scope value for the candidate statement type with the candidate's own canonical value. Matching, conflicting, or missing ancestor statement types compare only structured finalized scope values.
+- `source_relations` contains deterministic child-relative table evidence recovered from exact source anchors and persisted table grids. `parent_cell_applies_to_child_row` means the table grid explicitly shows that the parent cell originating in an earlier raw row applies to the child row. This is stronger than source-order, same-window, same-segment, or active-outline evidence.
+- `same_source_unit` means the child and parent cite the same exact source-visible table cell. `same_raw_table_row` means they cite source-visible cells in the same raw row. Same-row evidence is strong locality evidence, but it does not by itself prove parentage when several candidates of the same statement type share that row.
 - `identity_scope_complete_parent_match`, `identity_scope_direct_parent_match`, `identity_scope_ancestor_match`, and `identity_scope_ancestor_conflict` are deterministic evidence labels. A complete match is usually strong retrieval evidence, while a conflict requires careful source review; neither label authorizes an automatic edge.
 - Typed source-local controlled-value matches and conflicts are recognition evidence from bounded hierarchy-bearing labels. Those labels can be cumulative, repeated, stale, or emitted in unusual reading order, so they are not an asserted hierarchy stack.
 - Treat code-parent hints, source-scope groupings, active outline evidence, section-path matches, same table context, same source context, and source-order proximity as evidence channels rather than automatic truth.
 - Prefer the most direct source-grounded parent, not merely the broadest, nearest, most repeated, or highest-ranked candidate.
+- Never let active-outline or flattened source-order evidence override an explicit supplied source relation. When several same-type candidates have equivalent exact row evidence, distinguish them by statement meaning and the runtime hierarchy policy rather than by which candidate appears latest in source order.
 - For table-derived children, same-row or continuation context is strong locality evidence, but it proves direct parentage only when the source structure or runtime policy supports that interpretation.
 - Source-visible hierarchy may override code expectations when the bounded source evidence clearly supports it. Do not infer universal hierarchy from textual code prefixes.
 - Repeated labels require scope-sensitive resolution. Compare the candidate's own scope and canonical value with the child's complete finalized scope, then reconcile any conflict with the source-local evidence and runtime instructions.
 - The StandardsFramework root is a valid direct parent only for configured top-level items or when no supplied SFI parent can be resolved safely.
 - Do not select the root together with non-root parents.
+- `parent_requirements` is the complete allowed direct-parent policy for the child. Each entry names an allowed parent statement type, gives the minimum count required for a resolved decision, and gives an optional maximum count; max_count=null means no configured upper limit. An empty list means the child is configured to attach directly to the StandardsFramework root. If a required minimum cannot be satisfied safely, set unresolved=true and select no parents rather than returning a partial parent set.
 
 ## Output contract
 - Copy request_id exactly.
 - Return exactly one child_resolutions entry for every child in the request.
 - For resolved children, selected_parent_endpoint_ids must contain one or more endpoint IDs from that child's parent_candidates.
+- For resolved children, the number of selected supplied non-root candidates of each type must satisfy that type's min_count and max_count in parent_requirements. Select no non-root type that is absent from parent_requirements.
 - For unresolved children, selected_parent_endpoint_ids must be empty.
 - Give a concise source-grounded reason for every child decision.
         """
@@ -1153,7 +1158,7 @@ Use exactly one decision for each decision group:
 - A mixed-type subset covered by one same_source_occurrence_cross_type signal may preserve different identity-scope shapes caused by its competing statement-type policies. Merge it only when every candidate preserves one identical non-empty description_source_anchors set and every scope dimension shared by two or more candidates has the same source-backed value. The selected canonical type source supplies the merged item's identity scope.
 - Outside that narrow mixed-type same-occurrence case, different identity scope requires keep_separate, conflict, or needs_review.
 - Do not reinterpret, rewrite, or infer missing identity-scope values. Use the supplied canonical values exactly.
-- For uncoded same-type candidates, identical canonical_statement_value_key and identical identity scope define the same prospective no-code logical identity. This match is not automatic merge evidence, but do not return multiple eligible final groups with that exact identity when the runtime policy identifies one editorial duplication or one logical organizer. Apply the specific runtime rule and select one representative. When the source evidence instead supports genuinely distinct items but the supplied identity contract cannot distinguish them, use conflict or needs_review rather than silently producing colliding singleton groups.
+- For uncoded same-type candidates, the same non-null canonical_statement_value together with identical identity_scope_key and identity_scope_values defines the same prospective no-code logical identity. This match is not automatic merge evidence, but do not return multiple eligible final groups with that exact identity when the runtime policy identifies one editorial duplication or one logical organizer. Apply the specific runtime rule and select one representative. When the source evidence instead supports genuinely distinct items but the supplied identity contract cannot distinguish them, use conflict or needs_review rather than silently producing colliding singleton groups.
 
 ## Compact evidence model
 - review_signals are deterministic retrieval evidence. Each signal applies only to its listed candidate_ids; never assume it applies to the entire connected review set.
@@ -1264,7 +1269,7 @@ Independently determine the correct partition and decision for every supplied ca
 13. For every same-type merge, verify exact identity_scope_key and identity_scope_values equality. For a mixed-type subset, permit classification-derived scope-shape differences only when every candidate has one identical non-empty description_source_anchors set and shared scope dimensions agree; the selected canonical type source supplies final identity scope.
 14. Reject relaxed mixed-type code or identity-scope treatment when the candidates do not preserve one identical exact description-source-anchor set, even if a coarse review signal, shared row, shared segment, matching code, or identical wording suggests similarity.
 15. Treat representative_candidate_id, canonical_type_source_candidate_id, and canonical_code_source_candidate_id as independent selections; they may identify different candidates.
-16. For uncoded same-type candidates with identical canonical_statement_value_key and identical identity scope, verify that the draft does not leave multiple eligible final groups with one indistinguishable logical identity. Matching fields do not force a merge, but a runtime-defined editorial duplication must be merged; if the source supports distinct items and the supplied identity contract cannot distinguish them, require conflict or needs_review.
+16. For uncoded same-type candidates with the same non-null canonical_statement_value and identical identity_scope_key and identity_scope_values, verify that the draft does not leave multiple eligible final groups with one indistinguishable logical identity. Matching fields do not force a merge, but a runtime-defined editorial duplication must be merged; if the source supports distinct items and the supplied identity contract cannot distinguish them, require conflict or needs_review.
 17. Use needs_review only when the bounded evidence remains genuinely insufficient after applying the runtime instructions.
 
 ## Universal response contract
@@ -1598,10 +1603,14 @@ def validate_sfi_has_child_response(
 - Re-evaluate every child rather than merely approving the producer's explanation.
 - Compare the child's complete `identity_scope_values` with each candidate's canonical value and `identity_scope_values`.
 - Use `scope_comparison` as exact comparison evidence, not as an automatic decision rule. Investigate ancestor conflicts, missing dimensions, and repeated labels using the bounded source evidence and runtime instructions.
+- Audit every supplied `source_relations` entry as deterministic source geometry. Treat `parent_cell_applies_to_child_row` as explicit carried-cell evidence. Do not accept a producer claim about row continuation or inherited table structure unless the corresponding relation is supplied.
+- Treat `same_raw_table_row` as strong locality evidence but not automatic parentage when multiple same-type candidates share that row. In those cases, audit the semantic match rather than relying on flattened source order.
 - Treat typed source-local labels, active outline, table locality, section paths, code hints, and source proximity as evidence channels that may conflict or be stale.
+- Reject an active-outline choice when a different candidate has stronger explicit source-relation evidence, and reject arbitrary source-order selection among same-type candidates with equivalent exact row evidence.
 - Reject cross-scope or wrong-level parents when the request evidence supports a different supplied direct parent.
 - Reject root fallback when a defensible supplied semantic parent exists, and reject forced semantic parents when the evidence is materially unresolved.
 - Multiple direct parents are valid only when the source and runtime policy genuinely support multiple direct memberships.
+- For a resolved child, selected parent counts must satisfy every `parent_requirements` entry: each listed type is allowed, min_count is the required minimum, max_count is the permitted maximum, and max_count=null means no configured upper limit. An empty list means only the StandardsFramework root is configured as the direct parent. If a required minimum cannot be resolved safely, the corrected response must mark the child unresolved and select no parents.
 
 ## Verdict contract
 - Copy request_id exactly.

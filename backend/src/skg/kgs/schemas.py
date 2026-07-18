@@ -5088,8 +5088,43 @@ class SFIHasChildCandidateParentSet(BaseSchema):
     child_context: SFIFinalContext
     max_parent_candidates: int = Field(ge=2)
     parent_candidates: list[SFIHasChildParentCandidate] = Field(min_length=1)
+    parent_requirements: list[SFIHasChildParentRequirement]
     truncation_notes: list[str] = Field(default_factory=list)
     was_truncated: bool = Field(default=False)
+
+    @field_validator("parent_requirements")
+    @classmethod
+    def validate_parent_requirements(
+        cls, v: list[SFIHasChildParentRequirement]
+    ) -> list[SFIHasChildParentRequirement]:
+        """Reject duplicate parent statement types in one child policy.
+
+        Parameters
+        ----------
+        v
+            Allowed direct-parent requirements for this child.
+
+        Returns
+        -------
+        list[SFIHasChildParentRequirement]
+            Validated requirements in configured order.
+
+        Raises
+        ------
+        ValueError
+            If one parent statement type appears more than once.
+        """
+
+        parent_statement_types = [
+            requirement.parent_statement_type for requirement in v
+        ]
+
+        if len(parent_statement_types) != len(set(parent_statement_types)):
+            raise ValueError(
+                "parent_requirements must not repeat a parent statement_type."
+            )
+
+        return v
 
 
 class SFIHasChildEdge(BaseSchema):
@@ -5196,10 +5231,57 @@ class SFIHasChildParentCandidate(BaseSchema):
     source_context_keys: list[str] = Field(default_factory=list)
     source_order: Optional[int] = Field(default=None, ge=0)
     source_page_indexes: list[int] = Field(default_factory=list)
+    source_relations: list[SFIHasChildSourceRelation] = Field(default_factory=list)
     source_segment_ids: list[str] = Field(default_factory=list)
     source_window_indexes: list[int] = Field(default_factory=list)
     statement_code: Optional[str] = Field(default=None)
     statement_type: Optional[str] = Field(default=None)
+
+
+class SFIHasChildParentRequirement(BaseSchema):
+    """Allowed direct-parent statement type and resolved-child cardinality."""
+
+    max_count: Optional[int] = Field(default=None, ge=1)
+    min_count: int = Field(ge=0)
+    parent_statement_type: str = Field(min_length=1)
+
+    @field_validator("parent_statement_type", mode="before")
+    @classmethod
+    def clean_parent_statement_type(cls, v: str) -> str:
+        """Clean and require the parent statement-type label.
+
+        Parameters
+        ----------
+        v
+            Raw parent statement-type label.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty parent statement-type label.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+    @model_validator(mode="after")
+    def validate_cardinality(self) -> Self:
+        """Validate that max_count is not below min_count.
+
+        Returns
+        -------
+        Self
+            Validated parent requirement.
+
+        Raises
+        ------
+        ValueError
+            If max_count is smaller than min_count.
+        """
+
+        if self.max_count is not None and self.max_count < self.min_count:
+            raise ValueError("max_count must be greater than or equal to min_count.")
+
+        return self
 
 
 class SFIHasChildResolutionRequest(BaseSchema):
@@ -5243,6 +5325,98 @@ class SFIHasChildResolutionSummary(BaseSchema):
     sfi_to_sfi_edge_count: int = Field(default=0, ge=0)
     truncated_candidate_parent_set_count: int = Field(default=0, ge=0)
     unresolved_child_count: int = Field(default=0, ge=0)
+
+
+class SFIHasChildSourceRelation(BaseSchema):
+    """Deterministic child-relative source structure for one parent candidate.
+
+    The relation describes exact source geometry recovered from persisted extraction
+    windows and source anchors. It is evidence for producer/checker review, not an
+    automatic semantic parent decision.
+    """
+
+    child_row_index: Optional[int] = Field(default=None, ge=0)
+    child_source_text: str = Field(min_length=1)
+    child_source_unit_id: str = Field(min_length=1)
+    parent_column_end_index_exclusive: Optional[int] = Field(default=None, ge=1)
+    parent_column_start_index: Optional[int] = Field(default=None, ge=0)
+    parent_origin_row_index: Optional[int] = Field(default=None, ge=0)
+    parent_source_text: str = Field(min_length=1)
+    parent_source_unit_id: str = Field(min_length=1)
+    relation_kind: Literal[
+        "parent_cell_applies_to_child_row", "same_raw_table_row", "same_source_unit"
+    ]
+    source_segment_id: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_source_relation(self) -> Self:
+        """Validate relation-specific source coordinates.
+
+        Returns
+        -------
+        Self
+            Validated source relation.
+
+        Raises
+        ------
+        ValueError
+            If identifiers, rows, or column bounds contradict the relation kind.
+        """
+
+        if (self.parent_column_start_index is None) != (
+            self.parent_column_end_index_exclusive is None
+        ):
+            raise ValueError(
+                "Parent source-relation column bounds must be both present or both "
+                "absent."
+            )
+
+        if (
+            self.parent_column_start_index is not None
+            and self.parent_column_end_index_exclusive is not None
+            and self.parent_column_end_index_exclusive <= self.parent_column_start_index
+        ):
+            raise ValueError(
+                "parent_column_end_index_exclusive must be greater than "
+                "parent_column_start_index."
+            )
+
+        if self.relation_kind == "same_source_unit":
+            if self.child_source_unit_id != self.parent_source_unit_id:
+                raise ValueError(
+                    "same_source_unit relations require identical source unit IDs."
+                )
+
+        if self.relation_kind == "same_raw_table_row":
+            if (
+                self.child_row_index is None
+                or self.parent_origin_row_index is None
+                or self.child_row_index != self.parent_origin_row_index
+            ):
+                raise ValueError(
+                    "same_raw_table_row relations require equal child and parent "
+                    "row indexes."
+                )
+
+        if self.relation_kind == "parent_cell_applies_to_child_row":
+            if (
+                self.child_row_index is None
+                or self.parent_origin_row_index is None
+                or self.parent_column_start_index is None
+                or self.parent_column_end_index_exclusive is None
+            ):
+                raise ValueError(
+                    "parent_cell_applies_to_child_row relations require child row, "
+                    "parent origin row, and parent column bounds."
+                )
+
+            if self.parent_origin_row_index >= self.child_row_index:
+                raise ValueError(
+                    "parent_cell_applies_to_child_row requires an earlier parent "
+                    "origin row."
+                )
+
+        return self
 
 
 class SFIHasChildValidationIssue(BaseSchema):

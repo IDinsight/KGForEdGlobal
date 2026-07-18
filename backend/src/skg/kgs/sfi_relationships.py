@@ -33,12 +33,15 @@ from skg.kgs.schemas import (
     SFIHasChildCandidateParentSet,
     SFIHasChildEdge,
     SFIHasChildParentCandidate,
+    SFIHasChildParentRequirement,
     SFIHasChildResolutionRequest,
     SFIHasChildResolutionResponse,
     SFIHasChildResolutionSummary,
     SFIHasChildScopeComparison,
+    SFIHasChildSourceRelation,
     SFIHasChildValidationVerdict,
 )
+from skg.kgs.sfi_source_anchors import SFISourceUnit, build_sfi_source_unit_map
 from skg.kgs.utils import (
     KGDirs,
     append_jsonl_model,
@@ -64,9 +67,12 @@ from skg.kgs.validators import (
     MATCHED_SECTION_PATH_LABEL_REASON,
     NEARBY_SOURCE_CONTEXT_KEY_REASON,
     NEAREST_PRECEDING_GROUPING_REASON,
+    PARENT_CELL_APPLIES_TO_CHILD_ROW_REASON,
     ROOT_EVIDENCE_REASON,
+    SAME_RAW_TABLE_ROW_REASON,
     SAME_SOURCE_CONTEXT_KEY_REASON,
     SAME_SOURCE_SEGMENT_REASON,
+    SAME_SOURCE_UNIT_REASON,
     SAME_SOURCE_WINDOW_REASON,
     SAME_TABLE_CONTEXT_REASON,
     SOURCE_LOCAL_CONTROLLED_PARENT_SCOPE_CONFLICT_REASON,
@@ -83,6 +89,11 @@ from skg.schemas import CreateKGConfig, normalize_controlled_value_key
 from skg.utils.general import make_dir, open_json_type, write_to_json
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
+_TABLE_BODY_SOURCE_UNIT_PATTERN = re.compile(
+    r"^(?P<source_segment_id>[^|]+)\|table_body_cell\|row=(?P<row_index>\d+)"
+    r"\|columns=(?P<column_start_index>\d+):"
+    r"(?P<column_end_index_exclusive>\d+)$"
+)
 
 
 @dataclass(frozen=True)
@@ -90,15 +101,6 @@ class _ControlledValueMatchPolicy:
     """Normalized controlled-value aliases for one configured statement type."""
 
     alias_to_value_key: dict[str, str]
-
-
-@dataclass(frozen=True)
-class _ResolutionProgress:
-    """Reusable producer/checker progress for hasChild resolution."""
-
-    draft_responses: list[SFIHasChildResolutionResponse]
-    final_responses: list[SFIHasChildResolutionResponse]
-    validation_verdicts: list[SFIHasChildValidationVerdict]
 
 
 @dataclass
@@ -114,6 +116,52 @@ class _ParentEvidence:
 
         self.evidence_reasons = set(self.candidate.evidence_reasons)
         self.evidence_summary = list(self.candidate.evidence_summary)
+
+
+@dataclass(frozen=True)
+class _ResolutionProgress:
+    """Reusable producer/checker progress for hasChild resolution."""
+
+    draft_responses: list[SFIHasChildResolutionResponse]
+    final_responses: list[SFIHasChildResolutionResponse]
+    validation_verdicts: list[SFIHasChildValidationVerdict]
+
+
+@dataclass(frozen=True)
+class _TableOccurrenceRef:
+    """Candidate-level table occurrence with paired source provenance.
+
+    Attributes
+    ----------
+    source_segment_id
+        DocumentIR table segment containing the occurrence.
+    table_header_indexes
+        Raw header-row indexes cited by the candidate in this occurrence.
+    table_row_indexes
+        Raw body-row indexes cited by the candidate in this occurrence.
+    window_id
+        Stable extraction-window identifier preserving occurrence identity.
+    window_index
+        Zero-based extraction-window index used for bounded locality checks.
+    """
+
+    source_segment_id: str
+    table_header_indexes: tuple[int, ...]
+    table_row_indexes: tuple[int, ...]
+    window_id: str
+    window_index: int
+
+
+@dataclass(frozen=True)
+class _TableSourceUnitRef:
+    """Parsed table-body source unit used for child-relative source relations."""
+
+    column_end_index_exclusive: int
+    column_start_index: int
+    row_index: int
+    source_segment_id: str
+    source_text: str
+    source_unit_id: str
 
 
 def _add_identity_scope_match_evidence(
@@ -178,48 +226,35 @@ def _add_identity_scope_match_evidence(
 def _add_local_active_outline_direct_parent_evidence(
     *,
     child_context: SFIFinalContext,
-    child_table_keys: set[str],
     evidence_by_endpoint_id: dict[str, _ParentEvidence],
     parent_context: SFIFinalContext,
-    parent_table_keys: set[str],
+    source_relations: Sequence[SFIHasChildSourceRelation],
 ) -> None:
     """Add strong local ranking evidence for active-outline parent candidates.
 
     Active outline evidence by itself is only a carry-forward retrieval signal. It
-    becomes stronger local ranking evidence when the active parent and child share a
-    local source container, such as the same extraction window, source segment,
-    source-context key, or paired table row/header context. This keeps previous
-    siblings in the candidate set without allowing them to outrank source-local parents
-    across curricula.
+    becomes stronger local ranking evidence only when the active parent and child share
+    an exact source-context key or a deterministic table relation. Broad same-segment
+    and same-window overlap are intentionally insufficient.
 
     Parameters
     ----------
     child_context
         Final SFI context for the child.
-    child_table_keys
-        Paired table row/header context keys for the child.
     evidence_by_endpoint_id
         Mutable parent evidence records keyed by selectable endpoint ID.
     parent_context
         Active-outline parent final SFI context.
-    parent_table_keys
-        Paired table row/header context keys for the parent.
+    source_relations
+        Exact child-relative table relations for the active parent candidate.
     """
 
-    # Check whether a child and parent share a local source container.
     if not (
         bool(
             set(child_context.source_context_keys)
             & set(parent_context.source_context_keys)
         )
-        or bool(
-            set(child_context.source_segment_ids)
-            & set(parent_context.source_segment_ids)
-        )
-        or bool(
-            set(child_context.source_window_ids) & set(parent_context.source_window_ids)
-        )
-        or bool(child_table_keys & parent_table_keys)
+        or bool(source_relations)
     ):
         return
 
@@ -228,9 +263,10 @@ def _add_local_active_outline_direct_parent_evidence(
         evidence_reason=LOCAL_ACTIVE_OUTLINE_DIRECT_PARENT_REASON,
         evidence_summary=(
             "Parent is the active configured direct parent in source order and shares "
-            "a local source container with the child."
+            "an exact source-context key or deterministic table relation with the child."
         ),
         parent_context=parent_context,
+        source_relations=source_relations,
     )
 
 
@@ -324,6 +360,7 @@ def _add_parent_evidence(
     evidence_summary: str,
     parent_context: SFIFinalContext,
     scope_comparison: SFIHasChildScopeComparison | None = None,
+    source_relations: Sequence[SFIHasChildSourceRelation] = (),
 ) -> None:
     """Add or update one non-root parent candidate evidence record.
 
@@ -339,6 +376,8 @@ def _add_parent_evidence(
         Finalized context for the candidate parent.
     scope_comparison
         Optional exact structured-scope comparison with the current child.
+    source_relations
+        Deterministic child-relative source relations to preserve on the candidate.
     """
 
     endpoint_id = str(parent_context.final_sfi_uuid)
@@ -365,6 +404,7 @@ def _add_parent_evidence(
                 source_context_keys=parent_context.source_context_keys,
                 source_order=parent_context.source_order,
                 source_page_indexes=parent_context.source_page_indexes,
+                source_relations=list(source_relations),
                 source_segment_ids=parent_context.source_segment_ids,
                 source_window_indexes=parent_context.source_window_indexes,
                 statement_code=parent_context.statement_code,
@@ -382,6 +422,25 @@ def _add_parent_evidence(
     if scope_comparison is not None:
         evidence.candidate = evidence.candidate.model_copy(
             update={"scope_comparison": scope_comparison}
+        )
+
+    if source_relations:
+        relations_by_key = {
+            model_dump_key(relation): relation
+            for relation in evidence.candidate.source_relations
+        }
+
+        for source_relation in source_relations:
+            relations_by_key.setdefault(
+                model_dump_key(source_relation), source_relation
+            )
+
+        evidence.candidate = evidence.candidate.model_copy(
+            update={
+                "source_relations": [
+                    relations_by_key[key] for key in sorted(relations_by_key)
+                ]
+            }
         )
 
 
@@ -441,6 +500,38 @@ def _add_preceding_grouping_evidence(
             ),
             parent_context=parent_context,
             scope_comparison=scope_comparison,
+        )
+
+
+def _add_source_relation_evidence(
+    *,
+    evidence_by_endpoint_id: dict[str, _ParentEvidence],
+    parent_context: SFIFinalContext,
+    scope_comparison: SFIHasChildScopeComparison,
+    source_relations: Sequence[SFIHasChildSourceRelation],
+) -> None:
+    """Attach deterministic table relations to one parent candidate.
+
+    Parameters
+    ----------
+    evidence_by_endpoint_id
+        Mutable parent evidence records keyed by selectable endpoint ID.
+    parent_context
+        Candidate parent final SFI context.
+    scope_comparison
+        Exact structured-scope comparison between child and candidate parent.
+    source_relations
+        Child-relative source relations recovered from anchors and table grids.
+    """
+
+    for source_relation in source_relations:
+        _add_parent_evidence(
+            evidence_by_endpoint_id=evidence_by_endpoint_id,
+            evidence_reason=_source_relation_evidence_reason(source_relation),
+            evidence_summary=_source_relation_evidence_summary(source_relation),
+            parent_context=parent_context,
+            scope_comparison=scope_comparison,
+            source_relations=[source_relation],
         )
 
 
@@ -543,6 +634,7 @@ def _bound_parent_candidates(
         source_context_keys=[],
         source_order=None,
         source_page_indexes=[],
+        source_relations=[],
         source_segment_ids=[],
         source_window_indexes=[],
         statement_code=None,
@@ -554,6 +646,9 @@ def _bound_parent_candidates(
     indispensable_reasons = {
         CODE_PARENT_HINT_REASON,
         IDENTITY_SCOPE_COMPLETE_PARENT_MATCH_REASON,
+        PARENT_CELL_APPLIES_TO_CHILD_ROW_REASON,
+        SAME_RAW_TABLE_ROW_REASON,
+        SAME_SOURCE_UNIT_REASON,
         SOURCE_SCOPE_GROUPING_REASON,
     }
     indispensable_candidates = [
@@ -569,7 +664,8 @@ def _bound_parent_candidates(
             f"candidates, but max_has_child_parent_candidates="
             f"{max_parent_candidates} leaves only {slots_for_non_root} non-root "
             f"slots. Increase the runtime bound rather than truncating exact "
-            f"structured-scope, code-parent, or source-grouping evidence."
+            f"structured-scope, source-relation, code-parent, or source-grouping "
+            f"evidence."
         )
 
     selected_non_root = list(indispensable_candidates)
@@ -679,7 +775,9 @@ def _build_candidate_parent_sets(
     extraction_windows: Sequence[ExtractionWindow],
     framework_uuid: uuid.UUID,
     kg_config: CreateKGConfig,
+    sfi_final_records: Sequence[SFIFinalRecord],
     table_context_keys_by_uuid: dict[uuid.UUID, set[str]],
+    table_occurrences_by_uuid: dict[uuid.UUID, tuple[_TableOccurrenceRef, ...]],
 ) -> list[SFIHasChildCandidateParentSet]:
     """Build bounded candidate parent sets for finalized SFIs.
 
@@ -748,11 +846,16 @@ def _build_candidate_parent_sets(
         Deterministic StandardsFramework root UUID.
     kg_config
         Runtime KG configuration.
+    sfi_final_records
+        Finalized SFI records containing exact candidate source anchors.
     table_context_keys_by_uuid
         Paired table row/header context keys keyed by final SFI UUID. These keys are
         recovered from candidate-level source refs rather than flattened final-record
         segment/index aggregates, so table evidence does not cross-combine unrelated
         source segments and row/header indexes.
+    table_occurrences_by_uuid
+        Candidate-level table occurrences keyed by final SFI UUID. Each occurrence
+        preserves the segment, window, and row/header indexes from one source ref.
 
     Returns
     -------
@@ -761,8 +864,17 @@ def _build_candidate_parent_sets(
     """
 
     parent_sets: list[SFIHasChildCandidateParentSet] = []
+    parent_requirements_by_child_type = _build_parent_requirements_by_child_type(
+        kg_config
+    )
     parent_statement_types_by_child_type = _build_direct_parent_statement_types(
         kg_config
+    )
+    records_by_uuid = {record.final_sfi_uuid: record for record in sfi_final_records}
+    source_row_by_grid_position = _build_table_grid_source_row_index(extraction_windows)
+    source_units_by_id = _build_source_unit_map_from_windows(extraction_windows)
+    table_source_units_by_uuid = _build_table_source_unit_refs_by_uuid(
+        sfi_final_records=sfi_final_records, source_units_by_id=source_units_by_id
     )
     value_match_policies = _build_controlled_value_match_policies(kg_config)
     outline_parent_by_child_uuid = _build_active_outline_parent_map(
@@ -783,7 +895,11 @@ def _build_candidate_parent_sets(
 
     for child_context in contexts:
         child_code = normalize_code(child_context.normalized_statement_code)
+        child_source_units = table_source_units_by_uuid[child_context.final_sfi_uuid]
         child_table_keys = table_keys_by_uuid[child_context.final_sfi_uuid]
+        child_table_occurrences = table_occurrences_by_uuid[
+            child_context.final_sfi_uuid
+        ]
         evidence_by_endpoint_id: dict[str, _ParentEvidence] = {}
         source_local_parent_scope_value_keys_by_type = (
             _collect_source_local_parent_scope_value_keys(
@@ -802,54 +918,97 @@ def _build_candidate_parent_sets(
         if outline_parent_context := outline_parent_by_child_uuid.get(
             child_context.final_sfi_uuid
         ):
-            _add_parent_evidence(
-                evidence_by_endpoint_id=evidence_by_endpoint_id,
-                evidence_reason=ACTIVE_OUTLINE_STACK_PARENT_REASON,
-                evidence_summary=(
-                    "Parent is the active preceding finalized SFI of the configured "
-                    "immediate parent statement type in source order. This is "
-                    "retrieval evidence only; the producer/checker must confirm the "
-                    "direct hasChild parent."
-                ),
-                parent_context=outline_parent_context,
-                scope_comparison=_build_parent_scope_comparison(
-                    child_context=child_context,
-                    parent_context=outline_parent_context,
-                ),
-            )
-            _add_local_active_outline_direct_parent_evidence(
-                child_context=child_context,
-                child_table_keys=child_table_keys,
-                evidence_by_endpoint_id=evidence_by_endpoint_id,
-                parent_context=outline_parent_context,
-                parent_table_keys=table_keys_by_uuid[
+            outline_source_relations = _build_source_relations(
+                child_source_units=child_source_units,
+                parent_source_units=table_source_units_by_uuid[
                     outline_parent_context.final_sfi_uuid
                 ],
+                source_row_by_grid_position=source_row_by_grid_position,
             )
+            outline_parent_record = records_by_uuid[
+                outline_parent_context.final_sfi_uuid
+            ]
+            shares_exact_source_context = bool(
+                set(child_context.source_context_keys)
+                & set(outline_parent_context.source_context_keys)
+            )
+
+            if (
+                not _record_has_multiple_source_occurrences(outline_parent_record)
+                or shares_exact_source_context
+                or outline_source_relations
+            ):
+                _add_parent_evidence(
+                    evidence_by_endpoint_id=evidence_by_endpoint_id,
+                    evidence_reason=ACTIVE_OUTLINE_STACK_PARENT_REASON,
+                    evidence_summary=(
+                        "Parent is the active preceding finalized SFI of the "
+                        "configured immediate parent statement type in source order. "
+                        "This is retrieval evidence only; the producer/checker must "
+                        "confirm the direct hasChild parent."
+                    ),
+                    parent_context=outline_parent_context,
+                    scope_comparison=_build_parent_scope_comparison(
+                        child_context=child_context,
+                        parent_context=outline_parent_context,
+                    ),
+                    source_relations=outline_source_relations,
+                )
+                _add_local_active_outline_direct_parent_evidence(
+                    child_context=child_context,
+                    evidence_by_endpoint_id=evidence_by_endpoint_id,
+                    parent_context=outline_parent_context,
+                    source_relations=outline_source_relations,
+                )
 
         for parent_context in contexts:
             if parent_context.final_sfi_uuid == child_context.final_sfi_uuid:
                 continue
 
+            if parent_context.statement_type not in (
+                parent_statement_types_by_child_type.get(
+                    child_context.statement_type, set()
+                )
+            ):
+                continue
+
+            source_relations = _build_source_relations(
+                child_source_units=child_source_units,
+                parent_source_units=table_source_units_by_uuid[
+                    parent_context.final_sfi_uuid
+                ],
+                source_row_by_grid_position=source_row_by_grid_position,
+            )
+
             _evaluate_parent_child_relationship(
                 child_code=child_code,
                 child_context=child_context,
                 child_table_keys=child_table_keys,
+                child_table_occurrences=child_table_occurrences,
                 code_parent_pairs=code_parent_pairs,
                 evidence_by_endpoint_id=evidence_by_endpoint_id,
                 parent_context=parent_context,
                 parent_statement_types_by_child_type=parent_statement_types_by_child_type,
                 parent_table_keys=table_keys_by_uuid[parent_context.final_sfi_uuid],
+                parent_table_occurrences=table_occurrences_by_uuid[
+                    parent_context.final_sfi_uuid
+                ],
                 source_local_parent_scope_value_keys_by_type=(
                     source_local_parent_scope_value_keys_by_type
                 ),
+                source_relations=source_relations,
             )
+
+        _suppress_ambiguous_active_outline_evidence(evidence_by_endpoint_id)
 
         parent_set = _finalize_candidate_parent_set(
             child_context=child_context,
             evidence_by_endpoint_id=evidence_by_endpoint_id,
             framework_uuid=framework_uuid,
             kg_config=kg_config,
+            parent_requirements=parent_requirements_by_child_type.get(
+                child_context.statement_type, []
+            ),
         )
         parent_sets.append(parent_set)
 
@@ -905,18 +1064,12 @@ def _build_controlled_value_match_policies(
 def _build_direct_parent_statement_types(
     kg_config: CreateKGConfig,
 ) -> dict[str, set[str]]:
-    """Build allowed direct parent statement types for hasChild resolution.
-
-    The runtime config may provide an explicit mapping for branching hierarchies such
-    as Topic having both Performance Objective and Content children. When the mapping
-    is absent, the ordered hierarchy is converted into a simple one-parent-per-rank
-    policy. Child types with an empty parent set are considered root-level and may
-    attach directly to the StandardsFramework root.
+    """Build allowed direct parent statement types from the unified policy.
 
     Parameters
     ----------
     kg_config
-        Runtime KG configuration containing hasChild hierarchy policy.
+        Runtime KG configuration containing the complete hasChild parent policy.
 
     Returns
     -------
@@ -924,25 +1077,12 @@ def _build_direct_parent_statement_types(
         Allowed direct parent statement types keyed by child statement_type.
     """
 
-    explicit_policy = kg_config.academic_standards.sfi_has_child_parent_statement_types
-
-    if explicit_policy:
-        return {
-            child_type: set(parent_types)
-            for child_type, parent_types in explicit_policy.items()
-        }
-
-    hierarchy = _get_hierarchy_statement_types(kg_config)
-    parent_types_by_child_type: dict[str, set[str]] = {}
-
-    for hierarchy_index, statement_type in enumerate(hierarchy):
-        if hierarchy_index == 0:
-            parent_types_by_child_type[statement_type] = set()
-            continue
-
-        parent_types_by_child_type[statement_type] = {hierarchy[hierarchy_index - 1]}
-
-    return parent_types_by_child_type
+    return {
+        child_type: {entry.parent_statement_type for entry in parent_policy_entries}
+        for child_type, parent_policy_entries in (
+            kg_config.academic_standards.sfi_has_child_parent_policy.items()
+        )
+    }
 
 
 def _build_edge(
@@ -1020,6 +1160,10 @@ def _build_edge(
             "parent_scope_comparison": parent_candidate.scope_comparison.model_dump(
                 mode="json"
             ),
+            "parent_source_relations": [
+                source_relation.model_dump(mode="json")
+                for source_relation in parent_candidate.source_relations
+            ],
             "relationship_identity_key": relationship_key,
             "resolution_origin": resolution_origin,
             "resolution_request_id": resolution_request_id,
@@ -1181,6 +1325,37 @@ def _build_edges_from_responses(
     return edges
 
 
+def _build_parent_requirements_by_child_type(
+    kg_config: CreateKGConfig,
+) -> dict[str, list[SFIHasChildParentRequirement]]:
+    """Build request-facing parent requirements from the runtime policy.
+
+    Parameters
+    ----------
+    kg_config
+        Runtime KG configuration containing parent cardinalities.
+
+    Returns
+    -------
+    dict[str, list[SFIHasChildParentRequirement]]
+        Parent requirements keyed by child statement_type in configured order.
+    """
+
+    return {
+        child_type: [
+            SFIHasChildParentRequirement(
+                max_count=entry.max_count,
+                min_count=entry.min_count,
+                parent_statement_type=entry.parent_statement_type,
+            )
+            for entry in parent_policy_entries
+        ]
+        for child_type, parent_policy_entries in (
+            kg_config.academic_standards.sfi_has_child_parent_policy.items()
+        )
+    }
+
+
 def _build_parent_scope_comparison(
     *, child_context: SFIFinalContext, parent_context: SFIFinalContext
 ) -> SFIHasChildScopeComparison:
@@ -1257,6 +1432,269 @@ def _build_parent_scope_comparison(
         matching_ancestor_statement_types=matching_ancestor_statement_types,
         missing_child_ancestor_statement_types=missing_child_ancestor_statement_types,
     )
+
+
+def _build_source_relations(
+    *,
+    child_source_units: Sequence[_TableSourceUnitRef],
+    parent_source_units: Sequence[_TableSourceUnitRef],
+    source_row_by_grid_position: dict[tuple[str, int, int], int],
+) -> list[SFIHasChildSourceRelation]:
+    """Build exact child-relative table relations for one parent candidate.
+
+    Parameters
+    ----------
+    child_source_units
+        Exact table-body units cited by the child.
+    parent_source_units
+        Exact table-body units cited by the candidate parent.
+    source_row_by_grid_position
+        Table-grid origin-row index derived from persisted grid_sources metadata.
+
+    Returns
+    -------
+    list[SFIHasChildSourceRelation]
+        Unique deterministic source relations sorted by serialized content.
+    """
+
+    relations_by_key: dict[str, SFIHasChildSourceRelation] = {}
+
+    for child_source_unit in child_source_units:
+        for parent_source_unit in parent_source_units:
+            if (
+                child_source_unit.source_segment_id
+                != parent_source_unit.source_segment_id
+            ):
+                continue
+
+            relation_kind: str | None = None
+
+            if child_source_unit.source_unit_id == parent_source_unit.source_unit_id:
+                relation_kind = "same_source_unit"
+            elif child_source_unit.row_index == parent_source_unit.row_index:
+                relation_kind = "same_raw_table_row"
+            elif parent_source_unit.row_index < child_source_unit.row_index:
+                parent_column_indexes = range(
+                    parent_source_unit.column_start_index,
+                    parent_source_unit.column_end_index_exclusive,
+                )
+                parent_cell_applies = all(
+                    source_row_by_grid_position.get(
+                        (
+                            child_source_unit.source_segment_id,
+                            child_source_unit.row_index,
+                            column_index,
+                        )
+                    )
+                    == parent_source_unit.row_index
+                    for column_index in parent_column_indexes
+                )
+
+                if parent_cell_applies:
+                    relation_kind = "parent_cell_applies_to_child_row"
+
+            if relation_kind is None:
+                continue
+
+            relation = SFIHasChildSourceRelation(
+                child_row_index=child_source_unit.row_index,
+                child_source_text=child_source_unit.source_text,
+                child_source_unit_id=child_source_unit.source_unit_id,
+                parent_column_end_index_exclusive=(
+                    parent_source_unit.column_end_index_exclusive
+                ),
+                parent_column_start_index=parent_source_unit.column_start_index,
+                parent_origin_row_index=parent_source_unit.row_index,
+                parent_source_text=parent_source_unit.source_text,
+                parent_source_unit_id=parent_source_unit.source_unit_id,
+                relation_kind=relation_kind,
+                source_segment_id=child_source_unit.source_segment_id,
+            )
+            relations_by_key.setdefault(model_dump_key(relation), relation)
+
+    return [relations_by_key[key] for key in sorted(relations_by_key)]
+
+
+def _build_source_unit_map_from_windows(
+    extraction_windows: Sequence[ExtractionWindow],
+) -> dict[str, SFISourceUnit]:
+    """Build a run-wide exact source-unit map from persisted extraction windows.
+
+    Overlapping windows may repeat the same stable source unit. Repeated definitions
+    must be identical so relationship evidence cannot depend on which window copy was
+    encountered first.
+
+    Parameters
+    ----------
+    extraction_windows
+        Persisted source-faithful extraction windows.
+
+    Returns
+    -------
+    dict[str, SFISourceUnit]
+        Stable source units keyed by source_unit_id.
+
+    Raises
+    ------
+    ValueError
+        If overlapping windows define one source_unit_id inconsistently.
+    """
+
+    source_units_by_id: dict[str, SFISourceUnit] = {}
+
+    for extraction_window in extraction_windows:
+        for source_unit_id, source_unit in build_sfi_source_unit_map(
+            extraction_window
+        ).items():
+            existing_source_unit = source_units_by_id.get(source_unit_id)
+
+            if existing_source_unit is not None and existing_source_unit != source_unit:
+                raise ValueError(
+                    f"Extraction windows define source unit {source_unit_id!r} "
+                    f"inconsistently."
+                )
+
+            source_units_by_id[source_unit_id] = source_unit
+
+    return source_units_by_id
+
+
+def _build_table_grid_source_row_index(
+    extraction_windows: Sequence[ExtractionWindow],
+) -> dict[tuple[str, int, int], int]:
+    """Index table-grid origin rows by segment, selected row, and column.
+
+    Parameters
+    ----------
+    extraction_windows
+        Persisted extraction windows containing aligned grid_sources metadata.
+
+    Returns
+    -------
+    dict[tuple[str, int, int], int]
+        Mapping from `(segment_id, child_row_index, column_index)` to the raw row that
+        originated the visible grid value.
+
+    Raises
+    ------
+    ValueError
+        If table payload alignment is invalid or overlapping windows disagree.
+    """
+
+    source_row_by_grid_position: dict[tuple[str, int, int], int] = {}
+
+    for extraction_window in extraction_windows:
+        table = extraction_window.table
+
+        if table is None or table.grid_sources is None:
+            continue
+
+        if len(extraction_window.source_segment_ids) != 1:
+            raise ValueError(
+                "Table extraction windows must reference exactly one source segment."
+            )
+
+        if len(table.grid_sources) != len(table.row_indexes):
+            raise ValueError(
+                f"Table window {extraction_window.window_id!r} has misaligned "
+                f"grid_sources and row_indexes."
+            )
+
+        source_segment_id = extraction_window.source_segment_ids[0]
+
+        for grid_sources, row_index in zip(table.grid_sources, table.row_indexes):
+            if len(grid_sources) != table.n_cols:
+                raise ValueError(
+                    f"Table window {extraction_window.window_id!r} row {row_index} "
+                    f"has grid_sources that do not match n_cols."
+                )
+
+            for column_index, source_info in enumerate(grid_sources):
+                source_row = source_info.get("source_row")
+
+                if not isinstance(source_row, int):
+                    continue
+
+                grid_key = (source_segment_id, row_index, column_index)
+                existing_source_row = source_row_by_grid_position.get(grid_key)
+
+                if (
+                    existing_source_row is not None
+                    and existing_source_row != source_row
+                ):
+                    raise ValueError(
+                        f"Overlapping extraction windows disagree on grid origin "
+                        f"for segment {source_segment_id!r}, row {row_index}, "
+                        f"column {column_index}."
+                    )
+
+                source_row_by_grid_position[grid_key] = source_row
+
+    return source_row_by_grid_position
+
+
+def _build_table_source_unit_refs_by_uuid(
+    *,
+    sfi_final_records: Sequence[SFIFinalRecord],
+    source_units_by_id: dict[str, SFISourceUnit],
+) -> dict[uuid.UUID, list[_TableSourceUnitRef]]:
+    """Recover exact table-body source units for every finalized SFI.
+
+    Parameters
+    ----------
+    sfi_final_records
+        Finalized SFIs whose candidate anchors preserve source_unit_id values.
+    source_units_by_id
+        Run-wide exact source-unit map built from persisted extraction windows.
+
+    Returns
+    -------
+    dict[uuid.UUID, list[_TableSourceUnitRef]]
+        Sorted table-body source-unit references keyed by final SFI UUID.
+
+    Raises
+    ------
+    ValueError
+        If a table-body source anchor cannot be resolved to a persisted source unit.
+    """
+
+    refs_by_uuid: dict[uuid.UUID, list[_TableSourceUnitRef]] = {}
+
+    for record in sfi_final_records:
+        table_refs: list[_TableSourceUnitRef] = []
+
+        for source_unit_id in _source_unit_ids_from_record(record):
+            source_unit = source_units_by_id.get(source_unit_id)
+
+            if source_unit is None:
+                if "|table_body_cell|" in source_unit_id:
+                    raise ValueError(
+                        f"Final SFI {record.final_sfi_uuid} references table source "
+                        f"unit {source_unit_id!r}, which is absent from persisted "
+                        f"extraction windows."
+                    )
+
+                continue
+
+            table_ref = _parse_table_source_unit(
+                source_unit=source_unit, source_unit_id=source_unit_id
+            )
+
+            if table_ref is not None:
+                table_refs.append(table_ref)
+
+        refs_by_uuid[record.final_sfi_uuid] = sorted(
+            table_refs,
+            key=lambda item: (
+                item.source_segment_id,
+                item.row_index,
+                item.column_start_index,
+                item.column_end_index_exclusive,
+                item.source_unit_id,
+            ),
+        )
+
+    return refs_by_uuid
 
 
 def _collect_source_local_parent_scope_value_keys(
@@ -1510,12 +1948,15 @@ def _evaluate_parent_child_relationship(
     child_code: str | None,
     child_context: SFIFinalContext,
     child_table_keys: set[str],
+    child_table_occurrences: Sequence[_TableOccurrenceRef],
     code_parent_pairs: set[tuple[str, str]],
     evidence_by_endpoint_id: dict[str, _ParentEvidence],
     parent_context: SFIFinalContext,
     parent_statement_types_by_child_type: dict[str, set[str]],
     parent_table_keys: set[str],
+    parent_table_occurrences: Sequence[_TableOccurrenceRef],
     source_local_parent_scope_value_keys_by_type: dict[str, set[str]],
+    source_relations: Sequence[SFIHasChildSourceRelation],
 ) -> None:
     """Collect deterministic retrieval evidence for one possible parent.
 
@@ -1532,6 +1973,8 @@ def _evaluate_parent_child_relationship(
         Finalized child context.
     child_table_keys
         Paired table-local context keys for the child.
+    child_table_occurrences
+        Candidate-level child table occurrences preserving paired source provenance.
     code_parent_pairs
         Locally extracted normalized child-code to parent-code hints.
     evidence_by_endpoint_id
@@ -1542,8 +1985,12 @@ def _evaluate_parent_child_relationship(
         Allowed direct parent statement types keyed by child statement type.
     parent_table_keys
         Paired table-local context keys for the candidate parent.
+    parent_table_occurrences
+        Candidate-level parent table occurrences preserving paired source provenance.
     source_local_parent_scope_value_keys_by_type
         All controlled parent values recognized in typed local source labels.
+    source_relations
+        Exact child-relative table relations for this parent candidate.
     """
 
     if parent_context.statement_type not in parent_statement_types_by_child_type.get(
@@ -1580,13 +2027,21 @@ def _evaluate_parent_child_relationship(
     )
     same_table_context = bool(child_table_keys & parent_table_keys)
     source_scope_grouping = _is_source_scope_grouping(
-        child_context=child_context, parent_context=parent_context
+        child_occurrences=child_table_occurrences,
+        parent_context=parent_context,
+        parent_occurrences=parent_table_occurrences,
     )
 
     _add_identity_scope_match_evidence(
         evidence_by_endpoint_id=evidence_by_endpoint_id,
         parent_context=parent_context,
         scope_comparison=scope_comparison,
+    )
+    _add_source_relation_evidence(
+        evidence_by_endpoint_id=evidence_by_endpoint_id,
+        parent_context=parent_context,
+        scope_comparison=scope_comparison,
+        source_relations=source_relations,
     )
 
     simple_rules: tuple[tuple[bool, str, str], ...] = (
@@ -1767,6 +2222,7 @@ def _finalize_candidate_parent_set(
     evidence_by_endpoint_id: dict[str, _ParentEvidence],
     framework_uuid: uuid.UUID,
     kg_config: CreateKGConfig,
+    parent_requirements: Sequence[SFIHasChildParentRequirement],
 ) -> SFIHasChildCandidateParentSet:
     """Process collected evidence and build the bounded candidate parent set.
 
@@ -1816,6 +2272,7 @@ def _finalize_candidate_parent_set(
         evidence_by_endpoint_id=evidence_by_endpoint_id,
         framework_uuid=<framework-uuid>,
         kg_config=kg_config,
+        parent_requirements=[...],
     )
 
     returns an `SFIHasChildCandidateParentSet` whose `child_context` is the supplied
@@ -1848,6 +2305,8 @@ def _finalize_candidate_parent_set(
         Deterministic StandardsFramework root UUID.
     kg_config
         Runtime KG configuration.
+    parent_requirements
+        Allowed direct-parent types and cardinalities for this child statement type.
 
     Returns
     -------
@@ -1877,6 +2336,7 @@ def _finalize_candidate_parent_set(
         child_context=child_context,
         max_parent_candidates=kg_config.academic_standards.max_has_child_parent_candidates,
         parent_candidates=parent_candidates,
+        parent_requirements=list(parent_requirements),
         truncation_notes=truncation_notes,
         was_truncated=was_truncated,
     )
@@ -1977,51 +2437,63 @@ def _is_nearby_source_window(
 
 
 def _is_source_scope_grouping(
-    *, child_context: SFIFinalContext, parent_context: SFIFinalContext
+    *,
+    child_occurrences: Sequence[_TableOccurrenceRef],
+    parent_context: SFIFinalContext,
+    parent_occurrences: Sequence[_TableOccurrenceRef],
 ) -> bool:
-    """Check whether a parent is a source-scope grouping for a row child.
+    """Check whether a parent has a paired header occurrence for a row child.
 
-    This captures a common curriculum layout without hardcoding any curriculum labels:
-    a table or source-scope grouping is expressed in header-level provenance, while
-    the child SFI is expressed in body-row provenance from the same source segment or
-    nearby extraction window. The signal is used only to keep a plausible parent in
-    the bounded candidate set; the LLM still decides whether it is the direct parent.
+    This captures a common curriculum layout without hardcoding curriculum labels: a
+    table grouping is expressed by one header-only parent occurrence, while the child
+    is expressed by one body-row occurrence from the same table segment and the same
+    or a nearby following extraction window. Candidate-level occurrences are compared
+    directly so provenance from separate source refs cannot be cross-combined.
 
     Parameters
     ----------
-    child_context
-        Final SFI source context for the potential child.
+    child_occurrences
+        Candidate-level child table occurrences preserving segment/window/index pairing.
     parent_context
         Final SFI source context for the potential parent.
+    parent_occurrences
+        Candidate-level parent table occurrences preserving segment/window/index
+        pairing.
 
     Returns
     -------
     bool
-        True when the parent is a header-level Standard Grouping that scopes a
-        row-derived child in the same source segment and same or nearby window.
+        True when one header-only parent occurrence scopes one row-derived child
+        occurrence in the same source segment and same or nearby following window.
     """
 
-    # Early exit if any prerequisites for the grouping/child relationship fail.
-    if (
-        parent_context.normalized_statement_type != "Standard Grouping"
-        or not parent_context.table_header_indexes
-        or parent_context.table_row_indexes
-        or not child_context.table_row_indexes
-        or not (
-            set(child_context.source_segment_ids)
-            & set(parent_context.source_segment_ids)
-        )
-    ):
+    if parent_context.normalized_statement_type != "Standard Grouping":
         return False
 
-    return bool(
-        set(child_context.source_window_indexes)
-        & set(parent_context.source_window_indexes)
-    ) or any(
-        0 <= child_window_index - parent_window_index <= 2
-        for child_window_index in child_context.source_window_indexes
-        for parent_window_index in parent_context.source_window_indexes
-    )
+    for parent_occurrence in parent_occurrences:
+        if (
+            not parent_occurrence.table_header_indexes
+            or parent_occurrence.table_row_indexes
+        ):
+            continue
+
+        for child_occurrence in child_occurrences:
+            if (
+                not child_occurrence.table_row_indexes
+                or child_occurrence.source_segment_id
+                != parent_occurrence.source_segment_id
+            ):
+                continue
+
+            same_window = child_occurrence.window_id == parent_occurrence.window_id
+            nearby_following_window = (
+                0 <= child_occurrence.window_index - parent_occurrence.window_index <= 2
+            )
+
+            if same_window or nearby_following_window:
+                return True
+
+    return False
 
 
 def _load_and_validate_existing_relationship_artifacts(
@@ -2549,8 +3021,11 @@ def _parent_candidate_evidence_tier(
     shares_local_source_container = bool(
         evidence_reasons
         & {
+            PARENT_CELL_APPLIES_TO_CHILD_ROW_REASON,
+            SAME_RAW_TABLE_ROW_REASON,
             SAME_SOURCE_CONTEXT_KEY_REASON,
             SAME_SOURCE_SEGMENT_REASON,
+            SAME_SOURCE_UNIT_REASON,
             SAME_SOURCE_WINDOW_REASON,
         }
     )
@@ -2562,6 +3037,8 @@ def _parent_candidate_evidence_tier(
         (_evidence_has_decisive_direct_parent_support(evidence_reasons), 1),
         (
             IDENTITY_SCOPE_DIRECT_PARENT_MATCH_REASON in evidence_reasons
+            or SAME_RAW_TABLE_ROW_REASON in evidence_reasons
+            or SAME_SOURCE_UNIT_REASON in evidence_reasons
             or SOURCE_VISIBLE_DIRECT_PARENT_REASON in evidence_reasons,
             2,
         ),
@@ -2615,9 +3092,12 @@ def _parent_candidate_rank(
         MATCHED_SECTION_PATH_LABEL_REASON: 60,
         NEARBY_SOURCE_CONTEXT_KEY_REASON: 35,
         NEAREST_PRECEDING_GROUPING_REASON: 30,
+        PARENT_CELL_APPLIES_TO_CHILD_ROW_REASON: 170,
         ROOT_EVIDENCE_REASON: 0,
+        SAME_RAW_TABLE_ROW_REASON: 135,
         SAME_SOURCE_CONTEXT_KEY_REASON: 70,
         SAME_SOURCE_SEGMENT_REASON: 60,
+        SAME_SOURCE_UNIT_REASON: 145,
         SAME_SOURCE_WINDOW_REASON: 55,
         SAME_TABLE_CONTEXT_REASON: 85,
         SOURCE_LOCAL_CONTROLLED_PARENT_SCOPE_CONFLICT_REASON: -45,
@@ -2628,6 +3108,52 @@ def _parent_candidate_rank(
     }
     score = sum(weights.get(reason, 0) for reason in candidate.evidence_reasons)
     return _parent_candidate_evidence_tier(candidate), -score, candidate.endpoint_id
+
+
+def _parse_table_source_unit(
+    *, source_unit: SFISourceUnit, source_unit_id: str
+) -> _TableSourceUnitRef | None:
+    """Parse one stable table-body source-unit identifier.
+
+    Parameters
+    ----------
+    source_unit
+        Exact source unit recovered from persisted extraction windows.
+    source_unit_id
+        Stable source-unit identifier to parse.
+
+    Returns
+    -------
+    _TableSourceUnitRef | None
+        Parsed table-body coordinates, or `None` for non-table-body units.
+
+    Raises
+    ------
+    ValueError
+        If parsed column bounds are invalid.
+    """
+
+    match = _TABLE_BODY_SOURCE_UNIT_PATTERN.fullmatch(source_unit_id)
+
+    if match is None:
+        return None
+
+    column_end_index_exclusive = int(match.group("column_end_index_exclusive"))
+    column_start_index = int(match.group("column_start_index"))
+
+    if column_end_index_exclusive <= column_start_index:
+        raise ValueError(
+            f"Invalid table source-unit column range in {source_unit_id!r}."
+        )
+
+    return _TableSourceUnitRef(
+        column_end_index_exclusive=column_end_index_exclusive,
+        column_start_index=column_start_index,
+        row_index=int(match.group("row_index")),
+        source_segment_id=match.group("source_segment_id"),
+        source_text=source_unit.source_text,
+        source_unit_id=source_unit_id,
+    )
 
 
 def _reachable_sfi_ids(
@@ -2667,6 +3193,32 @@ def _reachable_sfi_ids(
             stack.append(child_id)
 
     return reachable
+
+
+def _record_has_multiple_source_occurrences(record: SFIFinalRecord) -> bool:
+    """Return whether one finalized SFI represents multiple printed occurrences.
+
+    Parameters
+    ----------
+    record
+        Finalized SFI record with candidate source references.
+
+    Returns
+    -------
+    bool
+        True when more than one distinct source occurrence is represented.
+    """
+
+    occurrence_keys = {
+        str(source_ref.get("source_occurrence_location_key") or "").strip()
+        for source_ref in record.candidate_source_refs
+        if str(source_ref.get("source_occurrence_location_key") or "").strip()
+    }
+
+    if occurrence_keys:
+        return len(occurrence_keys) > 1
+
+    return len(_source_unit_ids_from_record(record)) > 1
 
 
 def _relationship_code_anomaly_metadata(
@@ -3181,6 +3733,94 @@ def _source_ref_text_list(*, key: str, source_ref: dict[str, object]) -> list[st
     return unique_nonempty(str(value).strip() for value in values_iterable)
 
 
+def _source_relation_evidence_reason(source_relation: SFIHasChildSourceRelation) -> str:
+    """Return the evidence-reason constant for one source relation.
+
+    Parameters
+    ----------
+    source_relation
+        Deterministic child-relative source relation.
+
+    Returns
+    -------
+    str
+        Machine-readable evidence reason.
+    """
+
+    reasons_by_relation_kind = {
+        "parent_cell_applies_to_child_row": (PARENT_CELL_APPLIES_TO_CHILD_ROW_REASON),
+        "same_raw_table_row": SAME_RAW_TABLE_ROW_REASON,
+        "same_source_unit": SAME_SOURCE_UNIT_REASON,
+    }
+    return reasons_by_relation_kind[source_relation.relation_kind]
+
+
+def _source_relation_evidence_summary(
+    source_relation: SFIHasChildSourceRelation,
+) -> str:
+    """Build a concise human-readable summary for one source relation.
+
+    Parameters
+    ----------
+    source_relation
+        Deterministic child-relative source relation.
+
+    Returns
+    -------
+    str
+        Source-grounded relation summary for producer/checker review.
+    """
+
+    if source_relation.relation_kind == "same_source_unit":
+        return "Child and parent cite the same exact source-visible table cell."
+
+    if source_relation.relation_kind == "same_raw_table_row":
+        return (
+            f"Child and parent cite source-visible table cells in the same raw row "
+            f"{source_relation.child_row_index}."
+        )
+
+    return (
+        f"The persisted table grid shows that the parent cell originating in raw row "
+        f"{source_relation.parent_origin_row_index}, columns "
+        f"[{source_relation.parent_column_start_index}, "
+        f"{source_relation.parent_column_end_index_exclusive}), applies to child raw "
+        f"row {source_relation.child_row_index}."
+    )
+
+
+def _source_unit_ids_from_record(record: SFIFinalRecord) -> list[str]:
+    """Return stable source-unit IDs preserved by one finalized SFI record.
+
+    Parameters
+    ----------
+    record
+        Finalized SFI record containing candidate-level source references.
+
+    Returns
+    -------
+    list[str]
+        Sorted unique source-unit identifiers from code and description anchors.
+    """
+
+    source_unit_ids: set[str] = set()
+
+    for source_ref in record.candidate_source_refs:
+        for anchor_field in ("code_source_anchors", "description_source_anchors"):
+            anchors = source_ref.get(anchor_field) or []
+
+            for anchor in anchors:
+                if not isinstance(anchor, dict):
+                    continue
+
+                source_unit_id = str(anchor.get("source_unit_id") or "").strip()
+
+                if source_unit_id:
+                    source_unit_ids.add(source_unit_id)
+
+    return sorted(source_unit_ids)
+
+
 def _split_typed_source_hierarchy_segments(
     *,
     raw_text: str,
@@ -3300,68 +3940,194 @@ def _statement_type_aliases_by_type(kg_config: CreateKGConfig) -> dict[str, set[
     return aliases_by_type
 
 
-def _table_context_keys_from_source_refs(record: SFIFinalRecord) -> set[str]:
-    """Build paired table-local context keys for one final SFI record.
+def _suppress_ambiguous_active_outline_evidence(
+    evidence_by_endpoint_id: dict[str, _ParentEvidence],
+) -> None:
+    """Remove arbitrary active-outline advantages from equivalent row candidates.
 
-    Table evidence must preserve the pairing between a source segment and the
-    row/header indexes cited within the same candidate source-ref record. Final SFI
-    records also carry flattened aggregate segment IDs and flattened row/header index
-    lists for prompt/debug context, but those aggregate lists must not be cross-joined
-    when constructing `same_table_context` retrieval evidence.
-
-    Examples
-    --------
-
-    1. If a final SFI has two source refs:
-
-    - `segment_010` row `2`
-    - `segment_011` row `4`
-
-    this function returns exactly:
-
-    - `segment:segment_010:row:2`
-    - `segment:segment_011:row:4`
-
-    It does not emit false cross-pairs such as `segment_010` row `4`.
+    When multiple candidates of the same statement type have the same strongest exact
+    table relation to the child, flattened source order cannot distinguish their
+    semantic parentage. Structural evidence remains; only active-outline ranking
+    signals are removed.
 
     Parameters
     ----------
-    record
-        Final SFI record whose candidate-level source refs should be converted into
-        table-context keys.
+    evidence_by_endpoint_id
+        Mutable parent evidence records keyed by selectable endpoint ID.
+    """
+
+    relation_priority = {
+        "parent_cell_applies_to_child_row": 0,
+        "same_source_unit": 1,
+        "same_raw_table_row": 2,
+    }
+    grouped_endpoint_ids: dict[tuple[str, int], list[str]] = defaultdict(list)
+
+    for endpoint_id, evidence in evidence_by_endpoint_id.items():
+        statement_type = evidence.candidate.statement_type
+
+        if not statement_type or not evidence.candidate.source_relations:
+            continue
+
+        strongest_relation_priority = min(
+            relation_priority[relation.relation_kind]
+            for relation in evidence.candidate.source_relations
+        )
+        grouped_endpoint_ids[(statement_type, strongest_relation_priority)].append(
+            endpoint_id
+        )
+
+    for endpoint_ids in grouped_endpoint_ids.values():
+        if len(endpoint_ids) < 2:
+            continue
+
+        for endpoint_id in endpoint_ids:
+            evidence = evidence_by_endpoint_id[endpoint_id]
+            evidence.evidence_reasons.discard(ACTIVE_OUTLINE_STACK_PARENT_REASON)
+            evidence.evidence_reasons.discard(LOCAL_ACTIVE_OUTLINE_DIRECT_PARENT_REASON)
+            evidence.evidence_summary = [
+                summary
+                for summary in evidence.evidence_summary
+                if "active preceding finalized SFI" not in summary
+                and "active configured direct parent" not in summary
+            ]
+
+
+def _table_context_keys_from_occurrences(
+    table_occurrences: Sequence[_TableOccurrenceRef],
+) -> set[str]:
+    """Build paired table-local context keys from candidate-level occurrences.
+
+    Parameters
+    ----------
+    table_occurrences
+        Candidate-level table occurrences preserving segment/window/index pairing.
 
     Returns
     -------
     set[str]
-        Table-local row/header context keys derived from paired candidate source refs.
+        Table-local row/header context keys derived without cross-combining provenance.
     """
 
     keys: set[str] = set()
 
-    for source_ref in record.candidate_source_refs:
+    for occurrence in table_occurrences:
+        for row_index in occurrence.table_row_indexes:
+            keys.add(f"segment:{occurrence.source_segment_id}:row:{row_index}")
+
+        for header_index in occurrence.table_header_indexes:
+            keys.add(f"segment:{occurrence.source_segment_id}:header:{header_index}")
+
+    return keys
+
+
+def _table_occurrences_from_source_refs(
+    record: SFIFinalRecord,
+) -> tuple[_TableOccurrenceRef, ...]:
+    """Build strict candidate-level table occurrences for one final SFI record.
+
+    Each occurrence is constructed from one candidate source-ref entry so source
+    segment, extraction window, and cited row/header indexes remain paired. Non-table
+    refs are ignored. Table refs must identify exactly one source segment and a valid
+    extraction window; malformed provenance fails closed rather than creating inferred
+    combinations.
+
+    Parameters
+    ----------
+    record
+        Final SFI record whose candidate source refs should be parsed.
+
+    Returns
+    -------
+    tuple[_TableOccurrenceRef, ...]
+        Unique deterministic table occurrences sorted by complete provenance.
+
+    Raises
+    ------
+    ValueError
+        If a table source ref is not dictionary-shaped, does not identify exactly one
+        source segment, or lacks a valid extraction-window identity.
+    """
+
+    occurrences: set[_TableOccurrenceRef] = set()
+
+    for source_ref_index, source_ref in enumerate(record.candidate_source_refs):
         if not isinstance(source_ref, dict):
+            raise ValueError(
+                f"Final SFI {record.final_sfi_uuid} candidate_source_refs entry "
+                f"{source_ref_index} is not a dictionary."
+            )
+
+        table_header_indexes = tuple(
+            _source_ref_int_list(key="table_header_indexes", source_ref=source_ref)
+        )
+        table_row_indexes = tuple(
+            _source_ref_int_list(key="table_row_indexes", source_ref=source_ref)
+        )
+
+        if not table_header_indexes and not table_row_indexes:
             continue
 
         source_segment_ids = _source_ref_segment_ids(source_ref)
 
-        if not source_segment_ids:
-            continue
+        if len(source_segment_ids) != 1:
+            raise ValueError(
+                f"Final SFI {record.final_sfi_uuid} table source ref "
+                f"{source_ref_index} must identify exactly one source segment; got "
+                f"{source_segment_ids!r}."
+            )
 
-        table_header_indexes = _source_ref_int_list(
-            key="table_header_indexes", source_ref=source_ref
+        window_id = str(source_ref.get("window_id") or "").strip()
+        raw_window_index: Any = source_ref.get("window_index")
+
+        if not window_id:
+            raise ValueError(
+                f"Final SFI {record.final_sfi_uuid} table source ref "
+                f"{source_ref_index} has no window_id."
+            )
+
+        if isinstance(raw_window_index, bool):
+            raise ValueError(
+                f"Final SFI {record.final_sfi_uuid} table source ref "
+                f"{source_ref_index} has invalid window_index {raw_window_index!r}."
+            )
+
+        try:
+            window_index = int(raw_window_index)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Final SFI {record.final_sfi_uuid} table source ref "
+                f"{source_ref_index} has invalid window_index {raw_window_index!r}."
+            ) from exc
+
+        if window_index < 0:
+            raise ValueError(
+                f"Final SFI {record.final_sfi_uuid} table source ref "
+                f"{source_ref_index} has negative window_index {window_index}."
+            )
+
+        occurrences.add(
+            _TableOccurrenceRef(
+                source_segment_id=source_segment_ids[0],
+                table_header_indexes=table_header_indexes,
+                table_row_indexes=table_row_indexes,
+                window_id=window_id,
+                window_index=window_index,
+            )
         )
-        table_row_indexes = _source_ref_int_list(
-            key="table_row_indexes", source_ref=source_ref
+
+    return tuple(
+        sorted(
+            occurrences,
+            key=lambda occurrence: (
+                occurrence.source_segment_id,
+                occurrence.window_index,
+                occurrence.window_id,
+                occurrence.table_header_indexes,
+                occurrence.table_row_indexes,
+            ),
         )
-
-        for source_segment_id in source_segment_ids:
-            for row_index in table_row_indexes:
-                keys.add(f"segment:{source_segment_id}:row:{row_index}")
-
-            for header_index in table_header_indexes:
-                keys.add(f"segment:{source_segment_id}:header:{header_index}")
-
-    return keys
+    )
 
 
 def _typed_source_local_parent_texts_by_type(
@@ -3423,6 +4189,76 @@ def _typed_source_local_parent_texts_by_type(
         parent_statement_type: unique_nonempty(texts)
         for parent_statement_type, texts in texts_by_type.items()
     }
+
+
+def _validate_child_parent_cardinality(
+    *,
+    child_edges: Sequence[SFIHasChildEdge],
+    child_id: str,
+    child_record: SFIFinalRecord,
+    parent_requirements_by_child_type: dict[str, list[SFIHasChildParentRequirement]],
+    records_by_id: dict[str, SFIFinalRecord],
+) -> None:
+    """Validate resolved edge counts against the unified parent policy.
+
+    Children with an unresolved root-fallback edge are exempt because no semantic
+    parent set was resolved. Root-level child types have an empty requirement list.
+
+    Parameters
+    ----------
+    child_edges
+        Incoming hasChild edges for this child.
+    child_id
+        String UUID of the child SFI.
+    child_record
+        Final SFI record for the child.
+    parent_requirements_by_child_type
+        Allowed parent types and cardinalities keyed by child statement type.
+    records_by_id
+        Final SFI records keyed by string UUID.
+
+    Raises
+    ------
+    ValueError
+        If a resolved child's parent count falls outside any configured range.
+    """
+
+    if any(edge.unresolved_root_fallback for edge in child_edges):
+        return
+
+    selected_parent_counts: dict[str, int] = defaultdict(int)
+
+    for edge in child_edges:
+        source_id = str(edge.source_entity_uuid)
+
+        if edge.is_root_edge or source_id not in records_by_id:
+            continue
+
+        parent_statement_type = records_by_id[source_id].statement_type
+        selected_parent_counts[parent_statement_type] += 1
+
+    for requirement in parent_requirements_by_child_type.get(
+        child_record.statement_type, []
+    ):
+        selected_count = selected_parent_counts.get(
+            requirement.parent_statement_type, 0
+        )
+
+        if selected_count < requirement.min_count:
+            raise ValueError(
+                f"Resolved hasChild edges for child {child_id} with statement_type "
+                f"{child_record.statement_type!r} selected {selected_count} parent(s) "
+                f"of type {requirement.parent_statement_type!r}; the configured "
+                f"minimum is {requirement.min_count}."
+            )
+
+        if requirement.max_count is not None and selected_count > requirement.max_count:
+            raise ValueError(
+                f"Resolved hasChild edges for child {child_id} with statement_type "
+                f"{child_record.statement_type!r} selected {selected_count} parent(s) "
+                f"of type {requirement.parent_statement_type!r}; the configured "
+                f"maximum is {requirement.max_count}."
+            )
 
 
 def _validate_final_contexts_align_with_records(
@@ -3775,6 +4611,82 @@ def _validate_graph(
         )
 
 
+def _validate_has_child_edge_parent_type(
+    *,
+    edge: SFIHasChildEdge,
+    framework_uuid: uuid.UUID,
+    parent_statement_types_by_child_type: dict[str, set[str]],
+    records_by_id: dict[str, SFIFinalRecord],
+    root_child_statement_types: set[str],
+) -> None:
+    """Validate a single hasChild edge against the direct parent statement-type policy.
+
+    Root and framework-root edges are checked against the set of statement types
+    permitted at the root, while resolved SFI-to-SFI edges are checked against the
+    allowed parent types configured for the child's statement type. Unresolved
+    root-fallback edges are accepted at the root and rejected everywhere else.
+
+    Parameters
+    ----------
+    edge
+        The hasChild edge to validate.
+    framework_uuid
+        StandardsFramework root UUID.
+    parent_statement_types_by_child_type
+        Allowed parent statement types keyed by child statement type.
+    records_by_id
+        Final SFI records keyed by string UUID.
+    root_child_statement_types
+        Statement types permitted directly under the StandardsFramework root.
+
+    Raises
+    ------
+    ValueError
+        If the edge violates the configured direct parent statement-type policy, or an
+        unresolved root-fallback edge does not terminate at the root.
+    """
+
+    child_record = records_by_id[str(edge.target_sfi_uuid)]
+
+    if edge.is_root_edge or str(edge.source_entity_uuid) == str(framework_uuid):
+        if edge.unresolved_root_fallback:
+            return
+
+        if child_record.statement_type not in root_child_statement_types:
+            raise ValueError(
+                f"hasChild root edge violates configured statement-type policy: "
+                f"child {child_record.final_sfi_uuid} has statement_type "
+                f"{child_record.statement_type!r}; root-level child types are "
+                f"{sorted(root_child_statement_types)}. Use an unresolved "
+                f"root-fallback edge only when no supplied SFI parent candidate "
+                f"is source-supported."
+            )
+
+        return
+
+    if edge.unresolved_root_fallback:
+        raise ValueError(
+            f"hasChild edge for child {child_record.final_sfi_uuid} is marked "
+            f"as an unresolved root fallback, but its parent endpoint is not the "
+            f"StandardsFramework root."
+        )
+
+    parent_record = records_by_id[str(edge.source_entity_uuid)]
+    allowed_parent_types = parent_statement_types_by_child_type.get(
+        child_record.statement_type, set()
+    )
+
+    if parent_record.statement_type not in allowed_parent_types:
+        raise ValueError(
+            f"hasChild SFI edge violates configured statement-type policy: "
+            f"parent {parent_record.final_sfi_uuid} has statement_type "
+            f"{parent_record.statement_type!r}; child "
+            f"{child_record.final_sfi_uuid} has statement_type "
+            f"{child_record.statement_type!r}; allowed parent types are "
+            f"{sorted(allowed_parent_types)}."
+        )
+
+
 def _validate_has_child_statement_type_policy(
     *,
     edges: Sequence[SFIHasChildEdge],
@@ -3782,7 +4694,7 @@ def _validate_has_child_statement_type_policy(
     kg_config: CreateKGConfig,
     sfi_final_records: Sequence[SFIFinalRecord],
 ) -> None:
-    """Validate final hasChild edges against configured direct parent types.
+    """Validate final edges against allowed direct-parent types and cardinalities.
 
     Structural graph checks can pass even when a resolved non-root child is attached to
     the StandardsFramework root or a child is attached to a broader non-direct
@@ -3807,9 +4719,13 @@ def _validate_has_child_statement_type_policy(
     Raises
     ------
     ValueError
-        If a resolved root or SFI parent violates the configured direct parent policy.
+        If a resolved root or SFI parent violates the configured direct parent policy,
+        or a resolved child violates a configured parent cardinality.
     """
 
+    parent_requirements_by_child_type = _build_parent_requirements_by_child_type(
+        kg_config
+    )
     parent_statement_types_by_child_type = _build_direct_parent_statement_types(
         kg_config
     )
@@ -3819,47 +4735,27 @@ def _validate_has_child_statement_type_policy(
         if not parent_types
     }
     records_by_id = {str(record.final_sfi_uuid): record for record in sfi_final_records}
+    incoming_edges_by_child_id: dict[str, list[SFIHasChildEdge]] = defaultdict(list)
 
     for edge in edges:
         child_record = records_by_id[str(edge.target_sfi_uuid)]
-
-        if edge.is_root_edge or str(edge.source_entity_uuid) == str(framework_uuid):
-            if edge.unresolved_root_fallback:
-                continue
-
-            if child_record.statement_type not in root_child_statement_types:
-                raise ValueError(
-                    f"hasChild root edge violates configured statement-type policy: "
-                    f"child {child_record.final_sfi_uuid} has statement_type "
-                    f"{child_record.statement_type!r}; root-level child types are "
-                    f"{sorted(root_child_statement_types)}. Use an unresolved "
-                    f"root-fallback edge only when no supplied SFI parent candidate "
-                    f"is source-supported."
-                )
-
-            continue
-
-        if edge.unresolved_root_fallback:
-            raise ValueError(
-                f"hasChild edge for child {child_record.final_sfi_uuid} is marked "
-                f"as an unresolved root fallback, but its parent endpoint is not the "
-                f"StandardsFramework root."
-            )
-
-        parent_record = records_by_id[str(edge.source_entity_uuid)]
-        allowed_parent_types = parent_statement_types_by_child_type.get(
-            child_record.statement_type, set()
+        incoming_edges_by_child_id[str(child_record.final_sfi_uuid)].append(edge)
+        _validate_has_child_edge_parent_type(
+            edge=edge,
+            framework_uuid=framework_uuid,
+            parent_statement_types_by_child_type=parent_statement_types_by_child_type,
+            records_by_id=records_by_id,
+            root_child_statement_types=root_child_statement_types,
         )
 
-        if parent_record.statement_type not in allowed_parent_types:
-            raise ValueError(
-                f"hasChild SFI edge violates configured statement-type policy: "
-                f"parent {parent_record.final_sfi_uuid} has statement_type "
-                f"{parent_record.statement_type!r}; child "
-                f"{child_record.final_sfi_uuid} has statement_type "
-                f"{child_record.statement_type!r}; allowed parent types are "
-                f"{sorted(allowed_parent_types)}."
-            )
+    for child_id, child_record in records_by_id.items():
+        _validate_child_parent_cardinality(
+            child_edges=incoming_edges_by_child_id.get(child_id, []),
+            child_id=child_id,
+            child_record=child_record,
+            parent_requirements_by_child_type=parent_requirements_by_child_type,
+            records_by_id=records_by_id,
+        )
 
 
 def _validate_resolution_artifact_prefix(
@@ -4151,16 +5047,22 @@ def resolve_has_child_edges(
     _validate_final_contexts_align_with_records(
         contexts=contexts, sfi_final_records=sfi_final_records
     )
-    table_context_keys_by_uuid = {
-        record.final_sfi_uuid: _table_context_keys_from_source_refs(record)
+    table_occurrences_by_uuid = {
+        record.final_sfi_uuid: _table_occurrences_from_source_refs(record)
         for record in sfi_final_records
+    }
+    table_context_keys_by_uuid = {
+        final_sfi_uuid: _table_context_keys_from_occurrences(table_occurrences)
+        for final_sfi_uuid, table_occurrences in table_occurrences_by_uuid.items()
     }
     parent_sets = _build_candidate_parent_sets(
         contexts=contexts,
         extraction_windows=extraction_windows,
         framework_uuid=framework_uuid,
         kg_config=kg_config,
+        sfi_final_records=sfi_final_records,
         table_context_keys_by_uuid=table_context_keys_by_uuid,
+        table_occurrences_by_uuid=table_occurrences_by_uuid,
     )
     requests = [
         SFIHasChildResolutionRequest(
