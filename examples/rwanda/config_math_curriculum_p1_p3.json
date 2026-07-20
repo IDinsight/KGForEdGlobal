@@ -43,6 +43,17 @@
 			"excluded_table_section_patterns": [
 				"(?i)(SUBJECTS AND WEEKLY TIME ALLOCATION|weekly\\s+time\\s+allocation)"
 			],
+      			"grade_level_mapping": {
+				"P1": [
+					"1"
+				],
+				"P2": [
+					"2"
+				],
+				"P3": [
+					"3"
+				]
+			},
 			"grade_level_statement_types": [
 				"Grade"
 			],
@@ -670,6 +681,7 @@
 				"P2",
 				"P3"
 			],
+			"is_current": true,
 			"jurisdiction": "Rwanda",
 			"languages": [
 				"en"

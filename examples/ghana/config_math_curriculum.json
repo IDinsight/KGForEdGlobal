@@ -53,6 +53,17 @@
 			"code_scope_statement_types": {},
 			"excluded_table_columns_signatures": [],
 			"excluded_table_section_patterns": [],
+      			"grade_level_mapping": {
+				"BASIC 4": [
+					"4"
+				],
+				"BASIC 5": [
+					"5"
+				],
+				"BASIC 6": [
+					"6"
+				]
+			},
 			"grade_level_statement_types": [
 				"Grade"
 			],
@@ -451,6 +462,7 @@
 				"Basic 5",
 				"Basic 6"
 			],
+			"is_current": true,
 			"jurisdiction": "Ghana",
 			"languages": [
 				"en"

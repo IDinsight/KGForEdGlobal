@@ -53,6 +53,23 @@
 			"code_scope_statement_types": {},
 			"excluded_table_columns_signatures": [],
 			"excluded_table_section_patterns": [],
+			"grade_level_mapping": {
+				"Class-1": [
+					"1"
+				],
+				"Class-2": [
+					"2"
+				],
+				"Class-3": [
+					"3"
+				],
+				"Class-4": [
+					"4"
+				],
+				"Class-5": [
+					"5"
+				]
+			},
 			"grade_level_statement_types": [
 				"Class"
 			],
@@ -363,6 +380,7 @@
 				"Class-4",
 				"Class-5"
 			],
+			"is_current": true,
 			"jurisdiction": "Tamil Nadu, India",
 			"languages": [
 				"en"

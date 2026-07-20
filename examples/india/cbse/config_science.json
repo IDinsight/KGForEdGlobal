@@ -56,6 +56,14 @@
 			},
 			"excluded_table_columns_signatures": [],
 			"excluded_table_section_patterns": [],
+      			"grade_level_mapping": {
+				"Class IX": [
+					"9"
+				],
+				"Class X": [
+					"10"
+				]
+			},
 			"grade_level_statement_types": [
 				"Class"
 			],
@@ -548,6 +556,7 @@
 				"Class IX",
 				"Class X"
 			],
+			"is_current": true,
 			"jurisdiction": "India",
 			"languages": [
 				"en"
