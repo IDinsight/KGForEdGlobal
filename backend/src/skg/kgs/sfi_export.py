@@ -608,6 +608,36 @@ def _get_learning_commons_export_schema_version() -> str:
     return value.strip()
 
 
+def _json_object_from_unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build one JSON object while rejecting duplicate property names.
+
+    Parameters
+    ----------
+    pairs
+        Ordered key-value pairs supplied by `json.loads` for one JSON object.
+
+    Returns
+    -------
+    dict[str, Any]
+        JSON object preserving the parsed values.
+
+    Raises
+    ------
+    ValueError
+        If the object contains a duplicate property name.
+    """
+
+    output: dict[str, Any] = {}
+
+    for key, value in pairs:
+        if key in output:
+            raise ValueError(f"Duplicate JSON property name: {key!r}.")
+
+        output[key] = value
+
+    return output
+
+
 def _load_complete_existing_export_artifacts(
     *,
     bundle: AcademicStandardsKGBundle,
@@ -701,18 +731,16 @@ def _load_complete_existing_export_artifacts(
             artifact_label="relationships_has_child.jsonl",
             expected=relationships,
         )
-        loaded_learning_commons_nodes = _load_jsonl_models(
-            fp=learning_commons_nodes_fp, model_type=LearningCommonsNode
-        )
-        _validate_model_sequences_equal(
+        loaded_learning_commons_nodes = _load_jsonl_objects(learning_commons_nodes_fp)
+        _validate_learning_commons_wire_sequences_equal(
             actual=loaded_learning_commons_nodes,
             artifact_label="nodes.jsonl",
             expected=learning_commons_nodes,
         )
-        loaded_learning_commons_relationships = _load_jsonl_models(
-            fp=learning_commons_relationships_fp, model_type=LearningCommonsRelationship
+        loaded_learning_commons_relationships = _load_jsonl_objects(
+            learning_commons_relationships_fp
         )
-        _validate_model_sequences_equal(
+        _validate_learning_commons_wire_sequences_equal(
             actual=loaded_learning_commons_relationships,
             artifact_label="relationships.jsonl",
             expected=learning_commons_relationships,
@@ -804,6 +832,62 @@ def _load_jsonl_models(*, fp: Path, model_type: type[BaseModel]) -> list[BaseMod
                 ) from e
 
     return models
+
+
+def _load_jsonl_objects(fp: Path) -> list[dict[str, Any]]:
+    """Load a JSONL artifact as raw JSON objects without model normalization.
+
+    Raw loading is required for wire-format reuse checks because Pydantic parsing can
+    accept aliases or otherwise normalize a noncanonical persisted representation.
+    Blank lines are ignored, while every nonblank line must contain exactly one JSON
+    object with unique property names.
+
+    Parameters
+    ----------
+    fp
+        JSONL artifact path.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Parsed JSON objects in file order.
+
+    Raises
+    ------
+    ValueError
+        If the artifact is missing, a nonblank line is invalid JSON, a JSON value is
+        not an object, or any object contains duplicate property names.
+    """
+
+    if not fp.exists():
+        raise ValueError(f"Missing JSONL artifact: {fp}")
+
+    objects: list[dict[str, Any]] = []
+
+    with fp.open("r", encoding="utf-8") as f:
+        for line_number, line in enumerate(f, start=1):
+            line_clean = line.strip()
+
+            if not line_clean:
+                continue
+
+            try:
+                payload = json.loads(
+                    line_clean, object_pairs_hook=_json_object_from_unique_pairs
+                )
+            except Exception as exc:  # pylint: disable=W0718
+                raise ValueError(
+                    f"Invalid JSONL record in {fp} at line {line_number}."
+                ) from exc
+
+            if not isinstance(payload, dict):
+                raise ValueError(
+                    f"JSONL record in {fp} at line {line_number} must be an object."
+                )
+
+            objects.append(payload)
+
+    return objects
 
 
 def _map_learning_commons_grade_levels(
@@ -2068,6 +2152,53 @@ def _validate_learning_commons_relationship_structure(
         )
 
     return errors
+
+
+def _validate_learning_commons_wire_sequences_equal(
+    *,
+    actual: Sequence[dict[str, Any]],
+    artifact_label: str,
+    expected: Sequence[BaseModel],
+) -> None:
+    """Validate exact Learning Commons JSON-object shape, values, and record order.
+
+    Unlike model-to-model comparison, this check preserves the persisted wire shape. It
+    therefore rejects snake_case field names accepted through Pydantic population
+    aliases, explicit null fields that should have been omitted, extra properties, and
+    any other representation that differs from the canonical writer output.
+
+    Parameters
+    ----------
+    actual
+        Raw JSON objects loaded from the persisted JSONL artifact.
+    artifact_label
+        Human-readable artifact label for errors.
+    expected
+        Expected Learning Commons wire-model sequence.
+
+    Raises
+    ------
+    ValueError
+        If sequence lengths, record order, JSON-object shape, or values differ.
+    """
+
+    if len(actual) != len(expected):
+        raise ValueError(
+            f"{artifact_label} has {len(actual)} records, but expected {len(expected)}."
+        )
+
+    for index, (actual_payload, expected_model) in enumerate(
+        zip(actual, expected, strict=True), start=1
+    ):
+        expected_payload = expected_model.model_dump(
+            by_alias=True, exclude_none=True, mode="json"
+        )
+
+        if actual_payload != expected_payload:
+            raise ValueError(
+                f"{artifact_label} record {index} does not exactly match the current "
+                f"Learning Commons wire payload."
+            )
 
 
 def _validate_model_equal(
