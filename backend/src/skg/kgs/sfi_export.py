@@ -54,6 +54,23 @@ _LEARNING_COMMONS_GRADE_LEVELS = set(get_args(LearningCommonsGradeLevel))
 _LEARNING_COMMONS_UNRESOLVED_ROOT_FALLBACK = "unresolvedRootFallback"
 
 
+def _bool_to_learning_commons_string(value: bool) -> str:
+    """Serialize one Boolean using Learning Commons' JSONL property convention.
+
+    Parameters
+    ----------
+    value
+        Boolean value to serialize.
+
+    Returns
+    -------
+    str
+        `"true"` or `"false"`.
+    """
+
+    return "true" if value else "false"
+
+
 def _build_entity_provenance(
     *,
     document_ir: DocumentIR,
@@ -137,6 +154,201 @@ def _build_entity_provenance(
     }
 
 
+def _build_learning_commons_nodes(
+    *,
+    grade_level_mapping: dict[str, list[LearningCommonsGradeLevel]],
+    sf: StandardsFramework,
+    sfis: Sequence[StandardsFrameworkItem],
+) -> list[LearningCommonsNode]:
+    """Build slim Learning Commons-shaped node records.
+
+    Parameters
+    ----------
+    grade_level_mapping
+        Runtime mapping from local canonical grades to Learning Commons grades.
+    sf
+        Internal framework entity.
+    sfis
+        Internal standards-item entities in deterministic export order.
+
+    Returns
+    -------
+    list[LearningCommonsNode]
+        Framework-first Learning Commons node records.
+    """
+
+    framework_identifier = str(sf.identifier)
+    nodes = [
+        LearningCommonsNode(
+            identifier=framework_identifier,
+            labels=["StandardsFramework"],
+            properties=LearningCommonsStandardsFrameworkProperties(
+                academic_subject=sf.academic_subject,
+                adoption_status=sf.adoption_status,
+                attribution_statement=sf.attribution_statement,
+                author=sf.author,
+                case_identifier_uri=sf.case_identifier_uri,
+                case_identifier_uuid=str(sf.case_identifier_uuid),
+                date_created=sf.date_created,
+                date_modified=sf.date_modified,
+                description=sf.description,
+                identifier=framework_identifier,
+                in_language=sf.in_language,
+                is_current=_bool_to_learning_commons_string(sf.is_current),
+                jurisdiction=sf.jurisdiction,
+                license=sf.license,
+                name=sf.name,
+                notes=sf.notes,
+                provider=sf.provider,
+            ),
+        )
+    ]
+
+    for item in sfis:
+        mapped_grade_levels = _map_learning_commons_grade_levels(
+            grade_level_mapping=grade_level_mapping, local_grade_levels=item.grade_level
+        )
+        grade_level = (
+            json.dumps(mapped_grade_levels, ensure_ascii=False, separators=(",", ":"))
+            if mapped_grade_levels
+            else None
+        )
+        item_identifier = str(item.identifier)
+        nodes.append(
+            LearningCommonsNode(
+                identifier=item_identifier,
+                labels=["StandardsFrameworkItem"],
+                properties=LearningCommonsStandardsFrameworkItemProperties(
+                    academic_subject=item.academic_subject,
+                    adoption_status=sf.adoption_status,
+                    alternate_statement_code=item.alternate_statement_code,
+                    attribution_statement=item.attribution_statement,
+                    author=item.author,
+                    case_identifier_uri=item.case_identifier_uri,
+                    case_identifier_uuid=str(item.case_identifier_uuid),
+                    date_created=item.date_created,
+                    date_modified=item.date_modified,
+                    description=item.description,
+                    grade_level=grade_level,
+                    identifier=item_identifier,
+                    in_language=item.in_language,
+                    is_current=_bool_to_learning_commons_string(item.is_current),
+                    jurisdiction=item.jurisdiction,
+                    license=item.license,
+                    normalized_statement_type=item.normalized_statement_type,
+                    notes=item.notes,
+                    provider=item.provider,
+                    statement_code=item.statement_code,
+                    statement_type=item.statement_type,
+                ),
+            )
+        )
+
+    return nodes
+
+
+def _build_learning_commons_relationships(
+    *, nodes: Sequence[LearningCommonsNode], relationships: Sequence[Relationship]
+) -> list[LearningCommonsRelationship]:
+    """Build slim Learning Commons-shaped relationship records.
+
+    The graph topology is preserved exactly, including valid multi-parent DAG edges.
+    Unresolved root fallbacks remain present and receive an explicit extension status.
+
+    Parameters
+    ----------
+    nodes
+        Learning Commons node records used to resolve graph identifiers and labels.
+    relationships
+        Internal relationship records in deterministic order.
+
+    Returns
+    -------
+    list[LearningCommonsRelationship]
+        Learning Commons relationship records aligned to the internal graph.
+
+    Raises
+    ------
+    ValueError
+        If a declared relationship endpoint cannot be resolved to a node.
+    """
+
+    nodes_by_case_identifier_uuid = {
+        node.properties.case_identifier_uuid: node for node in nodes
+    }
+    nodes_by_identifier = {node.properties.identifier: node for node in nodes}
+    output: list[LearningCommonsRelationship] = []
+
+    for relationship in relationships:
+        source_lookup = (
+            nodes_by_case_identifier_uuid
+            if relationship.source_entity_key == "case_identifier_uuid"
+            else nodes_by_identifier
+        )
+        target_lookup = (
+            nodes_by_case_identifier_uuid
+            if relationship.target_entity_key == "case_identifier_uuid"
+            else nodes_by_identifier
+        )
+        source_node = source_lookup.get(relationship.source_entity_value)
+        target_node = target_lookup.get(relationship.target_entity_value)
+
+        if source_node is None:
+            raise ValueError(
+                f"Unable to resolve Learning Commons relationship source endpoint "
+                f"{relationship.source_entity_key}="
+                f"{relationship.source_entity_value!r}."
+            )
+
+        if target_node is None:
+            raise ValueError(
+                f"Unable to resolve Learning Commons relationship target endpoint "
+                f"{relationship.target_entity_key}="
+                f"{relationship.target_entity_value!r}."
+            )
+
+        resolution_status = (
+            _LEARNING_COMMONS_UNRESOLVED_ROOT_FALLBACK
+            if relationship.metadata.get("unresolved_root_fallback") is True
+            else None
+        )
+        relationship_identifier = str(relationship.identifier)
+        output.append(
+            LearningCommonsRelationship(
+                identifier=relationship_identifier,
+                label=relationship.relationship_type,
+                properties=LearningCommonsRelationshipProperties(
+                    attribution_statement=relationship.attribution_statement,
+                    author=relationship.author,
+                    date_created=relationship.date_created,
+                    date_modified=relationship.date_modified,
+                    description=relationship.description,
+                    identifier=relationship_identifier,
+                    license=relationship.license,
+                    provider=relationship.provider,
+                    relationship_type=relationship.relationship_type,
+                    resolution_status=resolution_status,
+                    source_entity=relationship.source_entity,
+                    source_entity_key=_to_learning_commons_entity_key(
+                        relationship.source_entity_key
+                    ),
+                    source_entity_value=relationship.source_entity_value,
+                    target_entity=relationship.target_entity,
+                    target_entity_key=_to_learning_commons_entity_key(
+                        relationship.target_entity_key
+                    ),
+                    target_entity_value=relationship.target_entity_value,
+                ),
+                source_identifier=source_node.identifier,
+                source_labels=list(source_node.labels),
+                target_identifier=target_node.identifier,
+                target_labels=list(target_node.labels),
+            )
+        )
+
+    return output
+
+
 def _collect_candidate_scope_value_maps(record: SFIFinalRecord) -> list[dict[str, Any]]:
     """Collect candidate-level identity-scope value maps from a final SFI record.
 
@@ -167,6 +379,67 @@ def _collect_candidate_scope_value_maps(record: SFIFinalRecord) -> list[dict[str
             candidate_scope_value_maps.append(identity_scope_values)
 
     return candidate_scope_value_maps
+
+
+def _detect_learning_commons_cycles(
+    relationships: Sequence[LearningCommonsRelationship],
+) -> list[list[str]]:
+    """Detect directed cycles in Learning Commons relationship records.
+
+    Parameters
+    ----------
+    relationships
+        Learning Commons relationship records.
+
+    Returns
+    -------
+    list[list[str]]
+        Detected cycles represented by outer node identifiers.
+    """
+
+    graph: dict[str, list[str]] = defaultdict(list)
+
+    for relationship in relationships:
+        graph[relationship.source_identifier].append(relationship.target_identifier)
+
+    cycles: list[list[str]] = []
+    stack: list[str] = []
+    visited: set[str] = set()
+    visiting: set[str] = set()
+
+    def _visit(node_identifier: str) -> None:
+        """Visit one node while detecting Learning Commons graph cycles.
+
+        Parameters
+        ----------
+        node_identifier
+            Outer graph-node identifier.
+        """
+
+        if node_identifier in visiting:
+            cycle_start = (
+                stack.index(node_identifier) if node_identifier in stack else 0
+            )
+            cycles.append(stack[cycle_start:] + [node_identifier])
+            return
+
+        if node_identifier in visited:
+            return
+
+        visiting.add(node_identifier)
+        stack.append(node_identifier)
+
+        for child_identifier in graph.get(node_identifier, []):
+            _visit(child_identifier)
+
+        stack.pop()
+        visiting.remove(node_identifier)
+        visited.add(node_identifier)
+
+    for node_identifier in sorted(graph):
+        _visit(node_identifier)
+
+    return cycles
 
 
 def _detect_sfi_cycles(relationships: Sequence[Relationship]) -> list[list[str]]:
@@ -291,21 +564,22 @@ def _extract_local_grade_levels(
     return list(grade_levels)
 
 
-def _bool_to_learning_commons_string(value: bool) -> str:
-    """Serialize one Boolean using Learning Commons' JSONL property convention.
+def _fingerprint_jsonable(value: Any) -> str:
+    """Build a deterministic SHA-256 fingerprint for a JSON-compatible value.
 
     Parameters
     ----------
     value
-        Boolean value to serialize.
+        JSON-compatible value to fingerprint.
 
     Returns
     -------
     str
-        `"true"` or `"false"`.
+        Hex SHA-256 digest.
     """
 
-    return "true" if value else "false"
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _get_learning_commons_export_schema_version() -> str:
@@ -332,349 +606,6 @@ def _get_learning_commons_export_schema_version() -> str:
         )
 
     return value.strip()
-
-
-def _map_learning_commons_grade_levels(
-    *,
-    grade_level_mapping: dict[str, list[LearningCommonsGradeLevel]],
-    local_grade_levels: Sequence[str],
-) -> list[LearningCommonsGradeLevel]:
-    """Map source-canonical local grades to Learning Commons grade values.
-
-    Explicit mappings take precedence. Local values already present in the Learning
-    Commons grade vocabulary use identity mapping. An explicit empty target list is
-    retained as an intentional decision to omit `gradeLevel` from the slim export.
-
-    Parameters
-    ----------
-    grade_level_mapping
-        Runtime mapping from local canonical values to Learning Commons grades.
-    local_grade_levels
-        Source-canonical local grade values associated with one item.
-
-    Returns
-    -------
-    list[LearningCommonsGradeLevel]
-        Stable, de-duplicated Learning Commons grade values.
-
-    Raises
-    ------
-    ValueError
-        If a local value is neither explicitly mapped nor already a valid Learning
-        Commons grade value.
-    """
-
-    mapped: list[LearningCommonsGradeLevel] = []
-    seen: set[str] = set()
-
-    for local_grade_level in local_grade_levels:
-        if local_grade_level in grade_level_mapping:
-            targets = grade_level_mapping[local_grade_level]
-        elif local_grade_level in _LEARNING_COMMONS_GRADE_LEVELS:
-            targets = [cast(LearningCommonsGradeLevel, local_grade_level)]
-        else:
-            raise ValueError(
-                "No Learning Commons grade mapping exists for local grade value "
-                f"{local_grade_level!r}."
-            )
-
-        for target in targets:
-            if target in seen:
-                continue
-
-            mapped.append(target)
-            seen.add(target)
-
-    return mapped
-
-
-def _to_learning_commons_entity_key(value: str) -> str:
-    """Convert one internal entity-key name to its Learning Commons spelling.
-
-    Parameters
-    ----------
-    value
-        Internal entity-key name.
-
-    Returns
-    -------
-    str
-        Learning Commons entity-key value.
-
-    Raises
-    ------
-    ValueError
-        If the internal entity key is unsupported.
-    """
-
-    mapping = {
-        "case_identifier_uuid": "caseIdentifierUUID",
-        "identifier": "identifier",
-    }
-
-    try:
-        return mapping[value]
-    except KeyError as exc:
-        raise ValueError(
-            f"Unsupported Learning Commons relationship entity key: {value!r}."
-        ) from exc
-
-
-def _validate_learning_commons_grade_mapping(
-    *,
-    grade_level_mapping: dict[str, list[LearningCommonsGradeLevel]],
-    sfis: Sequence[StandardsFrameworkItem],
-) -> list[str]:
-    """Validate that every observed local grade can be exported deterministically.
-
-    Parameters
-    ----------
-    grade_level_mapping
-        Runtime local-to-Learning-Commons grade mapping.
-    sfis
-        Internal standards items containing source-canonical local grade values.
-
-    Returns
-    -------
-    list[str]
-        Validation errors for unmapped or invalid observed grade values.
-    """
-
-    errors: list[str] = []
-    observed_local_grade_levels = dict.fromkeys(
-        grade_level for item in sfis for grade_level in item.grade_level
-    )
-
-    for local_grade_level in observed_local_grade_levels:
-        try:
-            _map_learning_commons_grade_levels(
-                grade_level_mapping=grade_level_mapping,
-                local_grade_levels=[local_grade_level],
-            )
-        except ValueError as exc:
-            errors.append(str(exc))
-
-    return errors
-
-
-def _build_learning_commons_nodes(
-    *,
-    grade_level_mapping: dict[str, list[LearningCommonsGradeLevel]],
-    sf: StandardsFramework,
-    sfis: Sequence[StandardsFrameworkItem],
-) -> list[LearningCommonsNode]:
-    """Build slim Learning Commons-shaped node records.
-
-    Parameters
-    ----------
-    grade_level_mapping
-        Runtime mapping from local canonical grades to Learning Commons grades.
-    sf
-        Internal framework entity.
-    sfis
-        Internal standards-item entities in deterministic export order.
-
-    Returns
-    -------
-    list[LearningCommonsNode]
-        Framework-first Learning Commons node records.
-    """
-
-    framework_identifier = str(sf.identifier)
-    nodes = [
-        LearningCommonsNode(
-            identifier=framework_identifier,
-            labels=["StandardsFramework"],
-            properties=LearningCommonsStandardsFrameworkProperties(
-                academic_subject=sf.academic_subject,
-                adoption_status=sf.adoption_status,
-                attribution_statement=sf.attribution_statement,
-                author=sf.author,
-                case_identifier_uri=sf.case_identifier_uri,
-                case_identifier_uuid=str(sf.case_identifier_uuid),
-                date_created=sf.date_created,
-                date_modified=sf.date_modified,
-                description=sf.description,
-                identifier=framework_identifier,
-                in_language=sf.in_language,
-                is_current=_bool_to_learning_commons_string(sf.is_current),
-                jurisdiction=sf.jurisdiction,
-                license=sf.license,
-                name=sf.name,
-                notes=sf.notes,
-                provider=sf.provider,
-            ),
-        )
-    ]
-
-    for item in sfis:
-        mapped_grade_levels = _map_learning_commons_grade_levels(
-            grade_level_mapping=grade_level_mapping,
-            local_grade_levels=item.grade_level,
-        )
-        grade_level = (
-            json.dumps(
-                mapped_grade_levels,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-            if mapped_grade_levels
-            else None
-        )
-        item_identifier = str(item.identifier)
-        nodes.append(
-            LearningCommonsNode(
-                identifier=item_identifier,
-                labels=["StandardsFrameworkItem"],
-                properties=LearningCommonsStandardsFrameworkItemProperties(
-                    academic_subject=item.academic_subject,
-                    adoption_status=sf.adoption_status,
-                    alternate_statement_code=item.alternate_statement_code,
-                    attribution_statement=item.attribution_statement,
-                    author=item.author,
-                    case_identifier_uri=item.case_identifier_uri,
-                    case_identifier_uuid=str(item.case_identifier_uuid),
-                    date_created=item.date_created,
-                    date_modified=item.date_modified,
-                    description=item.description,
-                    grade_level=grade_level,
-                    identifier=item_identifier,
-                    in_language=item.in_language,
-                    is_current=_bool_to_learning_commons_string(item.is_current),
-                    jurisdiction=item.jurisdiction,
-                    license=item.license,
-                    normalized_statement_type=item.normalized_statement_type,
-                    notes=item.notes,
-                    provider=item.provider,
-                    statement_code=item.statement_code,
-                    statement_type=item.statement_type,
-                ),
-            )
-        )
-
-    return nodes
-
-
-def _build_learning_commons_relationships(
-    *,
-    nodes: Sequence[LearningCommonsNode],
-    relationships: Sequence[Relationship],
-) -> list[LearningCommonsRelationship]:
-    """Build slim Learning Commons-shaped relationship records.
-
-    The graph topology is preserved exactly, including valid multi-parent DAG edges.
-    Unresolved root fallbacks remain present and receive an explicit extension status.
-
-    Parameters
-    ----------
-    nodes
-        Learning Commons node records used to resolve graph identifiers and labels.
-    relationships
-        Internal relationship records in deterministic order.
-
-    Returns
-    -------
-    list[LearningCommonsRelationship]
-        Learning Commons relationship records aligned to the internal graph.
-
-    Raises
-    ------
-    ValueError
-        If a declared relationship endpoint cannot be resolved to a node.
-    """
-
-    nodes_by_case_identifier_uuid = {
-        node.properties.case_identifier_uuid: node for node in nodes
-    }
-    nodes_by_identifier = {node.properties.identifier: node for node in nodes}
-    output: list[LearningCommonsRelationship] = []
-
-    for relationship in relationships:
-        source_lookup = (
-            nodes_by_case_identifier_uuid
-            if relationship.source_entity_key == "case_identifier_uuid"
-            else nodes_by_identifier
-        )
-        target_lookup = (
-            nodes_by_case_identifier_uuid
-            if relationship.target_entity_key == "case_identifier_uuid"
-            else nodes_by_identifier
-        )
-        source_node = source_lookup.get(relationship.source_entity_value)
-        target_node = target_lookup.get(relationship.target_entity_value)
-
-        if source_node is None:
-            raise ValueError(
-                "Unable to resolve Learning Commons relationship source endpoint "
-                f"{relationship.source_entity_key}="
-                f"{relationship.source_entity_value!r}."
-            )
-
-        if target_node is None:
-            raise ValueError(
-                "Unable to resolve Learning Commons relationship target endpoint "
-                f"{relationship.target_entity_key}="
-                f"{relationship.target_entity_value!r}."
-            )
-
-        resolution_status = (
-            _LEARNING_COMMONS_UNRESOLVED_ROOT_FALLBACK
-            if relationship.metadata.get("unresolved_root_fallback") is True
-            else None
-        )
-        relationship_identifier = str(relationship.identifier)
-        output.append(
-            LearningCommonsRelationship(
-                identifier=relationship_identifier,
-                label=relationship.relationship_type,
-                properties=LearningCommonsRelationshipProperties(
-                    attribution_statement=relationship.attribution_statement,
-                    author=relationship.author,
-                    date_created=relationship.date_created,
-                    date_modified=relationship.date_modified,
-                    description=relationship.description,
-                    identifier=relationship_identifier,
-                    license=relationship.license,
-                    provider=relationship.provider,
-                    relationship_type=relationship.relationship_type,
-                    resolution_status=resolution_status,
-                    source_entity=relationship.source_entity,
-                    source_entity_key=_to_learning_commons_entity_key(
-                        relationship.source_entity_key
-                    ),
-                    source_entity_value=relationship.source_entity_value,
-                    target_entity=relationship.target_entity,
-                    target_entity_key=_to_learning_commons_entity_key(
-                        relationship.target_entity_key
-                    ),
-                    target_entity_value=relationship.target_entity_value,
-                ),
-                source_identifier=source_node.identifier,
-                source_labels=list(source_node.labels),
-                target_identifier=target_node.identifier,
-                target_labels=list(target_node.labels),
-            )
-        )
-
-    return output
-
-
-def _fingerprint_jsonable(value: Any) -> str:
-    """Build a deterministic SHA-256 fingerprint for a JSON-compatible value.
-
-    Parameters
-    ----------
-    value
-        JSON-compatible value to fingerprint.
-
-    Returns
-    -------
-    str
-        Hex SHA-256 digest.
-    """
-
-    payload = json.dumps(value, ensure_ascii=False, sort_keys=True)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _load_complete_existing_export_artifacts(
@@ -875,6 +806,99 @@ def _load_jsonl_models(*, fp: Path, model_type: type[BaseModel]) -> list[BaseMod
     return models
 
 
+def _map_learning_commons_grade_levels(
+    *,
+    grade_level_mapping: dict[str, list[LearningCommonsGradeLevel]],
+    local_grade_levels: Sequence[str],
+) -> list[LearningCommonsGradeLevel]:
+    """Map source-canonical local grades to Learning Commons grade values.
+
+    Explicit mappings take precedence. Local values already present in the Learning
+    Commons grade vocabulary use identity mapping. An explicit empty target list is
+    retained as an intentional decision to omit `gradeLevel` from the slim export.
+
+    Parameters
+    ----------
+    grade_level_mapping
+        Runtime mapping from local canonical values to Learning Commons grades.
+    local_grade_levels
+        Source-canonical local grade values associated with one item.
+
+    Returns
+    -------
+    list[LearningCommonsGradeLevel]
+        Stable, de-duplicated Learning Commons grade values.
+
+    Raises
+    ------
+    ValueError
+        If a local value is neither explicitly mapped nor already a valid Learning
+        Commons grade value.
+    """
+
+    mapped: list[LearningCommonsGradeLevel] = []
+    seen: set[str] = set()
+
+    for local_grade_level in local_grade_levels:
+        if local_grade_level in grade_level_mapping:
+            targets = grade_level_mapping[local_grade_level]
+        elif local_grade_level in _LEARNING_COMMONS_GRADE_LEVELS:
+            targets = [cast(LearningCommonsGradeLevel, local_grade_level)]
+        else:
+            raise ValueError(
+                f"No Learning Commons grade mapping exists for local grade value "
+                f"{local_grade_level!r}."
+            )
+
+        for target in targets:
+            if target in seen:
+                continue
+
+            mapped.append(target)
+            seen.add(target)
+
+    return mapped
+
+
+def _reachable_learning_commons_item_identifiers(
+    *, framework_identifier: str, relationships: Sequence[LearningCommonsRelationship]
+) -> set[str]:
+    """Compute Learning Commons item nodes reachable from the framework root.
+
+    Parameters
+    ----------
+    framework_identifier
+        Outer identifier of the framework node.
+    relationships
+        Learning Commons relationship records.
+
+    Returns
+    -------
+    set[str]
+        Reachable outer node identifiers excluding the root.
+    """
+
+    graph: dict[str, list[str]] = defaultdict(list)
+
+    for relationship in relationships:
+        graph[relationship.source_identifier].append(relationship.target_identifier)
+
+    reachable: set[str] = set()
+    stack = [framework_identifier]
+
+    while stack:
+        node_identifier = stack.pop()
+
+        for child_identifier in graph.get(node_identifier, []):
+            if child_identifier in reachable:
+                continue
+
+            reachable.add(child_identifier)
+            stack.append(child_identifier)
+
+    return reachable
+
+
 def _reachable_sfi_ids(
     *, relationships: Sequence[Relationship], sf_uuid: uuid.UUID
 ) -> set[str]:
@@ -912,6 +936,49 @@ def _reachable_sfi_ids(
             stack.append(child_id)
 
     return reachable
+
+
+def _remove_artifacts(artifact_fps: Sequence[Path]) -> None:
+    """Remove stale artifacts without recreating empty placeholder files.
+
+    Parameters
+    ----------
+    artifact_fps
+        Artifact paths to remove when they exist.
+    """
+
+    for artifact_fp in artifact_fps:
+        if artifact_fp.exists():
+            artifact_fp.unlink()
+
+
+def _to_learning_commons_entity_key(value: str) -> str:
+    """Convert one internal entity-key name to its Learning Commons spelling.
+
+    Parameters
+    ----------
+    value
+        Internal entity-key name.
+
+    Returns
+    -------
+    str
+        Learning Commons entity-key value.
+
+    Raises
+    ------
+    ValueError
+        If the internal entity key is unsupported.
+    """
+
+    mapping = {"case_identifier_uuid": "caseIdentifierUUID", "identifier": "identifier"}
+
+    try:
+        return mapping[value]
+    except KeyError as exc:
+        raise ValueError(
+            f"Unsupported Learning Commons relationship entity key: {value!r}."
+        ) from exc
 
 
 def _validate_count_alignment(
@@ -1009,7 +1076,8 @@ def _validate_count_alignment(
 
     if sfi_to_sfi_edge_count != has_child_resolution_summary.sfi_to_sfi_edge_count:
         errors.append(
-            "has_child_resolution_summary.sfi_to_sfi_edge_count does not match SFI-to-SFI edge count."
+            "has_child_resolution_summary.sfi_to_sfi_edge_count does not match "
+            "SFI-to-SFI edge count."
         )
 
     return errors
@@ -1058,488 +1126,6 @@ def _validate_coverage_and_reachability(
     if unreachable:
         errors.append(
             f"Final SFIs are not reachable from StandardsFramework root: {unreachable}."
-        )
-
-    return errors
-
-
-def _detect_learning_commons_cycles(
-    relationships: Sequence[LearningCommonsRelationship],
-) -> list[list[str]]:
-    """Detect directed cycles in Learning Commons relationship records.
-
-    Parameters
-    ----------
-    relationships
-        Learning Commons relationship records.
-
-    Returns
-    -------
-    list[list[str]]
-        Detected cycles represented by outer node identifiers.
-    """
-
-    graph: dict[str, list[str]] = defaultdict(list)
-
-    for relationship in relationships:
-        graph[relationship.source_identifier].append(relationship.target_identifier)
-
-    cycles: list[list[str]] = []
-    stack: list[str] = []
-    visited: set[str] = set()
-    visiting: set[str] = set()
-
-    def _visit(node_identifier: str) -> None:
-        """Visit one node while detecting Learning Commons graph cycles.
-
-        Parameters
-        ----------
-        node_identifier
-            Outer graph-node identifier.
-        """
-
-        if node_identifier in visiting:
-            cycle_start = (
-                stack.index(node_identifier) if node_identifier in stack else 0
-            )
-            cycles.append(stack[cycle_start:] + [node_identifier])
-            return
-
-        if node_identifier in visited:
-            return
-
-        visiting.add(node_identifier)
-        stack.append(node_identifier)
-
-        for child_identifier in graph.get(node_identifier, []):
-            _visit(child_identifier)
-
-        stack.pop()
-        visiting.remove(node_identifier)
-        visited.add(node_identifier)
-
-    for node_identifier in sorted(graph):
-        _visit(node_identifier)
-
-    return cycles
-
-
-def _reachable_learning_commons_item_identifiers(
-    *,
-    framework_identifier: str,
-    relationships: Sequence[LearningCommonsRelationship],
-) -> set[str]:
-    """Compute Learning Commons item nodes reachable from the framework root.
-
-    Parameters
-    ----------
-    framework_identifier
-        Outer identifier of the framework node.
-    relationships
-        Learning Commons relationship records.
-
-    Returns
-    -------
-    set[str]
-        Reachable outer node identifiers excluding the root.
-    """
-
-    graph: dict[str, list[str]] = defaultdict(list)
-
-    for relationship in relationships:
-        graph[relationship.source_identifier].append(relationship.target_identifier)
-
-    reachable: set[str] = set()
-    stack = [framework_identifier]
-
-    while stack:
-        node_identifier = stack.pop()
-
-        for child_identifier in graph.get(node_identifier, []):
-            if child_identifier in reachable:
-                continue
-
-            reachable.add(child_identifier)
-            stack.append(child_identifier)
-
-    return reachable
-
-
-def _validate_learning_commons_export(
-    *,
-    grade_level_mapping: dict[str, list[LearningCommonsGradeLevel]],
-    internal_relationships: Sequence[Relationship],
-    nodes: Sequence[LearningCommonsNode],
-    relationships: Sequence[LearningCommonsRelationship],
-    sf: StandardsFramework,
-    sfis: Sequence[StandardsFrameworkItem],
-) -> list[str]:
-    """Validate slim Learning Commons-shaped node and relationship artifacts.
-
-    Validation preserves source-authored graph semantics. Multi-parent DAGs are
-    allowed, while duplicate edges, missing endpoints, cycles, and unreachable nodes
-    are rejected.
-
-    Parameters
-    ----------
-    grade_level_mapping
-        Runtime local-to-Learning-Commons grade mapping.
-    internal_relationships
-        Internal relationships that the slim export must preserve exactly.
-    nodes
-        Learning Commons node records.
-    relationships
-        Learning Commons relationship records.
-    sf
-        Internal framework record.
-    sfis
-        Internal standards-item records.
-
-    Returns
-    -------
-    list[str]
-        Validation error messages.
-    """
-
-    errors: list[str] = []
-    expected_node_count = len(sfis) + 1
-
-    if len(nodes) != expected_node_count:
-        errors.append(
-            "Learning Commons node count does not match one framework plus all "
-            f"items; expected={expected_node_count}, actual={len(nodes)}."
-        )
-
-    framework_nodes = [node for node in nodes if node.labels == ["StandardsFramework"]]
-
-    if len(framework_nodes) != 1:
-        errors.append(
-            "Learning Commons export must contain exactly one StandardsFramework "
-            f"node; actual={len(framework_nodes)}."
-        )
-
-    node_identifiers = [node.identifier for node in nodes]
-
-    if len(node_identifiers) != len(set(node_identifiers)):
-        duplicate_node_identifiers = sorted(
-            identifier
-            for identifier, count in Counter(node_identifiers).items()
-            if count > 1
-        )
-        errors.append(
-            "Duplicate Learning Commons node identifiers detected: "
-            f"{duplicate_node_identifiers}."
-        )
-
-    nodes_by_identifier = {node.identifier: node for node in nodes}
-    expected_node_identifiers = {
-        str(sf.identifier),
-        *(str(item.identifier) for item in sfis),
-    }
-
-    if set(nodes_by_identifier) != expected_node_identifiers:
-        missing_node_identifiers = sorted(
-            expected_node_identifiers - set(nodes_by_identifier)
-        )
-        extra_node_identifiers = sorted(
-            set(nodes_by_identifier) - expected_node_identifiers
-        )
-        errors.append(
-            "Learning Commons node identifiers do not preserve the internal graph; "
-            f"missing={missing_node_identifiers}, extra={extra_node_identifiers}."
-        )
-
-    for node in nodes:
-        property_payload = node.properties.model_dump(
-            by_alias=True,
-            exclude_none=True,
-            mode="json",
-        )
-        non_string_properties = sorted(
-            key for key, value in property_payload.items() if not isinstance(value, str)
-        )
-
-        if non_string_properties:
-            errors.append(
-                f"Learning Commons node {node.identifier} contains non-string "
-                f"properties: {non_string_properties}."
-            )
-
-        grade_level = property_payload.get("gradeLevel")
-
-        if grade_level is not None:
-            try:
-                parsed_grade_levels = json.loads(grade_level)
-            except json.JSONDecodeError:
-                errors.append(
-                    f"Learning Commons node {node.identifier} has invalid "
-                    "gradeLevel JSON encoding."
-                )
-                continue
-
-            if not isinstance(parsed_grade_levels, list) or not all(
-                isinstance(value, str) for value in parsed_grade_levels
-            ):
-                errors.append(
-                    f"Learning Commons node {node.identifier} gradeLevel must encode "
-                    "a JSON array of strings."
-                )
-                continue
-
-            invalid_grade_levels = sorted(
-                set(parsed_grade_levels) - _LEARNING_COMMONS_GRADE_LEVELS
-            )
-
-            if invalid_grade_levels:
-                errors.append(
-                    f"Learning Commons node {node.identifier} contains invalid "
-                    f"gradeLevel values: {invalid_grade_levels}."
-                )
-
-    framework_node = nodes_by_identifier.get(str(sf.identifier))
-
-    if framework_node is not None:
-        if not isinstance(
-            framework_node.properties,
-            LearningCommonsStandardsFrameworkProperties,
-        ):
-            errors.append(
-                "Learning Commons framework identifier resolves to item properties."
-            )
-        else:
-            if framework_node.properties.case_identifier_uuid != str(
-                sf.case_identifier_uuid
-            ):
-                errors.append(
-                    "Learning Commons framework caseIdentifierUUID was not preserved."
-                )
-
-            if framework_node.properties.is_current != (
-                _bool_to_learning_commons_string(sf.is_current)
-            ):
-                errors.append("Learning Commons framework isCurrent was not preserved.")
-
-    for item in sfis:
-        item_node = nodes_by_identifier.get(str(item.identifier))
-
-        if item_node is None:
-            continue
-
-        if not isinstance(
-            item_node.properties,
-            LearningCommonsStandardsFrameworkItemProperties,
-        ):
-            errors.append(
-                f"Learning Commons item {item.identifier} resolves to framework "
-                "properties."
-            )
-            continue
-
-        expected_grade_levels = _map_learning_commons_grade_levels(
-            grade_level_mapping=grade_level_mapping,
-            local_grade_levels=item.grade_level,
-        )
-        expected_grade_level = (
-            json.dumps(
-                expected_grade_levels,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-            if expected_grade_levels
-            else None
-        )
-
-        if item_node.properties.case_identifier_uuid != str(item.case_identifier_uuid):
-            errors.append(
-                f"Learning Commons item {item.identifier} caseIdentifierUUID was "
-                "not preserved."
-            )
-
-        if item_node.properties.description != item.description:
-            errors.append(
-                f"Learning Commons item {item.identifier} description was not "
-                "preserved."
-            )
-
-        if item_node.properties.grade_level != expected_grade_level:
-            errors.append(
-                f"Learning Commons item {item.identifier} gradeLevel does not match "
-                "the configured mapping."
-            )
-
-        if item_node.properties.is_current != _bool_to_learning_commons_string(
-            item.is_current
-        ):
-            errors.append(
-                f"Learning Commons item {item.identifier} isCurrent was not preserved."
-            )
-
-        if (
-            item_node.properties.alternate_statement_code
-            != item.alternate_statement_code
-        ):
-            errors.append(
-                f"Learning Commons item {item.identifier} alternateStatementCode "
-                "was not preserved."
-            )
-
-    if len(relationships) != len(internal_relationships):
-        errors.append(
-            "Learning Commons relationship count does not match the internal graph; "
-            f"expected={len(internal_relationships)}, actual={len(relationships)}."
-        )
-
-    relationship_identifiers = [
-        relationship.identifier for relationship in relationships
-    ]
-
-    if len(relationship_identifiers) != len(set(relationship_identifiers)):
-        duplicate_relationship_identifiers = sorted(
-            identifier
-            for identifier, count in Counter(relationship_identifiers).items()
-            if count > 1
-        )
-        errors.append(
-            "Duplicate Learning Commons relationship identifiers detected: "
-            f"{duplicate_relationship_identifiers}."
-        )
-
-    edge_triples = [
-        (
-            relationship.source_identifier,
-            relationship.label,
-            relationship.target_identifier,
-        )
-        for relationship in relationships
-    ]
-
-    if len(edge_triples) != len(set(edge_triples)):
-        duplicate_edge_triples = sorted(
-            edge for edge, count in Counter(edge_triples).items() if count > 1
-        )
-        errors.append(
-            "Duplicate Learning Commons relationship edge triples detected: "
-            f"{duplicate_edge_triples}."
-        )
-
-    internal_relationships_by_id = {
-        str(relationship.identifier): relationship
-        for relationship in internal_relationships
-    }
-
-    for relationship in relationships:
-        property_payload = relationship.properties.model_dump(
-            by_alias=True,
-            exclude_none=True,
-            mode="json",
-        )
-        non_string_properties = sorted(
-            key for key, value in property_payload.items() if not isinstance(value, str)
-        )
-
-        if non_string_properties:
-            errors.append(
-                f"Learning Commons relationship {relationship.identifier} contains "
-                f"non-string properties: {non_string_properties}."
-            )
-
-        source_node = nodes_by_identifier.get(relationship.source_identifier)
-        target_node = nodes_by_identifier.get(relationship.target_identifier)
-
-        if source_node is None:
-            errors.append(
-                f"Learning Commons relationship {relationship.identifier} source "
-                f"endpoint does not exist: {relationship.source_identifier}."
-            )
-        elif relationship.source_labels != source_node.labels:
-            errors.append(
-                f"Learning Commons relationship {relationship.identifier} source "
-                "labels do not match the source node."
-            )
-
-        if target_node is None:
-            errors.append(
-                f"Learning Commons relationship {relationship.identifier} target "
-                f"endpoint does not exist: {relationship.target_identifier}."
-            )
-        elif relationship.target_labels != target_node.labels:
-            errors.append(
-                f"Learning Commons relationship {relationship.identifier} target "
-                "labels do not match the target node."
-            )
-
-        if relationship.source_identifier == relationship.target_identifier:
-            errors.append(
-                f"Learning Commons relationship {relationship.identifier} is a "
-                "self-loop."
-            )
-
-        internal_relationship = internal_relationships_by_id.get(
-            relationship.identifier
-        )
-
-        if internal_relationship is None:
-            errors.append(
-                f"Learning Commons relationship {relationship.identifier} does not "
-                "exist in the internal graph."
-            )
-            continue
-
-        if (
-            relationship.properties.source_entity != internal_relationship.source_entity
-            or relationship.properties.source_entity_key
-            != _to_learning_commons_entity_key(internal_relationship.source_entity_key)
-            or relationship.properties.source_entity_value
-            != internal_relationship.source_entity_value
-            or relationship.properties.target_entity
-            != internal_relationship.target_entity
-            or relationship.properties.target_entity_key
-            != _to_learning_commons_entity_key(internal_relationship.target_entity_key)
-            or relationship.properties.target_entity_value
-            != internal_relationship.target_entity_value
-            or relationship.properties.relationship_type
-            != internal_relationship.relationship_type
-        ):
-            errors.append(
-                f"Learning Commons relationship {relationship.identifier} does not "
-                "preserve the internal relationship payload."
-            )
-
-        expected_resolution_status = (
-            _LEARNING_COMMONS_UNRESOLVED_ROOT_FALLBACK
-            if internal_relationship.metadata.get("unresolved_root_fallback") is True
-            else None
-        )
-
-        if relationship.properties.resolution_status != expected_resolution_status:
-            errors.append(
-                f"Learning Commons relationship {relationship.identifier} has an "
-                "incorrect resolutionStatus."
-            )
-
-    cycles = _detect_learning_commons_cycles(relationships)
-
-    if cycles:
-        errors.append(f"Learning Commons relationship cycles detected: {cycles[:5]}.")
-
-    if framework_nodes:
-        framework_identifier = framework_nodes[0].identifier
-    else:
-        framework_identifier = str(sf.identifier)
-
-    item_identifiers = {
-        node.identifier for node in nodes if node.labels == ["StandardsFrameworkItem"]
-    }
-    reachable_item_identifiers = _reachable_learning_commons_item_identifiers(
-        framework_identifier=framework_identifier,
-        relationships=relationships,
-    )
-    unreachable_item_identifiers = sorted(item_identifiers - reachable_item_identifiers)
-
-    if unreachable_item_identifiers:
-        errors.append(
-            "Learning Commons item nodes are not reachable from the framework root: "
-            f"{unreachable_item_identifiers}."
         )
 
     return errors
@@ -1741,6 +1327,665 @@ def _validate_graph_export(
             relationships=relationships, sf_uuid=sf_uuid, sfi_id_set=sfi_id_set
         )
     )
+
+    return errors
+
+
+def _validate_learning_commons_export(
+    *,
+    grade_level_mapping: dict[str, list[LearningCommonsGradeLevel]],
+    internal_relationships: Sequence[Relationship],
+    nodes: Sequence[LearningCommonsNode],
+    relationships: Sequence[LearningCommonsRelationship],
+    sf: StandardsFramework,
+    sfis: Sequence[StandardsFrameworkItem],
+) -> list[str]:
+    """Validate slim Learning Commons-shaped node and relationship artifacts.
+
+    Validation preserves source-authored graph semantics. Multi-parent DAGs are
+    allowed, while duplicate edges, missing endpoints, cycles, and unreachable nodes
+    are rejected.
+
+    Parameters
+    ----------
+    grade_level_mapping
+        Runtime local-to-Learning-Commons grade mapping.
+    internal_relationships
+        Internal relationships that the slim export must preserve exactly.
+    nodes
+        Learning Commons node records.
+    relationships
+        Learning Commons relationship records.
+    sf
+        Internal framework record.
+    sfis
+        Internal standards-item records.
+
+    Returns
+    -------
+    list[str]
+        Validation error messages.
+    """
+
+    errors: list[str] = []
+    errors.extend(
+        _validate_learning_commons_node_structure(nodes=nodes, sf=sf, sfis=sfis)
+    )
+    errors.extend(_validate_learning_commons_node_properties(nodes))
+    errors.extend(
+        _validate_learning_commons_node_payloads(
+            grade_level_mapping=grade_level_mapping, nodes=nodes, sf=sf, sfis=sfis
+        )
+    )
+    errors.extend(
+        _validate_learning_commons_relationship_structure(
+            internal_relationships=internal_relationships, relationships=relationships
+        )
+    )
+    errors.extend(
+        _validate_learning_commons_relationship_payloads(
+            internal_relationships=internal_relationships,
+            nodes=nodes,
+            relationships=relationships,
+        )
+    )
+    errors.extend(
+        _validate_learning_commons_reachability(
+            nodes=nodes, relationships=relationships, sf=sf
+        )
+    )
+    return errors
+
+
+def _validate_learning_commons_framework_payload(
+    *, framework_node: LearningCommonsNode | None, sf: StandardsFramework
+) -> list[str]:
+    """Validate that the framework node payload preserves the internal framework.
+
+    Parameters
+    ----------
+    framework_node
+        Learning Commons node resolved for the framework identifier, if present.
+    sf
+        Internal framework record.
+
+    Returns
+    -------
+    list[str]
+        Validation error messages.
+    """
+
+    errors: list[str] = []
+
+    if framework_node is None:
+        return errors
+
+    if not isinstance(
+        framework_node.properties,
+        LearningCommonsStandardsFrameworkProperties,
+    ):
+        errors.append(
+            "Learning Commons framework identifier resolves to item properties."
+        )
+        return errors
+
+    if framework_node.properties.case_identifier_uuid != str(sf.case_identifier_uuid):
+        errors.append(
+            "Learning Commons framework caseIdentifierUUID was not preserved."
+        )
+
+    if framework_node.properties.is_current != (
+        _bool_to_learning_commons_string(sf.is_current)
+    ):
+        errors.append("Learning Commons framework isCurrent was not preserved.")
+
+    return errors
+
+
+def _validate_learning_commons_grade_mapping(
+    *,
+    grade_level_mapping: dict[str, list[LearningCommonsGradeLevel]],
+    sfis: Sequence[StandardsFrameworkItem],
+) -> list[str]:
+    """Validate that every observed local grade can be exported deterministically.
+
+    Parameters
+    ----------
+    grade_level_mapping
+        Runtime local-to-Learning-Commons grade mapping.
+    sfis
+        Internal standards items containing source-canonical local grade values.
+
+    Returns
+    -------
+    list[str]
+        Validation errors for unmapped or invalid observed grade values.
+    """
+
+    errors: list[str] = []
+    observed_local_grade_levels = dict.fromkeys(
+        grade_level for item in sfis for grade_level in item.grade_level
+    )
+
+    for local_grade_level in observed_local_grade_levels:
+        try:
+            _map_learning_commons_grade_levels(
+                grade_level_mapping=grade_level_mapping,
+                local_grade_levels=[local_grade_level],
+            )
+        except ValueError as exc:
+            errors.append(str(exc))
+
+    return errors
+
+
+def _validate_learning_commons_item_payload(
+    *,
+    grade_level_mapping: dict[str, list[LearningCommonsGradeLevel]],
+    item: StandardsFrameworkItem,
+    item_node: LearningCommonsNode,
+) -> list[str]:
+    """Validate that a single item node payload preserves its internal item.
+
+    Parameters
+    ----------
+    grade_level_mapping
+        Runtime local-to-Learning-Commons grade mapping.
+    item
+        Internal standards-item record.
+    item_node
+        Learning Commons node resolved for the item identifier.
+
+    Returns
+    -------
+    list[str]
+        Validation error messages.
+    """
+
+    errors: list[str] = []
+
+    if not isinstance(
+        item_node.properties,
+        LearningCommonsStandardsFrameworkItemProperties,
+    ):
+        errors.append(
+            f"Learning Commons item {item.identifier} resolves to framework properties."
+        )
+        return errors
+
+    expected_grade_levels = _map_learning_commons_grade_levels(
+        grade_level_mapping=grade_level_mapping, local_grade_levels=item.grade_level
+    )
+    expected_grade_level = (
+        json.dumps(expected_grade_levels, ensure_ascii=False, separators=(",", ":"))
+        if expected_grade_levels
+        else None
+    )
+
+    if item_node.properties.case_identifier_uuid != str(item.case_identifier_uuid):
+        errors.append(
+            f"Learning Commons item {item.identifier} caseIdentifierUUID was "
+            f"not preserved."
+        )
+
+    if item_node.properties.description != item.description:
+        errors.append(
+            f"Learning Commons item {item.identifier} description was not preserved."
+        )
+
+    if item_node.properties.grade_level != expected_grade_level:
+        errors.append(
+            f"Learning Commons item {item.identifier} gradeLevel does not match "
+            f"the configured mapping."
+        )
+
+    if item_node.properties.is_current != _bool_to_learning_commons_string(
+        item.is_current
+    ):
+        errors.append(
+            f"Learning Commons item {item.identifier} isCurrent was not preserved."
+        )
+
+    if item_node.properties.alternate_statement_code != item.alternate_statement_code:
+        errors.append(
+            f"Learning Commons item {item.identifier} alternateStatementCode "
+            f"was not preserved."
+        )
+
+    return errors
+
+
+def _validate_learning_commons_node_payloads(
+    *,
+    grade_level_mapping: dict[str, list[LearningCommonsGradeLevel]],
+    nodes: Sequence[LearningCommonsNode],
+    sf: StandardsFramework,
+    sfis: Sequence[StandardsFrameworkItem],
+) -> list[str]:
+    """Validate that node payloads preserve the internal framework and items.
+
+    Parameters
+    ----------
+    grade_level_mapping
+        Runtime local-to-Learning-Commons grade mapping.
+    nodes
+        Learning Commons node records.
+    sf
+        Internal framework record.
+    sfis
+        Internal standards-item records.
+
+    Returns
+    -------
+    list[str]
+        Validation error messages.
+    """
+
+    errors: list[str] = []
+    nodes_by_identifier = {node.identifier: node for node in nodes}
+
+    errors.extend(
+        _validate_learning_commons_framework_payload(
+            framework_node=nodes_by_identifier.get(str(sf.identifier)), sf=sf
+        )
+    )
+
+    for item in sfis:
+        item_node = nodes_by_identifier.get(str(item.identifier))
+
+        if item_node is None:
+            continue
+
+        errors.extend(
+            _validate_learning_commons_item_payload(
+                grade_level_mapping=grade_level_mapping, item=item, item_node=item_node
+            )
+        )
+
+    return errors
+
+
+def _validate_learning_commons_node_properties(
+    nodes: Sequence[LearningCommonsNode],
+) -> list[str]:
+    """Validate that Learning Commons node properties are string-encoded.
+
+    Enforces that every serialized property is a string and that any `gradeLevel`
+    property encodes a JSON array of recognized grade-level strings.
+
+    Parameters
+    ----------
+    nodes
+        Learning Commons node records.
+
+    Returns
+    -------
+    list[str]
+        Validation error messages.
+    """
+
+    errors: list[str] = []
+
+    for node in nodes:
+        property_payload = node.properties.model_dump(
+            by_alias=True, exclude_none=True, mode="json"
+        )
+        non_string_properties = sorted(
+            key for key, value in property_payload.items() if not isinstance(value, str)
+        )
+
+        if non_string_properties:
+            errors.append(
+                f"Learning Commons node {node.identifier} contains non-string "
+                f"properties: {non_string_properties}."
+            )
+
+        grade_level = property_payload.get("gradeLevel")
+
+        if grade_level is not None:
+            try:
+                parsed_grade_levels = json.loads(grade_level)
+            except json.JSONDecodeError:
+                errors.append(
+                    f"Learning Commons node {node.identifier} has invalid "
+                    f"gradeLevel JSON encoding."
+                )
+                continue
+
+            if not isinstance(parsed_grade_levels, list) or not all(
+                isinstance(value, str) for value in parsed_grade_levels
+            ):
+                errors.append(
+                    f"Learning Commons node {node.identifier} gradeLevel must encode "
+                    f"a JSON array of strings."
+                )
+                continue
+
+            invalid_grade_levels = sorted(
+                set(parsed_grade_levels) - _LEARNING_COMMONS_GRADE_LEVELS
+            )
+
+            if invalid_grade_levels:
+                errors.append(
+                    f"Learning Commons node {node.identifier} contains invalid "
+                    f"gradeLevel values: {invalid_grade_levels}."
+                )
+
+    return errors
+
+
+def _validate_learning_commons_node_structure(
+    *,
+    nodes: Sequence[LearningCommonsNode],
+    sf: StandardsFramework,
+    sfis: Sequence[StandardsFrameworkItem],
+) -> list[str]:
+    """Validate Learning Commons node counts, uniqueness, and identity coverage.
+
+    Parameters
+    ----------
+    nodes
+        Learning Commons node records.
+    sf
+        Internal framework record.
+    sfis
+        Internal standards-item records.
+
+    Returns
+    -------
+    list[str]
+        Validation error messages.
+    """
+
+    errors: list[str] = []
+    expected_node_count = len(sfis) + 1
+
+    if len(nodes) != expected_node_count:
+        errors.append(
+            f"Learning Commons node count does not match one framework plus all "
+            f"items; expected={expected_node_count}, actual={len(nodes)}."
+        )
+
+    framework_nodes = [node for node in nodes if node.labels == ["StandardsFramework"]]
+
+    if len(framework_nodes) != 1:
+        errors.append(
+            f"Learning Commons export must contain exactly one StandardsFramework "
+            f"node; actual={len(framework_nodes)}."
+        )
+
+    node_identifiers = [node.identifier for node in nodes]
+
+    if len(node_identifiers) != len(set(node_identifiers)):
+        duplicate_node_identifiers = sorted(
+            identifier
+            for identifier, count in Counter(node_identifiers).items()
+            if count > 1
+        )
+        errors.append(
+            f"Duplicate Learning Commons node identifiers detected: "
+            f"{duplicate_node_identifiers}."
+        )
+
+    nodes_by_identifier = {node.identifier: node for node in nodes}
+    expected_node_identifiers = {
+        str(sf.identifier),
+        *(str(item.identifier) for item in sfis),
+    }
+
+    if set(nodes_by_identifier) != expected_node_identifiers:
+        missing_node_identifiers = sorted(
+            expected_node_identifiers - set(nodes_by_identifier)
+        )
+        extra_node_identifiers = sorted(
+            set(nodes_by_identifier) - expected_node_identifiers
+        )
+        errors.append(
+            f"Learning Commons node identifiers do not preserve the internal graph; "
+            f"missing={missing_node_identifiers}, extra={extra_node_identifiers}."
+        )
+
+    return errors
+
+
+def _validate_learning_commons_reachability(
+    *,
+    nodes: Sequence[LearningCommonsNode],
+    relationships: Sequence[LearningCommonsRelationship],
+    sf: StandardsFramework,
+) -> list[str]:
+    """Validate acyclicity and framework-root reachability of item nodes.
+
+    Parameters
+    ----------
+    nodes
+        Learning Commons node records.
+    relationships
+        Learning Commons relationship records.
+    sf
+        Internal framework record.
+
+    Returns
+    -------
+    list[str]
+        Validation error messages.
+    """
+
+    errors: list[str] = []
+    framework_nodes = [node for node in nodes if node.labels == ["StandardsFramework"]]
+
+    cycles = _detect_learning_commons_cycles(relationships)
+
+    if cycles:
+        errors.append(f"Learning Commons relationship cycles detected: {cycles[:5]}.")
+
+    if framework_nodes:
+        framework_identifier = framework_nodes[0].identifier
+    else:
+        framework_identifier = str(sf.identifier)
+
+    item_identifiers = {
+        node.identifier for node in nodes if node.labels == ["StandardsFrameworkItem"]
+    }
+    reachable_item_identifiers = _reachable_learning_commons_item_identifiers(
+        framework_identifier=framework_identifier, relationships=relationships
+    )
+    unreachable_item_identifiers = sorted(item_identifiers - reachable_item_identifiers)
+
+    if unreachable_item_identifiers:
+        errors.append(
+            f"Learning Commons item nodes are not reachable from the framework root: "
+            f"{unreachable_item_identifiers}."
+        )
+
+    return errors
+
+
+def _validate_learning_commons_relationship_payloads(
+    *,
+    internal_relationships: Sequence[Relationship],
+    nodes: Sequence[LearningCommonsNode],
+    relationships: Sequence[LearningCommonsRelationship],
+) -> list[str]:
+    """Validate relationship endpoints, payloads, and resolution status.
+
+    Enforces string-encoded properties, existing and correctly labeled endpoints,
+    absence of self-loops, and exact preservation of the internal relationship payload
+    and resolution status.
+
+    Parameters
+    ----------
+    internal_relationships
+        Internal relationships that the slim export must preserve exactly.
+    nodes
+        Learning Commons node records.
+    relationships
+        Learning Commons relationship records.
+
+    Returns
+    -------
+    list[str]
+        Validation error messages.
+    """
+
+    errors: list[str] = []
+    nodes_by_identifier = {node.identifier: node for node in nodes}
+    internal_relationships_by_id = {
+        str(relationship.identifier): relationship
+        for relationship in internal_relationships
+    }
+
+    for relationship in relationships:
+        property_payload = relationship.properties.model_dump(
+            by_alias=True, exclude_none=True, mode="json"
+        )
+        non_string_properties = sorted(
+            key for key, value in property_payload.items() if not isinstance(value, str)
+        )
+
+        if non_string_properties:
+            errors.append(
+                f"Learning Commons relationship {relationship.identifier} contains "
+                f"non-string properties: {non_string_properties}."
+            )
+
+        source_node = nodes_by_identifier.get(relationship.source_identifier)
+        target_node = nodes_by_identifier.get(relationship.target_identifier)
+
+        if source_node is None:
+            errors.append(
+                f"Learning Commons relationship {relationship.identifier} source "
+                f"endpoint does not exist: {relationship.source_identifier}."
+            )
+        elif relationship.source_labels != source_node.labels:
+            errors.append(
+                f"Learning Commons relationship {relationship.identifier} source "
+                f"labels do not match the source node."
+            )
+
+        if target_node is None:
+            errors.append(
+                f"Learning Commons relationship {relationship.identifier} target "
+                f"endpoint does not exist: {relationship.target_identifier}."
+            )
+        elif relationship.target_labels != target_node.labels:
+            errors.append(
+                f"Learning Commons relationship {relationship.identifier} target "
+                f"labels do not match the target node."
+            )
+
+        if relationship.source_identifier == relationship.target_identifier:
+            errors.append(
+                f"Learning Commons relationship {relationship.identifier} is a "
+                f"self-loop."
+            )
+
+        internal_relationship = internal_relationships_by_id.get(
+            relationship.identifier
+        )
+
+        if internal_relationship is None:
+            errors.append(
+                f"Learning Commons relationship {relationship.identifier} does not "
+                f"exist in the internal graph."
+            )
+            continue
+
+        if (
+            relationship.properties.source_entity != internal_relationship.source_entity
+            or relationship.properties.source_entity_key
+            != _to_learning_commons_entity_key(internal_relationship.source_entity_key)
+            or relationship.properties.source_entity_value
+            != internal_relationship.source_entity_value
+            or relationship.properties.target_entity
+            != internal_relationship.target_entity
+            or relationship.properties.target_entity_key
+            != _to_learning_commons_entity_key(internal_relationship.target_entity_key)
+            or relationship.properties.target_entity_value
+            != internal_relationship.target_entity_value
+            or relationship.properties.relationship_type
+            != internal_relationship.relationship_type
+        ):
+            errors.append(
+                f"Learning Commons relationship {relationship.identifier} does not "
+                f"preserve the internal relationship payload."
+            )
+
+        expected_resolution_status = (
+            _LEARNING_COMMONS_UNRESOLVED_ROOT_FALLBACK
+            if internal_relationship.metadata.get("unresolved_root_fallback") is True
+            else None
+        )
+
+        if relationship.properties.resolution_status != expected_resolution_status:
+            errors.append(
+                f"Learning Commons relationship {relationship.identifier} has an "
+                f"incorrect resolutionStatus."
+            )
+
+    return errors
+
+
+def _validate_learning_commons_relationship_structure(
+    *,
+    internal_relationships: Sequence[Relationship],
+    relationships: Sequence[LearningCommonsRelationship],
+) -> list[str]:
+    """Validate Learning Commons relationship counts and uniqueness.
+
+    Parameters
+    ----------
+    internal_relationships
+        Internal relationships that the slim export must preserve exactly.
+    relationships
+        Learning Commons relationship records.
+
+    Returns
+    -------
+    list[str]
+        Validation error messages.
+    """
+
+    errors: list[str] = []
+
+    if len(relationships) != len(internal_relationships):
+        errors.append(
+            f"Learning Commons relationship count does not match the internal graph; "
+            f"expected={len(internal_relationships)}, actual={len(relationships)}."
+        )
+
+    relationship_identifiers = [
+        relationship.identifier for relationship in relationships
+    ]
+
+    if len(relationship_identifiers) != len(set(relationship_identifiers)):
+        duplicate_relationship_identifiers = sorted(
+            identifier
+            for identifier, count in Counter(relationship_identifiers).items()
+            if count > 1
+        )
+        errors.append(
+            f"Duplicate Learning Commons relationship identifiers detected: "
+            f"{duplicate_relationship_identifiers}."
+        )
+
+    edge_triples = [
+        (
+            relationship.source_identifier,
+            relationship.label,
+            relationship.target_identifier,
+        )
+        for relationship in relationships
+    ]
+
+    if len(edge_triples) != len(set(edge_triples)):
+        duplicate_edge_triples = sorted(
+            edge for edge, count in Counter(edge_triples).items() if count > 1
+        )
+        errors.append(
+            f"Duplicate Learning Commons relationship edge triples detected: "
+            f"{duplicate_edge_triples}."
+        )
 
     return errors
 
@@ -2206,20 +2451,6 @@ def _write_learning_commons_artifacts(
             fp=relationships_fp,
             model=relationship,
         )
-
-
-def _remove_artifacts(artifact_fps: Sequence[Path]) -> None:
-    """Remove stale artifacts without recreating empty placeholder files.
-
-    Parameters
-    ----------
-    artifact_fps
-        Artifact paths to remove when they exist.
-    """
-
-    for artifact_fp in artifact_fps:
-        if artifact_fp.exists():
-            artifact_fp.unlink()
 
 
 def compile_academic_standards_kg(  # pylint: disable=R0915
