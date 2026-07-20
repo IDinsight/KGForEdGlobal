@@ -1801,6 +1801,61 @@ def _validate_learning_commons_reachability(
     return errors
 
 
+def _validate_learning_commons_relationship_endpoints(
+    *,
+    nodes_by_identifier: dict[str, LearningCommonsNode],
+    relationship: LearningCommonsRelationship,
+) -> list[str]:
+    """Validate relationship endpoint existence, labels, and self-loops.
+
+    Parameters
+    ----------
+    nodes_by_identifier
+        Learning Commons nodes keyed by identifier.
+    relationship
+        Learning Commons relationship record to validate.
+
+    Returns
+    -------
+    list[str]
+        Validation error messages.
+    """
+
+    errors: list[str] = []
+    source_node = nodes_by_identifier.get(relationship.source_identifier)
+    target_node = nodes_by_identifier.get(relationship.target_identifier)
+
+    if source_node is None:
+        errors.append(
+            f"Learning Commons relationship {relationship.identifier} source "
+            f"endpoint does not exist: {relationship.source_identifier}."
+        )
+    elif relationship.source_labels != source_node.labels:
+        errors.append(
+            f"Learning Commons relationship {relationship.identifier} source "
+            f"labels do not match the source node."
+        )
+
+    if target_node is None:
+        errors.append(
+            f"Learning Commons relationship {relationship.identifier} target "
+            f"endpoint does not exist: {relationship.target_identifier}."
+        )
+    elif relationship.target_labels != target_node.labels:
+        errors.append(
+            f"Learning Commons relationship {relationship.identifier} target "
+            f"labels do not match the target node."
+        )
+
+    if relationship.source_identifier == relationship.target_identifier:
+        errors.append(
+            f"Learning Commons relationship {relationship.identifier} is a "
+            f"self-loop."
+        )
+
+    return errors
+
+
 def _validate_learning_commons_relationship_payloads(
     *,
     internal_relationships: Sequence[Relationship],
@@ -1836,49 +1891,14 @@ def _validate_learning_commons_relationship_payloads(
     }
 
     for relationship in relationships:
-        property_payload = relationship.properties.model_dump(
-            by_alias=True, exclude_none=True, mode="json"
+        errors.extend(
+            _validate_learning_commons_relationship_property_strings(relationship)
         )
-        non_string_properties = sorted(
-            key for key, value in property_payload.items() if not isinstance(value, str)
+        errors.extend(
+            _validate_learning_commons_relationship_endpoints(
+                nodes_by_identifier=nodes_by_identifier, relationship=relationship
+            )
         )
-
-        if non_string_properties:
-            errors.append(
-                f"Learning Commons relationship {relationship.identifier} contains "
-                f"non-string properties: {non_string_properties}."
-            )
-
-        source_node = nodes_by_identifier.get(relationship.source_identifier)
-        target_node = nodes_by_identifier.get(relationship.target_identifier)
-
-        if source_node is None:
-            errors.append(
-                f"Learning Commons relationship {relationship.identifier} source "
-                f"endpoint does not exist: {relationship.source_identifier}."
-            )
-        elif relationship.source_labels != source_node.labels:
-            errors.append(
-                f"Learning Commons relationship {relationship.identifier} source "
-                f"labels do not match the source node."
-            )
-
-        if target_node is None:
-            errors.append(
-                f"Learning Commons relationship {relationship.identifier} target "
-                f"endpoint does not exist: {relationship.target_identifier}."
-            )
-        elif relationship.target_labels != target_node.labels:
-            errors.append(
-                f"Learning Commons relationship {relationship.identifier} target "
-                f"labels do not match the target node."
-            )
-
-        if relationship.source_identifier == relationship.target_identifier:
-            errors.append(
-                f"Learning Commons relationship {relationship.identifier} is a "
-                f"self-loop."
-            )
 
         internal_relationship = internal_relationships_by_id.get(
             relationship.identifier
@@ -1891,39 +1911,99 @@ def _validate_learning_commons_relationship_payloads(
             )
             continue
 
-        if (
-            relationship.properties.source_entity != internal_relationship.source_entity
-            or relationship.properties.source_entity_key
-            != _to_learning_commons_entity_key(internal_relationship.source_entity_key)
-            or relationship.properties.source_entity_value
-            != internal_relationship.source_entity_value
-            or relationship.properties.target_entity
-            != internal_relationship.target_entity
-            or relationship.properties.target_entity_key
-            != _to_learning_commons_entity_key(internal_relationship.target_entity_key)
-            or relationship.properties.target_entity_value
-            != internal_relationship.target_entity_value
-            or relationship.properties.relationship_type
-            != internal_relationship.relationship_type
-        ):
-            errors.append(
-                f"Learning Commons relationship {relationship.identifier} does not "
-                f"preserve the internal relationship payload."
+        errors.extend(
+            _validate_learning_commons_relationship_preservation(
+                internal_relationship=internal_relationship, relationship=relationship
             )
-
-        expected_resolution_status = (
-            _LEARNING_COMMONS_UNRESOLVED_ROOT_FALLBACK
-            if internal_relationship.metadata.get("unresolved_root_fallback") is True
-            else None
         )
 
-        if relationship.properties.resolution_status != expected_resolution_status:
-            errors.append(
-                f"Learning Commons relationship {relationship.identifier} has an "
-                f"incorrect resolutionStatus."
-            )
+    return errors
+
+
+def _validate_learning_commons_relationship_preservation(
+    *, internal_relationship: Relationship, relationship: LearningCommonsRelationship
+) -> list[str]:
+    """Validate that a relationship preserves its internal payload and status.
+
+    Parameters
+    ----------
+    internal_relationship
+        Internal relationship the slim export must preserve exactly.
+    relationship
+        Learning Commons relationship record to validate.
+
+    Returns
+    -------
+    list[str]
+        Validation error messages.
+    """
+
+    errors: list[str] = []
+
+    if (
+        relationship.properties.source_entity != internal_relationship.source_entity
+        or relationship.properties.source_entity_key
+        != _to_learning_commons_entity_key(internal_relationship.source_entity_key)
+        or relationship.properties.source_entity_value
+        != internal_relationship.source_entity_value
+        or relationship.properties.target_entity != internal_relationship.target_entity
+        or relationship.properties.target_entity_key
+        != _to_learning_commons_entity_key(internal_relationship.target_entity_key)
+        or relationship.properties.target_entity_value
+        != internal_relationship.target_entity_value
+        or relationship.properties.relationship_type
+        != internal_relationship.relationship_type
+    ):
+        errors.append(
+            f"Learning Commons relationship {relationship.identifier} does not "
+            f"preserve the internal relationship payload."
+        )
+
+    expected_resolution_status = (
+        _LEARNING_COMMONS_UNRESOLVED_ROOT_FALLBACK
+        if internal_relationship.metadata.get("unresolved_root_fallback") is True
+        else None
+    )
+
+    if relationship.properties.resolution_status != expected_resolution_status:
+        errors.append(
+            f"Learning Commons relationship {relationship.identifier} has an "
+            f"incorrect resolutionStatus."
+        )
 
     return errors
+
+
+def _validate_learning_commons_relationship_property_strings(
+    relationship: LearningCommonsRelationship,
+) -> list[str]:
+    """Validate that all serialized relationship properties are strings.
+
+    Parameters
+    ----------
+    relationship
+        Learning Commons relationship record to validate.
+
+    Returns
+    -------
+    list[str]
+        Validation error messages.
+    """
+
+    property_payload = relationship.properties.model_dump(
+        by_alias=True, exclude_none=True, mode="json"
+    )
+    non_string_properties = sorted(
+        key for key, value in property_payload.items() if not isinstance(value, str)
+    )
+
+    if non_string_properties:
+        return [
+            f"Learning Commons relationship {relationship.identifier} contains "
+            f"non-string properties: {non_string_properties}."
+        ]
+
+    return []
 
 
 def _validate_learning_commons_relationship_structure(
