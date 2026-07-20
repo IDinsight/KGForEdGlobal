@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 from uuid import UUID
 
 # Third Party Library
-from pydantic import Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 # Package Library
 from skg.schemas import BaseSchema, LanguageField, NormalizedStatementType
@@ -5560,6 +5560,9 @@ class AcademicStandardsExportSummary(BaseSchema):
     finalization_exclusion_summary: dict[str, int] = Field(default_factory=dict)
     framework_count: int = Field(ge=0)
     has_child_relationship_count: int = Field(ge=0)
+    learning_commons_node_count: int = Field(ge=0)
+    learning_commons_relationship_count: int = Field(ge=0)
+    learning_commons_unresolved_fallback_relationship_count: int = Field(ge=0)
     relationship_unresolved_edge_count: int = Field(ge=0)
 
 
@@ -5587,6 +5590,7 @@ class AcademicStandardsValidationReport(BaseSchema):
 
     errors: list[str] = Field(default_factory=list)
     input_fingerprints: dict[str, str] = Field(default_factory=dict)
+    learning_commons_export_schema_version: str
     object_counts: dict[str, int] = Field(default_factory=dict)
     passed: bool
     validation_checks: list[str] = Field(default_factory=list)
@@ -5674,6 +5678,13 @@ class StandardsFramework(_CaseIdentifierMixin, _DateValidationMixin, BaseSchema)
             "Language tag for the framework (e.g., en-US). In `lc_public_strict`, "
             "this should conform to LC enum values; in `global_relaxed`, any valid "
             "BCP-47 language tag is allowed."
+        ),
+    )
+    is_current: bool = Field(
+        default=True,
+        description=(
+            "Whether this framework is the current version represented for its "
+            "jurisdiction and subject."
         ),
     )
     jurisdiction: str = Field(
@@ -5764,6 +5775,14 @@ class StandardsFrameworkItem(_CaseIdentifierMixin, _DateValidationMixin, BaseSch
             "in relaxed exports this may be a free-form subject label."
         ),
     )
+    alternate_statement_code: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional source-authoritative alternate code used by practitioners. "
+            "Pipeline-normalized code variants must not be placed here unless the "
+            "source identifies them as genuine alternate codes."
+        ),
+    )
     attribution_statement: str = Field(
         description=(
             "Attribution text required to credit the original publisher/owner "
@@ -5845,6 +5864,13 @@ class StandardsFrameworkItem(_CaseIdentifierMixin, _DateValidationMixin, BaseSch
             "in relaxed exports any valid BCP-47 language tag is allowed."
         ),
     )
+    is_current: bool = Field(
+        default=True,
+        description=(
+            "Whether this standards item belongs to the current version of its "
+            "framework."
+        ),
+    )
     jurisdiction: str = Field(
         description=(
             "Jurisdiction that issued the standards (e.g., Zambia, Uganda). "
@@ -5918,7 +5944,9 @@ class StandardsFrameworkItem(_CaseIdentifierMixin, _DateValidationMixin, BaseSch
 
         return strip_and_require_non_empty_str(v)
 
-    @field_validator("statement_code", "statement_type", mode="before")
+    @field_validator(
+        "alternate_statement_code", "statement_code", "statement_type", mode="before"
+    )
     @classmethod
     def _strip_optional_strings(cls, v: Optional[str]) -> Optional[str]:
         """Strip whitespace for optional string fields; treat empty as None.
@@ -6359,6 +6387,193 @@ class Relationship(_DateValidationMixin, BaseSchema):
             )
 
         return self
+
+
+# Schemas for Learning Commons.
+class _LearningCommonsWireModel(BaseSchema):
+    """Base model for Learning Commons JSONL wire-format records."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        from_attributes=True,
+        populate_by_name=True,
+        serialize_by_alias=True,
+    )
+
+
+class LearningCommonsNode(_LearningCommonsWireModel):
+    """One Learning Commons graph-node JSONL record."""
+
+    identifier: str
+    labels: list[Literal["StandardsFramework", "StandardsFrameworkItem"]]
+    properties: (
+        LearningCommonsStandardsFrameworkProperties
+        | LearningCommonsStandardsFrameworkItemProperties
+    )
+    type: Literal["node"] = "node"
+
+    @model_validator(mode="after")
+    def validate_node_shape(self) -> LearningCommonsNode:
+        """Validate label cardinality, property type, and identifier duplication.
+
+        Returns
+        -------
+        LearningCommonsNode
+            The validated Learning Commons node record.
+
+        Raises
+        ------
+        ValueError
+            If labels do not identify exactly one supported node type, the property
+            model does not match the label, or identifiers differ.
+        """
+
+        if len(self.labels) != 1:
+            raise ValueError(
+                "LearningCommonsNode.labels must contain exactly one label."
+            )
+
+        label = self.labels[0]
+
+        if label == "StandardsFramework" and not isinstance(
+            self.properties, LearningCommonsStandardsFrameworkProperties
+        ):
+            raise ValueError(
+                "StandardsFramework nodes require framework property records."
+            )
+
+        if label == "StandardsFrameworkItem" and not isinstance(
+            self.properties, LearningCommonsStandardsFrameworkItemProperties
+        ):
+            raise ValueError(
+                "StandardsFrameworkItem nodes require item property records."
+            )
+
+        if self.identifier != self.properties.identifier:
+            raise ValueError(
+                "LearningCommonsNode identifier must equal properties.identifier."
+            )
+
+        return self
+
+
+class LearningCommonsRelationship(_LearningCommonsWireModel):
+    """One Learning Commons graph-relationship JSONL record."""
+
+    identifier: str
+    label: str
+    properties: LearningCommonsRelationshipProperties
+    source_identifier: str
+    source_labels: list[str]
+    target_identifier: str
+    target_labels: list[str]
+    type: Literal["relationship"] = "relationship"
+
+    @model_validator(mode="after")
+    def validate_relationship_shape(self) -> LearningCommonsRelationship:
+        """Validate relationship label, identifiers, and endpoint labels.
+
+        Returns
+        -------
+        LearningCommonsRelationship
+            The validated Learning Commons relationship record.
+
+        Raises
+        ------
+        ValueError
+            If the outer label or identifier disagrees with the property record, or
+            endpoint labels are empty.
+        """
+
+        if self.identifier != self.properties.identifier:
+            raise ValueError(
+                "LearningCommonsRelationship identifier must equal properties.identifier."
+            )
+
+        if self.label != self.properties.relationship_type:
+            raise ValueError(
+                "LearningCommonsRelationship label must equal properties.relationshipType."
+            )
+
+        if not self.source_labels or not self.target_labels:
+            raise ValueError(
+                "LearningCommonsRelationship endpoint labels must be non-empty."
+            )
+
+        return self
+
+
+class LearningCommonsRelationshipProperties(_LearningCommonsWireModel):
+    """String-valued properties for one Learning Commons relationship record."""
+
+    attribution_statement: str = Field(alias="attributionStatement")
+    author: str
+    date_created: str | None = Field(default=None, alias="dateCreated")
+    date_modified: str | None = Field(default=None, alias="dateModified")
+    description: str
+    identifier: str
+    license: str
+    provider: str
+    relationship_type: str = Field(alias="relationshipType")
+    resolution_status: str | None = Field(default=None, alias="resolutionStatus")
+    source_entity: str = Field(alias="sourceEntity")
+    source_entity_key: str = Field(alias="sourceEntityKey")
+    source_entity_value: str = Field(alias="sourceEntityValue")
+    target_entity: str = Field(alias="targetEntity")
+    target_entity_key: str = Field(alias="targetEntityKey")
+    target_entity_value: str = Field(alias="targetEntityValue")
+
+
+class LearningCommonsStandardsFrameworkItemProperties(_LearningCommonsWireModel):
+    """String-valued properties for one Learning Commons standards-item node."""
+
+    academic_subject: str = Field(alias="academicSubject")
+    adoption_status: str = Field(alias="adoptionStatus")
+    alternate_statement_code: str | None = Field(
+        default=None, alias="alternateStatementCode"
+    )
+    attribution_statement: str = Field(alias="attributionStatement")
+    author: str
+    case_identifier_uri: str = Field(alias="caseIdentifierURI")
+    case_identifier_uuid: str = Field(alias="caseIdentifierUUID")
+    date_created: str | None = Field(default=None, alias="dateCreated")
+    date_modified: str | None = Field(default=None, alias="dateModified")
+    description: str
+    grade_level: str | None = Field(default=None, alias="gradeLevel")
+    identifier: str
+    in_language: str = Field(alias="inLanguage")
+    is_current: Literal["true", "false"] = Field(alias="isCurrent")
+    jurisdiction: str
+    license: str
+    normalized_statement_type: str | None = Field(
+        default=None, alias="normalizedStatementType"
+    )
+    notes: str | None = None
+    provider: str
+    statement_code: str | None = Field(default=None, alias="statementCode")
+    statement_type: str | None = Field(default=None, alias="statementType")
+
+
+class LearningCommonsStandardsFrameworkProperties(_LearningCommonsWireModel):
+    """String-valued properties for one Learning Commons framework node record."""
+
+    academic_subject: str = Field(alias="academicSubject")
+    adoption_status: str = Field(alias="adoptionStatus")
+    attribution_statement: str = Field(alias="attributionStatement")
+    author: str
+    case_identifier_uri: str = Field(alias="caseIdentifierURI")
+    case_identifier_uuid: str = Field(alias="caseIdentifierUUID")
+    date_created: str | None = Field(default=None, alias="dateCreated")
+    date_modified: str | None = Field(default=None, alias="dateModified")
+    description: str | None = None
+    identifier: str
+    in_language: str = Field(alias="inLanguage")
+    is_current: Literal["true", "false"] = Field(alias="isCurrent")
+    jurisdiction: str
+    license: str
+    name: str
+    notes: str | None = None
+    provider: str
 
 
 # CURRENTLY UNUSED #

@@ -41,6 +41,17 @@
 			"code_patterns": {},
 			"excluded_table_columns_signatures": [],
 			"excluded_table_section_patterns": [],
+			"grade_level_mapping": {
+				"PRIMARY ONE": [
+					"1"
+				],
+				"PRIMARY TWO": [
+					"2"
+				],
+				"PRIMARY THREE": [
+					"3"
+				]
+			},
 			"grade_level_statement_types": [
 				"Grade"
 			],
@@ -590,6 +601,7 @@
 				"Primary Two",
 				"Primary Three"
 			],
+			"is_current": true,
 			"jurisdiction": "Nigeria",
 			"languages": [
 				"en"

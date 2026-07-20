@@ -150,6 +150,22 @@ LanguageField = Annotated[
         description="Strict BCP-47 language code (e.g., 'en', 'sw'). Use 'und' if unknown; use 'mul' if mixed languages.",
     ),
 ]
+LearningCommonsGradeLevel = Literal[
+    "PK",
+    "K",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+]
 NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
 
 
@@ -825,6 +841,16 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
             "eligible."
         ),
     )
+    grade_level_mapping: dict[str, list[LearningCommonsGradeLevel]] = Field(
+        default_factory=dict,
+        description=(
+            "Maps source-canonical local grade, class, year, stage, or band values "
+            "to zero or more Learning Commons grade values. Keys must use canonical "
+            "controlled values rather than aliases. An explicit empty target list "
+            "means the local value was reviewed but intentionally has no Learning "
+            "Commons grade equivalent."
+        ),
+    )
     grade_level_statement_types: list[str] = Field(
         description=(
             "Ordered canonical statement_type labels whose own values or identity "
@@ -1258,6 +1284,61 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
 
         return cleaned
 
+    @staticmethod
+    def _clean_grade_level_mapping_targets(
+        *, local_value: str, raw_targets: object
+    ) -> list[str]:
+        """Clean the target grade values configured for a single local grade.
+
+        Parameters
+        ----------
+        local_value
+            Normalized source-canonical local grade key the targets map to, used only
+            in error messages.
+        raw_targets
+            Raw target collection configured for `local_value`.
+
+        Returns
+        -------
+        list[str]
+            Stripped target values in input order.
+
+        Raises
+        ------
+        TypeError
+            If the target collection or any target value is not the correct type.
+        ValueError
+            If the target list contains duplicates after whitespace normalization.
+        """
+
+        if not isinstance(raw_targets, list):
+            raise TypeError(
+                "CreateKGConfig.as.grade_level_mapping values must be lists."
+            )
+
+        targets: list[str] = []
+        seen_targets: set[str] = set()
+
+        for raw_target in raw_targets:
+            if not isinstance(raw_target, str):
+                raise TypeError(
+                    "CreateKGConfig.as.grade_level_mapping target values must "
+                    "be strings."
+                )
+
+            target = raw_target.strip()
+
+            if target in seen_targets:
+                raise ValueError(
+                    "CreateKGConfig.as.grade_level_mapping target lists must not "
+                    f"contain duplicates: {local_value!r} -> {target!r}."
+                )
+
+            targets.append(target)
+            seen_targets.add(target)
+
+        return targets
+
     @field_validator("grade_level_statement_types")
     @classmethod
     def validate_grade_level_statement_types(cls, v: list[str]) -> list[str]:
@@ -1282,6 +1363,65 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         return cls._clean_selection_string_list(
             field_name="grade_level_statement_types", values=v
         )
+
+    @field_validator("grade_level_mapping", mode="before")
+    @classmethod
+    def validate_grade_level_mapping(
+        cls, value: dict[str, list[str]] | None
+    ) -> dict[str, list[str]]:
+        """Validate and normalize configured local-to-Learning-Commons grade mappings.
+
+        Parameters
+        ----------
+        value
+            Raw mapping from source-canonical local grade values to Learning Commons
+            grade values.
+
+        Returns
+        -------
+        dict[str, list[str]]
+            Cleaned mapping with stripped keys and stable target ordering.
+
+        Raises
+        ------
+        TypeError
+            If the mapping, a mapping key, or a target collection has the wrong type.
+        ValueError
+            If a key is blank or a target list contains duplicates.
+        """
+
+        if value is None:
+            return {}
+
+        if not isinstance(value, dict):
+            raise TypeError("CreateKGConfig.as.grade_level_mapping must be a mapping.")
+
+        cleaned: dict[str, list[str]] = {}
+
+        for raw_local_value, raw_targets in value.items():
+            if not isinstance(raw_local_value, str):
+                raise TypeError(
+                    "CreateKGConfig.as.grade_level_mapping keys must be strings."
+                )
+
+            local_value = raw_local_value.strip()
+
+            if not local_value:
+                raise ValueError(
+                    "CreateKGConfig.as.grade_level_mapping keys must be non-empty."
+                )
+
+            if local_value in cleaned:
+                raise ValueError(
+                    "CreateKGConfig.as.grade_level_mapping contains duplicate keys "
+                    f"after whitespace normalization: {local_value!r}."
+                )
+
+            cleaned[local_value] = cls._clean_grade_level_mapping_targets(
+                local_value=local_value, raw_targets=raw_targets
+            )
+
+        return cleaned
 
     @field_validator(
         "excluded_table_columns_signatures", "included_table_columns_signatures"
@@ -1995,6 +2135,49 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
                 f"statement_type labels: {sorted(known_statement_types)}"
             )
 
+    def _validate_grade_level_mapping(self) -> None:
+        """Validate that grade mapping keys use configured canonical values.
+
+        When configured grade statement types define controlled values, every mapping
+        key must be one of those canonical values. Open-vocabulary grade statement
+        types remain valid and are checked against observed values during export.
+
+        Raises
+        ------
+        ValueError
+            If a mapping key is an alias or otherwise absent from the canonical values
+            configured for grade-level statement types.
+        """
+
+        if not self.grade_level_mapping:
+            return
+
+        canonical_values: set[str] = set()
+        has_controlled_values = False
+
+        for policy in self.statement_type_policy:
+            if policy.statement_type not in self.grade_level_statement_types:
+                continue
+
+            if policy.controlled_values:
+                has_controlled_values = True
+                canonical_values.update(
+                    item.canonical_value for item in policy.controlled_values
+                )
+
+        if not has_controlled_values:
+            return
+
+        unknown_values = sorted(set(self.grade_level_mapping) - canonical_values)
+
+        if unknown_values:
+            raise ValueError(
+                f"CreateKGConfig.as.grade_level_mapping keys must use canonical "
+                f"controlled values from the configured grade-level statement types. "
+                f"Unknown keys: {unknown_values}. Canonical values: "
+                f"{sorted(canonical_values)}"
+            )
+
     def _validate_has_child_statement_type_policy(self) -> None:
         """Validate the unified hasChild parent policy and hierarchy ordering.
 
@@ -2124,6 +2307,7 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         self._validate_code_parent_rules(known)
         self._validate_code_scope_policy(known)
         self._validate_dedup_context_statement_types()
+        self._validate_grade_level_mapping()
         self._validate_grade_level_statement_types()
         self._validate_identity_scope_policy()
         self._validate_has_child_statement_type_policy()
@@ -2179,6 +2363,13 @@ class _CreateKGMetadata(BaseSchema):
     grades_or_stages: list[str] = Field(
         default_factory=list,
         description="Grades or stages covered by the framework (e.g., ['Grade 1', 'Grade 2']).",
+    )
+    is_current: bool = Field(
+        default=True,
+        description=(
+            "Operator declaration that this is the most up-to-date framework "
+            "represented for its jurisdiction and subject."
+        ),
     )
     jurisdiction: str = Field(
         description="Jurisdiction that governs the framework (e.g., a national or regional education authority)."

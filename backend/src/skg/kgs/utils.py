@@ -1029,7 +1029,14 @@ def _validate_kg_config_compatibility(
     return warnings
 
 
-def append_jsonl_model(*, fp: Path, model: BaseModel) -> None:
+def append_jsonl_model(
+    *,
+    by_alias: bool = False,
+    compact: bool = False,
+    exclude_none: bool = False,
+    fp: Path,
+    model: BaseModel,
+) -> None:
     """Append one Pydantic model payload to a JSONL artifact.
 
     The parent directory is created before writing. If the target file already exists
@@ -1038,6 +1045,12 @@ def append_jsonl_model(*, fp: Path, model: BaseModel) -> None:
 
     Parameters
     ----------
+    by_alias
+        Whether to serialize fields using their configured aliases.
+    compact
+        Whether to omit optional JSON whitespace between separators.
+    exclude_none
+        Whether to omit fields whose value is `None`.
     fp
         JSONL artifact path to append to.
     model
@@ -1056,7 +1069,19 @@ def append_jsonl_model(*, fp: Path, model: BaseModel) -> None:
                 f.write("\n")
 
     with fp.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(model.model_dump(mode="json"), ensure_ascii=False))
+        payload = model.model_dump(
+            by_alias=by_alias,
+            exclude_none=exclude_none,
+            mode="json",
+        )
+        separators = (",", ":") if compact else None
+        f.write(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=separators,
+            )
+        )
         f.write("\n")
 
 
