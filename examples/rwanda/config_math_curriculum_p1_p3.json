@@ -43,7 +43,7 @@
 			"excluded_table_section_patterns": [
 				"(?i)(SUBJECTS AND WEEKLY TIME ALLOCATION|weekly\\s+time\\s+allocation)"
 			],
-      			"grade_level_mapping": {
+			"grade_level_mapping": {
 				"P1": [
 					"1"
 				],
