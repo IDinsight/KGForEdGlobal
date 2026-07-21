@@ -712,7 +712,7 @@ def _load_complete_existing_export_artifacts(
         )
         _validate_model_equal(
             actual=loaded_framework,
-            artifact_label="standards_framework.json",
+            artifact_label="as_standards_framework.json",
             expected=sf,
         )
         loaded_items = _load_jsonl_models(
@@ -720,7 +720,7 @@ def _load_complete_existing_export_artifacts(
         )
         _validate_model_sequences_equal(
             actual=loaded_items,
-            artifact_label="standards_framework_items.jsonl",
+            artifact_label="as_standards_framework_items.jsonl",
             expected=sfis,
         )
         loaded_relationships = _load_jsonl_models(
@@ -728,13 +728,13 @@ def _load_complete_existing_export_artifacts(
         )
         _validate_model_sequences_equal(
             actual=loaded_relationships,
-            artifact_label="relationships_has_child.jsonl",
+            artifact_label="as_relationships_has_child.jsonl",
             expected=relationships,
         )
         loaded_learning_commons_nodes = _load_jsonl_objects(learning_commons_nodes_fp)
         _validate_learning_commons_wire_sequences_equal(
             actual=loaded_learning_commons_nodes,
-            artifact_label="nodes.jsonl",
+            artifact_label="as_nodes.jsonl",
             expected=learning_commons_nodes,
         )
         loaded_learning_commons_relationships = _load_jsonl_objects(
@@ -742,7 +742,7 @@ def _load_complete_existing_export_artifacts(
         )
         _validate_learning_commons_wire_sequences_equal(
             actual=loaded_learning_commons_relationships,
-            artifact_label="relationships.jsonl",
+            artifact_label="as_relationships.jsonl",
             expected=learning_commons_relationships,
         )
         loaded_entity_provenance = open_json_type(entity_provenance_fp)
@@ -750,14 +750,14 @@ def _load_complete_existing_export_artifacts(
         if json.dumps(loaded_entity_provenance, sort_keys=True) != json.dumps(
             entity_provenance, sort_keys=True
         ):
-            raise ValueError("entity_provenance.json does not match current output.")
+            raise ValueError("as_entity_provenance.json does not match current output.")
 
         loaded_unresolved_items = AcademicStandardsUnresolvedItems.model_validate(
             open_json_type(unresolved_items_fp)
         )
         _validate_model_equal(
             actual=loaded_unresolved_items,
-            artifact_label="unresolved_items.json",
+            artifact_label="as_unresolved_items.json",
             expected=unresolved_items,
         )
         loaded_validation_report = AcademicStandardsValidationReport.model_validate(
@@ -765,20 +765,18 @@ def _load_complete_existing_export_artifacts(
         )
         _validate_model_equal(
             actual=loaded_validation_report,
-            artifact_label="validation_report.json",
+            artifact_label="as_validation_report.json",
             expected=validation_report,
         )
 
         if not loaded_validation_report.passed:
-            raise ValueError("Existing validation_report.json did not pass.")
+            raise ValueError("Existing as_validation_report.json did not pass.")
 
         loaded_bundle = AcademicStandardsKGBundle.model_validate(
             open_json_type(bundle_fp)
         )
         _validate_model_equal(
-            actual=loaded_bundle,
-            artifact_label="academic_standards_kg_bundle.json",
-            expected=bundle,
+            actual=loaded_bundle, artifact_label="as_kg_bundle.json", expected=bundle
         )
     except Exception as e:  # pylint: disable=W0718
         logger.warning(
@@ -2632,11 +2630,11 @@ def _write_learning_commons_artifacts(
     nodes
         Learning Commons node records in deterministic order.
     nodes_fp
-        Destination path for `nodes.jsonl`.
+        Destination path for `as_nodes.jsonl`.
     relationships
         Learning Commons relationship records in deterministic order.
     relationships_fp
-        Destination path for `relationships.jsonl`.
+        Destination path for `as_relationships.jsonl`.
     """
 
     make_dir(nodes_fp.parent)
@@ -2644,11 +2642,7 @@ def _write_learning_commons_artifacts(
 
     for node in nodes:
         append_jsonl_model(
-            by_alias=True,
-            compact=True,
-            exclude_none=True,
-            fp=nodes_fp,
-            model=node,
+            by_alias=True, compact=True, exclude_none=True, fp=nodes_fp, model=node
         )
 
     make_dir(relationships_fp.parent)
@@ -2718,15 +2712,15 @@ def compile_academic_standards_kg(  # pylint: disable=R0915
 
     # 1.
     make_dir(kg_dirs.root)
-    bundle_fp = kg_dirs.root / "academic_standards_kg_bundle.json"
-    entity_provenance_fp = kg_dirs.root / "entity_provenance.json"
-    learning_commons_nodes_fp = kg_dirs.root / "nodes.jsonl"
-    learning_commons_relationships_fp = kg_dirs.root / "relationships.jsonl"
-    relationships_fp = kg_dirs.root / "relationships_has_child.jsonl"
-    sf_fp = kg_dirs.root / "standards_framework.json"
-    sfi_fp = kg_dirs.root / "standards_framework_items.jsonl"
-    unresolved_items_fp = kg_dirs.root / "unresolved_items.json"
-    validation_report_fp = kg_dirs.root / "validation_report.json"
+    bundle_fp = kg_dirs.root / "as_kg_bundle.json"
+    entity_provenance_fp = kg_dirs.root / "as_entity_provenance.json"
+    learning_commons_nodes_fp = kg_dirs.root / "as_nodes.jsonl"
+    learning_commons_relationships_fp = kg_dirs.root / "as_relationships.jsonl"
+    relationships_fp = kg_dirs.root / "as_relationships_has_child.jsonl"
+    sf_fp = kg_dirs.root / "as_standards_framework.json"
+    sfi_fp = kg_dirs.root / "as_standards_framework_items.jsonl"
+    unresolved_items_fp = kg_dirs.root / "as_unresolved_items.json"
+    validation_report_fp = kg_dirs.root / "as_validation_report.json"
 
     # 2.
     grade_level_mapping = kg_config.academic_standards.grade_level_mapping
