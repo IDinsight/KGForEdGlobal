@@ -5,8 +5,9 @@
   leaf-node default).
 
 Sibling LC modules mirror the sfi_* per-step layout: lc_generation.py
-(steps 13-14: requests + LLM decomposition), lc_finalization.py (steps 15-17:
-mint nodes, supports edges, validate/summarize), lc_export.py (step 18:
+(steps 13-14: requests + LLM decomposition), lc_dedup.py (step 15: duplicate
+grouping), lc_finalization.py (steps 16-18: mint nodes, supports edges,
+validate/summarize), lc_export.py (step 19:
 AS+LC bundle merge).
 """
 

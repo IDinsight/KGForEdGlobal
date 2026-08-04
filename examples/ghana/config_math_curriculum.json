@@ -415,6 +415,11 @@
 		},
 		"lc": {
 			"generation_instructions": "Decompose each Ghana Mathematics Indicator SFI into atomic mathematical skills or concepts directly supported by the Indicator's own text. The leading code (e.g. B5.1.1.3.4) is an identifier, not content: never copy it into skill text and never derive grade, strand, or sub-strand scope from it - codes in this source contain visible errors. Many Indicators are already atomic (e.g. 'Round decimals to the nearest tenth'): emit exactly one clean skill and never force a split. Compound Indicators split along their own structure: paired verbs ('read and write', 'compare and order', 'count and convert ... and vice versa', 'estimate and calculate') are usually two skills; clause chains ('identify the unknown, represent the problem with an equation, and solve the problem') split per clause. Keep parenthetical scope qualifiers ('up to 100,000', 'to the nearest tenth', '(cm, m)') attached to their skill - never drop them or spin them off as separate skills. If exemplar text leaked into the seed (starting 'E.g. 1.' or 'Ask learners to...'), ignore everything from that point: exemplars, subject-specific practices, and core competencies are activities, never skills; lowercase 'e.g.'/'i.e.' inside a statement is legitimate content, not an exemplar boundary. Preserve NaCCA terminology and British spelling exactly (factorisation, multi-base materials, referents, highest common factor (HCF), Ghana Cedis). Output skills in English.",
+			"lc_dedup_batch_size": 25,
+			"lc_dedup_blocking": {"containment_min_shared_tokens": 2, "containment_threshold": 0.75, "corpus_stopword_df": 0.15, "neighborhood_all_pairs_max_size": 12, "tag_jaccard_threshold": 0.5, "token_jaccard_threshold": 0.55, "trigram_jaccard_threshold": 0.6},
+			"lc_dedup_instructions": null,
+			"lc_dedup_language_pack": {"min_fold_length": 5, "stopwords": ["a", "an", "the", "of", "to", "in", "on", "for", "with", "and", "or", "using", "given", "their", "its"], "strip_prefixes": [], "strip_suffixes": ["ing", "es", "s"]},
+			"lc_dedup_scope": "framework",
 			"lc_include_sibling_context": false,
 			"lc_manual_review_overrides": null,
 			"lc_max_failure_rate": 0.05,
@@ -422,6 +427,7 @@
 			"lc_max_skills_per_sfi": null,
 			"lc_min_skill_text_length": null,
 			"lc_request_batch_size": 1,
+			"lc_semantic_dedup": true,
 			"lc_source_statement_types": null
 		},
 		"metadata": {

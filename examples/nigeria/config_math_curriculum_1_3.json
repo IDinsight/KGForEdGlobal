@@ -374,6 +374,11 @@
 		},
 		"lc": {
 			"generation_instructions": "Decompose each Nigeria Primary 1-3 Mathematics seed according to its statement type. Performance Objective seeds are stem-plus-list statements ('Pupils should be able to: 1. ...; 2. ...'): drop the stem, treat each numbered item as at least one distinct skill, and split items bundling two actions ('sort and classify', 'read and represent') into their atomic parts. Content seeds are terse noun/gerund phrases ('ii. Addition of 3-digit numbers without exchanging or renaming'): strip the roman-numeral marker and express concept/knowledge components grounded in the phrase itself, using ancestor Topic/Sub-Theme/Theme for disambiguation only - do not invent performance behaviours the phrase does not state. Content and Performance Objectives under the same Topic are complementary views of the same material, so overlap between their decompositions is expected - do not borrow wording across seeds to avoid or create it. Never generate skills from teacher/pupil activities, teaching materials, or Evaluation Guide content; evaluation items imitate the objective format ('Pupils to: 1. ...') but are assessment tasks, not skills. Normalize extraction artifacts (stray mid-word spaces, split first letters, smart quotes) without changing meaning. Preserve Nigerian terminology and British spelling (naira ₦, kobo k and ½k, bank notes, natural units such as arm's length, metres/centimetres). Output skills in English.",
+			"lc_dedup_batch_size": 25,
+			"lc_dedup_blocking": {"containment_min_shared_tokens": 2, "containment_threshold": 0.75, "corpus_stopword_df": 0.15, "neighborhood_all_pairs_max_size": 12, "tag_jaccard_threshold": 0.5, "token_jaccard_threshold": 0.55, "trigram_jaccard_threshold": 0.6},
+			"lc_dedup_instructions": null,
+			"lc_dedup_language_pack": {"min_fold_length": 5, "stopwords": ["a", "an", "the", "of", "to", "in", "on", "for", "with", "and", "or", "using", "given", "their", "its"], "strip_prefixes": [], "strip_suffixes": ["ing", "es", "s"]},
+			"lc_dedup_scope": "framework",
 			"lc_include_sibling_context": false,
 			"lc_manual_review_overrides": null,
 			"lc_max_failure_rate": 0.05,
@@ -381,6 +386,7 @@
 			"lc_max_skills_per_sfi": null,
 			"lc_min_skill_text_length": null,
 			"lc_request_batch_size": 1,
+			"lc_semantic_dedup": true,
 			"lc_source_statement_types": null
 		},
 		"metadata": {

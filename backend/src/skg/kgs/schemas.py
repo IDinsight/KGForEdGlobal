@@ -2004,7 +2004,8 @@ class LCAtomicSkill(BaseSchema):
         default_factory=list,
         description=(
             "2-5 short lowercase keyword tags in the skill's source language. "
-            "Dormant until pass 2 (cross-SFI grouping)."
+            "Semantic nomination signal for step-15 dedup blocking and later "
+            "cross-SFI grouping."
         ),
     )
 
@@ -2015,6 +2016,72 @@ class LCContextSFI(BaseSchema):
     case_identifier_uuid: UUID
     description: str = Field(min_length=1)
     statement_type: str = Field(min_length=1)
+
+
+class LCDedupConflict(BaseSchema):
+    """One merge link dropped by the step-15 chaining guard."""
+
+    reason: str = Field(min_length=1)
+    text_a: str = Field(min_length=1)
+    text_b: str = Field(min_length=1)
+
+
+class LCDedupGroup(BaseSchema):
+    """One multi-claim duplicate group after step-15 clustering."""
+
+    canonical_text: str = Field(min_length=1)
+    member_texts: list[str] = Field(min_length=1)
+    scope_key: str = Field(min_length=1)
+    sfi_uuids: list[UUID] = Field(min_length=1)
+
+
+class LCDedupGroups(BaseSchema):
+    """Step-15 grouping artifact: exact + semantic duplicate clusters."""
+
+    candidate_pair_count: int = Field(ge=0)
+    conflict_count: int = Field(ge=0)
+    conflicts: list[LCDedupConflict] = Field(default_factory=list)
+    exact_duplicate_claim_count: int = Field(ge=0)
+    groups: list[LCDedupGroup] = Field(default_factory=list)
+    judged_same_count: int = Field(ge=0)
+    total_claim_count: int = Field(ge=0)
+    unique_text_count: int = Field(ge=0)
+
+
+class LCDedupPair(BaseSchema):
+    """One nominated candidate pair for step-15 duplicate adjudication."""
+
+    nomination_rules: list[str] = Field(min_length=1)
+    pair_id: int = Field(ge=0)
+    scope_key: str = Field(min_length=1)
+    statement_types_a: list[str] = Field(default_factory=list)
+    statement_types_b: list[str] = Field(default_factory=list)
+    text_a: str = Field(min_length=1)
+    text_b: str = Field(min_length=1)
+
+
+class LCDedupPairVerdict(BaseSchema):
+    """LLM verdict for one nominated duplicate-candidate pair."""
+
+    pair_id: int = Field(ge=0)
+    reason: str = Field(max_length=500, min_length=1)
+    same_skill: bool
+
+
+class LCDedupRequest(BaseSchema):
+    """Prompt payload for one batch of step-15 duplicate adjudications."""
+
+    pairs: list[LCDedupPair] = Field(min_length=1)
+    request_id: str = Field(description="Deterministic request ID.", min_length=1)
+
+
+class LCDedupResponse(BaseSchema):
+    """Structured LLM output for one step-15 adjudication request."""
+
+    request_id: str = Field(
+        description="Request ID copied from the prompt.", min_length=1
+    )
+    verdicts: list[LCDedupPairVerdict] = Field(min_length=1)
 
 
 class LCEligibilityReport(BaseSchema):

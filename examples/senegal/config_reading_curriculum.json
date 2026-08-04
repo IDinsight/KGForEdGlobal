@@ -272,6 +272,11 @@
 		},
 		"lc": {
 			"generation_instructions": "Generate LearningComponents only from final leaf expectation SFIs, especially Objectifs spécifiques / Nisaru jukki bi and clear learning objectives under Oral, Lecture, Communication écrite, Production d’écrits, Outils de langue, and Copie. Do not generate LearningComponents from durations, week numbers, integration/evaluation rows, table captions, generic section headings, row-level tool-category labels alone, or broad Objectif d’apprentissage grouping/context nodes when a more specific leaf objective is available. Preserve original Wolof/French wording; no English translation is required.",
+			"lc_dedup_batch_size": 25,
+			"lc_dedup_blocking": {"containment_min_shared_tokens": 2, "containment_threshold": 0.75, "corpus_stopword_df": 0.15, "neighborhood_all_pairs_max_size": 12, "tag_jaccard_threshold": 0.5, "token_jaccard_threshold": 0.55, "trigram_jaccard_threshold": 0.6},
+			"lc_dedup_instructions": null,
+			"lc_dedup_language_pack": null,
+			"lc_dedup_scope": "framework",
 			"lc_include_sibling_context": false,
 			"lc_manual_review_overrides": null,
 			"lc_max_failure_rate": 0.05,
@@ -279,6 +284,7 @@
 			"lc_max_skills_per_sfi": null,
 			"lc_min_skill_text_length": null,
 			"lc_request_batch_size": 1,
+			"lc_semantic_dedup": true,
 			"lc_source_statement_types": null
 		},
 		"metadata": {

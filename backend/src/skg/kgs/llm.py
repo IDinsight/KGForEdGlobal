@@ -4,16 +4,19 @@ artifacts using an LLM.
 
 # Standard Library
 from dataclasses import dataclass
+from typing import Optional
 
 # Package Library
 from skg.config import Settings
 from skg.kgs.agents import (
+    create_lc_dedup_agent,
     create_lc_generation_agent,
     create_sfi_dedup_agent,
     create_sfi_extraction_agent,
     create_sfi_has_child_agent,
 )
 from skg.kgs.prompts import (
+    build_lc_dedup_prompt,
     build_lc_generation_prompt,
     extract_sfi_candidates_from_window,
     resolve_sfi_has_child_parents,
@@ -21,6 +24,8 @@ from skg.kgs.prompts import (
 )
 from skg.kgs.schemas import (
     ExtractionWindow,
+    LCDedupRequest,
+    LCDedupResponse,
     LCGenerationRequest,
     LCGenerationResponse,
     SFIDedupReviewRequest,
@@ -30,6 +35,7 @@ from skg.kgs.schemas import (
     SFIHasChildResolutionResponse,
 )
 from skg.kgs.validators import (
+    verify_lc_dedup_quality,
     verify_lc_generation_quality,
     verify_sfi_dedup_review_quality,
     verify_sfi_extraction_quality,
@@ -43,6 +49,7 @@ from skg.utils.general import AgentUsageBucket
 class KGUsageTracker:
     """Track LLM token usage for the KG pipeline."""
 
+    lc_dedup: AgentUsageBucket
     lc_generation: AgentUsageBucket
     sfi_dedup: AgentUsageBucket
     sfi_extraction: AgentUsageBucket
@@ -51,6 +58,7 @@ class KGUsageTracker:
     def __init__(self) -> None:
         """Initialize empty usage buckets for KG LLM agents."""
 
+        self.lc_dedup = AgentUsageBucket(agent_name="lc_dedup")
         self.lc_generation = AgentUsageBucket(agent_name="lc_generation")
         self.sfi_dedup = AgentUsageBucket(agent_name="sfi_dedup")
         self.sfi_extraction = AgentUsageBucket(agent_name="sfi_extraction")
@@ -66,6 +74,7 @@ class KGUsageTracker:
         """
 
         agent_buckets = {
+            "lc_dedup": self.lc_dedup,
             "lc_generation": self.lc_generation,
             "sfi_dedup": self.sfi_dedup,
             "sfi_extraction": self.sfi_extraction,
@@ -98,6 +107,45 @@ class KGUsageTracker:
             },
             "totals": totals,
         }
+
+
+def adjudicate_lc_dedup_request(
+    *,
+    lc_dedup_instructions: Optional[str],
+    lc_dedup_request: LCDedupRequest,
+    usage_tracker: KGUsageTracker,
+) -> LCDedupResponse:
+    """Adjudicate one bounded batch of duplicate-candidate pairs via LLM.
+
+    Parameters
+    ----------
+    lc_dedup_instructions
+        Optional curriculum-specific adjudication policy, or None for the
+        generic rubric alone.
+    lc_dedup_request
+        Bounded adjudication request.
+    usage_tracker
+        Usage tracker to accumulate token usage.
+
+    Returns
+    -------
+    LCDedupResponse
+        Parsed and quality-validated pair-verdict response.
+    """
+
+    prompts = build_lc_dedup_prompt(
+        lc_dedup_instructions=lc_dedup_instructions,
+        lc_dedup_request=lc_dedup_request,
+    )
+    agent = create_lc_dedup_agent(
+        instructions=prompts.system_message,
+        lc_dedup_request=lc_dedup_request,
+        model_config=Settings.llm_config("kgs"),
+        verify_quality_fn=verify_lc_dedup_quality,
+    )
+    result = agent.run_sync(prompts.user_message)
+    usage_tracker.lc_dedup.add_run_usage(result.usage())
+    return result.output
 
 
 def extract_sfi_candidates(

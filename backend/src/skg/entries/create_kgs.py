@@ -28,6 +28,7 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
+from skg.kgs.lc_dedup import group_duplicate_skills
 from skg.kgs.lc_generation import (
     build_lc_generation_requests,
     decompose_lc_source_sfis,
@@ -86,8 +87,10 @@ def build_kgs(
         context).
     14. Decompose LC-source SFIs into atomic skills using an LLM (sequential,
         resumable).
+    15. Group exact + semantic duplicate skills (deterministic blocking, LLM
+        pair adjudication).
 
-    LC steps 15-18 (LC minting, supports edges, summary, AS+LC bundle merge)
+    LC steps 16-19 (LC minting, supports edges, summary, AS+LC bundle merge)
     are wired in as they are built.
 
     Parameters
@@ -213,11 +216,21 @@ def build_kgs(
         sfi_final_records=sfi_final_records,
     )
 
-    # 14. Later LC steps (15-18) are wired in as they are built.
-    decompose_lc_source_sfis(
+    # 14.
+    lc_generation_responses = decompose_lc_source_sfis(
         kg_dirs=kg_dirs,
         lc_config=kg_run_inputs.kg_config.learning_components,
         lc_generation_requests=lc_generation_requests,
+        overwrite=config.overwrite,
+        usage_tracker=usage_tracker,
+    )
+
+    # 15. Later LC steps (16-19) are wired in as they are built.
+    group_duplicate_skills(
+        kg_dirs=kg_dirs,
+        lc_config=kg_run_inputs.kg_config.learning_components,
+        lc_generation_requests=lc_generation_requests,
+        lc_generation_responses=lc_generation_responses,
         overwrite=config.overwrite,
         usage_tracker=usage_tracker,
     )

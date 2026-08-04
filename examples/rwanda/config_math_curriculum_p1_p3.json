@@ -476,6 +476,11 @@
 		},
 		"lc": {
 			"generation_instructions": "Decompose each Rwanda P1-P3 Mathematics objective SFI according to its type. Knowledge and understanding objectives ('Explain...', 'Differentiate...') yield conceptual components; Skills objectives ('Count...', 'Convert...', 'Draw...') yield procedural components; Attitudes and Values objectives ('Appreciate...', 'Develop...') yield disposition components - preserve the disposition meaning and never convert it into an activity or measurable task. Strip leading dash/bullet markers from seed text. A single objective often bundles a comma enumeration ('Draw right, acute, and obtuse angles'): split such enumerations into atomic components. Ultra-terse objectives ('Estimate.', 'Locate objects.') state an action whose object lives in the ancestors: take the object and scope from the ancestor Unit and Key Unit Competence (e.g. estimating length measurements in m, dm and cm under a length-measurement unit), and add nothing beyond what that Unit scope supports. Never generate skills from Content listings, Learning activities, Assessment criteria, Links to other subjects, or Teaching aids. Normalize source typos ('substract') without inventing new skills. Preserve CBC terminology (Key Unit Competence, competence), comparison symbols (<, >, =), and Rwandan currency (Frw). Output skills in English.",
+			"lc_dedup_batch_size": 25,
+			"lc_dedup_blocking": {"containment_min_shared_tokens": 2, "containment_threshold": 0.75, "corpus_stopword_df": 0.15, "neighborhood_all_pairs_max_size": 12, "tag_jaccard_threshold": 0.5, "token_jaccard_threshold": 0.55, "trigram_jaccard_threshold": 0.6},
+			"lc_dedup_instructions": null,
+			"lc_dedup_language_pack": {"min_fold_length": 5, "stopwords": ["a", "an", "the", "of", "to", "in", "on", "for", "with", "and", "or", "using", "given", "their", "its"], "strip_prefixes": [], "strip_suffixes": ["ing", "es", "s"]},
+			"lc_dedup_scope": "framework",
 			"lc_include_sibling_context": false,
 			"lc_manual_review_overrides": null,
 			"lc_max_failure_rate": 0.05,
@@ -483,6 +488,7 @@
 			"lc_max_skills_per_sfi": null,
 			"lc_min_skill_text_length": null,
 			"lc_request_batch_size": 1,
+			"lc_semantic_dedup": true,
 			"lc_source_statement_types": [
 				"Knowledge Objective",
 				"Skills Objective",

@@ -10,6 +10,8 @@ from pydantic_ai import Agent, ModelRetry
 # Package Library
 from skg.kgs.schemas import (
     ExtractionWindow,
+    LCDedupRequest,
+    LCDedupResponse,
     LCGenerationRequest,
     LCGenerationResponse,
     SFIDedupReviewRequest,
@@ -21,6 +23,101 @@ from skg.kgs.schemas import (
 from skg.model_registry import ModelConfig
 from skg.page_ir_extraction.validators import QualityError
 from skg.schemas import CreateKGConfig, _CreateKGLearningComponentsConfig
+
+
+def create_lc_dedup_agent(
+    *,
+    instructions: str,
+    lc_dedup_request: LCDedupRequest,
+    max_retries: int = 3,
+    model_config: ModelConfig,
+    verify_quality_fn: Callable[..., None],
+) -> Agent:
+    """Create an Agent configured for LC duplicate-pair adjudication (step 15).
+
+    The returned agent validates parsed LLM output against the supplied bounded
+    adjudication request. Quality failures raise `ModelRetry` so pydantic-ai
+    can ask the model to repair its structured response before duplicate
+    groups are clustered.
+
+    Parameters
+    ----------
+    instructions
+        System-level duplicate-adjudication instructions.
+    lc_dedup_request
+        Bounded adjudication request being processed.
+    max_retries
+        Maximum number of quality-error retries.
+    model_config
+        Model configuration containing the model name and model settings helpers.
+    verify_quality_fn
+        Callable with signature `(*, lc_dedup_request, lc_dedup_response)`
+        that raises `QualityError` on failure.
+
+    Returns
+    -------
+    Agent
+        Configured LC dedup adjudication agent.
+    """
+
+    attempt_counter: dict[str, int] = {"value": 0}
+    agent = Agent(
+        model_config.model,
+        instructions=instructions,
+        model_settings=model_config.kgs_settings("learning_components"),
+        output_retries=max_retries,
+        output_type=model_config.wrap_output_type(LCDedupResponse),
+    )
+
+    @agent.output_validator
+    def validate_lc_dedup_quality(output: LCDedupResponse) -> LCDedupResponse:
+        """Validate parsed LC duplicate-pair adjudication output.
+
+        Parameters
+        ----------
+        output
+            Parsed pair-verdict response from the model.
+
+        Returns
+        -------
+        LCDedupResponse
+            Validated pair-verdict response.
+
+        Raises
+        ------
+        ModelRetry
+            If output fails quality checks and should be corrected by the model.
+        """
+
+        attempt = attempt_counter["value"]
+
+        try:
+            verify_quality_fn(
+                lc_dedup_request=lc_dedup_request, lc_dedup_response=output
+            )
+        except QualityError as e:
+            truncated_msg = str(e)[:500]
+
+            logger.error(
+                f"LC dedup quality check failed for request "
+                f"{lc_dedup_request.request_id} attempt {attempt + 1}: "
+                f"{truncated_msg}"
+            )
+
+            attempt_counter["value"] += 1
+            raise ModelRetry(
+                f"Your structured LC dedup output has quality issues and must "
+                f"be corrected.\n"
+                f"ERROR: {str(e)}\n\n"
+                f"Return a complete LCDedupResponse that covers every pair in "
+                f"the request exactly once, with a concise reason per verdict."
+            ) from e
+
+        attempt_counter["value"] += 1
+
+        return output
+
+    return agent
 
 
 def create_lc_generation_agent(

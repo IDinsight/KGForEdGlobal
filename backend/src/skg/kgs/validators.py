@@ -14,6 +14,8 @@ from typing import Any
 # Package Library
 from skg.kgs.schemas import (
     ExtractionWindow,
+    LCDedupRequest,
+    LCDedupResponse,
     LCGenerationRequest,
     LCGenerationResponse,
     SFICandidate,
@@ -2111,6 +2113,61 @@ def strip_leading_enumerated_prefix(value: str) -> str:
     return stripped
 
 
+def _verify_lc_dedup_coverage(
+    *,
+    lc_dedup_request: LCDedupRequest,
+    lc_dedup_response: LCDedupResponse,
+) -> None:
+    """Verify a step-15 response covers every nominated pair exactly once.
+
+    Parameters
+    ----------
+    lc_dedup_request
+        The bounded adjudication request that produced the response.
+    lc_dedup_response
+        Parsed pair-verdict response from the model.
+
+    Raises
+    ------
+    QualityError
+        If the response ID mismatches the request, or verdicts duplicate,
+        invent, or omit pair IDs, or carry blank reasons.
+    """
+
+    if lc_dedup_response.request_id != lc_dedup_request.request_id:
+        raise QualityError(
+            f"request_id mismatch: expected "
+            f"{lc_dedup_request.request_id!r}, got "
+            f"{lc_dedup_response.request_id!r}."
+        )
+
+    expected_pair_ids = {pair.pair_id for pair in lc_dedup_request.pairs}
+    returned_pair_ids = [verdict.pair_id for verdict in lc_dedup_response.verdicts]
+    duplicate_pair_ids = {
+        pair_id for pair_id in returned_pair_ids if returned_pair_ids.count(pair_id) > 1
+    }
+    if duplicate_pair_ids:
+        raise QualityError(
+            f"duplicate verdicts for pair_ids {sorted(duplicate_pair_ids)}. "
+            "Return exactly one verdict per pair."
+        )
+    invented_pair_ids = set(returned_pair_ids) - expected_pair_ids
+    if invented_pair_ids:
+        raise QualityError(
+            f"verdicts reference pair_ids not in the request: "
+            f"{sorted(invented_pair_ids)}."
+        )
+    omitted_pair_ids = expected_pair_ids - set(returned_pair_ids)
+    if omitted_pair_ids:
+        raise QualityError(
+            f"verdicts omit pair_ids {sorted(omitted_pair_ids)}. Cover every "
+            "pair exactly once."
+        )
+    for verdict in lc_dedup_response.verdicts:
+        if not verdict.reason.strip():
+            raise QualityError(f"pair {verdict.pair_id} has a blank verdict reason.")
+
+
 def _verify_lc_generation_sfi_coverage(
     *,
     lc_generation_request: LCGenerationRequest,
@@ -2217,6 +2274,31 @@ def _verify_lc_generation_skill_bounds(
                     f"configured maximum of {max_text_length} characters: "
                     f"{skill_text[:120]!r}..."
                 )
+
+
+def verify_lc_dedup_quality(
+    *,
+    lc_dedup_request: LCDedupRequest,
+    lc_dedup_response: LCDedupResponse,
+) -> None:
+    """Verify one LC dedup adjudication response against its request (step 15).
+
+    Parameters
+    ----------
+    lc_dedup_request
+        The bounded adjudication request that produced the response.
+    lc_dedup_response
+        Parsed pair-verdict response from the model.
+
+    Raises
+    ------
+    QualityError
+        If the response mismatches the request or fails pair coverage.
+    """
+
+    _verify_lc_dedup_coverage(
+        lc_dedup_request=lc_dedup_request, lc_dedup_response=lc_dedup_response
+    )
 
 
 def verify_lc_generation_quality(

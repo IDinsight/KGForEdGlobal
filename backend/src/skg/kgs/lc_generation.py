@@ -6,7 +6,8 @@ for KG creation (steps 13-14).
   skills; isolated failures are recorded and guarded by lc_max_failure_rate.
 
 Sibling LC modules mirror the sfi_* per-step layout: lc_selection.py
-(steps 11-12), lc_finalization.py (steps 15-17), lc_export.py (step 18).
+(steps 11-12), lc_dedup.py (step 15: duplicate grouping), lc_finalization.py
+(steps 16-18), lc_export.py (step 19).
 """
 
 # Standard Library

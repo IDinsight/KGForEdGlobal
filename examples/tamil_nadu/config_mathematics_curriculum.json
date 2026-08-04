@@ -222,6 +222,11 @@
     },
     "lc": {
       "generation_instructions": "Decompose each Tamil Nadu Mathematics Content SFI (Classes 1-5) into atomic teachable skills. Content comes in two styles. Verb-led statements ('Compares and orders objects based on length, weight and capacity (long-short; ...)') split along their verbs and parenthetical enumerations: each attribute pair or case in a semicolon/comma list ('long-short; heavy-light; thick-thin') and each listed conversion ('hours into minutes, minutes into seconds') is its own skill; keep numeric ranges and units bound to the skill ('up to ₹99'). Bare-noun topics ('Tangrams', 'Turns', 'Odd and even numbers') carry no verb: take the action from the parent Competency in the ancestor path (e.g. 'Recognizes and creates...') and apply it to the topic, using the Curricular Goal for disambiguation only and adding nothing the Competency and topic together do not state. Class scope is already carried by the statement type and ancestor path - do not restate class levels inside skill text. Never generate skills from pedagogy or method notes, including inline parentheticals such as '(Use multiple approaches ... not as algorithm)' or '(like leaves on a tree)'. Preserve Indian conventions and terminology (₹ and Rs amounts, Indo-Arabic numerals, railway time / 24-hour clock, non-standard units like hand span and cubit, metres/centimetres spelling). Output skills in English.",
+      "lc_dedup_batch_size": 25,
+      "lc_dedup_blocking": {"containment_min_shared_tokens": 2, "containment_threshold": 0.75, "corpus_stopword_df": 0.15, "neighborhood_all_pairs_max_size": 12, "tag_jaccard_threshold": 0.5, "token_jaccard_threshold": 0.55, "trigram_jaccard_threshold": 0.6},
+      "lc_dedup_instructions": null,
+      "lc_dedup_language_pack": {"min_fold_length": 5, "stopwords": ["a", "an", "the", "of", "to", "in", "on", "for", "with", "and", "or", "using", "given", "their", "its"], "strip_prefixes": [], "strip_suffixes": ["ing", "es", "s"]},
+      "lc_dedup_scope": "framework",
       "lc_include_sibling_context": false,
       "lc_manual_review_overrides": null,
       "lc_max_failure_rate": 0.05,
@@ -229,6 +234,7 @@
       "lc_max_skills_per_sfi": null,
       "lc_min_skill_text_length": null,
       "lc_request_batch_size": 1,
+      "lc_semantic_dedup": true,
       "lc_source_statement_types": null
     }
   }

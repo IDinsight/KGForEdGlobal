@@ -7,6 +7,7 @@ from typing import Any, Optional
 # Package Library
 from skg.kgs.schemas import (
     ExtractionWindow,
+    LCDedupRequest,
     LCGenerationRequest,
     SFIDedupReviewRequest,
     SFIHasChildResolutionRequest,
@@ -520,6 +521,69 @@ def _get_block_language(extraction_window: ExtractionWindow) -> str:
         return language.strip()
 
     return extraction_window.primary_language
+
+
+def build_lc_dedup_prompt(
+    *,
+    lc_dedup_instructions: Optional[str],
+    lc_dedup_request: LCDedupRequest,
+) -> PromptPair:
+    """Generate prompts for LC duplicate-pair adjudication (step 15).
+
+    Parameters
+    ----------
+    lc_dedup_instructions
+        Optional curriculum-specific adjudication policy from the Learning
+        Components runtime configuration, or None for the generic rubric
+        alone.
+    lc_dedup_request
+        Bounded batch of nominated candidate pairs to adjudicate.
+
+    Returns
+    -------
+    PromptPair
+        System and user messages for the LC dedup adjudication agent.
+    """
+
+    user_payload = lc_dedup_request.model_dump(mode="json")
+    instructions_section = (
+        ""
+        if lc_dedup_instructions is None
+        else dedent(
+            f"""
+## Runtime curriculum instructions
+- Treat the following as the authoritative curriculum-specific adjudication policy for this request. If it conflicts with the generic policy above, follow it unless doing so would violate the output contract.
+{lc_dedup_instructions}
+"""
+        )
+    )
+    system_message = dedent(
+        f"""You are a curriculum-deduplication judge for a Learning Commons-shaped Knowledge Graph. For each nominated pair of atomic skill statements, decide whether the two statements describe THE SAME atomic teachable skill.
+
+## Judgment policy
+- Judge SAME only if the action, the object, the direction, and every scope qualifier match.
+- These are DISTINCT: different numeric bounds or ranges (up to 10,000 vs up to 100,000); opposite or different directions (convert X to Y vs convert Y to X; round up vs round down); presence vs absence of a qualifier (with vs without borrowing; with like denominators vs unqualified); different pedagogical actions (develop a formula vs apply a formula; explain vs perform).
+- These are SAME: pure rewording, reordering, or nominalization (add 3-digit numbers vs addition of 3-digit numbers); synonymous verbs for the identical action and object (apply vs use a named strategy); singular/plural, spelling, or inflection differences.
+- When statement types are provided and differ between the two sides (e.g. a knowledge objective vs a skills objective), treat differing knowledge/skill/disposition framing as DISTINCT unless the statements are plain rewordings of each other.
+- When uncertain, answer DISTINCT — a false merge corrupts the graph; a missed merge only leaves one extra node.
+{instructions_section}
+## Output contract
+- Copy request_id exactly.
+- Return exactly one verdict per pair, using each pair's pair_id; cover every pair exactly once and invent none.
+- Give a concise reason for every verdict.
+        """
+    )
+    user_message = dedent(
+        f"""Adjudicate the nominated duplicate-candidate pairs in this bounded request.
+
+## LC dedup request JSON
+{json_dumps(user_payload)}
+        """
+    )
+
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
+    )
 
 
 def build_lc_generation_prompt(

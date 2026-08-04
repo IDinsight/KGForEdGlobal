@@ -1725,10 +1725,128 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         return self
 
 
+class _CreateKGLCDedupBlockingConfig(BaseSchema):
+    """Step-15 dedup candidate-nomination thresholds.
+
+    Defaults are empirically calibrated. A curriculum whose calibration
+    warrants different gates overrides them in its own config.
+    """
+
+    containment_min_shared_tokens: int = Field(
+        default=2,
+        description="Minimum shared tokens for the containment rule to fire.",
+        ge=1,
+    )
+    containment_threshold: float = Field(
+        default=0.75,
+        description="Overlap coefficient (shared / smaller token set) gate.",
+        ge=0.0,
+        le=1.0,
+    )
+    corpus_stopword_df: float = Field(
+        default=0.15,
+        description=(
+            "Tokens appearing in more than this fraction of the run's unique "
+            "skill texts are treated as stopwords (language-independent)."
+        ),
+        ge=0.0,
+        le=1.0,
+    )
+    neighborhood_all_pairs_max_size: int = Field(
+        default=12,
+        description=(
+            "Nominate ALL pairs (no similarity gate) among unique texts "
+            "sharing a direct hasChild parent when that neighborhood holds "
+            "at most this many texts; 0 disables the rule."
+        ),
+        ge=0,
+    )
+    tag_jaccard_threshold: float = Field(
+        default=0.5,
+        description="Jaccard gate over folded tag-token bags.",
+        ge=0.0,
+        le=1.0,
+    )
+    token_jaccard_threshold: float = Field(
+        default=0.55,
+        description="Jaccard gate over content-token sets.",
+        ge=0.0,
+        le=1.0,
+    )
+    trigram_jaccard_threshold: float = Field(
+        default=0.6,
+        description="Jaccard gate over character trigrams (language-blind).",
+        ge=0.0,
+        le=1.0,
+    )
+
+
+class _CreateKGLCDedupLanguagePackConfig(BaseSchema):
+    """Language-specific lexical knowledge for step-15 dedup blocking.
+
+    Declares curated stopwords and affix-folding rules as data in the
+    document profile, so no language ever requires a code change. Omitted
+    means only the language-independent core rules run.
+    """
+
+    min_fold_length: int = Field(
+        default=5,
+        description="Minimum token length before affix folding applies.",
+        ge=1,
+    )
+    stopwords: list[str] = Field(
+        default_factory=list,
+        description="Curated function words excluded from pack token sets.",
+    )
+    strip_prefixes: list[str] = Field(
+        default_factory=list,
+        description="Prefixes folded off tokens (e.g. French elisions).",
+    )
+    strip_suffixes: list[str] = Field(
+        default_factory=list,
+        description="Suffixes folded off tokens (first match wins).",
+    )
+
+
 class _CreateKGLearningComponentsConfig(BaseSchema):
     """Learning Components configuration for KG creation."""
 
     generation_instructions: str
+    lc_dedup_batch_size: int = Field(
+        default=25,
+        description="Candidate pairs per step-15 adjudication request.",
+        ge=1,
+    )
+    lc_dedup_blocking: _CreateKGLCDedupBlockingConfig = Field(
+        default_factory=_CreateKGLCDedupBlockingConfig,
+        description="Step-15 candidate-nomination thresholds.",
+    )
+    lc_dedup_instructions: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional curriculum-specific adjudication policy appended to the "
+            "step-15 duplicate-pair judge prompt (local conventions such as "
+            "whether whole numbers include negatives). None runs the generic "
+            "conservative rubric alone."
+        ),
+    )
+    lc_dedup_language_pack: Optional[_CreateKGLCDedupLanguagePackConfig] = Field(
+        default=None,
+        description=(
+            "Language pack for step-15 blocking, declared entirely in the "
+            "document profile. None runs the language-independent core rules "
+            "alone."
+        ),
+    )
+    lc_dedup_scope: Literal["framework", "top_ancestor", "parent", "none"] = Field(
+        default="framework",
+        description=(
+            "Merge scope for duplicate skills: anywhere in the document "
+            "(framework), only under a shared first hasChild-path node "
+            "(top_ancestor), only among siblings (parent), or no cross-SFI "
+            "merging at all (none)."
+        ),
+    )
     lc_include_sibling_context: bool = Field(
         default=False,
         description=(
@@ -1795,6 +1913,13 @@ class _CreateKGLearningComponentsConfig(BaseSchema):
             "single SFI; raising it is a throughput knob, not a schema change."
         ),
         ge=1,
+    )
+    lc_semantic_dedup: bool = Field(
+        default=True,
+        description=(
+            "Run step-15 LLM pair adjudication for semantically equivalent "
+            "skills. False limits dedup to exact normalized-text grouping."
+        ),
     )
     lc_source_statement_types: Optional[list[str]] = Field(
         default=None,
