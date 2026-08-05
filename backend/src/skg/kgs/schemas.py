@@ -2183,6 +2183,47 @@ class LCGenerationResponse(BaseSchema):
     )
 
 
+class LCGenerationSummary(BaseSchema):
+    """Aggregate summary for the LC generation phase (step 18)."""
+
+    lc_confidence_distribution: dict[str, int] = Field(
+        default_factory=dict,
+        description="Claim decomposition confidences bucketed by first decimal.",
+    )
+    lc_count_by_language: dict[str, int] = Field(default_factory=dict)
+    lc_count_by_source_statement_type: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "LearningComponent counts per claiming source statement type; a "
+            "node claimed by several types counts once per type."
+        ),
+    )
+    lc_dedup_candidate_pair_count: int = Field(ge=0)
+    lc_dedup_conflict_count: int = Field(ge=0)
+    lc_dedup_judged_same_count: int = Field(ge=0)
+    lc_generation_failed_sfis_count: int = Field(ge=0)
+    lc_max_splits_observed: int = Field(ge=0)
+    lc_multi_claim_lc_count: int = Field(ge=0)
+    lc_multi_parent_lc_count: int = Field(ge=0)
+    lc_selection_mode: LCSelectionMode
+    lc_source_exclusion_reason_counts: dict[str, int] = Field(default_factory=dict)
+    lc_splits_distribution: dict[str, int] = Field(
+        default_factory=dict,
+        description="Atomic-skill counts per decomposed seed SFI.",
+    )
+    llm_request_count: int = Field(ge=0)
+    llm_response_count: int = Field(ge=0)
+    manual_review_overrides: Optional[dict[str, Any]] = Field(default=None)
+    total_lc_claims: int = Field(ge=0)
+    total_lc_source_sfis_considered: int = Field(ge=0)
+    total_lc_source_sfis_eligible: int = Field(ge=0)
+    total_lc_source_sfis_empty_text: int = Field(ge=0)
+    total_lc_source_sfis_excluded: int = Field(ge=0)
+    total_lcs: int = Field(ge=0)
+    total_supports_edges: int = Field(ge=0)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class LCRequestSFI(BaseSchema):
     """One LC-source SFI in a generation request, with its prompt context."""
 

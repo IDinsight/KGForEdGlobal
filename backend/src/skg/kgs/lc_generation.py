@@ -290,7 +290,7 @@ def build_lc_generation_requests(
 ) -> list[LCGenerationRequest]:
     """Run step 13: build deterministic LC generation requests.
 
-    Fully deterministic, no LLM. Eligible seeds are chunked in selection order
+    Eligible seeds are chunked in selection order
     into batches of `lc_request_batch_size` (default 1, hasChild parity); each
     request carries a deterministic request ID, the framework context, and
     per seed its source text, language tag, and hasChild ancestor path

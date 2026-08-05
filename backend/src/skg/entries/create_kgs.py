@@ -29,7 +29,11 @@ if __name__ == "__main__":
 
 # Package Library
 from skg.kgs.lc_dedup import group_duplicate_skills
-from skg.kgs.lc_finalization import build_lc_supports_edges, mint_learning_components
+from skg.kgs.lc_finalization import (
+    build_lc_supports_edges,
+    mint_learning_components,
+    summarize_learning_components,
+)
 from skg.kgs.lc_generation import (
     build_lc_generation_requests,
     decompose_lc_source_sfis,
@@ -94,9 +98,10 @@ def build_kgs(
         (content-addressed, deterministic).
     17. Emit one primary supports edge per (LearningComponent, claiming
         SFI) pair (deterministic edge identities).
+    18. Validate run-level LC invariants and persist the phase summary and
+        LC entity provenance.
 
-    LC steps 18-19 (summary, AS+LC bundle merge) are wired in as they are
-    built.
+    LC step 19 (AS+LC bundle merge) is wired in as it is built.
 
     Parameters
     ----------
@@ -203,7 +208,7 @@ def build_kgs(
     )
 
     # 11-12.
-    lc_eligible_sfis, _ = select_lc_source_sfis(
+    lc_eligible_sfis, lc_eligibility_report = select_lc_source_sfis(
         academic_standards_bundle=final_bundle,
         has_child_edges=has_child_edges,
         kg_dirs=kg_dirs,
@@ -252,13 +257,28 @@ def build_kgs(
         lc_generation_responses=lc_generation_responses,
     )
 
-    # 17. Later LC steps (18-19) are wired in as they are built.
-    build_lc_supports_edges(
+    # 17.
+    lc_supports_edges = build_lc_supports_edges(
         document_ir=kg_run_inputs.document_ir,
         kg_config=kg_run_inputs.kg_config,
         kg_dirs=kg_dirs,
         lc_eligible_sfis=lc_eligible_sfis,
         learning_components=learning_components,
+    )
+
+    # 18. Step 19 (AS+LC bundle merge) is wired in as it is built.
+    summarize_learning_components(
+        academic_standards_bundle=final_bundle,
+        document_ir=kg_run_inputs.document_ir,
+        kg_dirs=kg_dirs,
+        lc_config=kg_run_inputs.kg_config.learning_components,
+        lc_dedup_groups=lc_dedup_groups,
+        lc_eligibility_report=lc_eligibility_report,
+        lc_eligible_sfis=lc_eligible_sfis,
+        lc_generation_requests=lc_generation_requests,
+        lc_generation_responses=lc_generation_responses,
+        learning_components=learning_components,
+        supports_edges=lc_supports_edges,
     )
 
     return kg_run_manifest_fp

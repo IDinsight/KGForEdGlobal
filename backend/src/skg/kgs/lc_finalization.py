@@ -14,6 +14,8 @@ lc_export.py (step 19).
 """
 
 # Standard Library
+import json
+
 from collections import Counter
 from typing import Any, Sequence
 from uuid import UUID, uuid5
@@ -25,11 +27,15 @@ from loguru import logger
 from skg.config import Settings
 from skg.document_ir.schemas import DocumentIR
 from skg.kgs.lc_dedup import _normalize_skill_text, _scope_key_for
+from skg.kgs.lc_generation import LC_GENERATION_FAILURES_FN
 from skg.kgs.schemas import (
     AcademicStandardsKGBundle,
     LCDedupGroups,
+    LCEligibilityReport,
+    LCGenerationFailure,
     LCGenerationRequest,
     LCGenerationResponse,
+    LCGenerationSummary,
     LCRequestSFI,
     LearningComponent,
     Relationship,
@@ -38,9 +44,11 @@ from skg.kgs.schemas import (
 from skg.kgs.sfi_export import _fingerprint_jsonable
 from skg.kgs.sfi_finalization import _hash_text
 from skg.kgs.utils import KGDirs, append_jsonl_model, make_dir, reset_output_files
-from skg.schemas import CreateKGConfig
+from skg.schemas import CreateKGConfig, _CreateKGLearningComponentsConfig
 from skg.utils.general import write_to_json
 
+LC_ENTITY_PROVENANCE_FN = "lc_entity_provenance.json"
+LC_GENERATION_SUMMARY_FN = "lc_generation_summary.json"
 LC_SUPPORTS_EDGES_FN = "lc_supports_edges.json"
 LEARNING_COMPONENTS_FN = "learning_components.jsonl"
 
@@ -123,6 +131,46 @@ def _build_canonical_map(lc_dedup_groups: LCDedupGroups) -> dict[tuple[str, str]
         (group.scope_key, member): group.canonical_text
         for group in lc_dedup_groups.groups
         for member in group.member_texts
+    }
+
+
+def _build_lc_entity_provenance(
+    *, document_ir: DocumentIR, learning_components: Sequence[LearningComponent]
+) -> dict[str, Any]:
+    """Build the LearningComponent entity-provenance artifact.
+
+    Mirrors the step-10 entity-provenance shape so the step-19 merge can
+    compose both without translation.
+
+    Parameters
+    ----------
+    document_ir
+        Source document IR (doc key, pdf name).
+    learning_components
+        Minted step-16 LearningComponent nodes.
+
+    Returns
+    -------
+    dict[str, Any]
+        Deterministic provenance entries keyed by LC identifier.
+    """
+
+    return {
+        "doc_key": document_ir.doc_key,
+        "learning_components": {
+            str(component.identifier): {
+                "description": component.description,
+                "identity_key": component.metadata["identity"]["identity_key"],
+                "in_language": component.in_language,
+                "source_context_keys": component.metadata["source_context_keys"],
+                "source_page_indexes": component.metadata["source_page_indexes"],
+                "source_segment_ids": component.metadata["source_segment_ids"],
+                "source_sfi_uuids": component.metadata["source_sfi_uuids"],
+                "source_window_ids": component.metadata["source_window_ids"],
+            }
+            for component in learning_components
+        },
+        "pdf_name": document_ir.pdf_name,
     }
 
 
@@ -306,6 +354,27 @@ def _collect_lc_claims(
     return accumulators
 
 
+def _confidence_histogram(confidences: Sequence[float]) -> dict[str, int]:
+    """Bucket claim confidences by their first decimal.
+
+    Parameters
+    ----------
+    confidences
+        Decomposition confidences of every claim.
+
+    Returns
+    -------
+    dict[str, int]
+        Counts per bucket ("0.0".."0.9", "1.0"), sorted by bucket key.
+    """
+
+    buckets: Counter[str] = Counter(
+        "1.0" if confidence >= 1.0 else f"{int(confidence * 10) / 10:.1f}"
+        for confidence in confidences
+    )
+    return dict(sorted(buckets.items()))
+
+
 def _representative_description(
     *, canonical_text: str, surface_forms: Sequence[str]
 ) -> str:
@@ -333,6 +402,133 @@ def _representative_description(
     return min(counts, key=lambda surface: (-counts[surface], surface))
 
 
+def _validate_lc_coverage(
+    *,
+    lc_eligible_sfis: Sequence[SFIFinalRecord],
+    lc_generation_failures: Sequence[LCGenerationFailure],
+    learning_components: Sequence[LearningComponent],
+) -> None:
+    """Verify every eligible SFI is claimed or failed, exactly once.
+
+    Claimed and failed are disjoint and together cover the eligible set:
+    no eligible SFI silently vanishes, and none is covered by a
+    fabricated LC.
+
+    Parameters
+    ----------
+    lc_eligible_sfis
+        Final records of the eligible LC-source SFIs.
+    lc_generation_failures
+        Step-14 per-request decomposition failures.
+    learning_components
+        Minted step-16 LearningComponent nodes.
+
+    Raises
+    ------
+    ValueError
+        If an eligible SFI is unaccounted for, both claimed and failed,
+        or a claim/failure references a non-eligible SFI.
+    """
+
+    eligible = {str(record.final_sfi_uuid) for record in lc_eligible_sfis}
+    claimed = {
+        claim["source_sfi_uuid"]
+        for component in learning_components
+        for claim in component.metadata["claims"]
+    }
+    failed = {
+        str(sfi_uuid)
+        for failure in lc_generation_failures
+        for sfi_uuid in failure.sfi_uuids
+    }
+
+    if overlap := sorted(claimed & failed):
+        raise ValueError(
+            f"LC summary (step 18): SFIs both claimed and failed: {overlap}."
+        )
+    if stray := sorted((claimed | failed) - eligible):
+        raise ValueError(
+            f"LC summary (step 18): claims/failures reference non-eligible "
+            f"SFIs: {stray}."
+        )
+    if unaccounted := sorted(eligible - claimed - failed):
+        raise ValueError(
+            f"LC summary (step 18): eligible SFIs neither claimed by any LC "
+            f"nor recorded as failed: {unaccounted}."
+        )
+
+
+def _validate_lc_nodes_and_edges(
+    *,
+    academic_standards_bundle: AcademicStandardsKGBundle,
+    learning_components: Sequence[LearningComponent],
+    supports_edges: Sequence[Relationship],
+) -> None:
+    """Verify run-level LC node and supports-edge invariants.
+
+    Parameters
+    ----------
+    academic_standards_bundle
+        Final step-10 AS bundle (edge targets must be real items).
+    learning_components
+        Minted step-16 LearningComponent nodes.
+    supports_edges
+        Step-17 primary supports edges.
+
+    Raises
+    ------
+    ValueError
+        If identifiers duplicate or fail recomputation, an edge endpoint
+        is unknown, a (source, target) pair repeats, or an LC has no edge.
+    """
+
+    lc_ids = [str(component.identifier) for component in learning_components]
+    if len(set(lc_ids)) != len(lc_ids):
+        raise ValueError("LC summary (step 18): duplicate LC identifiers.")
+    for component in learning_components:
+        identity_key = component.metadata["identity"]["identity_key"]
+        if uuid5(Settings.LC_CANONICAL_NAMESPACE_UUID, identity_key) != (
+            component.identifier
+        ):
+            raise ValueError(
+                f"LC summary (step 18): identifier of LC "
+                f"{component.identifier} does not recompute from its "
+                f"identity key {identity_key!r}."
+            )
+
+    edge_ids = [str(edge.identifier) for edge in supports_edges]
+    if len(set(edge_ids)) != len(edge_ids):
+        raise ValueError("LC summary (step 18): duplicate edge identifiers.")
+    pairs = [
+        (edge.source_entity_value, edge.target_entity_value) for edge in supports_edges
+    ]
+    if len(set(pairs)) != len(pairs):
+        raise ValueError("LC summary (step 18): duplicate (LC, SFI) supports pairs.")
+
+    lc_id_set = set(lc_ids)
+    item_uuids = {
+        str(item.case_identifier_uuid) for item in academic_standards_bundle.items
+    }
+    for edge in supports_edges:
+        if edge.source_entity_value not in lc_id_set:
+            raise ValueError(
+                f"LC summary (step 18): edge {edge.identifier} sources "
+                f"unknown LC {edge.source_entity_value}."
+            )
+        if edge.target_entity_value not in item_uuids:
+            raise ValueError(
+                f"LC summary (step 18): edge {edge.identifier} targets "
+                f"{edge.target_entity_value}, which is not a final bundle "
+                "item."
+            )
+
+    if without_edges := sorted(lc_id_set - {pair[0] for pair in pairs}):
+        raise ValueError(
+            f"LC summary (step 18): LCs without any primary supports edge: "
+            f"{without_edges}."
+        )
+
+
 def build_lc_supports_edges(
     *,
     document_ir: DocumentIR,
@@ -343,8 +539,8 @@ def build_lc_supports_edges(
 ) -> list[Relationship]:
     """Run step 17: emit one primary supports edge per (LC, claiming SFI).
 
-    Deterministic, no LLM: each LearningComponent gets exactly one
-    `supports` relationship to every SFI whose decomposition claimed it,
+    Each LearningComponent gets exactly one `supports` relationship to
+    every SFI whose decomposition claimed it,
     with a deterministic UUIDv5 edge identity mirroring the hasChild
     scheme. `support_confidence` is that SFI's own claim confidence; when
     one SFI claimed the LC through several merged wordings, the minimum of
@@ -464,7 +660,7 @@ def mint_learning_components(
 ) -> list[LearningComponent]:
     """Run step 16: mint one LearningComponent per canonical skill text.
 
-    Deterministic, no LLM: every claim maps to its step-15 canonical text
+    Every claim maps to its step-15 canonical text
     (its own normalized text when ungrouped), each canonical mints a
     content-addressed UUIDv5 within its dedup scope, and duplicate claims
     collapse into one node carrying per-claim provenance. Attribution is
@@ -582,3 +778,186 @@ def mint_learning_components(
         f"{sum(1 for a in accumulators.values() if len(a.claims) > 1)}"
     )
     return minted
+
+
+def summarize_learning_components(
+    *,
+    academic_standards_bundle: AcademicStandardsKGBundle,
+    document_ir: DocumentIR,
+    kg_dirs: KGDirs,
+    lc_config: _CreateKGLearningComponentsConfig,
+    lc_dedup_groups: LCDedupGroups,
+    lc_eligibility_report: LCEligibilityReport,
+    lc_eligible_sfis: Sequence[SFIFinalRecord],
+    lc_generation_requests: Sequence[LCGenerationRequest],
+    lc_generation_responses: Sequence[LCGenerationResponse],
+    learning_components: Sequence[LearningComponent],
+    supports_edges: Sequence[Relationship],
+) -> LCGenerationSummary:
+    """Run step 18: validate LC artifacts and persist the phase summary.
+
+    Verifies run-level invariants (identifier recomputation, edge
+    endpoint reality, one primary edge per pair, eligible-SFI coverage),
+    then writes the `LCGenerationSummary` and the LC entity-provenance
+    artifact consumed by the step-19 merge.
+
+    Parameters
+    ----------
+    academic_standards_bundle
+        Final step-10 AS bundle (edge targets must be real items).
+    document_ir
+        Source document IR (doc key, pdf name).
+    kg_dirs
+        KG artifact directories; step-14 failures are read from and the
+        summary artifacts written under ``kg_dirs.root``.
+    lc_config
+        Learning Components runtime configuration (override record).
+    lc_dedup_groups
+        Step-15 duplicate groups (dedup counters).
+    lc_eligibility_report
+        Step-12 eligibility report (selection counters, warnings).
+    lc_eligible_sfis
+        Final records of the eligible LC-source SFIs.
+    lc_generation_requests
+        Deterministic step-13 requests (LLM accounting).
+    lc_generation_responses
+        Validated step-14 responses (splits and confidence counters).
+    learning_components
+        Minted step-16 LearningComponent nodes.
+    supports_edges
+        Step-17 primary supports edges.
+
+    Returns
+    -------
+    LCGenerationSummary
+        The persisted phase summary.
+
+    Raises
+    ------
+    ValueError
+        If any run-level invariant fails.
+    """
+
+    failures_fp = kg_dirs.root / LC_GENERATION_FAILURES_FN
+    lc_generation_failures = [
+        LCGenerationFailure.model_validate(entry)
+        for entry in json.loads(failures_fp.read_text())
+    ]
+
+    _validate_lc_nodes_and_edges(
+        academic_standards_bundle=academic_standards_bundle,
+        learning_components=learning_components,
+        supports_edges=supports_edges,
+    )
+    _validate_lc_coverage(
+        lc_eligible_sfis=lc_eligible_sfis,
+        lc_generation_failures=lc_generation_failures,
+        learning_components=learning_components,
+    )
+
+    splits = [
+        len(item.skills)
+        for response in lc_generation_responses
+        for item in response.items
+    ]
+    statement_type_counts: Counter[str] = Counter(
+        statement_type
+        for component in learning_components
+        for statement_type in component.metadata["statement_types"]
+    )
+    failed_sfis = {
+        str(sfi_uuid)
+        for failure in lc_generation_failures
+        for sfi_uuid in failure.sfi_uuids
+    }
+    warnings = list(lc_eligibility_report.warnings)
+    if failed_sfis:
+        warnings.append(
+            f"{len(failed_sfis)} eligible SFIs failed LLM decomposition and "
+            "have no LearningComponents."
+        )
+
+    summary = LCGenerationSummary(
+        lc_confidence_distribution=_confidence_histogram(
+            [
+                skill.confidence
+                for response in lc_generation_responses
+                for item in response.items
+                for skill in item.skills
+            ]
+        ),
+        lc_count_by_language=dict(
+            sorted(
+                Counter(
+                    component.in_language for component in learning_components
+                ).items()
+            )
+        ),
+        lc_count_by_source_statement_type=dict(sorted(statement_type_counts.items())),
+        lc_dedup_candidate_pair_count=lc_dedup_groups.candidate_pair_count,
+        lc_dedup_conflict_count=lc_dedup_groups.conflict_count,
+        lc_dedup_judged_same_count=lc_dedup_groups.judged_same_count,
+        lc_generation_failed_sfis_count=len(failed_sfis),
+        lc_max_splits_observed=max(splits, default=0),
+        lc_multi_claim_lc_count=sum(
+            1
+            for component in learning_components
+            if len(component.metadata["claims"]) > 1
+        ),
+        lc_multi_parent_lc_count=sum(
+            1
+            for component in learning_components
+            if len(component.metadata["source_sfi_uuids"]) > 1
+        ),
+        lc_selection_mode=lc_eligibility_report.lc_selection_mode,
+        lc_source_exclusion_reason_counts=(
+            lc_eligibility_report.lc_source_exclusion_reason_counts
+        ),
+        lc_splits_distribution=dict(
+            sorted(
+                Counter(str(count) for count in splits).items(),
+                key=lambda kv: int(kv[0]),
+            )
+        ),
+        llm_request_count=len(lc_generation_requests),
+        llm_response_count=len(lc_generation_responses),
+        manual_review_overrides=lc_config.lc_manual_review_overrides,
+        total_lc_claims=sum(
+            len(component.metadata["claims"]) for component in learning_components
+        ),
+        total_lc_source_sfis_considered=(
+            lc_eligibility_report.total_lc_source_sfis_considered
+        ),
+        total_lc_source_sfis_eligible=(
+            lc_eligibility_report.total_lc_source_sfis_eligible
+        ),
+        total_lc_source_sfis_empty_text=(
+            lc_eligibility_report.total_lc_source_sfis_empty_text
+        ),
+        total_lc_source_sfis_excluded=(
+            lc_eligibility_report.total_lc_source_sfis_excluded
+        ),
+        total_lcs=len(learning_components),
+        total_supports_edges=len(supports_edges),
+        warnings=warnings,
+    )
+
+    make_dir(kg_dirs.root)
+    write_to_json(
+        fp=kg_dirs.root / LC_GENERATION_SUMMARY_FN,
+        json_info=summary.model_dump(mode="json"),
+    )
+    write_to_json(
+        fp=kg_dirs.root / LC_ENTITY_PROVENANCE_FN,
+        json_info=_build_lc_entity_provenance(
+            document_ir=document_ir, learning_components=learning_components
+        ),
+    )
+
+    logger.success(
+        f"Summarized LC generation: lcs={summary.total_lcs}; "
+        f"edges={summary.total_supports_edges}; "
+        f"failed_sfis={summary.lc_generation_failed_sfis_count}; "
+        f"warnings={len(summary.warnings)}"
+    )
+    return summary
