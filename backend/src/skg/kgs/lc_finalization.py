@@ -3,8 +3,10 @@
 Step 16 mints one LearningComponent node per canonical skill text within
 its dedup scope: content-addressed UUIDv5 identity, representative
 surface-form description, attribution inherited from the claiming SFIs,
-and full per-claim provenance in metadata. Steps 17-18 (supports edges,
-validation/summary) are wired in as they are built.
+and full per-claim provenance in metadata. Step 17 emits one primary
+supports edge per (LearningComponent, claiming SFI) pair with a
+deterministic edge identity mirroring the hasChild scheme. Step 18
+(validation/summary) is wired in as it is built.
 
 Sibling LC modules mirror the sfi_* per-step layout: lc_selection.py
 (steps 11-12), lc_generation.py (steps 13-14), lc_dedup.py (step 15),
@@ -30,13 +32,16 @@ from skg.kgs.schemas import (
     LCGenerationResponse,
     LCRequestSFI,
     LearningComponent,
+    Relationship,
     SFIFinalRecord,
 )
 from skg.kgs.sfi_export import _fingerprint_jsonable
 from skg.kgs.sfi_finalization import _hash_text
 from skg.kgs.utils import KGDirs, append_jsonl_model, make_dir, reset_output_files
 from skg.schemas import CreateKGConfig
+from skg.utils.general import write_to_json
 
+LC_SUPPORTS_EDGES_FN = "lc_supports_edges.json"
 LEARNING_COMPONENTS_FN = "learning_components.jsonl"
 
 _ATTRIBUTION_FIELDS = (
@@ -326,6 +331,124 @@ def _representative_description(
         return canonical_text
     counts = Counter(surface_forms)
     return min(counts, key=lambda surface: (-counts[surface], surface))
+
+
+def build_lc_supports_edges(
+    *,
+    document_ir: DocumentIR,
+    kg_config: CreateKGConfig,
+    kg_dirs: KGDirs,
+    lc_eligible_sfis: Sequence[SFIFinalRecord],
+    learning_components: Sequence[LearningComponent],
+) -> list[Relationship]:
+    """Run step 17: emit one primary supports edge per (LC, claiming SFI).
+
+    Deterministic, no LLM: each LearningComponent gets exactly one
+    `supports` relationship to every SFI whose decomposition claimed it,
+    with a deterministic UUIDv5 edge identity mirroring the hasChild
+    scheme. `support_confidence` is that SFI's own claim confidence; when
+    one SFI claimed the LC through several merged wordings, the minimum of
+    its claim confidences is used (never overstate support).
+
+    Parameters
+    ----------
+    document_ir
+        Source document IR (doc key scopes edge identities).
+    kg_config
+        Country/document-specific KG configuration (edge attribution).
+    kg_dirs
+        KG artifact directories; the artifact is written under
+        ``kg_dirs.root``.
+    lc_eligible_sfis
+        Final records of the eligible LC-source SFIs (edge targets).
+    learning_components
+        Minted step-16 LearningComponent nodes.
+
+    Returns
+    -------
+    list[Relationship]
+        Primary supports edges, ordered by identifier.
+
+    Raises
+    ------
+    ValueError
+        If an LC claims an SFI absent from the eligible records or two
+        edges collide on one identifier.
+    """
+
+    metadata = kg_config.metadata
+    records_by_uuid = {record.final_sfi_uuid: record for record in lc_eligible_sfis}
+
+    edges: dict[UUID, Relationship] = {}
+    for component in learning_components:
+        claims_by_sfi: dict[str, list[dict[str, Any]]] = {}
+        for claim in component.metadata["claims"]:
+            claims_by_sfi.setdefault(claim["source_sfi_uuid"], []).append(claim)
+        for sfi_uuid_str in sorted(claims_by_sfi):
+            record = records_by_uuid.get(UUID(sfi_uuid_str))
+            if record is None:
+                raise ValueError(
+                    f"LC supports (step 17): LC {component.identifier} "
+                    f"claims SFI {sfi_uuid_str}, which is absent from the "
+                    "eligible records."
+                )
+            sfi_claims = claims_by_sfi[sfi_uuid_str]
+            relationship_key = (
+                f"lc:curriculum:{document_ir.doc_key}:relationship:supports:"
+                f"{component.identifier}:{record.case_identifier_uuid}"
+            )
+            identifier = uuid5(Settings.LC_CANONICAL_NAMESPACE_UUID, relationship_key)
+            if identifier in edges:
+                raise ValueError(
+                    f"LC supports (step 17): duplicate edge identifier for "
+                    f"{relationship_key!r}."
+                )
+            edges[identifier] = Relationship(
+                attribution_statement=metadata.attribution_statement,
+                author=metadata.author,
+                description="",
+                identifier=identifier,
+                license=metadata.license,
+                metadata={
+                    "doc_key": document_ir.doc_key,
+                    "relationship_identity_key": relationship_key,
+                    "request_ids": sorted(
+                        {claim["request_id"] for claim in sfi_claims}
+                    ),
+                    "source_framework_uuid": component.metadata[
+                        "source_framework_uuid"
+                    ],
+                    "support_confidence": min(
+                        claim["confidence"] for claim in sfi_claims
+                    ),
+                    "support_role": "primary",
+                    "target_sfi_statement_type": record.statement_type,
+                },
+                provider=metadata.provider,
+                relationship_type="supports",
+                source_entity="LearningComponent",
+                source_entity_key="identifier",
+                source_entity_value=str(component.identifier),
+                target_entity="StandardsFrameworkItem",
+                target_entity_key="case_identifier_uuid",
+                target_entity_value=str(record.case_identifier_uuid),
+            )
+
+    supports_edges = [edges[identifier] for identifier in sorted(edges, key=str)]
+
+    make_dir(kg_dirs.root)
+    write_to_json(
+        fp=kg_dirs.root / LC_SUPPORTS_EDGES_FN,
+        json_info=[edge.model_dump(mode="json") for edge in supports_edges],
+    )
+
+    logger.success(
+        f"Emitted LC supports edges: edges={len(supports_edges)}; "
+        f"lcs={len(learning_components)}; "
+        f"multi_parent_lcs="
+        f"{sum(1 for c in learning_components if len(c.metadata['source_sfi_uuids']) > 1)}"
+    )
+    return supports_edges
 
 
 def mint_learning_components(

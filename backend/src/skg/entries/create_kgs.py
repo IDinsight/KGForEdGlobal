@@ -29,7 +29,7 @@ if __name__ == "__main__":
 
 # Package Library
 from skg.kgs.lc_dedup import group_duplicate_skills
-from skg.kgs.lc_finalization import mint_learning_components
+from skg.kgs.lc_finalization import build_lc_supports_edges, mint_learning_components
 from skg.kgs.lc_generation import (
     build_lc_generation_requests,
     decompose_lc_source_sfis,
@@ -92,9 +92,11 @@ def build_kgs(
         pair adjudication).
     16. Mint LearningComponent nodes from canonical skill texts
         (content-addressed, deterministic).
+    17. Emit one primary supports edge per (LearningComponent, claiming
+        SFI) pair (deterministic edge identities).
 
-    LC steps 17-19 (supports edges, summary, AS+LC bundle merge) are wired
-    in as they are built.
+    LC steps 18-19 (summary, AS+LC bundle merge) are wired in as they are
+    built.
 
     Parameters
     ----------
@@ -238,8 +240,8 @@ def build_kgs(
         usage_tracker=usage_tracker,
     )
 
-    # 16. Later LC steps (17-19) are wired in as they are built.
-    mint_learning_components(
+    # 16.
+    learning_components = mint_learning_components(
         academic_standards_bundle=final_bundle,
         document_ir=kg_run_inputs.document_ir,
         kg_config=kg_run_inputs.kg_config,
@@ -248,6 +250,15 @@ def build_kgs(
         lc_eligible_sfis=lc_eligible_sfis,
         lc_generation_requests=lc_generation_requests,
         lc_generation_responses=lc_generation_responses,
+    )
+
+    # 17. Later LC steps (18-19) are wired in as they are built.
+    build_lc_supports_edges(
+        document_ir=kg_run_inputs.document_ir,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+        lc_eligible_sfis=lc_eligible_sfis,
+        learning_components=learning_components,
     )
 
     return kg_run_manifest_fp
