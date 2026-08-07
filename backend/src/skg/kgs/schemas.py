@@ -1956,6 +1956,42 @@ class AcademicStandardsKGBundle(BaseSchema):
     validation_report: AcademicStandardsValidationReport
 
 
+class AcademicStandardsLCExportSummary(BaseSchema):
+    """Combined summary for the merged AS+LC KG bundle (step 19)."""
+
+    academic_standards: AcademicStandardsExportSummary
+    learning_components: LCGenerationSummary
+    total_node_count: int = Field(ge=0)
+    total_relationship_count: int = Field(ge=0)
+
+
+class AcademicStandardsLCKGBundle(BaseSchema):
+    """Complete merged AS+LC KG bundle for one source framework (step 19).
+
+    Composes the step-10 Academic Standards bundle content, verbatim, with
+    the LC layer: LearningComponent nodes, primary supports relationships,
+    merged entity provenance, combined summary, and a merged-graph
+    validation report.
+    """
+
+    entity_provenance: dict[str, Any] = Field(default_factory=dict)
+    framework: StandardsFramework
+    items: list[StandardsFrameworkItem]
+    learning_components: list[LearningComponent]
+    relationships_has_child: list[Relationship]
+    relationships_supports: list[Relationship]
+    summary: AcademicStandardsLCExportSummary
+    unresolved_items: AcademicStandardsLCUnresolvedItems
+    validation_report: AcademicStandardsValidationReport
+
+
+class AcademicStandardsLCUnresolvedItems(BaseSchema):
+    """Unresolved report for the merged AS+LC KG bundle (step 19)."""
+
+    academic_standards: AcademicStandardsUnresolvedItems
+    learning_components: LCUnresolvedItems
+
+
 class AcademicStandardsUnresolvedItems(BaseSchema):
     """Final unresolved report for Academic Standards export artifacts."""
 
@@ -2270,6 +2306,13 @@ class LCResponseSFI(BaseSchema):
 
     sfi_uuid: UUID = Field(description="Final SFI UUID copied from the request batch.")
     skills: list[LCAtomicSkill] = Field(min_length=1)
+
+
+class LCUnresolvedItems(BaseSchema):
+    """Unresolved report for the LC generation phase (steps 14-18)."""
+
+    lc_generation_failures: list[LCGenerationFailure] = Field(default_factory=list)
+    lc_source_exclusion_reason_counts: dict[str, int] = Field(default_factory=dict)
 
 
 # Schemas for nodes.

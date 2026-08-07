@@ -29,6 +29,7 @@ if __name__ == "__main__":
 
 # Package Library
 from skg.kgs.lc_dedup import group_duplicate_skills
+from skg.kgs.lc_export import compile_as_lc_kg
 from skg.kgs.lc_finalization import (
     build_lc_supports_edges,
     mint_learning_components,
@@ -100,8 +101,8 @@ def build_kgs(
         SFI) pair (deterministic edge identities).
     18. Validate run-level LC invariants and persist the phase summary and
         LC entity provenance.
-
-    LC step 19 (AS+LC bundle merge) is wired in as it is built.
+    19. Merge the AS bundle and the LC layer into the single AS+LC KG
+        bundle, with flat node/relationship projections.
 
     Parameters
     ----------
@@ -266,8 +267,8 @@ def build_kgs(
         learning_components=learning_components,
     )
 
-    # 18. Step 19 (AS+LC bundle merge) is wired in as it is built.
-    summarize_learning_components(
+    # 18.
+    lc_generation_summary = summarize_learning_components(
         academic_standards_bundle=final_bundle,
         document_ir=kg_run_inputs.document_ir,
         kg_dirs=kg_dirs,
@@ -278,6 +279,16 @@ def build_kgs(
         lc_generation_requests=lc_generation_requests,
         lc_generation_responses=lc_generation_responses,
         learning_components=learning_components,
+        supports_edges=lc_supports_edges,
+    )
+
+    # 19.
+    compile_as_lc_kg(
+        academic_standards_bundle=final_bundle,
+        kg_dirs=kg_dirs,
+        lc_generation_summary=lc_generation_summary,
+        learning_components=learning_components,
+        overwrite=config.overwrite,
         supports_edges=lc_supports_edges,
     )
 
