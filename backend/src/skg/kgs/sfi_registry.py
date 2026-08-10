@@ -1,13 +1,15 @@
 """This module contains functionalities for building a global registry of extracted SFI
 candidates.
 
-It flattens validated window-local SFI extraction results into document-level candidate
-records, computes lightweight code/text keys, and emits possible duplicate buckets for
-later LLM-assisted merge review.
+It flattens checker-approved window-local SFI extraction results into document-level
+candidate records, computes lightweight code/text keys, emits possible duplicate
+buckets for later LLM-assisted merge review, and packages compact shared source-window
+context without claiming inferred hierarchy as canonical.
 """
 
 # Standard Library
 import hashlib
+import json
 import re
 
 from collections import Counter, defaultdict
@@ -23,6 +25,8 @@ from skg.document_ir.schemas import TableSegment
 from skg.kgs.schemas import (
     ExtractionWindow,
     SFICandidate,
+    SFIDedupContextItem,
+    SFIDedupContextWindow,
     SFIExtractionResult,
     SFIRegistryArtifact,
     SFIRegistryCandidate,
@@ -30,24 +34,10 @@ from skg.kgs.schemas import (
     SFIRegistrySummary,
     SFIRegistryWarning,
 )
-from skg.kgs.utils import normalize_code, normalize_text
-from skg.kgs.validators import (
-    normalize_controlled_value_key,
-    strip_leading_enumerated_prefix,
-    verify_sfi_extraction_quality,
-)
-from skg.page_ir_extraction.validators import QualityError
-from skg.schemas import CreateKGConfig
+from skg.kgs.sfi_source_anchors import source_anchor_set_signature
+from skg.kgs.utils import normalize_code, normalize_text, resolve_candidate_code
+from skg.schemas import CreateKGConfig, normalize_controlled_value_key
 from skg.utils.general import make_dir, write_to_json
-
-
-@dataclass(frozen=True)
-class _SourceOrderParentMatch:
-    """Source-order match for one controlled parent value."""
-
-    candidate_index: int
-    canonical_statement_value_key: str
-    window_index: int
 
 
 @dataclass(frozen=True)
@@ -55,9 +45,6 @@ class _StatementValuePolicy:
     """Controlled value canonicalization policy for one statement type."""
 
     alias_to_canonical: dict[str, str]
-    controlled_value_scope: str
-    controlled_value_scope_parent_statement_types: tuple[str, ...]
-    root_statement_types: frozenset[str]
 
 
 def _build_block_source_context(block: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -153,72 +140,6 @@ def _build_candidate_source_context(
     return source_context_key, _unique_limited(labels, limit=12)
 
 
-def _build_canonical_statement_scope_key(
-    *,
-    canonical_statement_value_key: Optional[str],
-    candidate: SFICandidate,
-    source_context_key: str,
-    source_context_labels: Sequence[str],
-    statement_value_policies: dict[str, _StatementValuePolicy],
-) -> Optional[str]:
-    """Build the configured deduplication scope for a canonical value.
-
-    Parameters
-    ----------
-    canonical_statement_value_key
-        Normalized canonical controlled value key for the candidate, if any.
-    candidate
-        Window-local candidate being canonicalized.
-    source_context_key
-        Deterministic source-derived context key already computed for the candidate.
-    source_context_labels
-        Human-readable source context labels from the extraction window.
-    statement_value_policies
-        Controlled value policies keyed by statement_type.
-
-    Returns
-    -------
-    Optional[str]
-        Controlled-value scope key, or None when the candidate has no canonical value.
-    """
-
-    policy = statement_value_policies.get(candidate.statement_type)
-
-    if not canonical_statement_value_key or policy is None:
-        return None
-
-    fallback = f"source_context:{source_context_key}"
-
-    if policy.controlled_value_scope == "document":
-        return "document"
-
-    if policy.controlled_value_scope == "source_context":
-        return fallback
-
-    if policy.controlled_value_scope != "nearest_parent_values":
-        return fallback
-
-    scope_parts: list[str] = []
-
-    for parent_statement_type in policy.controlled_value_scope_parent_statement_types:
-        parent_value_key = _extract_source_local_scope_value_key(
-            child_canonical_value_key=canonical_statement_value_key,
-            child_statement_type=candidate.statement_type,
-            parent_statement_type=parent_statement_type,
-            source_context_labels=source_context_labels,
-            statement_value_policies=statement_value_policies,
-        )
-
-        if not parent_value_key:
-            return fallback
-
-        scope_parts.append(
-            f"{_build_scope_part_label(parent_statement_type)}:{parent_value_key}"
-        )
-
-    return "|".join(scope_parts) if scope_parts else fallback
-
-
 def _build_canonical_statement_value(
     *,
     candidate: SFICandidate,
@@ -253,6 +174,106 @@ def _build_canonical_statement_value(
             return canonical_value, normalize_controlled_value_key(canonical_value)
 
     return None, None
+
+
+def _build_dedup_context_windows(
+    *,
+    candidates: Sequence[SFIRegistryCandidate],
+    extraction_windows: Sequence[ExtractionWindow],
+    kg_config: CreateKGConfig,
+) -> list[SFIDedupContextWindow]:
+    """Build one compact shared dedup context record per extraction window.
+
+    Context items are selected from runtime configuration. The resulting records omit
+    source UUIDs, item addresses, bounding boxes, and full provenance while retaining
+    concise page, boundary, section, and source-text evidence.
+
+    Parameters
+    ----------
+    candidates
+        Registry candidates in source order.
+    extraction_windows
+        Ordered source extraction windows.
+    kg_config
+        Runtime KG configuration controlling context-bearing statement types.
+
+    Returns
+    -------
+    list[SFIDedupContextWindow]
+        Compact shared source-window context in extraction-window order.
+    """
+
+    configured_types = kg_config.academic_standards.sfi_dedup_context_statement_types
+    context_statement_types = (
+        set(configured_types)
+        if configured_types
+        else {
+            item.statement_type
+            for item in kg_config.academic_standards.statement_type_policy
+            if item.normalized_statement_type == "Standard Grouping"
+        }
+    )
+    candidates_by_window_index: dict[int, list[SFIRegistryCandidate]] = defaultdict(
+        list
+    )
+
+    for candidate in candidates:
+        if candidate.statement_type in context_statement_types:
+            candidates_by_window_index[candidate.window_index].append(candidate)
+
+    context_windows: list[SFIDedupContextWindow] = []
+
+    for extraction_window in extraction_windows:
+        page_indexes = sorted(
+            {
+                int(record["page_index"])
+                for record in extraction_window.source_provenance
+                if record.get("page_index") is not None
+                and int(record["page_index"]) >= 0
+            }
+        )
+
+        boundary_markers = _unique_limited(
+            [
+                str(record.get("boundary") or "").strip()
+                for record in extraction_window.source_provenance
+            ],
+            limit=8,
+        )
+
+        section_labels = _extract_section_texts(extraction_window.source_section_path)[
+            -3:
+        ]
+
+        window_candidates = sorted(
+            candidates_by_window_index.get(extraction_window.window_index, []),
+            key=lambda candidate: candidate.source_window_candidate_index,
+        )
+
+        context_windows.append(
+            SFIDedupContextWindow(
+                boundary_markers=boundary_markers,
+                context_items=[
+                    SFIDedupContextItem(
+                        canonical_statement_value=candidate.canonical_statement_value,
+                        description=candidate.description,
+                        normalized_statement_type=candidate.normalized_statement_type,
+                        source_text=candidate.source_text,
+                        statement_type=candidate.statement_type,
+                    )
+                    for candidate in window_candidates
+                ],
+                page_indexes=page_indexes,
+                section_labels=section_labels,
+                segment_kind=extraction_window.segment_kind,
+                source_text_excerpt=_truncate_source_excerpt(
+                    limit=400, value=extraction_window.source_text
+                ),
+                window_index=extraction_window.window_index,
+            )
+        )
+
+    return context_windows
 
 
 def _build_duplicate_buckets(
@@ -329,7 +350,9 @@ def _build_registry_candidate(
     *,
     candidate: SFICandidate,
     code_patterns: dict[str, re.Pattern[str]],
+    code_scope_statement_types: dict[str, list[str]],
     extraction_window: ExtractionWindow,
+    identity_scope_statement_types: dict[str, list[str]],
     source_window_candidate_index: int,
     statement_type_code_types: dict[str, str],
     statement_value_policies: dict[str, _StatementValuePolicy],
@@ -342,8 +365,12 @@ def _build_registry_candidate(
         Window-local candidate from an SFI extraction result.
     code_patterns
         Compiled curriculum-specific code patterns keyed by code type.
+    code_scope_statement_types
+        Ordered code-scope statement types keyed by configured code type.
     extraction_window
         Source extraction window that produced the candidate.
+    identity_scope_statement_types
+        Ordered accepted-scope dimensions keyed by candidate statement type.
     source_window_candidate_index
         0-based candidate position within the extraction result.
     statement_type_code_types
@@ -354,24 +381,38 @@ def _build_registry_candidate(
     Returns
     -------
     SFIRegistryCandidate
-        Registry candidate with normalized code and literal text bucket keys.
+        Registry candidate with normalized code, accepted identity scope, and literal
+        text bucket keys.
+
+    Raises
+    ------
+    ValueError
+        If a statement code cannot be resolved.
     """
 
-    raw_normalized_statement_code = normalize_code(candidate.statement_code)
-    matching_code_types = _get_configured_code_types(
-        code_patterns=code_patterns,
-        statement_code=candidate.statement_code,
-    )
+    try:
+        code_resolution = resolve_candidate_code(
+            code_patterns=code_patterns,
+            expected_code_type=statement_type_code_types.get(candidate.statement_type),
+            statement_code=candidate.statement_code,
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"Could not resolve statement code for candidate "
+            f"{candidate.candidate_id!r} in extraction window "
+            f"{extraction_window.window_id!r}: {exc}"
+        ) from exc
+
     expected_code_type = statement_type_code_types.get(candidate.statement_type)
-    normalized_statement_code = (
-        raw_normalized_statement_code
-        if matching_code_types
-        and (expected_code_type is None or expected_code_type in matching_code_types)
-        else None
-    )
+    normalized_statement_code = code_resolution.normalized_statement_code
+    resolved_code_type = code_resolution.resolved_code_type
+    applicable_code_type = resolved_code_type or expected_code_type
 
     source_context_key, source_context_labels = _build_candidate_source_context(
         candidate=candidate, extraction_window=extraction_window
+    )
+    source_occurrence_location_key = _build_source_occurrence_location_key(
+        candidate=candidate, doc_key=extraction_window.doc_key
     )
     (
         canonical_statement_value,
@@ -379,14 +420,21 @@ def _build_registry_candidate(
     ) = _build_canonical_statement_value(
         candidate=candidate, statement_value_policies=statement_value_policies
     )
-    canonical_statement_scope_key = _build_canonical_statement_scope_key(
-        canonical_statement_value_key=canonical_statement_value_key,
+    code_scope_key, code_scope_values = _resolve_applicable_code_scope(
+        applicable_code_type=applicable_code_type,
         candidate=candidate,
-        source_context_key=source_context_key,
-        source_context_labels=source_context_labels,
+        code_scope_statement_types=code_scope_statement_types,
         statement_value_policies=statement_value_policies,
     )
-
+    identity_scope_key, identity_scope_values = _canonicalize_configured_scope(
+        candidate_id=candidate.candidate_id,
+        provided_scope_values=candidate.identity_scope_values,
+        scope_label=f"identity scope for statement type {candidate.statement_type!r}",
+        scope_statement_types=identity_scope_statement_types.get(
+            candidate.statement_type, []
+        ),
+        statement_value_policies=statement_value_policies,
+    )
     # Generate deterministic temporary registry candidate ID.
     candidate_slug = re.sub(
         r"[^0-9A-Za-z_\-]+", "_", candidate.candidate_id.strip()
@@ -401,43 +449,54 @@ def _build_registry_candidate(
     normalized_source_text = normalize_text(candidate.source_text)
     statement_type_key = normalize_text(candidate.statement_type)
     text_bucket_key = _build_text_bucket_key(
-        canonical_statement_scope_key=canonical_statement_scope_key,
-        canonical_statement_value_key=canonical_statement_value_key,
+        code_scope_key=code_scope_key,
+        identity_scope_key=identity_scope_key,
         normalized_statement_code=normalized_statement_code,
         normalized_text=normalized_description,
         source_context_key=source_context_key,
         statement_type_key=statement_type_key,
     )
     source_text_bucket_key = _build_text_bucket_key(
-        canonical_statement_scope_key=canonical_statement_scope_key,
-        canonical_statement_value_key=canonical_statement_value_key,
+        code_scope_key=code_scope_key,
+        identity_scope_key=identity_scope_key,
         normalized_statement_code=normalized_statement_code,
         normalized_text=normalized_source_text,
         source_context_key=source_context_key,
         statement_type_key=statement_type_key,
     )
+    code_bucket_key_parts = [code_scope_key] if code_scope_key is not None else []
     code_bucket_key = (
-        _join_bucket_key(statement_type_key, normalized_statement_code)
+        _join_bucket_key(
+            *code_bucket_key_parts, statement_type_key, normalized_statement_code
+        )
         if normalized_statement_code
         else None
     )
 
     return SFIRegistryCandidate(
+        applicable_code_type=applicable_code_type,
         candidate_payload=candidate,
-        canonical_statement_scope_key=canonical_statement_scope_key,
         canonical_statement_value=canonical_statement_value,
         canonical_statement_value_key=canonical_statement_value_key,
         code_bucket_key=code_bucket_key,
+        code_scope_key=code_scope_key,
+        code_scope_values=code_scope_values,
+        code_source_anchors=candidate.code_source_anchors,
         confidence=candidate.confidence,
         description=candidate.description,
+        description_source_anchors=candidate.description_source_anchors,
+        identity_scope_key=identity_scope_key,
+        identity_scope_values=identity_scope_values,
         language=candidate.language,
         normalized_description=normalized_description,
         normalized_source_text=normalized_source_text,
         normalized_statement_code=normalized_statement_code,
         normalized_statement_type=candidate.normalized_statement_type,
         registry_candidate_id=registry_candidate_id,
+        resolved_code_type=resolved_code_type,
         source_context_key=source_context_key,
         source_context_labels=source_context_labels,
+        source_occurrence_location_key=source_occurrence_location_key,
         source_segment_ids=extraction_window.source_segment_ids,
         source_text=candidate.source_text,
         source_text_bucket_key=source_text_bucket_key,
@@ -554,8 +613,6 @@ def _build_registry_warnings(
         Possible duplicate buckets generated from candidate keys.
     statement_type_code_types
         Mapping from canonical statement_type labels to expected code types.
-    statement_value_policies
-        Controlled value canonicalization policies keyed by statement_type.
 
     Returns
     -------
@@ -605,58 +662,34 @@ def _build_registry_warnings(
     ]
 
 
-def _build_root_statement_types(kg_config: CreateKGConfig) -> set[str]:
-    """Build statement types allowed to attach to the framework root.
+def _build_source_occurrence_location_key(
+    *, candidate: SFICandidate, doc_key: str
+) -> str:
+    """Build an exact type-independent physical-occurrence key.
 
     Parameters
     ----------
-    kg_config
-        Runtime KG configuration containing hasChild parent-type policy.
-
-    Returns
-    -------
-    set[str]
-        Statement types whose configured direct parent set is empty. When the explicit
-        parent policy is absent, the broadest statement type in the configured
-        hierarchy is treated as root-level.
-    """
-
-    parent_policy = kg_config.academic_standards.sfi_has_child_parent_statement_types
-
-    if parent_policy:
-        return {
-            child_statement_type
-            for child_statement_type, parent_statement_types in parent_policy.items()
-            if not parent_statement_types
-        }
-
-    hierarchy = kg_config.academic_standards.sfi_has_child_statement_type_hierarchy
-
-    if hierarchy:
-        return {hierarchy[0]}
-
-    if kg_config.academic_standards.statement_type_policy:
-        return {kg_config.academic_standards.statement_type_policy[0].statement_type}
-
-    return set()
-
-
-def _build_scope_part_label(statement_type: str) -> str:
-    """Build a generic controlled-scope key label from a statement type.
-
-    Parameters
-    ----------
-    statement_type
-        Source-facing statement type label.
+    candidate
+        Window-local candidate carrying validated description source anchors.
+    doc_key
+        Stable source document key.
 
     Returns
     -------
     str
-        Lowercase, underscore-separated scope key label.
+        Stable SHA-256-derived key for the exact description-bearing source spans.
     """
 
-    label = re.sub(r"[^0-9a-z]+", "_", normalize_text(statement_type)).strip("_")
-    return label or "scope"
+    location_payload = {
+        "description_source_anchors": source_anchor_set_signature(
+            candidate.description_source_anchors
+        ),
+        "doc_key": doc_key,
+    }
+    location_basis = json.dumps(
+        location_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    )
+    return hashlib.sha256(location_basis.encode("utf-8")).hexdigest()[:32]
 
 
 def _build_statement_value_policies(
@@ -672,52 +705,25 @@ def _build_statement_value_policies(
     Returns
     -------
     dict[str, _StatementValuePolicy]
-        Controlled value policies keyed by canonical statement_type. Ambiguous alias
-        keys are dropped so registry canonicalization never silently chooses between
-        multiple configured controlled values.
+        Controlled value policies keyed by canonical statement_type.
     """
 
     policies: dict[str, _StatementValuePolicy] = {}
-    root_statement_types = _build_root_statement_types(kg_config)
-
     for item in kg_config.academic_standards.statement_type_policy:
         alias_to_canonical: dict[str, str] = {}
-        ambiguous_alias_keys: set[str] = set()
 
         for controlled_value in item.controlled_values:
             for alias in [controlled_value.canonical_value, *controlled_value.aliases]:
-                alias_keys = {
-                    normalize_controlled_value_key(alias),
-                    normalize_controlled_value_key(
-                        strip_leading_enumerated_prefix(alias)
-                    ),
-                }
+                alias_key = normalize_controlled_value_key(alias)
 
-                for alias_key in sorted(key for key in alias_keys if key):
-                    existing_value = alias_to_canonical.get(alias_key)
-
-                    if (
-                        existing_value
-                        and existing_value != controlled_value.canonical_value
-                    ):
-                        ambiguous_alias_keys.add(alias_key)
-                        continue
-
+                if alias_key:
                     alias_to_canonical[alias_key] = controlled_value.canonical_value
-
-        for alias_key in ambiguous_alias_keys:
-            alias_to_canonical.pop(alias_key, None)
 
         if not alias_to_canonical:
             continue
 
         policies[item.statement_type] = _StatementValuePolicy(
-            alias_to_canonical=alias_to_canonical,
-            controlled_value_scope=item.controlled_value_scope,
-            controlled_value_scope_parent_statement_types=tuple(
-                item.controlled_value_scope_parent_statement_types
-            ),
-            root_statement_types=frozenset(root_statement_types),
+            alias_to_canonical=alias_to_canonical
         )
 
     return policies
@@ -813,14 +819,16 @@ def _build_table_source_context(
     row_indexes = ",".join(str(index) for index in candidate.table_row_indexes)
     header_indexes = ",".join(str(index) for index in candidate.table_header_indexes)
 
-    if columns_signature:
-        labels.append("table_columns:" + _truncate_context_label(columns_signature))
+    # Keep candidate-local source evidence before broader table metadata so generic
+    # nearest-value matching selects the most relevant controlled-value context.
+    labels.extend(_build_table_row_labels(candidate=candidate, table=table))
+    labels.extend(_build_table_header_labels(candidate=candidate, table=table))
 
     if local_code:
         labels.append(f"table_local_code:{local_code}")
 
-    labels.extend(_build_table_header_labels(candidate=candidate, table=table))
-    labels.extend(_build_table_row_labels(candidate=candidate, table=table))
+    if columns_signature:
+        labels.append("table_columns:" + _truncate_context_label(columns_signature))
 
     key_parts = [
         f"table_columns:{columns_signature}",
@@ -833,8 +841,8 @@ def _build_table_source_context(
 
 def _build_text_bucket_key(
     *,
-    canonical_statement_scope_key: Optional[str],
-    canonical_statement_value_key: Optional[str],
+    code_scope_key: Optional[str],
+    identity_scope_key: Optional[str],
     normalized_statement_code: Optional[str],
     normalized_text: str,
     source_context_key: str,
@@ -842,20 +850,19 @@ def _build_text_bucket_key(
 ) -> str:
     """Build a duplicate bucket key for candidate text.
 
-    Coded candidates retain the text-bucket behavior because official codes provide
-    stronger identity evidence and text buckets are only secondary review signals.
-    No-code candidates with configured controlled values use the canonical value and
-    configured scope so source-visible punctuation variants such as `PRIMARY THREE` and
-    `PRIMARY: THREE` enter the same review neighborhood. Other no-code candidates
-    remain scoped by source context so repeated labels are not treated as possible
-    duplicates solely because their visible text matches.
+    Coded candidates use configured deterministic code scope, statement type, and
+    visible text as a secondary review signal because official code evidence is carried
+    separately. No-code candidates use checker-approved semantic identity scope when
+    available and otherwise fall back to deterministic source context. Controlled-value
+    matches are exposed separately as same-canonical-value review edges, not as
+    canonical bucket identity.
 
     Parameters
     ----------
-    canonical_statement_scope_key
-        Controlled-value deduplication scope key, when configured for this candidate.
-    canonical_statement_value_key
-        Normalized canonical controlled value key, when configured for this candidate.
+    code_scope_key
+        Deterministic configured code scope for accepted coded candidates.
+    identity_scope_key
+        Deterministic normalized key derived from checker-approved semantic scope.
     normalized_statement_code
         Registry-normalized official statement code, when one was accepted.
     normalized_text
@@ -872,16 +879,109 @@ def _build_text_bucket_key(
     """
 
     if normalized_statement_code:
-        return _join_bucket_key(statement_type_key, normalized_text)
-
-    if canonical_statement_scope_key and canonical_statement_value_key:
+        code_scope_key_parts = [code_scope_key] if code_scope_key is not None else []
         return _join_bucket_key(
-            statement_type_key,
-            canonical_statement_scope_key,
-            canonical_statement_value_key,
+            *code_scope_key_parts, statement_type_key, normalized_text
         )
 
-    return _join_bucket_key(statement_type_key, source_context_key, normalized_text)
+    no_code_scope_key = identity_scope_key or source_context_key
+    return _join_bucket_key(statement_type_key, no_code_scope_key, normalized_text)
+
+
+def _canonicalize_configured_scope(
+    *,
+    candidate_id: str,
+    provided_scope_values: dict[str, str],
+    scope_label: str,
+    scope_statement_types: Sequence[str],
+    statement_value_policies: dict[str, _StatementValuePolicy],
+) -> tuple[Optional[str], dict[str, str]]:
+    """Validate and canonicalize one checker-approved semantic scope mapping.
+
+    The model chooses the semantic values. Python enforces only the runtime-configured
+    shape and mechanically maps configured aliases to canonical values. No source text
+    is searched and no missing value is inferred.
+
+    Parameters
+    ----------
+    candidate_id
+        Window-local candidate identifier used in validation errors.
+    provided_scope_values
+        Checker-approved scope mapping returned by the extraction flow.
+    scope_label
+        Human-readable scope label used in validation errors.
+    scope_statement_types
+        Ordered configured dimensions required for this scope.
+    statement_value_policies
+        Controlled-value policies keyed by canonical statement type.
+
+    Returns
+    -------
+    tuple[Optional[str], dict[str, str]]
+        Deterministic normalized scope key and canonical ordered values.
+
+    Raises
+    ------
+    ValueError
+        If dimensions are missing, extra, or contain unknown values.
+    """
+
+    expected_scope_statement_types = list(scope_statement_types)
+    actual_scope_statement_types = list(provided_scope_values)
+
+    if set(actual_scope_statement_types) != set(expected_scope_statement_types):
+        raise ValueError(
+            f"Candidate {candidate_id!r} {scope_label} keys must exactly match the "
+            f"configured dimensions {expected_scope_statement_types!r}; got "
+            f"{actual_scope_statement_types!r}."
+        )
+
+    if not expected_scope_statement_types:
+        return None, {}
+
+    canonical_scope_values: dict[str, str] = {}
+
+    for scope_statement_type in expected_scope_statement_types:
+        policy = statement_value_policies.get(scope_statement_type)
+
+        if policy is None:
+            raise ValueError(
+                f"{scope_label} requires scope statement_type "
+                f"{scope_statement_type!r}, but no controlled-value policy is "
+                f"available."
+            )
+
+        supplied_value = provided_scope_values[scope_statement_type]
+        supplied_value_key = normalize_controlled_value_key(supplied_value)
+        canonical_value = policy.alias_to_canonical.get(supplied_value_key)
+
+        if canonical_value is None:
+            raise ValueError(
+                f"Candidate {candidate_id!r} supplied unknown {scope_label} value "
+                f"{supplied_value!r} for {scope_statement_type!r}."
+            )
+
+        canonical_scope_values[scope_statement_type] = canonical_value
+
+    scope_key = (
+        None
+        if not canonical_scope_values
+        else _join_bucket_key(
+            *(
+                f"{normalize_controlled_value_key(statement_type)}="
+                f"{normalize_controlled_value_key(scope_value)}"
+                for statement_type, scope_value in canonical_scope_values.items()
+            )
+        )
+    )
+
+    if scope_key is None:
+        raise ValueError(
+            f"Candidate {candidate_id!r} produced an empty normalized {scope_label} "
+            f"key from non-empty configured values."
+        )
+
+    return scope_key, canonical_scope_values
 
 
 def _deterministic_bucket_id(*, bucket_key: str, bucket_type: str) -> str:
@@ -902,96 +1002,6 @@ def _deterministic_bucket_id(*, bucket_key: str, bucket_type: str) -> str:
 
     digest = hashlib.sha256(f"{bucket_type}|{bucket_key}".encode("utf-8")).hexdigest()
     return f"bucket_{bucket_type}_{digest[:16]}"
-
-
-def _extract_nearest_canonical_scope_value_key(
-    *,
-    source_context_labels: Sequence[str],
-    statement_type: str,
-    statement_value_policies: dict[str, _StatementValuePolicy],
-) -> Optional[str]:
-    """Extract the nearest configured scope value from source context labels.
-
-    Parameters
-    ----------
-    source_context_labels
-        Human-readable source context labels associated with a candidate.
-    statement_type
-        Statement type whose controlled values should be searched for scope.
-    statement_value_policies
-        Controlled value policies keyed by statement_type.
-
-    Returns
-    -------
-    Optional[str]
-        Normalized canonical value key for the nearest matching scope value.
-    """
-
-    policy = statement_value_policies.get(statement_type)
-
-    if policy is None:
-        return None
-
-    matched_value: Optional[str] = None
-
-    for label in source_context_labels:
-        canonical_value = _match_controlled_value(
-            allow_contained=True, policy=policy, value=label
-        )
-
-        if canonical_value:
-            matched_value = canonical_value
-
-    return normalize_controlled_value_key(matched_value) if matched_value else None
-
-
-def _extract_parent_value_key_near_label(
-    *,
-    child_label_index: int,
-    labels: Sequence[str],
-    parent_policy: _StatementValuePolicy,
-    prefer_following_labels_first: bool,
-) -> Optional[str]:
-    """Find the nearest parent controlled value around one child label.
-
-    Parameters
-    ----------
-    child_label_index
-        Index of the source-context label that matched the child controlled value.
-    labels
-        Source-context labels in artifact order.
-    parent_policy
-        Controlled-value policy for the desired parent statement type.
-    prefer_following_labels_first
-        Whether labels after the child should be searched before labels before the
-        child. This is driven by configured root-level parent statement types rather
-        than hard-coded source labels, and handles PDFs whose visual broad heading is
-        emitted after a narrower heading by OCR/reading order.
-
-    Returns
-    -------
-    Optional[str]
-        Normalized parent canonical value key, if found near the child label.
-    """
-
-    search_indexes = [child_label_index]
-
-    if prefer_following_labels_first:
-        search_indexes.extend(range(child_label_index + 1, len(labels)))
-        search_indexes.extend(range(child_label_index - 1, -1, -1))
-    else:
-        search_indexes.extend(range(child_label_index - 1, -1, -1))
-        search_indexes.extend(range(child_label_index + 1, len(labels)))
-
-    for label_index in search_indexes:
-        canonical_value = _match_controlled_value(
-            allow_contained=True, policy=parent_policy, value=labels[label_index]
-        )
-
-        if canonical_value:
-            return normalize_controlled_value_key(canonical_value)
-
-    return None
 
 
 def _extract_section_texts(section_path: Sequence[Any]) -> list[str]:
@@ -1024,79 +1034,6 @@ def _extract_section_texts(section_path: Sequence[Any]) -> list[str]:
         section_texts.append(_truncate_context_label(section_text))
 
     return section_texts
-
-
-def _extract_source_local_scope_value_key(
-    *,
-    child_canonical_value_key: str,
-    child_statement_type: str,
-    parent_statement_type: str,
-    source_context_labels: Sequence[str],
-    statement_value_policies: dict[str, _StatementValuePolicy],
-) -> Optional[str]:
-    """Extract a source-local parent scope value for a controlled child value.
-
-    The registry should scope controlled organizers by the active local path, not by
-    the last matching label in a cumulative DocumentIR section-path bag. This function
-    first looks for labels that mention the child controlled value and then searches
-    the same or adjacent source-context labels for the requested parent controlled
-    value. That preserves paired headings such as `THEME: X SUB-THEME: Y` even when
-    older headings remain in the cumulative context. If no paired/local value is found,
-    it falls back to the nearest matching parent value in the full context.
-
-    Parameters
-    ----------
-    child_canonical_value_key
-        Normalized canonical value key for the child controlled statement.
-    child_statement_type
-        Child statement type whose controlled value anchors local search.
-    parent_statement_type
-        Parent statement type whose controlled value should be recovered.
-    source_context_labels
-        Human-readable source context labels associated with the child candidate.
-    statement_value_policies
-        Controlled value policies keyed by statement_type.
-
-    Returns
-    -------
-    Optional[str]
-        Normalized canonical value key for the source-local parent value, if found.
-    """
-
-    child_policy = statement_value_policies.get(child_statement_type)
-    parent_policy = statement_value_policies.get(parent_statement_type)
-
-    if child_policy is None or parent_policy is None:
-        return None
-
-    labels = list(source_context_labels)
-    child_label_indexes = [
-        label_index
-        for label_index, label in enumerate(labels)
-        if _label_matches_canonical_value_key(
-            canonical_value_key=child_canonical_value_key,
-            label=label,
-            policy=child_policy,
-        )
-    ]
-
-    for child_label_index in reversed(child_label_indexes):
-        local_parent_value_key = _extract_parent_value_key_near_label(
-            child_label_index=child_label_index,
-            labels=labels,
-            parent_policy=parent_policy,
-            prefer_following_labels_first=parent_statement_type
-            in parent_policy.root_statement_types,
-        )
-
-        if local_parent_value_key:
-            return local_parent_value_key
-
-    return _extract_nearest_canonical_scope_value_key(
-        source_context_labels=source_context_labels,
-        statement_type=parent_statement_type,
-        statement_value_policies=statement_value_policies,
-    )
 
 
 def _extract_table_row_text(row: dict[str, Any]) -> str:
@@ -1197,179 +1134,6 @@ def _find_configured_code_matches_in_text(
     return matches
 
 
-def _find_source_order_parent_value_key(
-    *,
-    child_index: int,
-    ordered_candidates: Sequence[SFIRegistryCandidate],
-    parent_statement_type: str,
-    root_statement_types: frozenset[str],
-) -> Optional[str]:
-    """Find a controlled parent value using candidate source order.
-
-    DocumentIR section paths can be cumulative at page or layout transitions, so the
-    last label in a section-path bag is not always the active scope. This function uses
-    extracted controlled organizer candidates in source order instead. Same-window
-    parent candidates are strongest because they reflect local table or layout context.
-    Across windows, root-level organizers scope forward: a following root organizer is
-    used only when no preceding root organizer exists. This prevents a later document
-    section, grade, class, level, or similar root organizer from claiming rows that
-    belong to the previous root scope.
-
-    Parameters
-    ----------
-    child_index
-        Index of the child candidate in source-order registry candidates.
-    ordered_candidates
-        Registry candidates in source order.
-    parent_statement_type
-        Parent statement type whose controlled value should be resolved.
-    root_statement_types
-        Statement types configured as root-level organizers.
-
-    Returns
-    -------
-    Optional[str]
-        Normalized canonical parent value key, if one can be resolved.
-    """
-
-    def _pick(
-        *, matches: Sequence[_SourceOrderParentMatch], take_first: bool
-    ) -> Optional[str]:
-        """Return the boundary match's canonical value key, or `None` if empty.
-
-        Parameters
-        ----------
-        matches
-            Candidate matches already filtered to a single resolution tier.
-        take_first
-            When `True`, select the earliest match in source order; when `False`,
-            select the latest.
-
-        Returns
-        -------
-        Optional[str]
-            The chosen match's canonical statement value key, or `None` when `matches`
-            is empty.
-        """
-
-        if not matches:
-            return None
-
-        chosen = matches[0] if take_first else matches[-1]
-        return chosen.canonical_statement_value_key
-
-    if child_index < 0 or child_index >= len(ordered_candidates):
-        return None
-
-    child_candidate = ordered_candidates[child_index]
-    parent_matches = [
-        _SourceOrderParentMatch(
-            candidate_index=parent_index,
-            canonical_statement_value_key=parent_candidate.canonical_statement_value_key,
-            window_index=parent_candidate.window_index,
-        )
-        for parent_index, parent_candidate in enumerate(ordered_candidates)
-        if parent_candidate.statement_type == parent_statement_type
-        and parent_candidate.canonical_statement_value_key
-    ]
-
-    if not parent_matches:
-        return None
-
-    same_window_matches = [
-        parent_match
-        for parent_match in parent_matches
-        if parent_match.window_index == child_candidate.window_index
-    ]
-    same_window_before = [
-        parent_match
-        for parent_match in same_window_matches
-        if parent_match.candidate_index < child_index
-    ]
-    same_window_after = [
-        parent_match
-        for parent_match in same_window_matches
-        if parent_match.candidate_index > child_index
-    ]
-
-    same_window_value_key = _pick(
-        matches=same_window_before, take_first=False
-    ) or _pick(matches=same_window_after, take_first=True)
-
-    if same_window_value_key:
-        return same_window_value_key
-
-    previous_matches = [
-        parent_match
-        for parent_match in parent_matches
-        if parent_match.candidate_index < child_index
-    ]
-    following_matches = [
-        parent_match
-        for parent_match in parent_matches
-        if parent_match.candidate_index > child_index
-    ]
-
-    if parent_statement_type in root_statement_types:
-        previous_root_value_key = _pick(matches=previous_matches, take_first=False)
-
-        if previous_root_value_key:
-            return previous_root_value_key
-
-        following_root_matches = [
-            parent_match
-            for parent_match in following_matches
-            if 0 <= parent_match.window_index - child_candidate.window_index <= 1
-        ]
-        return _pick(matches=following_root_matches, take_first=True)
-
-    return _pick(matches=previous_matches, take_first=False) or _pick(
-        matches=following_matches, take_first=True
-    )
-
-
-def _get_configured_code_types(
-    *, code_patterns: dict[str, re.Pattern[str]], statement_code: Optional[str]
-) -> list[str]:
-    """Return configured code types matching a candidate statement code.
-
-    Configured code patterns are authored for source-visible code text and are used
-    elsewhere as raw-text regexes. This function therefore applies each pattern to the
-    raw candidate `statement_code`, normalizes the matched substring, and compares it
-    with the normalized full candidate code. This accepts source-visible formatting
-    variants without requiring config authors to maintain separate normalized-code
-    regexes.
-
-    Parameters
-    ----------
-    code_patterns
-        Compiled curriculum-specific source-text code patterns keyed by code type.
-    statement_code
-        Candidate statement_code copied from visible source text, or None when absent.
-
-    Returns
-    -------
-    list[str]
-        Configured code type keys whose source-text patterns match the candidate code.
-    """
-
-    statement_code_clean = str(statement_code or "").strip()
-    normalized_statement_code = normalize_code(statement_code_clean)
-
-    if normalized_statement_code is None:
-        return []
-
-    matching_code_types: list[str] = []
-
-    for code_type, pattern in sorted(code_patterns.items()):
-        for match in pattern.finditer(statement_code_clean):
-            if normalize_code(match.group(0)) == normalized_statement_code:
-                matching_code_types.append(code_type)
-                break
-
-    return matching_code_types
-
-
 def _join_bucket_key(*values: Optional[str]) -> str:
     """Join normalized bucket-key parts.
 
@@ -1385,36 +1149,6 @@ def _join_bucket_key(*values: Optional[str]) -> str:
     """
 
     return "|".join(str(value or "").strip() for value in values)
-
-
-def _label_matches_canonical_value_key(
-    *, canonical_value_key: str, label: str, policy: _StatementValuePolicy
-) -> bool:
-    """Check whether a context label expresses one canonical controlled value.
-
-    Parameters
-    ----------
-    canonical_value_key
-        Normalized canonical value key to match.
-    label
-        Source-context label to inspect.
-    policy
-        Controlled-value policy used to canonicalize the label.
-
-    Returns
-    -------
-    bool
-        True when the label canonicalizes to the requested value key.
-    """
-
-    canonical_value = _match_controlled_value(
-        allow_contained=True, policy=policy, value=label
-    )
-
-    if not canonical_value:
-        return False
-
-    return normalize_controlled_value_key(canonical_value) == canonical_value_key
 
 
 def _match_controlled_value(
@@ -1442,30 +1176,41 @@ def _match_controlled_value(
     if not value_key:
         return None
 
-    exact = policy.alias_to_canonical.get(value_key)
-
-    if exact:
-        return exact
-
-    stripped_key = normalize_controlled_value_key(
-        strip_leading_enumerated_prefix(value)
+    candidate_keys = (
+        value_key,
+        normalize_controlled_value_key(_strip_controlled_label_prefixes(value)),
     )
-    exact_stripped = policy.alias_to_canonical.get(stripped_key)
-
-    if exact_stripped:
-        return exact_stripped
+    for candidate_key in candidate_keys:
+        exact = policy.alias_to_canonical.get(candidate_key)
+        if exact:
+            return exact
 
     if not allow_contained:
         return None
 
     padded_value_key = f" {value_key} "
+    contained_matches = [
+        (alias_key, canonical_value)
+        for alias_key, canonical_value in policy.alias_to_canonical.items()
+        if f" {alias_key} " in padded_value_key
+    ]
 
-    for alias_key, canonical_value in policy.alias_to_canonical.items():
-        padded_alias_key = f" {alias_key} "
-        if padded_alias_key in padded_value_key:
-            return canonical_value
+    if not contained_matches:
+        return None
 
-    return None
+    highest_specificity = max(
+        (len(alias_key.split()), len(alias_key)) for alias_key, _ in contained_matches
+    )
+    most_specific_values = {
+        canonical_value
+        for alias_key, canonical_value in contained_matches
+        if (len(alias_key.split()), len(alias_key)) == highest_specificity
+    }
+
+    if len(most_specific_values) != 1:
+        return None
+
+    return next(iter(most_specific_values))
 
 
 def _maybe_append_warning(
@@ -1517,76 +1262,127 @@ def _maybe_append_warning(
     )
 
 
-def _resolve_canonical_statement_scope_from_source_order(
+def _resolve_applicable_code_scope(
     *,
-    candidate: SFIRegistryCandidate,
-    candidate_index: int,
-    ordered_candidates: Sequence[SFIRegistryCandidate],
+    applicable_code_type: Optional[str],
+    candidate: SFICandidate,
+    code_scope_statement_types: dict[str, list[str]],
     statement_value_policies: dict[str, _StatementValuePolicy],
-) -> Optional[str]:
-    """Resolve a controlled-value scope from extracted source-order organizers.
+) -> tuple[Optional[str], dict[str, str]]:
+    """Canonicalize checker-approved scope for a candidate's official code.
+
+    Python does not infer code scope from rows, headings, section paths, or candidate
+    wording. A coded candidate must provide exactly the configured scope dimensions for
+    its resolved code type. Uncoded candidates and document-global code types must
+    provide an empty mapping.
 
     Parameters
     ----------
+    applicable_code_type
+        Resolved or statement-type-derived code type applicable to the candidate.
     candidate
-        Registry candidate whose scope should be resolved.
-    candidate_index
-        Source-order index for `candidate` in `ordered_candidates`.
-    ordered_candidates
-        Registry candidates in source order.
+        Checker-approved extraction candidate.
+    code_scope_statement_types
+        Ordered code-scope statement types keyed by configured code type.
     statement_value_policies
-        Controlled value policies keyed by statement type.
+        Controlled-value policies keyed by canonical statement type.
 
     Returns
     -------
-    Optional[str]
-        Corrected canonical statement scope key, or None when the candidate has no
-        controlled value.
+    tuple[Optional[str], dict[str, str]]
+        Deterministic code-scope key and canonical values, or an empty scope.
+
+    Raises
+    ------
+    ValueError
+        If the candidate provides missing, extra, out-of-order, or unknown scope data.
     """
 
-    policy = statement_value_policies.get(candidate.statement_type)
-
-    if not candidate.canonical_statement_value_key or policy is None:
-        return None
-
-    fallback = f"source_context:{candidate.source_context_key}"
-
-    if policy.controlled_value_scope == "document":
-        return "document"
-
-    if policy.controlled_value_scope == "source_context":
-        return fallback
-
-    if policy.controlled_value_scope != "nearest_parent_values":
-        return fallback
-
-    scope_parts: list[str] = []
-
-    for parent_statement_type in policy.controlled_value_scope_parent_statement_types:
-        parent_value_key = _find_source_order_parent_value_key(
-            child_index=candidate_index,
-            ordered_candidates=ordered_candidates,
-            parent_statement_type=parent_statement_type,
-            root_statement_types=policy.root_statement_types,
-        )
-
-        if not parent_value_key:
-            parent_value_key = _extract_source_local_scope_value_key(
-                child_canonical_value_key=candidate.canonical_statement_value_key,
-                child_statement_type=candidate.statement_type,
-                parent_statement_type=parent_statement_type,
-                source_context_labels=candidate.source_context_labels,
-                statement_value_policies=statement_value_policies,
+    if candidate.statement_code is None:
+        if candidate.code_scope_values:
+            raise ValueError(
+                f"Uncoded candidate {candidate.candidate_id!r} must provide empty "
+                f"code_scope_values."
             )
 
-        if not parent_value_key:
-            return fallback
+        return None, {}
 
-        scope_parts.append(
-            f"{_build_scope_part_label(parent_statement_type)}:{parent_value_key}"
+    if applicable_code_type is None:
+        raise ValueError(
+            f"Coded candidate {candidate.candidate_id!r} has no resolved applicable "
+            f"code type."
         )
 
-    return "|".join(scope_parts) if scope_parts else fallback
+    return _canonicalize_configured_scope(
+        candidate_id=candidate.candidate_id,
+        provided_scope_values=candidate.code_scope_values,
+        scope_label=f"code scope for code type {applicable_code_type!r}",
+        scope_statement_types=code_scope_statement_types.get(applicable_code_type, []),
+        statement_value_policies=statement_value_policies,
+    )
+
+
+def _statement_type_is_ancestor(
+    *,
+    ancestor_statement_type: str,
+    descendant_statement_type: str,
+    parent_statement_types: dict[str, list[str]],
+) -> bool:
+    """Check whether one configured statement type is an ancestor of another.
+
+    Parameters
+    ----------
+    ancestor_statement_type
+        Candidate ancestor statement type.
+    descendant_statement_type
+        Candidate descendant statement type.
+    parent_statement_types
+        Configured direct-parent statement types keyed by child type.
+
+    Returns
+    -------
+    bool
+        True when the ancestor is reachable through one or more parent links.
+    """
+
+    pending = list(parent_statement_types.get(descendant_statement_type, []))
+    visited: set[str] = set()
+
+    while pending:
+        statement_type = pending.pop()
+
+        if statement_type == ancestor_statement_type:
+            return True
+
+        if statement_type in visited:
+            continue
+
+        visited.add(statement_type)
+        pending.extend(parent_statement_types.get(statement_type, []))
+
+    return False
+
+
+def _strip_controlled_label_prefixes(value: str) -> str:
+    """Remove common source-label prefixes before controlled-value matching.
+
+    Parameters
+    ----------
+    value
+        Source-visible value or source context label.
+
+    Returns
+    -------
+    str
+        Value with non-semantic labeling prefixes removed.
+    """
+
+    stripped = str(value or "").strip()
+    stripped = re.sub(r"^section\s*:\s*", "", stripped, flags=re.IGNORECASE)
+    stripped = re.sub(
+        r"^(theme|sub[-\s]*theme|subtheme)\s*:\s*", "", stripped, flags=re.IGNORECASE
+    )
+    return stripped.strip()
 
 
 def _truncate_context_label(value: str) -> str:
@@ -1609,6 +1405,30 @@ def _truncate_context_label(value: str) -> str:
         return value_clean
 
     return value_clean[:177].rstrip() + "..."
+
+
+def _truncate_source_excerpt(*, limit: int, value: str) -> str:
+    """Normalize and truncate source text for local-neighborhood evidence.
+
+    Parameters
+    ----------
+    limit
+        Maximum returned character length.
+    value
+        Raw extraction-window source text.
+
+    Returns
+    -------
+    str
+        Single-line source excerpt with a deterministic length cap.
+    """
+
+    value_clean = re.sub(r"\s+", " ", str(value or "")).strip()
+
+    if len(value_clean) <= limit:
+        return value_clean
+
+    return value_clean[: limit - 3].rstrip() + "..."
 
 
 def _unique_limited(values: Sequence[str], *, limit: int) -> list[str]:
@@ -1649,10 +1469,9 @@ def _validate_result_window_alignment(
     *,
     extraction_result: SFIExtractionResult,
     extraction_window: ExtractionWindow,
-    kg_config: CreateKGConfig,
     result_index: int,
 ) -> None:
-    """Validate that one extraction result aligns to one extraction window.
+    """Validate positional identity alignment for one result and window.
 
     Parameters
     ----------
@@ -1660,15 +1479,13 @@ def _validate_result_window_alignment(
         SFI extraction result to validate.
     extraction_window
         Extraction window expected at the same position.
-    kg_config
-        Runtime KG config used for quality validation.
     result_index
-        0-based extraction-result position.
+        Zero-based extraction-result position.
 
     Raises
     ------
     ValueError
-        If alignment or current quality validation fails.
+        If the result does not copy the matching window identity fields exactly.
     """
 
     if extraction_result.window_id != extraction_window.window_id:
@@ -1695,17 +1512,6 @@ def _validate_result_window_alignment(
             f"extraction window has source segment IDs "
             f"{extraction_window.source_segment_ids!r}."
         )
-
-    try:
-        verify_sfi_extraction_quality(
-            extraction_result=extraction_result,
-            kg_config=kg_config,
-            window=extraction_window,
-        )
-    except QualityError as e:
-        raise ValueError(
-            f"SFI extraction result {result_index} failed current quality validation: {e}"
-        ) from e
 
 
 def _validate_statement_type_code_types(
@@ -1831,13 +1637,17 @@ def _warn_on_code_across_statement_types(
         Mutable warning accumulator.
     """
 
-    candidates_by_code: dict[str, list[SFIRegistryCandidate]] = defaultdict(list)
+    candidates_by_code: dict[tuple[str, str], list[SFIRegistryCandidate]] = defaultdict(
+        list
+    )
 
     for candidate in candidates:
         if candidate.normalized_statement_code:
-            candidates_by_code[candidate.normalized_statement_code].append(candidate)
+            candidates_by_code[
+                (candidate.code_scope_key or "", candidate.normalized_statement_code)
+            ].append(candidate)
 
-    for normalized_statement_code, code_candidates in sorted(
+    for (code_scope_key, normalized_statement_code), code_candidates in sorted(
         candidates_by_code.items()
     ):
         statement_types = {candidate.statement_type for candidate in code_candidates}
@@ -1846,8 +1656,9 @@ def _warn_on_code_across_statement_types(
             _maybe_append_warning(
                 bucket_id=None,
                 message=(
-                    f"Statement code {normalized_statement_code!r} appears across "
-                    f"multiple statement types: {sorted(statement_types)}."
+                    f"Statement code {normalized_statement_code!r} within configured "
+                    f"scope {code_scope_key or None!r} appears across multiple "
+                    f"statement types: {sorted(statement_types)}."
                 ),
                 registry_candidate_ids=[
                     candidate.registry_candidate_id for candidate in code_candidates
@@ -1930,7 +1741,12 @@ def _warn_on_per_candidate_issues(
     warning_signatures: set[tuple[Any, ...]],
     warnings: list[SFIRegistryWarning],
 ) -> None:
-    """Warn on candidate-level statement_code anomalies.
+    """Warn on candidate-level statement-code anomalies.
+
+    Registry candidates have already passed shared deterministic code resolution. The
+    remaining warnings therefore focus on source text that appears coded but was
+    extracted without a code, and on valid opportunistic codes assigned to statement
+    types that do not declare a preferred code family.
 
     Parameters
     ----------
@@ -1939,9 +1755,7 @@ def _warn_on_per_candidate_issues(
     code_patterns
         Compiled curriculum-specific code patterns keyed by code type.
     statement_type_code_types
-        Mapping from canonical statement_type labels to expected code types.
-    statement_value_policies
-        Controlled value canonicalization policies keyed by statement_type.
+        Mapping from canonical statement-type labels to expected code types.
     warning_signatures
         Mutable set of warning signatures already emitted.
     warnings
@@ -1949,13 +1763,6 @@ def _warn_on_per_candidate_issues(
     """
 
     for candidate in candidates:
-        raw_normalized_statement_code = normalize_code(candidate.statement_code)
-        matching_code_types = _get_configured_code_types(
-            code_patterns=code_patterns,
-            statement_code=candidate.statement_code,
-        )
-        expected_code_type = statement_type_code_types.get(candidate.statement_type)
-
         if candidate.statement_code is None and _find_configured_code_matches_in_text(
             code_patterns=code_patterns, value=candidate.source_text
         ):
@@ -1972,76 +1779,18 @@ def _warn_on_per_candidate_issues(
                 warnings=warnings,
             )
 
-        if raw_normalized_statement_code is not None and not code_patterns:
-            _maybe_append_warning(
-                bucket_id=None,
-                message=(
-                    f"Candidate {candidate.registry_candidate_id} has statement_code "
-                    f"{candidate.statement_code!r}, but kg_config.academic_standards."
-                    f"code_patterns is empty. The code is preserved on the "
-                    f"candidate payload but excluded from code buckets."
-                ),
-                registry_candidate_ids=[candidate.registry_candidate_id],
-                severity="warning",
-                warning_signatures=warning_signatures,
-                warning_type="statement_code_without_configured_code_patterns",
-                warnings=warnings,
-            )
-            continue
-
-        if raw_normalized_statement_code is not None and not matching_code_types:
-            _maybe_append_warning(
-                bucket_id=None,
-                message=(
-                    f"Candidate {candidate.registry_candidate_id} has statement_code "
-                    f"{candidate.statement_code!r}, normalized as "
-                    f"{raw_normalized_statement_code!r}, but it does not match any "
-                    f"configured code_patterns: {sorted(code_patterns)}. The code is "
-                    f"preserved on the candidate payload but excluded from code "
-                    f"buckets."
-                ),
-                registry_candidate_ids=[candidate.registry_candidate_id],
-                severity="warning",
-                warning_signatures=warning_signatures,
-                warning_type="statement_code_does_not_match_configured_code_patterns",
-                warnings=warnings,
-            )
-            continue
-
         if (
-            raw_normalized_statement_code is not None
-            and expected_code_type is not None
-            and expected_code_type not in matching_code_types
-        ):
-            _maybe_append_warning(
-                bucket_id=None,
-                message=(
-                    f"Candidate {candidate.registry_candidate_id} has statement_type "
-                    f"{candidate.statement_type!r}, which expects code_type "
-                    f"{expected_code_type!r}, but statement_code "
-                    f"{candidate.statement_code!r} matches configured code types "
-                    f"{matching_code_types}. The code is preserved on the "
-                    f"candidate payload but excluded from code buckets."
-                ),
-                registry_candidate_ids=[candidate.registry_candidate_id],
-                severity="warning",
-                warning_signatures=warning_signatures,
-                warning_type="statement_code_mismatched_expected_code_type",
-                warnings=warnings,
-            )
-            continue
-
-        if (
-            candidate.normalized_statement_code is not None
+            candidate.resolved_code_type is not None
             and candidate.statement_type not in statement_type_code_types
         ):
             _maybe_append_warning(
                 bucket_id=None,
                 message=(
                     f"Candidate {candidate.registry_candidate_id} has statement_code "
-                    f"{candidate.statement_code!r}, but statement_type "
-                    f"{candidate.statement_type!r} does not define a code_type in "
-                    f"statement_type_policy."
+                    f"{candidate.statement_code!r} unambiguously resolved as "
+                    f"code_type {candidate.resolved_code_type!r}, while statement_type "
+                    f"{candidate.statement_type!r} does not declare a preferred "
+                    f"code_type in statement_type_policy."
                 ),
                 registry_candidate_ids=[candidate.registry_candidate_id],
                 severity="warning",
@@ -2152,73 +1901,6 @@ def _warn_on_text_repeated_within_window(
         )
 
 
-def _with_source_order_controlled_scopes(
-    *,
-    candidates: Sequence[SFIRegistryCandidate],
-    statement_value_policies: dict[str, _StatementValuePolicy],
-) -> list[SFIRegistryCandidate]:
-    """Return registry candidates with source-order controlled scopes applied.
-
-    Parameters
-    ----------
-    candidates
-        Registry candidates in source order.
-    statement_value_policies
-        Controlled value policies keyed by statement type.
-
-    Returns
-    -------
-    list[SFIRegistryCandidate]
-        Registry candidates with corrected canonical scope keys and recomputed text
-        duplicate bucket keys.
-    """
-
-    ordered_candidates = list(candidates)
-    scoped_candidates: list[SFIRegistryCandidate] = []
-
-    for candidate_index, candidate in enumerate(ordered_candidates):
-        canonical_statement_scope_key = (
-            _resolve_canonical_statement_scope_from_source_order(
-                candidate=candidate,
-                candidate_index=candidate_index,
-                ordered_candidates=ordered_candidates,
-                statement_value_policies=statement_value_policies,
-            )
-        )
-
-        if canonical_statement_scope_key == candidate.canonical_statement_scope_key:
-            scoped_candidates.append(candidate)
-            continue
-
-        text_bucket_key = _build_text_bucket_key(
-            canonical_statement_scope_key=canonical_statement_scope_key,
-            canonical_statement_value_key=candidate.canonical_statement_value_key,
-            normalized_statement_code=candidate.normalized_statement_code,
-            normalized_text=candidate.normalized_description,
-            source_context_key=candidate.source_context_key,
-            statement_type_key=normalize_text(candidate.statement_type),
-        )
-        source_text_bucket_key = _build_text_bucket_key(
-            canonical_statement_scope_key=canonical_statement_scope_key,
-            canonical_statement_value_key=candidate.canonical_statement_value_key,
-            normalized_statement_code=candidate.normalized_statement_code,
-            normalized_text=candidate.normalized_source_text,
-            source_context_key=candidate.source_context_key,
-            statement_type_key=normalize_text(candidate.statement_type),
-        )
-        scoped_candidates.append(
-            candidate.model_copy(
-                update={
-                    "canonical_statement_scope_key": canonical_statement_scope_key,
-                    "source_text_bucket_key": source_text_bucket_key,
-                    "text_bucket_key": text_bucket_key,
-                }
-            )
-        )
-
-    return scoped_candidates
-
-
 def build_candidate_registry(
     *,
     extraction_windows: Sequence[ExtractionWindow],
@@ -2269,6 +1951,10 @@ def build_candidate_registry(
     code_patterns, statement_type_code_types = _validate_statement_type_code_types(
         kg_config
     )
+    code_scope_statement_types = kg_config.academic_standards.code_scope_statement_types
+    identity_scope_statement_types = (
+        kg_config.academic_standards.identity_scope_statement_types
+    )
     statement_value_policies = _build_statement_value_policies(kg_config)
 
     for result_index, extraction_result in enumerate(sfi_extraction_results):
@@ -2276,7 +1962,6 @@ def build_candidate_registry(
         _validate_result_window_alignment(
             extraction_result=extraction_result,
             extraction_window=extraction_window,
-            kg_config=kg_config,
             result_index=result_index,
         )
         _validate_unique_window_candidate_ids(
@@ -2291,15 +1976,19 @@ def build_candidate_registry(
                 _build_registry_candidate(
                     candidate=candidate,
                     code_patterns=code_patterns,
+                    code_scope_statement_types=code_scope_statement_types,
                     extraction_window=extraction_window,
+                    identity_scope_statement_types=identity_scope_statement_types,
                     source_window_candidate_index=source_window_candidate_index,
                     statement_type_code_types=statement_type_code_types,
                     statement_value_policies=statement_value_policies,
                 )
             )
 
-    candidates = _with_source_order_controlled_scopes(
-        candidates=candidates, statement_value_policies=statement_value_policies
+    dedup_context_windows = _build_dedup_context_windows(
+        candidates=candidates,
+        extraction_windows=extraction_windows,
+        kg_config=kg_config,
     )
     duplicate_buckets = _build_duplicate_buckets(candidates)
     warnings = _build_registry_warnings(
@@ -2318,6 +2007,7 @@ def build_candidate_registry(
     sfi_registry_artifact = SFIRegistryArtifact(
         candidates=candidates,
         country=kg_config.metadata.country,
+        dedup_context_windows=dedup_context_windows,
         doc_key=extraction_windows[0].doc_key if extraction_windows else None,
         duplicate_buckets=duplicate_buckets,
         framework_title=kg_config.metadata.framework_title,

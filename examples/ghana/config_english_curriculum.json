@@ -1,0 +1,638 @@
+{
+	"page_ir_extraction": {
+		"country": "Ghana",
+		"dpi": 250,
+		"end_page": null,
+		"languages": [
+			"en"
+		],
+		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results/kg_for_ed",
+		"overwrite": false,
+		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/ghana/ghana_english.pdf",
+		"start_page": 0,
+		"use_extracted_hints": true,
+		"year": 2019
+	},
+	"page_ir_verification": {
+		"end_page": null,
+		"min_confidence_to_patch": 0.5,
+		"min_confidence_to_select_positive": 0.5,
+		"min_confidence_to_stop_negative_search": 0.9,
+		"next_page_crop_padding_px": 120,
+		"overwrite": false,
+		"start_page": 0
+	},
+	"document_ir": {
+		"keep_artifacts": false,
+		"max_section_path_length": 40,
+		"min_link_score": 1.0,
+		"overwrite": true,
+		"repair_hyphenation": true,
+		"sort_items_by_bbox": true,
+		"table_filldown_enabled": true,
+		"table_filldown_group_cols_max": 1,
+		"verification_auto_stitch_confidence": 0.7
+	},
+	"kgs": {
+		"overwrite": false,
+		"as": {
+			"bilingual_pair_policy": "This Ghana English Language curriculum is English-only for KG extraction. Do not create bilingual pairs, translations, or cross-language equivalents. Preserve the visible English wording exactly. References in the front matter to Ghanaian languages or first-language instruction are explanatory context, not parallel official English standards. If incidental non-English text is visible, preserve it only as source evidence and do not translate or pair it.",
+			"code_parent_rules": [
+				{
+					"child": "indicator",
+					"parent": "content_standard",
+					"method": "regex_substitution",
+					"regex": "^\\s*(B\\s*[123]\\s*\\.\\s*\\d+\\s*\\.\\s*\\d+\\s*\\.\\s*\\d+)\\s*\\.\\s*\\d+\\s*\\.?\\s*$",
+					"replacement": "\\1"
+				}
+			],
+			"code_patterns": {
+				"content_standard": "\\bB\\s*[123]\\s*\\.\\s*\\d+\\s*\\.\\s*\\d+\\s*\\.\\s*\\d+(?!\\s*\\.\\s*\\d)",
+				"indicator": "\\bB\\s*[123]\\s*\\.\\s*\\d+\\s*\\.\\s*\\d+\\s*\\.\\s*\\d+\\s*\\.\\s*\\d+(?!\\s*\\.\\s*\\d)"
+			},
+			"excluded_table_columns_signatures": [
+				"strand 2: reading sub-strand 3: word families, rhyming endings and common digraphs|||||b1|b2|b3",
+				"strands|sub-strands|b1|b2|b3|b4|b5|b6",
+				"sn|name|address/institution"
+			],
+			"excluded_table_section_patterns": [],
+			"grade_level_mapping": {
+				"BASIC 1": [
+					"1"
+				],
+				"BASIC 2": [
+					"2"
+				],
+				"BASIC 3": [
+					"3"
+				]
+			},
+			"grade_level_statement_types": [
+				"Grade"
+			],
+			"identity_scope_statement_types": {
+				"Strand": [
+					"Grade"
+				],
+				"Sub-Strand": [
+					"Grade",
+					"Strand"
+				],
+				"Content Standard": [
+					"Grade",
+					"Strand",
+					"Sub-Strand"
+				],
+				"Indicator": [
+					"Grade",
+					"Strand",
+					"Sub-Strand"
+				]
+			},
+			"included_table_columns_signatures": [
+				"content standards|indicators and exemplars|subject specific practices and core competencies",
+				"content standard|indicators and exemplars|subject specific practices and core competencies"
+			],
+			"included_table_section_patterns": [],
+			"max_dedup_review_set_candidates": null,
+			"max_has_child_parent_candidates": 24,
+			"max_has_child_section_path_labels": 12,
+			"max_rows_per_table_window": 10,
+			"row_overlap": 1,
+			"sfi_dedup_context_statement_types": [
+				"Grade",
+				"Strand",
+				"Sub-Strand"
+			],
+			"sfi_dedup_context_window_radius": 3,
+			"sfi_dedup_instructions": "Deduplicate Ghana English Language Basic 1-3 SFI candidates conservatively. Merge candidates only when they represent the same logical source-visible curriculum item, such as duplicate extraction from overlapping table windows, a repeated continuation row/page, or repeated rendering of the same heading. Do not merge merely because wording, statement type, or topic is similar.\n\nCoded items:\n- Same canonical statement_type and same normalized official code are strong merge evidence only when the descriptions/source_text are compatible and provenance indicates the same item or a clear continuation. Ghana continuation pages sometimes repeat a code with minor wording changes, including B1.1.6.1, B2.1.6.1, B2.4.3.1, B3.1.6.1, and B3.4.5.1. When local table context and indicator sequence show one continued content standard, merge the occurrences and preserve all wording/provenance.\n- Apply B2.1.6.1 explicitly: in the Basic 2 Oral Language / Conversation table, merge the row-1 occurrence \"Use certain culturally acceptable language for communication\" with the row-2 occurrence \"Explore using certain culturally acceptable language for communication\". They are one continued Content Standard because they share code B2.1.6.1, the same configured identity scope, the same local table, and the indicator sequence B2.1.6.1.1 through B2.1.6.1.4 continues across those rows. The fact that B2.1.6.2 also begins in row 2 does not split B2.1.6.1, and similarity between the row-2 wording and Basic 3 wording is not sufficient reason for needs_review. Use the clean row-1 occurrence as representative and preserve the row-2 wording and source reference as provenance.\n- Do not treat codes as infallible identity. The source contains printed numbering errors and misplaced codes. Preserve distinct source items when the same code is attached to materially different statements, and use conflict or needs_review when bounded evidence cannot determine whether the records are duplicate occurrences or competing source items.\n- Similar or identical descriptions with different official codes normally remain separate, especially across grades or indicator positions. Merge them only when provenance proves duplicate extraction of the same printed item. Never merge an erroneous printed code with a presumed corrected code solely to repair the source.\n- A code appearing only inside exemplar or cross-reference text is not an SFI identity signal. In particular, the B2.1.6.1.2 reference inside the exemplar for B2.1.7.1.2 must not create or merge an Indicator candidate.\n\nGrouping items:\n- BASIC 1, BASIC 2, and BASIC 3 are distinct grade-scoped organizers. Merge case/format duplicates of the same grade, but never merge different grades.\n- Strand and Sub-Strand headings are grade-scoped. The same visible label (for example Oral Language, Reading, Songs, Phonics, Vocabulary, or Comprehension) under different grades represents separate hierarchy nodes. Merge only repeated occurrences within the same grade/strand source scope.\n- Apply the configured deterministic identity scopes exactly: Strand uses Grade; Sub-Strand uses Grade and Strand; Content Standard and Indicator use Grade, Strand, and Sub-Strand. Treat disagreement in any configured identity-scope dimension as incompatible for merging. These scopes distinguish repeated labels across grades and strands; direct hasChild resolution still occurs later from finalized hierarchy evidence.\n- Preserve sparse source numbering. Do not merge headings or reassign identity to close missing Strand 3 or unused sub-strand numbers.\n\nKnown source anomalies are not dedup corrections: the Basic 1 Story Telling heading is printed as Sub-Strand 3 although its code family is 4; the Basic 1 Dramatisation heading is printed as Sub-Strand 4 although its code family is 5; B1.1.3.1.1 and B3.3.13.1.1 are printed indicator codes that conflict with their visible parents; B3.5.4.1.3 is duplicated in the Content Standards column. Preserve source-visible evidence and merge only true duplicate occurrences. Source-row/header overlap, proximity, duplicate buckets, controlled-value matches, and same-code buckets are review signals, not automatic merge rules.",
+			"sfi_extraction_instructions": "Extract candidate StandardsFrameworkItems only from the official detailed Ghana English Language curriculum for Basic 1, Basic 2, and Basic 3. The intended hierarchy is Grade -> Strand -> Sub-Strand -> Content Standard -> Indicator. Treat visible BASIC 1, BASIC 2, and BASIC 3 headings as Standard Grouping SFIs; visible Strand and Sub-Strand headings in the detailed grade sections are also Standard Grouping SFIs. When one block contains both a Strand and a Sub-Strand heading, emit two candidates in source order. Preserve the complete visible grouping label, including ordinal, punctuation, and wording.\n\nTreat a coded Content Standard of the form B1.1.1.1, B2.2.3.1, or B3.5.4.1 as a Standard SFI with statement_type Content Standard. Treat a coded Indicator with one additional numeric component, such as B1.1.1.1.1, as a Standard SFI with statement_type Indicator. Restrict target codes to B1, B2, and B3. Do not extract the KG1 sample in the reference-number diagram or B4-B6 entries in the scope-and-sequence overview. Preserve spaces and punctuation in source_text, and preserve the printed code as statement_code when it is directly paired with the candidate; do not silently repair a source code.\n\nIn the detailed curriculum tables, the left column contains Content Standards. The middle column contains bold coded Indicators followed by exemplars and teaching activities. Determine statement_type from the visible source role and table column, not from whether a malformed printed code appears to imply a different role. Repeated or continued renderings of the same source role must retain the same canonical statement_type. Extract only the coded normative statement, not the bullet exemplars beneath it. The right Subject Specific Practices and Core Competencies column is guidance/context and is not an SFI. Do not extract examples, e.g. text, notes, classroom directions, assessment suggestions, resources, reading-topic lists, competencies, values, aims, pedagogy, time allocation, table headers, CONT'D labels, or teacher guidance. Do not extract LearningComponents or decompose a standard into teachable subskills.\n\nTreat the table of contents, Organisation of the Curriculum, Curriculum Reference Numbers, Note to the Teacher, Scope and Sequence, and panel-member pages as contextual/non-target material. Grade, Strand, or Sub-Strand words appearing in those overview sections are not target grouping SFIs.\n\nPreserve sparse numbering exactly: the detailed Basic 1-3 curriculum uses Strands 1, 2, 4, 5, and 6, and sub-strand numbers are also intentionally non-contiguous. Do not invent missing organizers or renumber visible headings. Known source anomalies must remain source-faithful: Basic 1 Story Telling is visibly headed Sub-Strand 3 while its main code family is 4; Basic 1 Dramatisation is visibly headed Sub-Strand 4 while its code family is 5; B1.1.6.2 indicators appear without a visible B1.1.6.2 Content Standard; B3.4.9.3.1 and .3.2 precede the visible B3.4.9.3 parent on the next page; B3.3.13.1.1 is printed under B3.4.13.1; and B3.5.4.1.3 is duplicated in the left column. Extract visible normative items, but never synthesize or silently correct absent/incorrect source text.",
+			"sfi_extraction_validation_instructions": "Independently validate each Ghana English Language Basic 1-3 extraction against the exact compact source window. Require candidate-local source fidelity: for every table candidate, the cited header/body row indexes must contain the candidate's complete description and source_text, and any statement_code must be directly paired with that description in the cited locations. A code elsewhere in the same window is insufficient. Remove or correct candidates with valid-but-wrong row citations, borrowed codes, truncated statements, or source_text assembled from unrelated rows.\n\nConfirm the source role. Content Standards are the coded normative statements in the left table column. Indicators are the bold coded outcomes in the middle column. Validate statement_type from that visible source role rather than from malformed code components; repeated or continued occurrences of the same source role must use the same canonical statement_type. Bullet lists, examples, notes, classroom procedures, questions, sample dialogue, competency labels, and other exemplar text are not SFIs. A code mentioned only as a cross-reference inside exemplar text is not an Indicator candidate; specifically, B2.1.6.1.2 inside the B2.1.7.1.2 exemplar is only a procedural reference.\n\nReject groupings extracted from the table of contents, Curriculum Reference Numbers example, Scope and Sequence matrix, front matter, reading-topic lists, or panel-member list. Accept Grade, Strand, and Sub-Strand groupings only when they are visible organizers of the detailed Basic 1, Basic 2, or Basic 3 curriculum. Preserve the full visible heading and do not renumber sparse Strand/Sub-Strand ordinals.\n\nDo not normalize away genuine source errors. Preserve printed codes in statement_code/source_text when directly paired with the normative statement, even when hierarchy context shows that the code is erroneous. Apply these known cases explicitly: (1) on the Basic 1 Story Telling page, preserve the visible heading Sub-Strand 3, content standard B1.1.4.1, printed first indicator B1.1.3.1.1, and second indicator B1.1.4.1.2; (2) preserve the Basic 1 Dramatisation heading Sub-Strand 4 and its B1.1.5.1 code family; (3) extract B1.1.6.2.1 and B1.1.6.2.2 but do not invent a missing B1.1.6.2 Content Standard or assign them to B1.1.6.1; (4) preserve B3.4.9.3.1 and B3.4.9.3.2 even though they appear under the preceding B3.4.9.2 cell, because B3.4.9.3 is visibly introduced on the following page; (5) preserve printed B3.3.13.1.1 under B3.4.13.1 rather than silently changing its strand component; and (6) treat the duplicate left-column B3.5.4.1.3 as a misplaced Indicator code, not a Content Standard or second distinct indicator.\n\nFor continuation pages, repeated Content Standard cells with CONT'D or small wording differences may represent the same logical standard, but each window result must remain source-faithful; deduplication occurs later. Return zero candidates when a window contains only exemplars/guidance or non-target overview material.",
+			"sfi_has_child_instructions": "Resolve direct hasChild relationships for the Ghana English Language Basic 1-3 curriculum. Use only supplied finalized SFIs and parent_candidates. The normal direct hierarchy is StandardsFramework -> Grade -> Strand -> Sub-Strand -> Content Standard -> Indicator. This source defines a single hierarchy membership for each item, so select exactly one direct parent unless the child must be marked unresolved.\n\nGeneral rules:\n- BASIC 1, BASIC 2, and BASIC 3 attach directly to the StandardsFramework root.\n- A Strand attaches to the correct Grade. Repeated strand labels across grades are distinct. Preserve the source's sparse strand numbers; Strand 4 follows Strand 2 because Strand 3 is not part of the detailed Basic 1-3 sections.\n- A Sub-Strand attaches to the correct Strand within the same Grade and local source section. Repeated labels across grades are distinct, and non-contiguous sub-strand numbers are valid.\n- Apply finalized identity_scope values exactly: Strand carries Grade; Sub-Strand carries Grade and Strand; Content Standard and Indicator carry Grade, Strand, and Sub-Strand. Use these values to exclude cross-grade and cross-strand parent candidates, while still verifying the direct parent against the visible local hierarchy, table context, and source evidence.\n- A Content Standard normally attaches to the Sub-Strand indicated by the grade/strand/sub-strand components of its code and confirmed by the local visible heading.\n- An Indicator normally attaches to the Content Standard obtained by removing the final numeric component from its code, when that parent is present and source-compatible.\n- Do not attach to a broader non-direct ancestor or a sibling merely to avoid unresolved output. Root is a normal direct parent only for Grade items; otherwise unresolved children use the pipeline's audited root fallback.\n\nStructured response contract:\n- For a Grade child, select the StandardsFramework root as its one resolved parent: unresolved=false and selected_parent_endpoint_ids contains only the root endpoint.\n- For every non-Grade child, never select the StandardsFramework root as an ordinary resolved parent. If no supplied non-root candidate is a defensible direct parent, return unresolved=true and selected_parent_endpoint_ids=[]; the pipeline will add a separately marked audited root-fallback edge afterward.\n- Do not use the presence of the root candidate to avoid unresolved output. A non-Grade root selection with unresolved=false is incorrect.\n- For a resolved child, select exactly one supplied direct-parent endpoint and set unresolved=false. Do not select a broader ancestor, sibling, or source-nearby item merely to produce a resolved answer.\n\nCodes are strong evidence but not absolute because the PDF contains confirmed source errors. Apply these overrides using visible table and section context:\n- Basic 1 Story Telling: the heading is printed Sub-Strand 3, but B1.1.4.1 and B1.1.4.1.2 belong under that Story Telling heading. The printed B1.1.3.1.1 also belongs directly under B1.1.4.1; do not search for or invent B1.1.3.1.\n- Basic 1 Dramatisation and Role-Play: the heading is printed Sub-Strand 4, but B1.1.5.1 and B1.1.5.1.1 belong under that visible Dramatisation heading.\n- B1.1.6.2.1 and B1.1.6.2.2 imply a B1.1.6.2 parent that is not visibly printed in the source. Attach them only if an exact finalized B1.1.6.2 Content Standard exists from valid source evidence; otherwise mark unresolved. Never attach them to B1.1.6.1 merely because that continued cell is nearby.\n- B3.4.9.3.1 and B3.4.9.3.2 attach to B3.4.9.3, whose Content Standard is printed on the following page, not to B3.4.9.2.\n- Printed B3.3.13.1.1 attaches to visible parent B3.4.13.1 in Sub-Strand 13: Persuasive/Argumentative Writing. The source's strand component is erroneous; local source hierarchy overrides the malformed prefix.\n- B3.5.4.1.3 attaches to B3.5.4.1. Its duplicate appearance in the Content Standards column is a layout/source duplication, not a new parent.\n\nContinuation and duplicate-code handling:\n- Repeated Content Standard wording across continued pages is one logical parent when finalization has merged it. If multiple same-code parent candidates remain, prefer the candidate supported by the child's exact source table segment, row/span, window, and active local heading; do not choose by topic similarity alone.\n- Same table row/window and section_path are evidence, not automatic truth. Section paths can be stale. Prefer exact local table structure, visible heading, code-parent hints, source segment/window, and continuation context.\n- Do not create parents for exemplars, Subject Specific Practices/Core Competencies, scope-and-sequence entries, or reference-number samples.",
+			"sfi_has_child_parent_policy": {
+				"Grade": [],
+				"Strand": [
+					{
+						"parent_statement_type": "Grade",
+						"min_count": 1,
+						"max_count": 1
+					}
+				],
+				"Sub-Strand": [
+					{
+						"parent_statement_type": "Strand",
+						"min_count": 1,
+						"max_count": 1
+					}
+				],
+				"Content Standard": [
+					{
+						"parent_statement_type": "Sub-Strand",
+						"min_count": 1,
+						"max_count": 1
+					}
+				],
+				"Indicator": [
+					{
+						"parent_statement_type": "Content Standard",
+						"min_count": 1,
+						"max_count": 1
+					}
+				]
+			},
+			"sfi_has_child_statement_type_hierarchy": [
+				"Grade",
+				"Strand",
+				"Sub-Strand",
+				"Content Standard",
+				"Indicator"
+			],
+			"sfi_has_child_validation_instructions": "Independently validate every Ghana English Basic 1-3 hasChild resolution against the supplied child context, bounded parent candidates, deterministic evidence, and runtime hierarchy policy. Do not assume the producer answer is correct. Correct the complete response whenever any child has the wrong parent, an unsupported parent, an incorrect unresolved flag, or an invalid root selection.\n\nRoot and unresolved contract:\n- Grade is the only statement_type whose normal resolved parent is the StandardsFramework root. For a Grade child, require unresolved=false and exactly the root endpoint as the selected parent.\n- For Strand, Sub-Strand, Content Standard, and Indicator children, the root is never an ordinary resolved parent. If no supplied non-root candidate is a defensible direct parent, require unresolved=true and selected_parent_endpoint_ids=[]. The pipeline will create the separately marked audited root-fallback edge after semantic resolution.\n- Reject any non-Grade response that sets unresolved=false while selecting the root. Reject unresolved=true when any parent endpoint is selected. Reject a resolved child with zero or multiple selected parents.\n- Do not force resolution merely because a root candidate or a nearby same-type candidate is available.\n\nDirect hierarchy and scope:\n- Enforce exactly StandardsFramework -> Grade -> Strand -> Sub-Strand -> Content Standard -> Indicator. Do not accept broader ancestors, siblings, or wrong-level parents.\n- Repeated Strand and Sub-Strand labels across grades are distinct. Use finalized identity_scope values to reject cross-grade and cross-strand candidates. Treat exact direct-parent scope matches as strong evidence, but verify them against visible local hierarchy and source context.\n- Same row, same window, same segment, same table context, active outline, section_path, nearby position, controlled-value recognition, and code-parent hints are evidence channels rather than automatic truth. Section paths and cumulative labels can be stale.\n- When the correct direct parent is absent from the bounded candidate set, mark the child unresolved rather than choosing the nearest plausible candidate.\n\nCode and source-anomaly checks:\n- Codes are strong but not absolute. Preserve and apply the source-visible hierarchy overrides below instead of silently repairing printed codes.\n- Basic 1 Story Telling: B1.1.4.1, B1.1.4.1.2, and printed B1.1.3.1.1 belong under the visible Story Telling Sub-Strand; B1.1.3.1.1 attaches directly to B1.1.4.1. Do not invent B1.1.3.1.\n- Basic 1 Dramatisation and Role-Play: B1.1.5.1 and B1.1.5.1.1 belong under the visible Dramatisation heading.\n- B1.1.6.2.1 and B1.1.6.2.2 may attach only to an exact finalized B1.1.6.2 Content Standard supported by valid source evidence. If that parent is absent, require unresolved; never attach them to nearby B1.1.6.1.\n- B3.4.9.3.1 and B3.4.9.3.2 attach to B3.4.9.3 on the following page, not B3.4.9.2.\n- Printed B3.3.13.1.1 attaches to visible B3.4.13.1 in Persuasive/Argumentative Writing despite its malformed strand component.\n- B3.5.4.1.3 attaches to B3.5.4.1. Its left-column duplicate is a layout duplication and not a separate parent.\n- Repeated continuation Content Standards may be one finalized parent. If multiple same-code candidates remain, require source-compatible local table, heading, continuation, and scope evidence; do not choose by wording or topic similarity alone.\n- Never create or select parents from exemplars, Subject Specific Practices/Core Competencies, scope-and-sequence entries, table headers, or reference-number samples.",
+			"statement_type_policy": [
+				{
+					"aliases": [
+						"Basic",
+						"BASIC",
+						"basic",
+						"Grade",
+						"Class/Year",
+						"Year/Class"
+					],
+					"controlled_values": [
+						{
+							"canonical_value": "BASIC 1",
+							"aliases": [
+								"Basic 1",
+								"basic 1",
+								"B1",
+								"Primary 1",
+								"Grade 1",
+								"Class 1"
+							]
+						},
+						{
+							"canonical_value": "BASIC 2",
+							"aliases": [
+								"Basic 2",
+								"basic 2",
+								"B2",
+								"Primary 2",
+								"Grade 2",
+								"Class 2"
+							]
+						},
+						{
+							"canonical_value": "BASIC 3",
+							"aliases": [
+								"Basic 3",
+								"basic 3",
+								"B3",
+								"Primary 3",
+								"Grade 3",
+								"Class 3"
+							]
+						}
+					],
+					"description": "Visible BASIC 1, BASIC 2, or BASIC 3 organizer in the detailed Ghana English curriculum; a root-level Standard Grouping under the framework.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Grade"
+				},
+				{
+					"aliases": [
+						"STRAND",
+						"strand"
+					],
+					"controlled_values": [
+						{
+							"canonical_value": "Oral Language",
+							"aliases": [
+								"ORAL LANGUAGE",
+								"Oral Language: Listening and Speaking",
+								"ORAL LANGUAGE: LISTENING AND SPEAKING",
+								"Strand 1: Oral Language",
+								"STRAND 1: ORAL LANGUAGE"
+							]
+						},
+						{
+							"canonical_value": "Reading",
+							"aliases": [
+								"READING",
+								"Strand 2: Reading",
+								"STRAND 2: READING"
+							]
+						},
+						{
+							"canonical_value": "Writing",
+							"aliases": [
+								"WRITING",
+								"Strand 4: Writing",
+								"STRAND 4: WRITING"
+							]
+						},
+						{
+							"canonical_value": "Using Writing Conventions/Grammar Usage",
+							"aliases": [
+								"Using Writing Convention/Grammar Usage",
+								"USING WRITING CONVENTION/GRAMMAR USAGE",
+								"USING WRITING CONVENTIONS/GRAMMAR USAGE",
+								"Strand 5: Using Writing Convention/Grammar Usage",
+								"Strand 5: Using Writing Conventions/Grammar Usage",
+								"STRAND 5: USING WRITING CONVENTION/GRAMMAR USAGE",
+								"STRAND 5: USING WRITING CONVENTIONS/GRAMMAR USAGE"
+							]
+						},
+						{
+							"canonical_value": "Extensive Reading",
+							"aliases": [
+								"EXTENSIVE READING",
+								"Strand 6: Extensive Reading",
+								"Strand 6:  Extensive Reading",
+								"STRAND 6: EXTENSIVE READING"
+							]
+						}
+					],
+					"description": "Visible Ghana English strand heading in the detailed Basic 1-3 curriculum, scoped under the active Grade.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Strand"
+				},
+				{
+					"aliases": [
+						"Sub-Strand",
+						"Sub-strand",
+						"Substrand",
+						"sub-strand",
+						"substrand"
+					],
+					"controlled_values": [
+						{
+							"canonical_value": "Songs",
+							"aliases": [
+								"Sub-Strand 1: Songs",
+								"Sub-Strand 1:  Songs",
+								"Songs"
+							]
+						},
+						{
+							"canonical_value": "Rhymes",
+							"aliases": [
+								"Sub-Strand 2: Rhymes",
+								"Rhymes"
+							]
+						},
+						{
+							"canonical_value": "Story Telling",
+							"aliases": [
+								"Sub-Strand 3: Story Telling",
+								"Sub-Strand 4: Story Telling",
+								"Story Telling",
+								"Storytelling"
+							]
+						},
+						{
+							"canonical_value": "Dramatisation and Role Play",
+							"aliases": [
+								"Sub-Strand 4: Dramatisation and Role-Play",
+								"Sub-Strand 5: Dramatisation and Role Play",
+								"Dramatisation and Role-Play",
+								"Dramatisation and Role Play"
+							]
+						},
+						{
+							"canonical_value": "Conversation",
+							"aliases": [
+								"Conversation",
+								"Sub-Strand 6: Conversation – Talking about Oneself, Family, People, Places, Greetings, Customs, Events, Social/Cultural Values, Manners and other Themes",
+								"Sub-Strand 6: Conversation - Talking about Oneself, Family, People, Places, Greetings, Customs, Events, Social/ Cultural Values, Manners and other Themes",
+								"Sub-Strand 6: Conversation and Talking about Oneself, Family, People, Places, Customs, Events, Social/Cultural Values and Manners and other Themes"
+							]
+						},
+						{
+							"canonical_value": "Listening Comprehension",
+							"aliases": [
+								"Sub-Strand 7: Listening Comprehension",
+								"Listening Comprehension"
+							]
+						},
+						{
+							"canonical_value": "Asking and Answering Questions",
+							"aliases": [
+								"Sub-Strand 8: Asking and Answering Questions",
+								"Sub-Strand 8:  Asking and Answering Questions",
+								"Asking and Answering Questions"
+							]
+						},
+						{
+							"canonical_value": "Giving and Responding to Commands, Instructions, Directions and Making Requests",
+							"aliases": [
+								"Sub-Strand 9: Giving and Responding to Commands/Instructions and Making Requests",
+								"Sub-Strand 9: Giving and Responding to Commands/Instructions/Directions and Making Requests",
+								"Sub-Strand 9: Giving and Responding to Commands, Instructions, Directions and Making Requests",
+								"Giving and Responding to Commands/Instructions and Making Requests",
+								"Giving and Responding to Commands/Instructions/Directions and Making Requests"
+							]
+						},
+						{
+							"canonical_value": "Presentation",
+							"aliases": [
+								"Sub-Strand 10: Presentation",
+								"Sub-Strand 10:  Presentation",
+								"Presentation"
+							]
+						},
+						{
+							"canonical_value": "Pre-Reading Activities",
+							"aliases": [
+								"Sub-Strand1: Pre-Reading Activities",
+								"Sub-Strand 1: Pre-Reading Activities",
+								"Pre-Reading Activities"
+							]
+						},
+						{
+							"canonical_value": "Phonics",
+							"aliases": [
+								"Sub-Strand 2: Phonics",
+								"Phonics"
+							]
+						},
+						{
+							"canonical_value": "Word Families, Rhyming Endings and Common Digraphs",
+							"aliases": [
+								"Sub-Strand 3: Word Families, Rhyming Endings and Common Digraphs",
+								"Sub-Strand 3: Word Families-Rhyming Endings and Common Digraphs",
+								"Word Families, Rhyming Endings and Common Digraphs",
+								"Word Families-Rhyming Endings and Common Digraphs"
+							]
+						},
+						{
+							"canonical_value": "Diphthongs",
+							"aliases": [
+								"Sub-Strand 4: Diphthongs",
+								"Diphthongs"
+							]
+						},
+						{
+							"canonical_value": "Blends and Consonant Clusters",
+							"aliases": [
+								"Sub-Strand 5: Blends and Consonant Clusters",
+								"Blends and Consonant Clusters"
+							]
+						},
+						{
+							"canonical_value": "Vocabulary",
+							"aliases": [
+								"Sub-Strand 6: Vocabulary",
+								"Sub-Strand 6:  Vocabulary",
+								"Vocabulary"
+							]
+						},
+						{
+							"canonical_value": "Comprehension",
+							"aliases": [
+								"Sub-Strand 7: Comprehension",
+								"Comprehension"
+							]
+						},
+						{
+							"canonical_value": "Fluency",
+							"aliases": [
+								"Sub-Strand 9: Fluency",
+								"Fluency"
+							]
+						},
+						{
+							"canonical_value": "Pre-Writing",
+							"aliases": [
+								"Sub-Strand 1: Pre-Writing",
+								"Pre-Writing",
+								"Pre-Writing Activities"
+							]
+						},
+						{
+							"canonical_value": "Penmanship/Handwriting",
+							"aliases": [
+								"Sub-Strand 2: Penmanship",
+								"Sub-Strand 2: Penmanship/Handwriting",
+								"Penmanship",
+								"Penmanship/Handwriting"
+							]
+						},
+						{
+							"canonical_value": "Writing/Copying Letters - Small and Capital Letters",
+							"aliases": [
+								"Sub-Strand 3: Writing Letters – Small and Capital",
+								"Sub-Strand 3: Writing /Copying Letters – Small and Capital",
+								"Writing Letters – Small and Capital",
+								"Writing/Copying Letters-Small and Capital Letters"
+							]
+						},
+						{
+							"canonical_value": "Labelling Items",
+							"aliases": [
+								"Sub-Strand 4: Labelling Items",
+								"Sub-Strand 4: Labelling items",
+								"Sub-Strand 4:  Labelling Items",
+								"Labelling Items",
+								"Labeling Items"
+							]
+						},
+						{
+							"canonical_value": "Writing Simple Words and Sentences",
+							"aliases": [
+								"Sub-Strand 5: Writing Simple Words and Sentences",
+								"Writing Simple Words and Sentences"
+							]
+						},
+						{
+							"canonical_value": "Controlled Writing",
+							"aliases": [
+								"Sub-Strand 7: Controlled Writing",
+								"Sub-Strand 7:  Controlled Writing",
+								"Controlled Writing"
+							]
+						},
+						{
+							"canonical_value": "Guided Composition",
+							"aliases": [
+								"Sub-Strand 8: Guided Composition",
+								"Guided Composition"
+							]
+						},
+						{
+							"canonical_value": "Writing as a Process",
+							"aliases": [
+								"Sub-Strand 9: Writing as a Process",
+								"Writing as a Process"
+							]
+						},
+						{
+							"canonical_value": "Narrative Writing",
+							"aliases": [
+								"Sub-Strand 10: Narrative Writing",
+								"Sub-Strand 10:  Narrative Writing",
+								"Narrative Writing"
+							]
+						},
+						{
+							"canonical_value": "Descriptive Writing",
+							"aliases": [
+								"Sub-Strand 12: Descriptive Writing",
+								"Descriptive Writing"
+							]
+						},
+						{
+							"canonical_value": "Persuasive/Argumentative Writing",
+							"aliases": [
+								"Sub-Strand 13: Persuasive/Argumentative Writing",
+								"Persuasive/Argumentative Writing"
+							]
+						},
+						{
+							"canonical_value": "Informative/Academic Writing",
+							"aliases": [
+								"Sub-Strand 14: Informative/ Academic Writing",
+								"Informative/Academic Writing",
+								"Informative/ Academic Writing"
+							]
+						},
+						{
+							"canonical_value": "Using Capitalisation",
+							"aliases": [
+								"Sub-Strand 1: Using Capitalisation",
+								"Using Capitalisation",
+								"Using Capitalization"
+							]
+						},
+						{
+							"canonical_value": "Using Punctuation",
+							"aliases": [
+								"Sub-Strand 2: Using Punctuation",
+								"Using Punctuation"
+							]
+						},
+						{
+							"canonical_value": "Using Action Words",
+							"aliases": [
+								"Sub-Strand 4: Using Action Words",
+								"Using Action Words"
+							]
+						},
+						{
+							"canonical_value": "Using Qualifying Words - Adjectives",
+							"aliases": [
+								"Sub-Strand 5: Using Adjectives",
+								"Sub-Strand 5: Using Qualifying Words – Adjectives",
+								"Sub-Strand 5: Using Qualifying Words –Adjectives",
+								"Using Qualifying Words: Adjectives",
+								"Using Adjectives"
+							]
+						},
+						{
+							"canonical_value": "Using Qualifying Words - Adverbs",
+							"aliases": [
+								"Sub-Strand 6: Using Qualifying Words – Adverbs",
+								"Using Qualifying Words: Adverbs",
+								"Using Adverbs"
+							]
+						},
+						{
+							"canonical_value": "Using Simple Prepositions",
+							"aliases": [
+								"Sub-Strand 7: Using Simple Preposition",
+								"Sub-Strand 7: Using Simple Prepositions",
+								"Sub-Strand 7: Using SimplePrepositions",
+								"Using Simple Preposition",
+								"Using Simple Prepositions"
+							]
+						},
+						{
+							"canonical_value": "Using Simple and Compound Sentences",
+							"aliases": [
+								"Sub-Strand 9: Using Simple and Compound Sentences",
+								"Using Simple and Compound Sentences"
+							]
+						},
+						{
+							"canonical_value": "Spelling",
+							"aliases": [
+								"Sub-Strand 10: Spelling",
+								"Spelling"
+							]
+						},
+						{
+							"canonical_value": "Building the Love and Culture of Reading",
+							"aliases": [
+								"Sub-Strand 1: Building the Love and Culture of Reading",
+								"Sub-Strand 1: Building The Love And Culture Of Reading",
+								"Building the Love and Culture of Reading"
+							]
+						}
+					],
+					"description": "Visible Ghana English sub-strand heading in the detailed curriculum, scoped under the active Grade and Strand. Preserve the printed ordinal even when the source contains a known numbering error.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Sub-Strand"
+				},
+				{
+					"aliases": [
+						"CONTENT STANDARD",
+						"CONTENT STANDARDS",
+						"content standard",
+						"content standards",
+						"content_standard"
+					],
+					"code_type": "content_standard",
+					"controlled_values": [],
+					"description": "Official coded Ghana English Content Standard for Basic 1-3, copied from the left column of a detailed curriculum table.",
+					"normalized_statement_type": "Standard",
+					"statement_type": "Content Standard"
+				},
+				{
+					"aliases": [
+						"INDICATOR",
+						"INDICATORS",
+						"indicator",
+						"learning indicator",
+						"performance indicator"
+					],
+					"code_type": "indicator",
+					"controlled_values": [],
+					"description": "Official coded Ghana English Indicator for Basic 1-3, copied from the bold normative statement in the Indicators and Exemplars column.",
+					"normalized_statement_type": "Standard",
+					"statement_type": "Indicator"
+				}
+			],
+			"synthetic_merge_key_fields": [
+				"country",
+				"subject",
+				"normalized_statement_type",
+				"statement_type",
+				"identity_scope",
+				"normalized_text"
+			],
+			"table_section_pattern_page_lookback": 1
+		},
+		"lc": {
+			"generation_instructions": "Decompose each final Ghana English Language Standard SFI into one or more atomic language or literacy skills/concepts. Do not create classroom activities, exemplar steps, sample questions, assessment tasks, resources, or competency labels as LearningComponents."
+		},
+		"metadata": {
+			"adoption_status": "Adopted",
+			"attribution_statement": "Source curriculum published by the National Council for Curriculum and Assessment (NaCCA), Ministry of Education, Republic of Ghana, September 2019.",
+			"author": "National Council for Curriculum and Assessment (NaCCA), Ministry of Education",
+			"country": "Ghana",
+			"framework_title": "English Language Curriculum for Primary Schools (Basic 1 - 3)",
+			"grades_or_stages": [
+				"Basic 1",
+				"Basic 2",
+				"Basic 3"
+			],
+			"is_current": true,
+			"jurisdiction": "Ghana",
+			"languages": [
+				"en"
+			],
+			"license": "Unknown",
+			"primary_language": "en",
+			"provider": "IDinsight",
+			"subject": "English Language"
+		}
+	}
+}

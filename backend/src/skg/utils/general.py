@@ -360,6 +360,41 @@ def redact_tokens(record: dict[str, Any]) -> dict[str, Any]:
     return record
 
 
+def strip_and_require_non_empty_str(v: str) -> str:
+    """Strip whitespace and require a non-empty string.
+
+    Parameters
+    ----------
+    v
+        The input string value to validate.
+
+    Returns
+    -------
+    str
+        The stripped non-empty string.
+
+    Raises
+    ------
+    TypeError
+        If the input is not a string.
+    ValueError
+        If the input value is None or empty after stripping.
+    """
+
+    if v is None:
+        raise ValueError("Required field cannot be None")
+
+    if not isinstance(v, str):
+        raise TypeError("Expected a string")
+
+    v_clean = v.strip()
+
+    if not v_clean:
+        raise ValueError("Required string field cannot be empty")
+
+    return v_clean
+
+
 def write_to_json(
     *,
     encoding: str = "utf-8",

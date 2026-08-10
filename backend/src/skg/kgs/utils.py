@@ -10,7 +10,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 # Third Party Library
 from loguru import logger
@@ -18,10 +18,77 @@ from pydantic import BaseModel
 
 # Package Library
 from skg.config import Settings
-from skg.document_ir.schemas import DocumentIR
+from skg.document_ir.schemas import DocumentIR, TableSegment
 from skg.page_ir_extraction.schemas import TableCell, TextUnit
 from skg.schemas import CreateKGConfig, ExtractionConfig, RunCtx
 from skg.utils.general import make_dir, open_json_type, write_to_json
+
+
+@dataclass(frozen=True)
+class ConfiguredCodeMatch:
+    """One source-visible match for a configured curriculum code pattern.
+
+    Attributes
+    ----------
+    code_type
+        Runtime-config code-pattern key that produced the match.
+    end_char
+        Exclusive end character offset in the scanned source text.
+    normalized_value
+        Formatting-normalized code value suitable for structured fields.
+    raw_value
+        Exact source-visible code surface matched in the source text.
+    start_char
+        Inclusive start character offset in the scanned source text.
+    """
+
+    code_type: str
+    end_char: int
+    normalized_value: str
+    raw_value: str
+    start_char: int
+
+
+@dataclass(frozen=True)
+class ConfiguredCodeMatchSourceUnit:
+    """Atomic source-text unit eligible for configured code matching.
+
+    Regex matching is confined to one unit, so a configured code cannot be manufactured
+    across unrelated source boundaries such as table cells or rows. `start_char`
+    locates the unit within a caller-defined coordinate space. This lets extraction
+    windows preserve offsets into their full rendered source text while preflight
+    counting can retain deterministic source order without concatenating units for
+    matching.
+
+    Attributes
+    ----------
+    start_char
+        Inclusive character offset of `text` in the caller-defined coordinate space.
+    text
+        Source-visible text to scan as one atomic matching unit.
+    """
+
+    start_char: int
+    text: str
+
+    def __post_init__(self) -> None:
+        """Validate the source unit offset and text value.
+
+        Raises
+        ------
+        TypeError
+            If `text` is not a string.
+        ValueError
+            If `start_char` is negative.
+        """
+
+        if self.start_char < 0:
+            raise ValueError(
+                "Configured code match source-unit offsets must be non-negative."
+            )
+
+        if not isinstance(self.text, str):
+            raise TypeError("Configured code match source-unit text must be a string.")
 
 
 @dataclass(frozen=True)
@@ -60,7 +127,7 @@ class KGInputs:
     table_columns_signature_counts
         Counts of table column signatures observed in table segments.
     table_selection_match_counts
-        Counts showing how the observed table signatures match the CreateKGConfig
+        Counts showing how table segments match the complete CreateKGConfig
         table-selection policy.
     warnings
         Non-fatal warnings.
@@ -78,10 +145,135 @@ class KGInputs:
     warnings: list[str]
 
 
+@dataclass(frozen=True)
+class ResolvedCandidateCode:
+    """Resolved code identity for one extracted SFI candidate.
+
+    Attributes
+    ----------
+    normalized_statement_code
+        Formatting-insensitive normalized code used for registry bucketing and
+        downstream identity logic, or `None` when the candidate is uncoded.
+    resolved_code_type
+        Configured code-pattern key that authoritatively matched the candidate code,
+        or `None` when the candidate is uncoded.
+    """
+
+    normalized_statement_code: str | None
+    resolved_code_type: str | None
+
+    def __post_init__(self) -> None:
+        """Validate that normalized code and resolved type are present together.
+
+        Raises
+        ------
+        ValueError
+            If exactly one of the two resolved-code fields is present.
+        """
+
+        if bool(self.normalized_statement_code) != bool(self.resolved_code_type):
+            raise ValueError(
+                "normalized_statement_code and resolved_code_type must either both "
+                "be present or both be null."
+            )
+
+
+def _build_glued_code_pattern(pattern: re.Pattern[str]) -> re.Pattern[str] | None:
+    """Build a conservative fallback regex for a code glued to statement text.
+
+    The configured regex remains authoritative. This function removes one terminal word
+    boundary only when the pattern ends with a literal `\\b` token. The shared matcher
+    then accepts a fallback match only when alphabetic statement text follows
+    immediately and the isolated code still fully matches the original regex. The
+    fallback preserves the original compiled flags, including the universal
+    case-insensitive code-matching policy.
+
+    Parameters
+    ----------
+    pattern
+        Compiled configured source-visible code regex.
+
+    Returns
+    -------
+    re.Pattern[str] | None
+        Compiled regex without one terminal word-boundary token, or `None` when no
+        supported fallback can be built.
+    """
+
+    pattern_clean = pattern.pattern.rstrip()
+
+    if not pattern_clean.endswith(r"\b"):
+        return None
+
+    return re.compile(flags=pattern.flags | re.IGNORECASE, pattern=pattern_clean[:-2])
+
+
+def _build_table_section_selection_text(
+    *, max_page_lookback: int, segment: TableSegment
+) -> str:
+    """Build bounded source context for table section-pattern matching.
+
+    Section paths may retain older headings that are no longer active. This function
+    therefore uses headings on the table's start page or within a configurable number
+    of preceding pages. When no heading falls inside that page window, the nearest
+    preceding section-path entry is retained as a conservative fallback. Table-local
+    code and column-signature metadata are appended after the bounded heading context.
+
+    Parameters
+    ----------
+    max_page_lookback
+        Maximum number of pages before the table start page from which section-path
+        headings may be used. Zero restricts matching to headings on the start page.
+    segment
+        Candidate stitched table segment.
+
+    Returns
+    -------
+    str
+        Bounded heading context plus table-local metadata for selection matching.
+
+    Raises
+    ------
+    ValueError
+        If max_page_lookback is negative.
+    """
+
+    if max_page_lookback < 0:
+        raise ValueError("max_page_lookback must be non-negative.")
+
+    table_start_page = min(
+        provenance.page_index for provenance in segment.segment_provenance
+    )
+    earliest_heading_page = table_start_page - max_page_lookback
+    nearby_heading_refs = [
+        heading_ref
+        for heading_ref in segment.section_path
+        if earliest_heading_page <= heading_ref.page_index <= table_start_page
+    ]
+
+    if not nearby_heading_refs and segment.section_path:
+        nearby_heading_refs = [segment.section_path[-1]]
+
+    parts = [heading_ref.text for heading_ref in nearby_heading_refs]
+
+    if segment.local_code:
+        parts.append(str(segment.local_code))
+
+    if segment.columns_signature:
+        parts.append(str(segment.columns_signature))
+
+    return "\n".join(part for part in parts if part)
+
+
 def _count_code_pattern_matches(
     *, document_ir: DocumentIR, kg_config: CreateKGConfig
 ) -> dict[str, dict[str, int]]:
-    """Count configured code pattern matches in the DocumentIR.
+    """Count configured code matches across source-visible DocumentIR text units.
+
+    The same shared matcher used by extraction-window construction is applied to each
+    source-visible block or table-cell text unit. Scanning units independently avoids
+    manufacturing matches across unrelated cells or segments while keeping strict and
+    glued-code recognition identical to the later detector.
 
     Parameters
     ----------
@@ -93,7 +285,7 @@ def _count_code_pattern_matches(
     Returns
     -------
     dict[str, dict[str, int]]
-        Mapping of pattern name to total and unique match counts.
+        Mapping of pattern name to total and unique normalized match counts.
 
     Raises
     ------
@@ -101,35 +293,54 @@ def _count_code_pattern_matches(
         If a segment kind is unrecognized.
     """
 
-    # 1. Extract text from block segments and table cells.
-    texts: list[str] = []
+    source_offset = 0
+    source_units: list[ConfiguredCodeMatchSourceUnit] = []
 
     for segment in document_ir.segments:
         if segment.kind == "block":
-            text = segment.combined_text
+            block_payload = segment.model_dump(mode="json")
 
-            if text is None and segment.text:
-                text = segment.text.text
-
-            if text and (clean_text := str(text).strip()):
-                texts.append(clean_text)
+            if block_text := extract_block_source_text(block_payload):
+                source_units.append(
+                    ConfiguredCodeMatchSourceUnit(
+                        start_char=source_offset, text=block_text
+                    )
+                )
+                source_offset += len(block_text) + 1
         elif segment.kind == "table":
             for row in segment.rows:
                 for cell in row.cells:
                     if cell_text := _extract_cell_text(cell):
-                        texts.append(cell_text)
+                        source_units.append(
+                            ConfiguredCodeMatchSourceUnit(
+                                start_char=source_offset, text=cell_text
+                            )
+                        )
+                        source_offset += len(cell_text) + 1
         else:
             raise ValueError(f"Unrecognized segment kind: {segment.kind}")
 
-    # 2. Join extracted text and scan for code patterns.
-    all_text = "\n".join(texts)
-    counts: dict[str, dict[str, int]] = {}
+    total_counts: dict[str, int] = {
+        code_type: 0 for code_type in kg_config.academic_standards.code_patterns
+    }
+    unique_values: dict[str, set[str]] = {
+        code_type: set() for code_type in kg_config.academic_standards.code_patterns
+    }
 
-    for name, pattern in kg_config.academic_standards.code_patterns.items():
-        matches = [match.group(0) for match in re.finditer(pattern, all_text)]
-        counts[name] = {"total": len(matches), "unique": len(set(matches))}
+    for match in find_configured_code_matches_in_source_units(
+        code_patterns=kg_config.academic_standards.code_patterns,
+        source_units=source_units,
+    ):
+        total_counts[match.code_type] += 1
+        unique_values[match.code_type].add(match.normalized_value)
 
-    return counts
+    return {
+        code_type: {
+            "total": total_counts[code_type],
+            "unique": len(unique_values[code_type]),
+        }
+        for code_type in kg_config.academic_standards.code_patterns
+    }
 
 
 def _count_table_columns_signatures(document_ir: DocumentIR) -> dict[str, int]:
@@ -161,7 +372,10 @@ def _count_table_columns_signatures(document_ir: DocumentIR) -> dict[str, int]:
 def _count_table_selection_matches(
     *, document_ir: DocumentIR, kg_config: CreateKGConfig
 ) -> dict[str, Any]:
-    """Count how observed table signatures match the KG config table-selection policy.
+    """Count matches against the complete table-selection policy.
+
+    Counts cover exact column signatures, bounded section-pattern matches, and the
+    final number of table segments selected after exclusion precedence.
 
     Parameters
     ----------
@@ -173,30 +387,77 @@ def _count_table_selection_matches(
     Returns
     -------
     dict[str, Any]
-        Summary counts for included and excluded table column signatures.
+        Selection counts by configured rule plus aggregate table-selection totals.
     """
 
+    academic_standards = kg_config.academic_standards
     observed_counts: Counter[str] = Counter()
+    included_section_pattern_counts = {
+        pattern: 0 for pattern in academic_standards.included_table_section_patterns
+    }
+    excluded_section_pattern_counts = {
+        pattern: 0 for pattern in academic_standards.excluded_table_section_patterns
+    }
+    included_section_pattern_segment_count = 0
+    excluded_section_pattern_segment_count = 0
+    selected_table_segment_count = 0
+    table_segment_count = 0
 
     for segment in document_ir.segments:
         if segment.kind != "table":
             continue
 
+        table_segment_count += 1
         observed_counts[segment.columns_signature or "<missing>"] += 1
+        section_text = _build_table_section_selection_text(
+            max_page_lookback=academic_standards.table_section_pattern_page_lookback,
+            segment=segment,
+        )
+        included_pattern_matched = False
+        excluded_pattern_matched = False
+
+        for pattern in academic_standards.included_table_section_patterns:
+            if re.search(pattern, section_text, flags=re.IGNORECASE):
+                included_section_pattern_counts[pattern] += 1
+                included_pattern_matched = True
+
+        for pattern in academic_standards.excluded_table_section_patterns:
+            if re.search(pattern, section_text, flags=re.IGNORECASE):
+                excluded_section_pattern_counts[pattern] += 1
+                excluded_pattern_matched = True
+
+        if included_pattern_matched:
+            included_section_pattern_segment_count += 1
+
+        if excluded_pattern_matched:
+            excluded_section_pattern_segment_count += 1
+
+        if get_table_selection_reasons(kg_config=kg_config, segment=segment):
+            selected_table_segment_count += 1
 
     excluded_signature_counts = {
         signature: observed_counts.get(signature, 0)
-        for signature in kg_config.academic_standards.excluded_table_columns_signatures
+        for signature in academic_standards.excluded_table_columns_signatures
     }
     included_signature_counts = {
         signature: observed_counts.get(signature, 0)
-        for signature in kg_config.academic_standards.included_table_columns_signatures
+        for signature in academic_standards.included_table_columns_signatures
     }
     return {
+        "excluded_table_section_pattern_counts": excluded_section_pattern_counts,
+        "excluded_table_section_pattern_match_total": (
+            excluded_section_pattern_segment_count
+        ),
         "excluded_table_signature_counts": excluded_signature_counts,
         "excluded_table_signature_match_total": sum(excluded_signature_counts.values()),
+        "included_table_section_pattern_counts": included_section_pattern_counts,
+        "included_table_section_pattern_match_total": (
+            included_section_pattern_segment_count
+        ),
         "included_table_signature_counts": included_signature_counts,
         "included_table_signature_match_total": sum(included_signature_counts.values()),
+        "selected_table_segment_count": selected_table_segment_count,
+        "table_segment_count": table_segment_count,
     }
 
 
@@ -247,6 +508,98 @@ def _extract_cell_text(cell: TableCell) -> Optional[str]:
         return None
 
     return str(text).strip() or None
+
+
+def _extract_figure_source_text(block_payload: dict[str, Any]) -> str:
+    """Extract source-visible text from serialized figure fields.
+
+    Figure alt text is descriptive metadata and is not treated as source-visible
+    evidence. Only embedded text and source-visible captions are eligible for the
+    extraction-window source text used by prompting and code matching.
+
+    Parameters
+    ----------
+    block_payload
+        JSON-serializable block payload containing optional figure data.
+
+    Returns
+    -------
+    str
+        Embedded text or caption text, otherwise an empty string.
+    """
+
+    figure = block_payload.get("figure")
+
+    if not isinstance(figure, dict):
+        return ""
+
+    embedded_text = figure.get("embedded_text")
+
+    if isinstance(embedded_text, dict) and embedded_text.get("text"):
+        return str(embedded_text["text"]).strip()
+
+    caption = figure.get("caption")
+
+    if isinstance(caption, dict) and caption.get("text"):
+        return str(caption["text"]).strip()
+
+    if isinstance(caption, str) and caption.strip():
+        return caption.strip()
+
+    return ""
+
+
+def _extract_list_items_source_text(list_items: list[Any]) -> str:
+    """Render serialized list items with visible markers in source order.
+
+    Each output line preserves the original item text. The structured marker is
+    prepended only when the text does not already begin with the same complete marker.
+    This keeps list-based identifiers available to extraction prompts and code matching
+    without duplicating markers already embedded in source text.
+
+    Parameters
+    ----------
+    list_items
+        Serialized list-item payloads.
+
+    Returns
+    -------
+    str
+        Newline-delimited source-visible list text, or an empty string.
+    """
+
+    if not isinstance(list_items, list):
+        return ""
+
+    item_lines: list[str] = []
+
+    for item in list_items:
+        if not isinstance(item, dict):
+            continue
+
+        marker = str(item.get("marker") or "").strip()
+        item_text = item.get("text")
+
+        if isinstance(item_text, dict):
+            text = str(item_text.get("text") or "").strip()
+        elif item_text is not None:
+            text = str(item_text).strip()
+        else:
+            text = ""
+
+        if (
+            marker
+            and text
+            and text_starts_with_complete_marker(marker=marker, text=text)
+        ):
+            line = text
+        else:
+            line = " ".join(part for part in [marker, text] if part)
+
+        if line:
+            item_lines.append(line)
+
+    return "\n".join(item_lines)
 
 
 def _extract_observed_languages(document_ir: DocumentIR) -> list[str]:
@@ -302,6 +655,98 @@ def _extract_text_unit_language(text_unit: TextUnit | None) -> Optional[str]:
     return language
 
 
+def _find_configured_code_matches(
+    *, compiled_patterns: Mapping[str, re.Pattern[str]], source_text: str
+) -> list[ConfiguredCodeMatch]:
+    """Find configured codes using precompiled case-insensitive patterns.
+
+    Strict matching is attempted first. Patterns ending in a literal terminal word
+    boundary also receive a conservative glued-code fallback that removes only that
+    boundary while preserving the compiled flags. A fallback match is accepted only
+    when alphabetic source text follows immediately and the isolated matched value
+    still fully matches the original configured pattern.
+
+    Parameters
+    ----------
+    compiled_patterns
+        Precompiled source-visible code regexes keyed by configured code type.
+    source_text
+        One atomic source-visible text unit to scan.
+
+    Returns
+    -------
+    list[ConfiguredCodeMatch]
+        Ordered, deduplicated configured code matches with source offsets.
+    """
+
+    matches: list[ConfiguredCodeMatch] = []
+
+    for code_type, pattern in compiled_patterns.items():
+        for match in pattern.finditer(source_text):
+            raw_value = match.group(0)
+            matches.append(
+                ConfiguredCodeMatch(
+                    code_type=code_type,
+                    end_char=match.end(),
+                    normalized_value=_normalize_code_match_value(
+                        pattern=pattern, raw_value=raw_value
+                    ),
+                    raw_value=raw_value,
+                    start_char=match.start(),
+                )
+            )
+
+        glued_pattern = _build_glued_code_pattern(pattern)
+
+        if glued_pattern is None:
+            continue
+
+        for match in glued_pattern.finditer(source_text):
+            if match.end() >= len(source_text):
+                continue
+
+            raw_value = match.group(0)
+
+            if not source_text[match.end()].isalpha():
+                continue
+
+            if pattern.fullmatch(raw_value) is None:
+                continue
+
+            matches.append(
+                ConfiguredCodeMatch(
+                    code_type=code_type,
+                    end_char=match.end(),
+                    normalized_value=_normalize_code_match_value(
+                        pattern=pattern, raw_value=raw_value
+                    ),
+                    raw_value=raw_value,
+                    start_char=match.start(),
+                )
+            )
+
+    matches.sort(key=lambda item: (item.start_char, item.end_char, item.code_type))
+    deduplicated_matches: list[ConfiguredCodeMatch] = []
+    seen: set[tuple[str, int, str, str, int]] = set()
+
+    for code_match in matches:
+        match_key = (
+            code_match.code_type,
+            code_match.end_char,
+            code_match.normalized_value,
+            code_match.raw_value,
+            code_match.start_char,
+        )
+
+        if match_key in seen:
+            continue
+
+        seen.add(match_key)
+        deduplicated_matches.append(code_match)
+
+    return deduplicated_matches
+
+
 def _language_base(language: str) -> str:
     """Return the base language subtag for loose language-overlap checks.
 
@@ -319,24 +764,160 @@ def _language_base(language: str) -> str:
     return language.replace("_", "-").split("-")[0].casefold()
 
 
-def _validate_document_ir(document_ir_fp: Path) -> DocumentIR:
+def _matches_any_pattern(*, patterns: Sequence[str], text: str) -> bool:
+    """Return whether any configured regex pattern matches text.
+
+    Parameters
+    ----------
+    patterns
+        Regex patterns to test.
+    text
+        Text to inspect.
+
+    Returns
+    -------
+    bool
+        True when at least one pattern matches; otherwise False.
+    """
+
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def _normalize_code_match_value(*, pattern: re.Pattern[str], raw_value: str) -> str:
+    """Normalize punctuation-adjacent whitespace in a matched code surface.
+
+    The compacted value is used only when it still fully matches the configured regex;
+    otherwise the stripped source-visible value is retained.
+
+    Parameters
+    ----------
+    pattern
+        Compiled configured regex that matched the source-visible code.
+    raw_value
+        Exact source-visible matched code surface.
+
+    Returns
+    -------
+    str
+        Formatting-normalized code suitable for structured code fields.
+    """
+
+    raw_value_clean = raw_value.strip()
+    compacted_value = re.sub(r"\s*([^\w\s])\s*", r"\1", raw_value_clean)
+
+    if pattern.fullmatch(compacted_value) is not None:
+        return compacted_value
+
+    return raw_value_clean
+
+
+def _resolve_code_type(
+    *,
+    compiled_patterns: Mapping[str, re.Pattern[str]],
+    expected_code_type: str | None,
+    matching_code_types: Sequence[str],
+    statement_code: str | None,
+) -> str:
+    """Resolve the authoritative configured code type for a coded candidate.
+
+    A declared expected code type acts as an explicit constraint: it must be a
+    configured code type and must appear among the candidate's matching code types.
+    When no code type is declared, the candidate code must match exactly one configured
+    code type.
+
+    Parameters
+    ----------
+    compiled_patterns
+        Compiled code patterns keyed by cleaned code type, used to validate that a
+        declared expected code type is configured.
+    expected_code_type
+        Optional code type declared for the candidate's canonical statement type.
+    matching_code_types
+        Configured code types whose pattern matched the candidate code exactly.
+    statement_code
+        Candidate statement code, used only for error messages.
+
+    Returns
+    -------
+    str
+        The uniquely resolved configured code type.
+
+    Raises
+    ------
+    ValueError
+        If the expected code type is not configured or does not match, or if an untyped
+        statement code matches zero or multiple code types.
+    """
+
+    expected_code_type_clean = str(expected_code_type or "").strip() or None
+
+    if expected_code_type_clean is not None:
+        if expected_code_type_clean not in compiled_patterns:
+            raise ValueError(
+                f"Expected code type {expected_code_type_clean!r} is not present in "
+                f"the configured code patterns."
+            )
+
+        if expected_code_type_clean not in matching_code_types:
+            raise ValueError(
+                f"Statement code {statement_code!r} does not match expected code "
+                f"type {expected_code_type_clean!r}; matched code types "
+                f"{list(matching_code_types)}."
+            )
+
+        return expected_code_type_clean
+
+    if len(matching_code_types) != 1:
+        raise ValueError(
+            f"Statement code {statement_code!r} must match exactly one configured "
+            f"code type when its statement type has no declared code_type; "
+            f"matched {list(matching_code_types)}."
+        )
+
+    return matching_code_types[0]
+
+
+def _validate_document_ir(*, document_ir_fp: Path, expected_doc_key: str) -> DocumentIR:
     """Validate basic DocumentIR assumptions required by KG creation.
 
     Parameters
     ----------
     document_ir_fp
         The file path to the stitched DocumentIR JSON.
+    expected_doc_key
+        The document key computed from the configured source PDF.
+
+    Returns
+    -------
+    DocumentIR
+        The validated stitched DocumentIR.
 
     Raises
     ------
     ValueError
-        If required document-level fields or segment identifiers are missing.
+        If the expected document key is blank, the DocumentIR key does not match it, or
+        required document-level fields or segment identifiers are missing.
     """
 
-    document_ir = DocumentIR.model_validate(open_json_type(document_ir_fp))
+    expected_doc_key_clean = str(expected_doc_key or "").strip()
 
-    if not document_ir.doc_key.strip():
+    if not expected_doc_key_clean:
+        raise ValueError("Expected DocumentIR doc_key must be non-empty.")
+
+    document_ir = DocumentIR.model_validate(open_json_type(document_ir_fp))
+    document_ir_doc_key = document_ir.doc_key.strip()
+
+    if not document_ir_doc_key:
         raise ValueError("DocumentIR.doc_key must be non-empty.")
+
+    if document_ir_doc_key != expected_doc_key_clean:
+        raise ValueError(
+            f"DocumentIR doc_key mismatch.\n"
+            f"  DocumentIR path:       {document_ir_fp}\n"
+            f"  expected doc_key:      {expected_doc_key_clean}\n"
+            f"  DocumentIR.doc_key:    {document_ir_doc_key}\n"
+            f"The loaded DocumentIR does not belong to the configured source PDF."
+        )
 
     if not document_ir.pages:
         raise ValueError("DocumentIR.pages must be non-empty.")
@@ -379,7 +960,7 @@ def _validate_kg_config_compatibility(
     segment_counts
         Counts of segment kinds in the DocumentIR.
     table_selection_match_counts
-        Counts showing how observed table signatures match the table-selection policy.
+        Counts showing how table segments match the complete selection policy.
 
     Returns
     -------
@@ -422,30 +1003,40 @@ def _validate_kg_config_compatibility(
             )
             raise ValueError(message)
 
-    if (
+    table_inclusion_rules_configured = bool(
         kg_config.academic_standards.included_table_columns_signatures
         or kg_config.academic_standards.included_table_section_patterns
-    ) and segment_counts.get("table", 0) == 0:
-        warnings.append(
-            "CreateKGConfig contains table-selection rules, but the DocumentIR "
-            "contains no table segments."
-        )
+    )
 
-    if kg_config.academic_standards.included_table_columns_signatures:
-        included_match_total = table_selection_match_counts[
-            "included_table_signature_match_total"
-        ]
-
-        if included_match_total == 0:
+    if (
+        table_inclusion_rules_configured
+        and table_selection_match_counts["selected_table_segment_count"] == 0
+    ):
+        if segment_counts.get("table", 0) == 0:
             raise ValueError(
-                "CreateKGConfig configured as.included_table_columns_signatures, but no "
-                "matching table segments were observed in the DocumentIR. "
+                "CreateKGConfig contains table inclusion rules, but the DocumentIR "
+                "contains no table segments."
             )
+
+        raise ValueError(
+            "CreateKGConfig contains table inclusion rules, but no table segments "
+            "were selected after applying bounded section-pattern matching and "
+            "exclusion precedence. Check included/excluded table column signatures, "
+            "included/excluded table section patterns, and "
+            "table_section_pattern_page_lookback."
+        )
 
     return warnings
 
 
-def append_jsonl_model(*, fp: Path, model: BaseModel) -> None:
+def append_jsonl_model(
+    *,
+    by_alias: bool = False,
+    compact: bool = False,
+    exclude_none: bool = False,
+    fp: Path,
+    model: BaseModel,
+) -> None:
     """Append one Pydantic model payload to a JSONL artifact.
 
     The parent directory is created before writing. If the target file already exists
@@ -454,6 +1045,12 @@ def append_jsonl_model(*, fp: Path, model: BaseModel) -> None:
 
     Parameters
     ----------
+    by_alias
+        Whether to serialize fields using their configured aliases.
+    compact
+        Whether to omit optional JSON whitespace between separators.
+    exclude_none
+        Whether to omit fields whose value is `None`.
     fp
         JSONL artifact path to append to.
     model
@@ -472,7 +1069,19 @@ def append_jsonl_model(*, fp: Path, model: BaseModel) -> None:
                 f.write("\n")
 
     with fp.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(model.model_dump(mode="json"), ensure_ascii=False))
+        payload = model.model_dump(
+            by_alias=by_alias,
+            exclude_none=exclude_none,
+            mode="json",
+        )
+        separators = (",", ":") if compact else None
+        f.write(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=separators,
+            )
+        )
         f.write("\n")
 
 
@@ -559,6 +1168,7 @@ def build_run_manifest(kg_run_inputs: KGInputs) -> dict[str, Any]:
             "excluded_table_section_patterns": kg_config.academic_standards.excluded_table_section_patterns,
             "included_table_columns_signatures": kg_config.academic_standards.included_table_columns_signatures,
             "included_table_section_patterns": kg_config.academic_standards.included_table_section_patterns,
+            "table_section_pattern_page_lookback": kg_config.academic_standards.table_section_pattern_page_lookback,
         },
         "warnings": kg_run_inputs.warnings,
     }
@@ -590,6 +1200,89 @@ def build_standards_framework_uuid(doc_key: str) -> uuid.UUID:
 
     identity_key = f"lc:curriculum:{doc_key_clean}:standards_framework"
     return uuid.uuid5(Settings.LC_CANONICAL_NAMESPACE_UUID, identity_key)
+
+
+def compile_code_patterns(
+    code_patterns: Mapping[str, str | re.Pattern[str]],
+) -> dict[str, re.Pattern[str]]:
+    """Compile and validate configured code patterns keyed by code type.
+
+    Code type keys are required to be non-empty and to remain unique after surrounding
+    whitespace is ignored for validation. Returned mappings preserve the configured
+    code type keys exactly. All patterns are compiled with case-insensitive matching as
+    the universal runtime contract. Existing compiled flags are preserved for compiled
+    patterns. String values are stripped and required to be non-empty. Keys are
+    processed in sorted order so validation is deterministic.
+
+    Parameters
+    ----------
+    code_patterns
+        Configured source-facing code regexes keyed by code type. Values may be raw
+        pattern strings or compiled regular expressions.
+
+    Returns
+    -------
+    dict[str, re.Pattern[str]]
+        Compiled regular expressions keyed by the configured code type.
+
+    Raises
+    ------
+    ValueError
+        If a code type key is empty or duplicated after stripping, or if a configured
+        pattern is empty, is byte-based, or is not a valid regular expression.
+    """
+
+    compiled_patterns: dict[str, re.Pattern[str]] = {}
+    validated_code_type_keys: set[str] = set()
+
+    for code_type, pattern in sorted(code_patterns.items()):
+        code_type_clean = str(code_type or "").strip()
+
+        if not code_type_clean:
+            raise ValueError(
+                "Configured code patterns must use non-empty code type keys."
+            )
+
+        if code_type_clean in validated_code_type_keys:
+            raise ValueError(
+                f"Configured code type {code_type_clean!r} is duplicated after "
+                f"stripping whitespace."
+            )
+
+        validated_code_type_keys.add(code_type_clean)
+
+        if isinstance(pattern, re.Pattern):
+            if not isinstance(pattern.pattern, str):
+                raise ValueError(
+                    f"Configured code pattern for code type {code_type_clean!r} must "
+                    f"be a string regular expression."
+                )
+
+            compiled_pattern = re.compile(
+                flags=pattern.flags | re.IGNORECASE, pattern=pattern.pattern
+            )
+        else:
+            pattern_clean = str(pattern or "").strip()
+
+            if not pattern_clean:
+                raise ValueError(
+                    f"Configured code pattern for code type {code_type_clean!r} "
+                    f"must be non-empty."
+                )
+
+            try:
+                compiled_pattern = re.compile(
+                    flags=re.IGNORECASE, pattern=pattern_clean
+                )
+            except re.error as exc:
+                raise ValueError(
+                    f"Configured code pattern for code type {code_type_clean!r} is "
+                    f"invalid: {pattern_clean!r}."
+                ) from exc
+
+        compiled_patterns[code_type] = compiled_pattern
+
+    return compiled_patterns
 
 
 def cross_check_stitching_run(
@@ -674,8 +1367,145 @@ def cross_check_stitching_run(
     return document_ir_fp
 
 
+def extract_block_source_text(block_payload: dict[str, Any]) -> str:
+    """Build source-faithful text from a serialized block segment payload.
+
+    The extraction order matches the Academic Standards window builder: combined text,
+    ordinary text, list-item text, then figure text. Keeping this logic in one shared
+    function ensures preflight code-pattern scanning and extraction-window construction
+    agree about which block content is extractable.
+
+    Parameters
+    ----------
+    block_payload
+        JSON-serializable block segment payload.
+
+    Returns
+    -------
+    str
+        Source-visible block text, or an empty string when no useful text is present.
+    """
+
+    if text := block_payload.get("combined_text"):
+        return str(text).strip()
+
+    text_unit = block_payload.get("text")
+
+    if isinstance(text_unit, dict) and text_unit.get("text"):
+        return str(text_unit["text"]).strip()
+
+    return _extract_list_items_source_text(
+        block_payload.get("list_items") or []
+    ) or _extract_figure_source_text(block_payload)
+
+
+def find_configured_code_matches_in_source_units(
+    *,
+    code_patterns: Mapping[str, str | re.Pattern[str]],
+    source_units: Sequence[ConfiguredCodeMatchSourceUnit],
+) -> list[ConfiguredCodeMatch]:
+    """Find configured code matches without crossing source-unit boundaries.
+
+    Configured patterns are compiled once, then each source unit is scanned
+    independently with the shared precompiled matcher. Unit-local offsets are
+    translated into the caller-defined coordinate space. Matches from separate units
+    are intentionally not deduplicated because equal codes in different cells or source
+    units represent distinct occurrences.
+
+    Parameters
+    ----------
+    code_patterns
+        Configured source-visible regexes keyed by code type. Values may be raw strings
+        or compiled regular expressions.
+    source_units
+        Ordered atomic source-text units with offsets in a caller-defined coordinate
+        space.
+
+    Returns
+    -------
+    list[ConfiguredCodeMatch]
+        Ordered configured code matches whose offsets use the caller-defined coordinate
+        space and whose spans never cross a source-unit boundary.
+    """
+
+    compiled_patterns = compile_code_patterns(code_patterns)
+    matches: list[ConfiguredCodeMatch] = []
+
+    for source_unit in source_units:
+        for match in _find_configured_code_matches(
+            compiled_patterns=compiled_patterns, source_text=source_unit.text
+        ):
+            matches.append(
+                ConfiguredCodeMatch(
+                    code_type=match.code_type,
+                    end_char=source_unit.start_char + match.end_char,
+                    normalized_value=match.normalized_value,
+                    raw_value=match.raw_value,
+                    start_char=source_unit.start_char + match.start_char,
+                )
+            )
+
+    matches.sort(key=lambda item: (item.start_char, item.end_char, item.code_type))
+    return matches
+
+
+def get_table_selection_reasons(
+    *, kg_config: CreateKGConfig, segment: TableSegment
+) -> list[str]:
+    """Return deterministic reasons for selecting a table for SFI extraction.
+
+    Exclusion rules take precedence over inclusion rules. Section-pattern rules are
+    evaluated against bounded nearby heading context built with
+    `table_section_pattern_page_lookback` so stale section-path entries cannot select
+    unrelated later tables.
+
+    Parameters
+    ----------
+    kg_config
+        Country/document-specific KG extraction configuration.
+    segment
+        Candidate stitched table segment.
+
+    Returns
+    -------
+    list[str]
+        Stable selection reasons, or an empty list when the table is not selected.
+    """
+
+    academic_standards = kg_config.academic_standards
+    columns_signature = segment.columns_signature or "<missing>"
+    section_text = _build_table_section_selection_text(
+        max_page_lookback=academic_standards.table_section_pattern_page_lookback,
+        segment=segment,
+    )
+
+    if columns_signature in academic_standards.excluded_table_columns_signatures:
+        return []
+
+    if _matches_any_pattern(
+        patterns=academic_standards.excluded_table_section_patterns, text=section_text
+    ):
+        return []
+
+    reasons: list[str] = []
+
+    if columns_signature in academic_standards.included_table_columns_signatures:
+        reasons.append("table_columns_signature_included_match")
+
+    if _matches_any_pattern(
+        patterns=academic_standards.included_table_section_patterns, text=section_text
+    ):
+        reasons.append("table_section_included_pattern_match")
+
+    return reasons
+
+
 def load_and_validate_inputs(
-    *, config: CreateKGConfig, document_ir_fp: Path, kg_dirs: KGDirs
+    *,
+    config: CreateKGConfig,
+    document_ir_fp: Path,
+    expected_doc_key: str,
+    kg_dirs: KGDirs,
 ) -> KGInputs:
     """Load, validate, and prep KG creation run inputs.
 
@@ -686,6 +1516,8 @@ def load_and_validate_inputs(
         attributes.
     document_ir_fp
         Path to the stitched DocumentIR JSON file.
+    expected_doc_key
+        Document key computed from the configured source PDF.
     kg_dirs
         Directories for storing KG run artifacts.
 
@@ -702,7 +1534,9 @@ def load_and_validate_inputs(
 
     # Validate the DocumentIR object. The CreateKGConfig has already been parsed and
     # validated by the runtime config loader.
-    document_ir = _validate_document_ir(document_ir_fp)
+    document_ir = _validate_document_ir(
+        document_ir_fp=document_ir_fp, expected_doc_key=expected_doc_key
+    )
 
     # Count code pattern matches in the document IR.
     code_pattern_match_counts = _count_code_pattern_matches(
@@ -863,6 +1697,120 @@ def reset_output_files(output_fps: Sequence[Path]) -> None:
 
         if output_fp.suffix == ".jsonl":
             output_fp.write_text("", encoding="utf-8")
+
+
+def resolve_candidate_code(
+    *,
+    code_patterns: Mapping[str, str | re.Pattern[str]],
+    expected_code_type: str | None,
+    statement_code: str | None,
+) -> ResolvedCandidateCode:
+    """Resolve one candidate code to exactly one configured code family.
+
+    A statement type's configured `code_type` acts as an explicit constraint. When no
+    code type is configured for the statement type, a non-null candidate code must
+    match exactly one configured pattern. The returned resolved code type is the
+    authoritative input for code-scope construction.
+
+    Configured patterns are source-facing regexes. Each pattern is searched against the
+    candidate code, and a match counts only when its normalized text equals the
+    normalized complete candidate code. This supports source formatting variants
+    without allowing a partial code match to determine the code family.
+
+    Parameters
+    ----------
+    code_patterns
+        Configured source-facing code regexes keyed by code type. Values may be raw
+        pattern strings or compiled regular expressions.
+    expected_code_type
+        Optional code type declared for the candidate's canonical statement type.
+    statement_code
+        Candidate statement code, or `None` for an uncoded candidate.
+
+    Returns
+    -------
+    ResolvedCandidateCode
+        Normalized statement code and uniquely resolved configured code type. Both
+        fields are `None` for an uncoded candidate.
+
+    Raises
+    ------
+    ValueError
+        If a configured pattern is invalid, the expected code type is unavailable or
+        does not match, or an untyped statement code matches zero or multiple code
+        types.
+    """
+
+    statement_code_clean = str(statement_code or "").strip()
+    normalized_statement_code = normalize_code(statement_code_clean)
+
+    if normalized_statement_code is None:
+        return ResolvedCandidateCode(
+            normalized_statement_code=None, resolved_code_type=None
+        )
+
+    compiled_patterns = compile_code_patterns(code_patterns)
+
+    matching_code_types: list[str] = []
+
+    for code_type, pattern in compiled_patterns.items():
+        for match in pattern.finditer(statement_code_clean):
+            if normalize_code(match.group(0)) == normalized_statement_code:
+                matching_code_types.append(code_type)
+                break
+
+    resolved_code_type = _resolve_code_type(
+        compiled_patterns=compiled_patterns,
+        expected_code_type=expected_code_type,
+        matching_code_types=matching_code_types,
+        statement_code=statement_code,
+    )
+
+    return ResolvedCandidateCode(
+        normalized_statement_code=normalized_statement_code,
+        resolved_code_type=resolved_code_type,
+    )
+
+
+def text_starts_with_complete_marker(*, marker: str, text: str) -> bool:
+    """Return whether text begins with the same complete structured list marker.
+
+    NFKC normalization and whitespace collapsing are used only for comparison; the
+    caller retains the original marker and text for output. Numeric hierarchy
+    continuations are not treated as complete matches, so marker `2.` does not match
+    text beginning with `2.1` and marker `2.1` does not match `2.1.1`.
+
+    Parameters
+    ----------
+    marker
+        Structured source-visible list marker.
+    text
+        Source-visible list-item text.
+
+    Returns
+    -------
+    bool
+        True when text already begins with the complete marker; otherwise False.
+    """
+
+    marker_key = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", marker)).strip()
+    text_key = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text)).lstrip()
+
+    if not marker_key or not text_key.startswith(marker_key):
+        return False
+
+    remainder = text_key[len(marker_key) :]
+
+    if not remainder or remainder[0].isspace():
+        return True
+
+    if marker_key.endswith("."):
+        return not remainder[0].isdigit()
+
+    if marker_key[-1].isalnum():
+        return remainder[0] in {":", ";", ")", "]", "}"}
+
+    return True
 
 
 def unique_nonempty(values: Iterable[Any]) -> list[str]:

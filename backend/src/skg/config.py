@@ -10,6 +10,7 @@ import uuid
 from typing import Literal
 
 # Third Party Library
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Package Library
@@ -21,6 +22,9 @@ class BackendSettings(BaseSettings):
 
     # Chat
     CHAT_ENV: Literal["dev", "prod", "local", "testing"] = "local"
+
+    # Learning Commons
+    LEARNING_COMMONS_EXPORT_SCHEMA_VERSION: str = ""
 
     # LLM
     LLM_ANTHROPIC_EFFORT: str = "high"
@@ -44,6 +48,41 @@ class BackendSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="allow"
     )
+
+    @field_validator("LEARNING_COMMONS_EXPORT_SCHEMA_VERSION", mode="before")
+    @classmethod
+    def validate_learning_commons_export_schema_version(cls, value: str) -> str:
+        """Validate the Learning Commons export schema version.
+
+        Parameters
+        ----------
+        value
+            Raw environment value for the Learning Commons export schema version.
+
+        Returns
+        -------
+        str
+            The stripped non-empty schema version.
+
+        Raises
+        ------
+        TypeError
+            If the configured value is not a string.
+        ValueError
+            If the configured string is blank after stripping whitespace.
+        """
+
+        if not isinstance(value, str):
+            raise TypeError("LEARNING_COMMONS_EXPORT_SCHEMA_VERSION must be a string.")
+
+        value_clean = value.strip()
+
+        if not value_clean:
+            raise ValueError(
+                "LEARNING_COMMONS_EXPORT_SCHEMA_VERSION must be a non-empty string."
+            )
+
+        return value_clean
 
     def _llm_type_registry(self, model_type: str) -> str:
         """Registry mapping LLM model types to their corresponding ModelConfig builders.

@@ -14,6 +14,7 @@ lc_export.py (step 19).
 """
 
 # Standard Library
+import hashlib
 import json
 
 from collections import Counter
@@ -42,8 +43,13 @@ from skg.kgs.schemas import (
     SFIFinalRecord,
 )
 from skg.kgs.sfi_export import _fingerprint_jsonable
-from skg.kgs.sfi_finalization import _hash_text
-from skg.kgs.utils import KGDirs, append_jsonl_model, make_dir, reset_output_files
+from skg.kgs.utils import (
+    KGDirs,
+    append_jsonl_model,
+    make_dir,
+    normalize_text,
+    reset_output_files,
+)
 from skg.schemas import CreateKGConfig, _CreateKGLearningComponentsConfig
 from skg.utils.general import write_to_json
 
@@ -373,6 +379,26 @@ def _confidence_histogram(confidences: Sequence[float]) -> dict[str, int]:
         for confidence in confidences
     )
     return dict(sorted(buckets.items()))
+
+
+def _hash_text(*, n_hex: int, value: str) -> str:
+    """Hash normalized text to a truncated hex digest.
+
+    Parameters
+    ----------
+    n_hex
+        Number of leading hex characters to keep from the digest.
+    value
+        Text to normalize and hash.
+
+    Returns
+    -------
+    str
+        The first n_hex characters of the SHA-256 digest of the normalized text.
+    """
+
+    normalized = normalize_text(value)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:n_hex]
 
 
 def _representative_description(

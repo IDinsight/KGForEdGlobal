@@ -2,6 +2,7 @@
 
 # Standard Library
 import re
+import unicodedata
 
 from datetime import datetime
 from pathlib import Path
@@ -21,42 +22,7 @@ from pydantic import (
 )
 
 # Package Library
-from skg.utils.general import make_dir
-
-
-def _strip_and_require_non_empty_str(v: str) -> str:
-    """Strip whitespace and require a non-empty string.
-
-    Parameters
-    ----------
-    v
-        The input string value to validate.
-
-    Returns
-    -------
-    str
-        The stripped non-empty string.
-
-    Raises
-    ------
-    TypeError
-        If the input is not a string.
-    ValueError
-        If the input value is None or empty after stripping.
-    """
-
-    if v is None:
-        raise ValueError("Required field cannot be None")
-
-    if not isinstance(v, str):
-        raise TypeError("Expected a string")
-
-    v_clean = v.strip()
-
-    if not v_clean:
-        raise ValueError("Required string field cannot be empty")
-
-    return v_clean
+from skg.utils.general import make_dir, strip_and_require_non_empty_str
 
 
 def _validate_bcp47(code: str) -> str:
@@ -92,6 +58,38 @@ def _validate_bcp47(code: str) -> str:
         return lang.to_tag()
     except langcodes.LanguageTagError as exc:
         raise ValueError(f"Unparseable language tag: '{code}'") from exc
+
+
+def normalize_controlled_value_key(value: str) -> str:
+    """Build a Unicode-aware comparison key for controlled values and aliases.
+
+    The normalization preserves Unicode letters and numbers while collapsing
+    punctuation, symbols, and whitespace into single spaces. NFKC normalization makes
+    compatibility forms comparable without transliterating or discarding
+    source-language characters.
+
+    Parameters
+    ----------
+    value
+        Controlled value, alias, statement type, or other source-facing label.
+
+    Returns
+    -------
+    str
+        NFKC-normalized, casefolded key containing Unicode letters, numbers, and
+        combining marks.
+    """
+
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    letters_numbers_marks_or_spaces = "".join(
+        (
+            character
+            if character.isalnum() or unicodedata.category(character).startswith("M")
+            else " "
+        )
+        for character in normalized
+    )
+    return " ".join(letters_numbers_marks_or_spaces.split())
 
 
 def validate_bbox_order(bbox: list[float]) -> list[float]:
@@ -137,9 +135,6 @@ def validate_bbox_order(bbox: list[float]) -> list[float]:
 
 # Common fields with descriptions.
 _BCP47Str = Annotated[str, AfterValidator(_validate_bcp47)]
-_ControlledStatementValueDedupScope = Literal[
-    "document", "nearest_parent_values", "source_context"
-]
 BBox = Annotated[
     list[float],
     AfterValidator(validate_bbox_order),
@@ -154,6 +149,22 @@ LanguageField = Annotated[
     Field(
         description="Strict BCP-47 language code (e.g., 'en', 'sw'). Use 'und' if unknown; use 'mul' if mixed languages.",
     ),
+]
+LearningCommonsGradeLevel = Literal[
+    "PK",
+    "K",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
 ]
 NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
 
@@ -280,23 +291,6 @@ class _AcademicStandardStatementTypePolicyItem(BaseSchema):
             "type, such as 'indicator' or 'content_standard'."
         ),
     )
-    controlled_value_scope: _ControlledStatementValueDedupScope = Field(
-        default="source_context",
-        description=(
-            "Scope used when controlled_values canonicalize organizer text for "
-            "deduplication. Use 'document' for document-wide values, "
-            "'nearest_parent_values' for values scoped by configured parent "
-            "statement types, and 'source_context' for source-local values."
-        ),
-    )
-    controlled_value_scope_parent_statement_types: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Ordered parent statement_type labels used when controlled_value_scope is "
-            "'nearest_parent_values'. The resulting scope key is built from these "
-            "parent values in configured order."
-        ),
-    )
     controlled_values: list[_AcademicStandardControlledValueItem] = Field(
         default_factory=list,
         description=(
@@ -315,67 +309,6 @@ class _AcademicStandardStatementTypePolicyItem(BaseSchema):
     statement_type: str = Field(
         description="Canonical source-facing statement_type label the LLM must output."
     )
-
-    @staticmethod
-    def _controlled_value_key(value: str) -> str:
-        """Build a stable comparison key for controlled values and aliases.
-
-        Parameters
-        ----------
-        value
-            Controlled value or alias.
-
-        Returns
-        -------
-        str
-            Casefolded key with non-alphanumeric runs collapsed to one space.
-        """
-
-        return re.sub(r"[^0-9a-z]+", " ", str(value or "").casefold()).strip()
-
-    @field_validator("controlled_value_scope_parent_statement_types")
-    @classmethod
-    def validate_controlled_value_scope_parent_statement_types(
-        cls, v: list[str]
-    ) -> list[str]:
-        """Clean controlled-value parent scope statement types.
-
-        Parameters
-        ----------
-        v
-            Parent statement_type labels used to build a controlled-value scope key.
-
-        Returns
-        -------
-        list[str]
-            Cleaned parent statement_type labels in stable order.
-
-        Raises
-        ------
-        TypeError
-            If any parent statement_type label is not a string.
-        """
-
-        cleaned: list[str] = []
-        seen: set[str] = set()
-
-        for statement_type in v or []:
-            if not isinstance(statement_type, str):
-                raise TypeError(
-                    "_AcademicStandardStatementTypePolicyItem."
-                    "controlled_value_scope_parent_statement_types must contain "
-                    "only strings."
-                )
-
-            statement_type_clean = statement_type.strip()
-
-            if not statement_type_clean or statement_type_clean in seen:
-                continue
-
-            cleaned.append(statement_type_clean)
-            seen.add(statement_type_clean)
-
-        return cleaned
 
     @field_validator("controlled_values")
     @classmethod
@@ -403,7 +336,7 @@ class _AcademicStandardStatementTypePolicyItem(BaseSchema):
         alias_to_canonical: dict[str, str] = {}
 
         for item in v or []:
-            canonical_key = cls._controlled_value_key(item.canonical_value)
+            canonical_key = normalize_controlled_value_key(item.canonical_value)
 
             if not canonical_key:
                 raise ValueError(
@@ -412,7 +345,7 @@ class _AcademicStandardStatementTypePolicyItem(BaseSchema):
                 )
 
             for alias in [item.canonical_value, *item.aliases]:
-                alias_key = cls._controlled_value_key(alias)
+                alias_key = normalize_controlled_value_key(alias)
 
                 if not alias_key:
                     continue
@@ -518,43 +451,7 @@ class _AcademicStandardStatementTypePolicyItem(BaseSchema):
             Cleaned non-empty string.
         """
 
-        return _strip_and_require_non_empty_str(v)
-
-    @model_validator(mode="after")
-    def validate_controlled_value_scope_config(self) -> Self:
-        """Validate controlled-value scope fields for this statement type.
-
-        Returns
-        -------
-        Self
-            Validated statement-type policy item.
-
-        Raises
-        ------
-        ValueError
-            If nearest_parent_values is selected without configured parent statement
-            types, or if parent statement types are configured for another scope.
-        """
-
-        if (
-            self.controlled_value_scope == "nearest_parent_values"
-            and not self.controlled_value_scope_parent_statement_types
-        ):
-            raise ValueError(
-                "controlled_value_scope='nearest_parent_values' requires "
-                "controlled_value_scope_parent_statement_types."
-            )
-
-        if (
-            self.controlled_value_scope != "nearest_parent_values"
-            and self.controlled_value_scope_parent_statement_types
-        ):
-            raise ValueError(
-                "controlled_value_scope_parent_statement_types may only be set when "
-                "controlled_value_scope='nearest_parent_values'."
-            )
-
-        return self
+        return strip_and_require_non_empty_str(v)
 
 
 class _ContextHeadingRule(BaseSchema):
@@ -613,7 +510,7 @@ class _ContextHeadingRule(BaseSchema):
             The validated and stripped string value.
         """
 
-        return _strip_and_require_non_empty_str(v)
+        return strip_and_require_non_empty_str(v)
 
     @field_validator("label_template", mode="before")
     @classmethod
@@ -699,7 +596,7 @@ class _ContextResetRule(BaseSchema):
             The validated and stripped on_role value.
         """
 
-        return _strip_and_require_non_empty_str(v)
+        return strip_and_require_non_empty_str(v)
 
     @field_validator("reset_roles")
     @classmethod
@@ -866,12 +763,69 @@ class _ContextSpineConfig(BaseSchema):
         return self
 
 
+class _SFIHasChildParentPolicyEntry(BaseSchema):
+    """Cardinality policy for one allowed direct-parent statement type."""
+
+    max_count: Optional[int] = Field(default=None, ge=1)
+    min_count: int = Field(ge=0)
+    parent_statement_type: str = Field(min_length=1)
+
+    @field_validator("parent_statement_type", mode="before")
+    @classmethod
+    def validate_parent_statement_type(cls, v: str) -> str:
+        """Clean and require the direct-parent statement-type label.
+
+        Parameters
+        ----------
+        v
+            Raw parent statement-type label.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty parent statement-type label.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+    @model_validator(mode="after")
+    def validate_cardinality(self) -> Self:
+        """Validate that the configured maximum is not below the minimum.
+
+        Returns
+        -------
+        Self
+            Validated parent-policy entry.
+
+        Raises
+        ------
+        ValueError
+            If max_count is smaller than min_count.
+        """
+
+        if self.max_count is not None and self.max_count < self.min_count:
+            raise ValueError("max_count must be greater than or equal to min_count.")
+
+        return self
+
+
 class _CreateKGAcademicStandardsConfig(BaseSchema):
     """Academic Standards extraction configuration for KG creation."""
 
     bilingual_pair_policy: str | None = None
     code_parent_rules: list[dict[str, str]] = Field(default_factory=list)
     code_patterns: dict[str, str] = Field(default_factory=dict)
+    code_scope_statement_types: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Ordered source-facing Standard Grouping statement types that the SFI "
+            "producer/checker must return in a coded candidate's code_scope_values. "
+            "A candidate code is unique only within this reviewed semantic scope. "
+            "The registry validates and canonicalizes the supplied values but does not "
+            "infer code scope from row text, section paths, or candidate wording. Omit "
+            "a code type from this mapping when its codes are document-global."
+        ),
+    )
     excluded_table_columns_signatures: list[str] = Field(
         default_factory=list,
         description=(
@@ -887,22 +841,33 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
             "eligible."
         ),
     )
-    included_source_page_end_index: Optional[int] = Field(
-        default=None,
+    grade_level_mapping: dict[str, list[LearningCommonsGradeLevel]] = Field(
+        default_factory=dict,
         description=(
-            "Inclusive 0-based source page index where KG SFI extraction should stop. "
-            "Set to null to include all pages from included_source_page_start_index "
-            "through the end of the source PDF."
+            "Maps source-canonical local grade, class, year, stage, or band values "
+            "to zero or more Learning Commons grade values. Keys must use canonical "
+            "controlled values rather than aliases. An explicit empty target list "
+            "means the local value was reviewed but intentionally has no Learning "
+            "Commons grade equivalent."
         ),
-        ge=1,
     )
-    included_source_page_start_index: int = Field(
+    grade_level_statement_types: list[str] = Field(
         description=(
-            "Inclusive 0-based source page index where KG SFI extraction should start. "
-            "Windows whose source pages fall outside the configured range are not sent "
-            "to the LLM and instead receive an empty SFI extraction result."
+            "Ordered canonical statement_type labels whose own values or identity "
+            "scope values populate StandardsFrameworkItem.grade_level. Supply an "
+            "explicit empty list when the framework has no applicable grade, year, "
+            "class, stage, band, or equivalent item-level dimension."
+        )
+    )
+    identity_scope_statement_types: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Ordered source-facing Standard Grouping statement types that the SFI "
+            "producer/checker must return in each candidate's identity_scope_values. "
+            "The registry validates the exact configured dimensions, mechanically "
+            "canonicalizes configured aliases, and constructs a deterministic key; it "
+            "does not independently infer semantic scope."
         ),
-        ge=0,
     )
     included_table_columns_signatures: list[str] = Field(
         default_factory=list,
@@ -951,28 +916,59 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         ),
     )
     row_overlap: int = Field(default=1, ge=0)
-    sfi_deduplication_instructions: str
-    sfi_extraction_instructions: str
-    sfi_has_child_instructions: str
-    sfi_has_child_parent_statement_types: dict[str, list[str]] = Field(
-        default_factory=dict,
+    sfi_dedup_context_statement_types: list[str] = Field(
+        default_factory=list,
         description=(
-            "Optional direct hasChild parent policy keyed by child statement_type. "
-            "Each value is the list of allowed direct parent statement_type labels. "
-            "An empty list means the child statement_type is allowed to attach "
-            "directly to the StandardsFramework root. When omitted, the ordered "
-            "sfi_has_child_statement_type_hierarchy is used to derive one direct "
-            "parent type per child type."
+            "Statement types to include as context-bearing items in nearby SFI "
+            "dedup source windows. When empty, use all statement types whose "
+            "configured normalized_statement_type is 'Standard Grouping'."
         ),
+    )
+    sfi_dedup_context_window_radius: int = Field(
+        default=1,
+        description=(
+            "Number of extraction windows before and after each reviewed candidate's "
+            "window to include as shared source context for the SFI dedup producer "
+            "and checker. This setting does not change candidate identity, duplicate "
+            "buckets, review signals, or review-component membership, but changing "
+            "the available context may change an LLM dedup decision."
+        ),
+        ge=0,
+    )
+    sfi_dedup_instructions: str
+    sfi_extraction_instructions: str
+    sfi_extraction_validation_instructions: str = Field(
+        description=(
+            "Curriculum-specific instructions for the second-stage SFI validation "
+            "LLM, including known source anomalies, edge cases, and distinctions "
+            "that require semantic review beyond universal Python integrity checks."
+        )
+    )
+    sfi_has_child_instructions: str
+    sfi_has_child_parent_policy: dict[str, list[_SFIHasChildParentPolicyEntry]] = Field(
+        description=(
+            "Complete direct hasChild parent policy keyed by child statement_type. "
+            "Every listed parent type is allowed; min_count and max_count define "
+            "the cardinality required for a resolved child. An empty list means the "
+            "child statement_type attaches directly to the StandardsFramework root."
+        )
     )
     sfi_has_child_statement_type_hierarchy: list[str] = Field(
         default_factory=list,
         description=(
-            "Optional ordered statement_type hierarchy, broadest parent to narrowest "
-            "child, used to derive direct hasChild parent candidates when "
-            "sfi_has_child_parent_statement_types is not provided. If omitted, "
-            "statement_type_policy order is used."
+            "Optional broad-to-narrow statement_type ordering used only for "
+            "active-outline retrieval and ranking. If omitted, statement_type_policy "
+            "order is used. Direct-parent eligibility and cardinality come exclusively "
+            "from sfi_has_child_parent_policy."
         ),
+    )
+    sfi_has_child_validation_instructions: str = Field(
+        description=(
+            "Curriculum-specific instructions for the independent hasChild checker, "
+            "including known source-order anomalies, repeated-label distinctions, "
+            "scope conflicts, and unresolved-parent policy that require semantic "
+            "review beyond universal Python integrity checks."
+        )
     )
     statement_type_policy: list[_AcademicStandardStatementTypePolicyItem] = Field(
         description=(
@@ -986,125 +982,111 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         default_factory=lambda: [
             "country",
             "subject",
-            "grade_level",
             "normalized_statement_type",
             "statement_type",
-            "hierarchy_context",
+            "identity_scope",
             "normalized_text",
         ]
     )
+    table_section_pattern_page_lookback: int = Field(
+        default=2,
+        description=(
+            "Maximum number of pages before a table's start page from which "
+            "DocumentIR section-path headings may be used for included/excluded "
+            "table section-pattern matching. If no heading falls within the bounded "
+            "page range, the nearest preceding section-path heading is used."
+        ),
+        ge=0,
+    )
 
-    @staticmethod
-    def _clean_has_child_parent_values(
-        parent_statement_types: list[str] | None,
-    ) -> list[str]:
-        """Clean and de-duplicate one child type's allowed parent labels.
-
-        Parameters
-        ----------
-        parent_statement_types
-            Raw list of allowed direct parent statement_type labels for a single child
-            statement_type. `None` is treated as an empty list.
-
-        Returns
-        -------
-        list[str]
-            Stripped, non-blank parent labels de-duplicated in input order.
-
-        Raises
-        ------
-        TypeError
-            If the value is not a list or any parent label is not a string.
-        """
-
-        if parent_statement_types is None:
-            parent_statement_types = []
-
-        if isinstance(parent_statement_types, (str, bytes)) or not isinstance(
-            parent_statement_types, list
-        ):
-            raise TypeError(
-                "CreateKGConfig.as.sfi_has_child_parent_statement_types values "
-                "must be lists of parent statement_type strings."
-            )
-
-        parent_values: list[str] = []
-        seen_parent_values: set[str] = set()
-
-        for parent_statement_type in parent_statement_types:
-            if not isinstance(parent_statement_type, str):
-                raise TypeError(
-                    "CreateKGConfig.as.sfi_has_child_parent_statement_types "
-                    "parent labels must be strings."
-                )
-
-            parent_statement_type_clean = parent_statement_type.strip()
-
-            if (
-                not parent_statement_type_clean
-                or parent_statement_type_clean in seen_parent_values
-            ):
-                continue
-
-            parent_values.append(parent_statement_type_clean)
-            seen_parent_values.add(parent_statement_type_clean)
-
-        return parent_values
-
-    @field_validator("sfi_has_child_parent_statement_types", mode="before")
+    @field_validator("sfi_has_child_parent_policy", mode="before")
     @classmethod
-    def validate_sfi_has_child_parent_statement_types(
-        cls, v: dict[str, list[str]] | None
-    ) -> dict[str, list[str]]:
-        """Clean direct hasChild parent-type policy entries.
+    def validate_sfi_has_child_parent_policy(cls, v: Any) -> dict[str, Any]:
+        """Clean child statement-type keys in the unified parent policy.
 
         Parameters
         ----------
         v
-            Mapping from child statement_type to allowed direct parent
-            statement_type labels. Empty parent lists identify root-level child types.
+            Raw mapping from child statement types to parent-policy entries.
 
         Returns
         -------
-        dict[str, list[str]]
-            Cleaned mapping with blank keys/values removed and parent lists
-            de-duplicated in input order.
+        dict[str, Any]
+            Mapping with stripped non-empty child labels.
 
         Raises
         ------
         TypeError
-            If the mapping, child keys, or parent values have invalid types.
+            If the policy is not a mapping, a child label is not a string, or a child
+            policy is not a list.
+        ValueError
+            If a child label is blank or duplicated after stripping.
         """
-
-        if v is None:
-            return {}
 
         if not isinstance(v, dict):
             raise TypeError(
-                "CreateKGConfig.as.sfi_has_child_parent_statement_types must be "
-                "a mapping from child statement_type to a list of parent "
-                "statement_type labels."
+                "CreateKGConfig.as.sfi_has_child_parent_policy must be a mapping "
+                "from child statement_type labels to parent-policy entry lists."
             )
 
-        cleaned: dict[str, list[str]] = {}
+        cleaned: dict[str, Any] = {}
 
-        for child_statement_type, parent_statement_types in v.items():
+        for child_statement_type, parent_policy_entries in v.items():
             if not isinstance(child_statement_type, str):
                 raise TypeError(
-                    "CreateKGConfig.as.sfi_has_child_parent_statement_types keys "
-                    "must be strings."
+                    "CreateKGConfig.as.sfi_has_child_parent_policy keys must be "
+                    "strings."
                 )
 
             child_statement_type_clean = child_statement_type.strip()
 
             if not child_statement_type_clean:
-                continue
+                raise ValueError(
+                    "CreateKGConfig.as.sfi_has_child_parent_policy keys must be "
+                    "non-empty after stripping."
+                )
 
-            cleaned[child_statement_type_clean] = cls._clean_has_child_parent_values(
-                parent_statement_types
-            )
+            if child_statement_type_clean in cleaned:
+                raise ValueError(
+                    f"CreateKGConfig.as.sfi_has_child_parent_policy contains duplicate "
+                    f"child label {child_statement_type_clean!r} after stripping."
+                )
+
+            if not isinstance(parent_policy_entries, list):
+                raise TypeError(
+                    "CreateKGConfig.as.sfi_has_child_parent_policy values must be "
+                    "lists of parent-policy entries."
+                )
+
+            cleaned[child_statement_type_clean] = parent_policy_entries
 
         return cleaned
+
+    @field_validator("sfi_dedup_context_statement_types")
+    @classmethod
+    def validate_sfi_dedup_context_statement_types(cls, v: list[str]) -> list[str]:
+        """Clean configured statement types used as SFI dedup context items.
+
+        Parameters
+        ----------
+        v
+            Optional statement-type labels to include in compact dedup context windows.
+
+        Returns
+        -------
+        list[str]
+            Cleaned labels in stable order. An empty list selects all configured
+            Standard Grouping statement types at runtime.
+
+        Raises
+        ------
+        TypeError
+            If any configured value is not a string.
+        """
+
+        return cls._clean_selection_string_list(
+            field_name="sfi_dedup_context_statement_types", values=v
+        )
 
     @field_validator("sfi_has_child_statement_type_hierarchy")
     @classmethod
@@ -1150,9 +1132,11 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         return cleaned
 
     @field_validator(
-        "sfi_deduplication_instructions",
+        "sfi_dedup_instructions",
         "sfi_extraction_instructions",
+        "sfi_extraction_validation_instructions",
         "sfi_has_child_instructions",
+        "sfi_has_child_validation_instructions",
         mode="before",
     )
     @classmethod
@@ -1170,7 +1154,7 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
             The validated and stripped string value.
         """
 
-        return _strip_and_require_non_empty_str(v)
+        return strip_and_require_non_empty_str(v)
 
     @field_validator("bilingual_pair_policy", mode="before")
     @classmethod
@@ -1300,6 +1284,145 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
 
         return cleaned
 
+    @staticmethod
+    def _clean_grade_level_mapping_targets(
+        *, local_value: str, raw_targets: object
+    ) -> list[str]:
+        """Clean the target grade values configured for a single local grade.
+
+        Parameters
+        ----------
+        local_value
+            Normalized source-canonical local grade key the targets map to, used only
+            in error messages.
+        raw_targets
+            Raw target collection configured for `local_value`.
+
+        Returns
+        -------
+        list[str]
+            Stripped target values in input order.
+
+        Raises
+        ------
+        TypeError
+            If the target collection or any target value is not the correct type.
+        ValueError
+            If the target list contains duplicates after whitespace normalization.
+        """
+
+        if not isinstance(raw_targets, list):
+            raise TypeError(
+                "CreateKGConfig.as.grade_level_mapping values must be lists."
+            )
+
+        targets: list[str] = []
+        seen_targets: set[str] = set()
+
+        for raw_target in raw_targets:
+            if not isinstance(raw_target, str):
+                raise TypeError(
+                    "CreateKGConfig.as.grade_level_mapping target values must "
+                    "be strings."
+                )
+
+            target = raw_target.strip()
+
+            if target in seen_targets:
+                raise ValueError(
+                    "CreateKGConfig.as.grade_level_mapping target lists must not "
+                    f"contain duplicates: {local_value!r} -> {target!r}."
+                )
+
+            targets.append(target)
+            seen_targets.add(target)
+
+        return targets
+
+    @field_validator("grade_level_statement_types")
+    @classmethod
+    def validate_grade_level_statement_types(cls, v: list[str]) -> list[str]:
+        """Clean statement types mapped to LC grade-level output.
+
+        Parameters
+        ----------
+        v
+            Ordered canonical statement_type labels configured for grade-level export.
+
+        Returns
+        -------
+        list[str]
+            Stripped, non-blank labels de-duplicated in input order.
+
+        Raises
+        ------
+        TypeError
+            If any configured value is not a string.
+        """
+
+        return cls._clean_selection_string_list(
+            field_name="grade_level_statement_types", values=v
+        )
+
+    @field_validator("grade_level_mapping", mode="before")
+    @classmethod
+    def validate_grade_level_mapping(
+        cls, value: dict[str, list[str]] | None
+    ) -> dict[str, list[str]]:
+        """Validate and normalize configured local-to-Learning-Commons grade mappings.
+
+        Parameters
+        ----------
+        value
+            Raw mapping from source-canonical local grade values to Learning Commons
+            grade values.
+
+        Returns
+        -------
+        dict[str, list[str]]
+            Cleaned mapping with stripped keys and stable target ordering.
+
+        Raises
+        ------
+        TypeError
+            If the mapping, a mapping key, or a target collection has the wrong type.
+        ValueError
+            If a key is blank or a target list contains duplicates.
+        """
+
+        if value is None:
+            return {}
+
+        if not isinstance(value, dict):
+            raise TypeError("CreateKGConfig.as.grade_level_mapping must be a mapping.")
+
+        cleaned: dict[str, list[str]] = {}
+
+        for raw_local_value, raw_targets in value.items():
+            if not isinstance(raw_local_value, str):
+                raise TypeError(
+                    "CreateKGConfig.as.grade_level_mapping keys must be strings."
+                )
+
+            local_value = raw_local_value.strip()
+
+            if not local_value:
+                raise ValueError(
+                    "CreateKGConfig.as.grade_level_mapping keys must be non-empty."
+                )
+
+            if local_value in cleaned:
+                raise ValueError(
+                    "CreateKGConfig.as.grade_level_mapping contains duplicate keys "
+                    f"after whitespace normalization: {local_value!r}."
+                )
+
+            cleaned[local_value] = cls._clean_grade_level_mapping_targets(
+                local_value=local_value, raw_targets=raw_targets
+            )
+
+        return cleaned
+
     @field_validator(
         "excluded_table_columns_signatures", "included_table_columns_signatures"
     )
@@ -1343,6 +1466,231 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         return cls._clean_selection_pattern_list(
             field_name="selection pattern list", values=v
         )
+
+    @field_validator("code_scope_statement_types")
+    @classmethod
+    def validate_code_scope_statement_types(
+        cls, v: dict[str, list[str]]
+    ) -> dict[str, list[str]]:
+        """Validate and clean configured code-scope statement-type lists.
+
+        Parameters
+        ----------
+        v
+            Mapping from code-pattern keys to ordered scope statement-type labels.
+
+        Returns
+        -------
+        dict[str, list[str]]
+            Cleaned mapping preserving configured key and scope order.
+
+        Raises
+        ------
+        TypeError
+            If keys, values, or scope labels have invalid types.
+        ValueError
+            If a code type or scope label is blank, or if a scope list contains
+            duplicate labels.
+        """
+
+        cleaned: dict[str, list[str]] = {}
+
+        for code_type, scope_statement_types in v.items():
+            if not isinstance(code_type, str):
+                raise TypeError(
+                    "CreateKGConfig.as.code_scope_statement_types keys must be strings."
+                )
+
+            code_type_clean = code_type.strip()
+
+            if not code_type_clean:
+                raise ValueError(
+                    "CreateKGConfig.as.code_scope_statement_types cannot contain a "
+                    "blank code type."
+                )
+
+            if code_type_clean in cleaned:
+                raise ValueError(
+                    f"CreateKGConfig.as.code_scope_statement_types contains duplicate "
+                    f"code type {code_type_clean!r} after stripping whitespace."
+                )
+
+            if not isinstance(scope_statement_types, list):
+                raise TypeError(
+                    "CreateKGConfig.as.code_scope_statement_types values must be "
+                    "lists of statement_type labels."
+                )
+
+            cleaned_scope_statement_types: list[str] = []
+            seen_scope_statement_types: set[str] = set()
+
+            for scope_statement_type in scope_statement_types:
+                if not isinstance(scope_statement_type, str):
+                    raise TypeError(
+                        "CreateKGConfig.as.code_scope_statement_types scope labels "
+                        "must be strings."
+                    )
+
+                scope_statement_type_clean = scope_statement_type.strip()
+
+                if (
+                    not scope_statement_type_clean
+                    or scope_statement_type_clean in seen_scope_statement_types
+                ):
+                    detail = (
+                        "a blank scope statement_type label."
+                        if not scope_statement_type_clean
+                        else (
+                            f"a duplicate scope label "
+                            f"{scope_statement_type_clean!r} for code type "
+                            f"{code_type_clean!r}."
+                        )
+                    )
+                    raise ValueError(
+                        f"CreateKGConfig.as.code_scope_statement_types contains {detail}"
+                    )
+
+                cleaned_scope_statement_types.append(scope_statement_type_clean)
+                seen_scope_statement_types.add(scope_statement_type_clean)
+
+            if not cleaned_scope_statement_types:
+                raise ValueError(
+                    "CreateKGConfig.as.code_scope_statement_types entries must "
+                    "contain at least one scope statement_type label. Omit a code "
+                    "type entirely when its codes are document-global."
+                )
+
+            cleaned[code_type_clean] = cleaned_scope_statement_types
+
+        return cleaned
+
+    @staticmethod
+    def _clean_identity_scope_statement_type_list(
+        *, scope_statement_types: object, target_statement_type: str
+    ) -> list[str]:
+        """Clean and validate one target's identity-scope statement-type list.
+
+        Parameters
+        ----------
+        scope_statement_types
+            Raw configured value for the target; expected to be a list of labels.
+        target_statement_type
+            Already-cleaned target statement type, used only in error messages.
+
+        Returns
+        -------
+        list[str]
+            Whitespace-stripped scope labels in configured order, de-duplicated of
+            nothing (duplicates are rejected rather than dropped).
+
+        Raises
+        ------
+        TypeError
+            If the value is not a list or a scope label is not a string.
+        ValueError
+            If a scope label is blank, the list is empty, or it contains duplicates.
+        """
+
+        if not isinstance(scope_statement_types, list):
+            raise TypeError(
+                "CreateKGConfig.as.identity_scope_statement_types values must be "
+                "lists of statement_type labels."
+            )
+
+        cleaned_scope_statement_types: list[str] = []
+        seen_scope_statement_types: set[str] = set()
+
+        for scope_statement_type in scope_statement_types:
+            if not isinstance(scope_statement_type, str):
+                raise TypeError(
+                    "CreateKGConfig.as.identity_scope_statement_types scope labels "
+                    "must be strings."
+                )
+
+            scope_statement_type_clean = scope_statement_type.strip()
+
+            if not scope_statement_type_clean:
+                raise ValueError(
+                    "CreateKGConfig.as.identity_scope_statement_types cannot "
+                    "contain a blank scope statement_type label."
+                )
+
+            if scope_statement_type_clean in seen_scope_statement_types:
+                raise ValueError(
+                    f"CreateKGConfig.as.identity_scope_statement_types contains "
+                    f"duplicate scope label {scope_statement_type_clean!r} for "
+                    f"target statement_type {target_statement_type!r}."
+                )
+
+            cleaned_scope_statement_types.append(scope_statement_type_clean)
+            seen_scope_statement_types.add(scope_statement_type_clean)
+
+        if not cleaned_scope_statement_types:
+            raise ValueError(
+                "CreateKGConfig.as.identity_scope_statement_types entries must "
+                "contain at least one scope statement_type label."
+            )
+
+        return cleaned_scope_statement_types
+
+    @field_validator("identity_scope_statement_types")
+    @classmethod
+    def validate_identity_scope_statement_types(
+        cls, v: dict[str, list[str]]
+    ) -> dict[str, list[str]]:
+        """Validate configured semantic identity-scope statement-type lists.
+
+        Parameters
+        ----------
+        v
+            Mapping from candidate statement types to ordered identity-scope labels.
+
+        Returns
+        -------
+        dict[str, list[str]]
+            Cleaned mapping preserving configured target and scope order.
+
+        Raises
+        ------
+        TypeError
+            If keys, values, or scope labels have invalid types.
+        ValueError
+            If a target or scope label is blank, or a scope list is empty or contains
+            duplicate labels.
+        """
+
+        cleaned: dict[str, list[str]] = {}
+
+        for statement_type, scope_statement_types in v.items():
+            if not isinstance(statement_type, str):
+                raise TypeError(
+                    "CreateKGConfig.as.identity_scope_statement_types keys must be "
+                    "strings."
+                )
+
+            statement_type_clean = statement_type.strip()
+
+            if not statement_type_clean:
+                raise ValueError(
+                    "CreateKGConfig.as.identity_scope_statement_types cannot contain "
+                    "a blank target statement_type."
+                )
+
+            if statement_type_clean in cleaned:
+                raise ValueError(
+                    f"CreateKGConfig.as.identity_scope_statement_types contains "
+                    f"duplicate target statement_type {statement_type_clean!r} after "
+                    f"stripping whitespace."
+                )
+
+            cleaned[statement_type_clean] = (
+                cls._clean_identity_scope_statement_type_list(
+                    scope_statement_types=scope_statement_types,
+                    target_statement_type=statement_type_clean,
+                )
+            )
+
+        return cleaned
 
     @field_validator("code_patterns")
     @classmethod
@@ -1503,25 +1851,6 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
 
         return v
 
-    def _validate_included_source_pages(self) -> None:
-        """Ensure the configured source-page inclusion range is internally valid.
-
-        Raises
-        ------
-        ValueError
-            If included_source_page_end_index is not greater than
-            included_source_page_start_index when an end index is configured.
-        """
-
-        if self.included_source_page_end_index is None:
-            return
-
-        if self.included_source_page_start_index >= self.included_source_page_end_index:
-            raise ValueError(
-                "CreateKGConfig.as.included_source_page_start_index must be less than "
-                "as.included_source_page_end_index when an end index is configured."
-            )
-
     def _validate_windowing(self) -> None:
         """Ensure table row windowing configuration is internally consistent.
 
@@ -1630,14 +1959,234 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
                     f"{item.statement_type!r}. Known code types: {sorted(known)}"
                 )
 
-    def _validate_has_child_statement_type_policy(self) -> None:
-        """Validate hasChild hierarchy and direct-parent labels.
+    def _validate_code_scope_policy(self, known: set[str]) -> None:
+        """Validate code-scope references against code and statement-type policy.
+
+        Parameters
+        ----------
+        known
+            Known configured code-pattern keys.
 
         Raises
         ------
         ValueError
-            If the explicit hierarchy or direct-parent policy references a
-            statement_type that is not present in statement_type_policy.
+            If a scope mapping references an unknown or unused code type, an unknown
+            statement type, a non-grouping statement type, or a grouping statement
+            type without controlled values.
+        """
+
+        policy_by_statement_type = {
+            item.statement_type: item for item in self.statement_type_policy
+        }
+        used_code_types = {
+            item.code_type
+            for item in self.statement_type_policy
+            if item.code_type is not None
+        }
+
+        for code_type, scope_statement_types in self.code_scope_statement_types.items():
+            if code_type not in known:
+                raise ValueError(
+                    f"CreateKGConfig.as.code_scope_statement_types references unknown "
+                    f"code type {code_type!r}. Known code types: {sorted(known)}"
+                )
+
+            if code_type not in used_code_types:
+                raise ValueError(
+                    f"CreateKGConfig.as.code_scope_statement_types references code "
+                    f"type {code_type!r}, but no statement_type_policy item uses it."
+                )
+
+            for scope_statement_type in scope_statement_types:
+                policy_item = policy_by_statement_type.get(scope_statement_type)
+
+                if policy_item is None:
+                    raise ValueError(
+                        f"CreateKGConfig.as.code_scope_statement_types references "
+                        f"unknown statement_type {scope_statement_type!r}. Known "
+                        f"statement types: {sorted(policy_by_statement_type)}"
+                    )
+
+                if policy_item.normalized_statement_type != "Standard Grouping":
+                    raise ValueError(
+                        f"CreateKGConfig.as.code_scope_statement_types scope "
+                        f"statement_type {scope_statement_type!r} must normalize to "
+                        f"'Standard Grouping'."
+                    )
+
+                if not policy_item.controlled_values:
+                    raise ValueError(
+                        f"CreateKGConfig.as.code_scope_statement_types scope "
+                        f"statement_type {scope_statement_type!r} must define "
+                        f"controlled_values for deterministic resolution."
+                    )
+
+    def _validate_identity_scope_policy(self) -> None:
+        """Validate checker-selected identity-scope policy and identity-key usage.
+
+        Raises
+        ------
+        ValueError
+            If a target or scope statement type is unknown, a scope type is not a
+            controlled Standard Grouping, or configured identity scope is omitted from
+            the synthetic identity recipe.
+        """
+
+        policy_by_statement_type = {
+            item.statement_type: item for item in self.statement_type_policy
+        }
+
+        for (
+            statement_type,
+            scope_statement_types,
+        ) in self.identity_scope_statement_types.items():
+            if statement_type not in policy_by_statement_type:
+                raise ValueError(
+                    f"CreateKGConfig.as.identity_scope_statement_types references "
+                    f"unknown target statement_type {statement_type!r}. Known "
+                    f"statement types: {sorted(policy_by_statement_type)}"
+                )
+
+            for scope_statement_type in scope_statement_types:
+                policy_item = policy_by_statement_type.get(scope_statement_type)
+
+                if policy_item is None:
+                    raise ValueError(
+                        f"CreateKGConfig.as.identity_scope_statement_types references "
+                        f"unknown scope statement_type {scope_statement_type!r}. Known "
+                        f"statement types: {sorted(policy_by_statement_type)}"
+                    )
+
+                if policy_item.normalized_statement_type != "Standard Grouping":
+                    raise ValueError(
+                        f"CreateKGConfig.as.identity_scope_statement_types scope "
+                        f"statement_type {scope_statement_type!r} must normalize to "
+                        f"'Standard Grouping'."
+                    )
+
+                if not policy_item.controlled_values:
+                    raise ValueError(
+                        f"CreateKGConfig.as.identity_scope_statement_types scope "
+                        f"statement_type {scope_statement_type!r} must define "
+                        f"controlled_values so producer/checker outputs can use "
+                        f"configured canonical scope values."
+                    )
+
+        if (
+            self.identity_scope_statement_types
+            and "identity_scope" not in self.synthetic_merge_key_fields
+        ):
+            raise ValueError(
+                "CreateKGConfig.as.synthetic_merge_key_fields must include "
+                "'identity_scope' when identity_scope_statement_types is configured."
+            )
+
+    def _validate_dedup_context_statement_types(self) -> None:
+        """Validate explicitly configured SFI dedup context statement types.
+
+        An empty list is valid and means all configured statement types normalized as
+        `Standard Grouping` are selected when the registry is built.
+
+        Raises
+        ------
+        ValueError
+            If an explicitly configured context statement type is absent from
+            `statement_type_policy`.
+        """
+
+        if not self.sfi_dedup_context_statement_types:
+            return
+
+        known_statement_types = {
+            item.statement_type for item in self.statement_type_policy
+        }
+        unknown_statement_types = sorted(
+            set(self.sfi_dedup_context_statement_types) - known_statement_types
+        )
+
+        if unknown_statement_types:
+            raise ValueError(
+                f"CreateKGConfig.as.sfi_dedup_context_statement_types references "
+                f"unknown statement_type labels: {unknown_statement_types}. Known "
+                f"statement_type labels: {sorted(known_statement_types)}"
+            )
+
+    def _validate_grade_level_statement_types(self) -> None:
+        """Validate statement types mapped to LC grade-level output.
+
+        Raises
+        ------
+        ValueError
+            If the mapping references a statement_type absent from
+            statement_type_policy.
+        """
+
+        known_statement_types = {
+            item.statement_type for item in self.statement_type_policy
+        }
+        unknown_statement_types = sorted(
+            set(self.grade_level_statement_types) - known_statement_types
+        )
+
+        if unknown_statement_types:
+            raise ValueError(
+                f"CreateKGConfig.as.grade_level_statement_types references unknown "
+                f"statement_type labels: {unknown_statement_types}. Known "
+                f"statement_type labels: {sorted(known_statement_types)}"
+            )
+
+    def _validate_grade_level_mapping(self) -> None:
+        """Validate that grade mapping keys use configured canonical values.
+
+        When configured grade statement types define controlled values, every mapping
+        key must be one of those canonical values. Open-vocabulary grade statement
+        types remain valid and are checked against observed values during export.
+
+        Raises
+        ------
+        ValueError
+            If a mapping key is an alias or otherwise absent from the canonical values
+            configured for grade-level statement types.
+        """
+
+        if not self.grade_level_mapping:
+            return
+
+        canonical_values: set[str] = set()
+        has_controlled_values = False
+
+        for policy in self.statement_type_policy:
+            if policy.statement_type not in self.grade_level_statement_types:
+                continue
+
+            if policy.controlled_values:
+                has_controlled_values = True
+                canonical_values.update(
+                    item.canonical_value for item in policy.controlled_values
+                )
+
+        if not has_controlled_values:
+            return
+
+        unknown_values = sorted(set(self.grade_level_mapping) - canonical_values)
+
+        if unknown_values:
+            raise ValueError(
+                f"CreateKGConfig.as.grade_level_mapping keys must use canonical "
+                f"controlled values from the configured grade-level statement types. "
+                f"Unknown keys: {unknown_values}. Canonical values: "
+                f"{sorted(canonical_values)}"
+            )
+
+    def _validate_has_child_statement_type_policy(self) -> None:
+        """Validate the unified hasChild parent policy and hierarchy ordering.
+
+        Raises
+        ------
+        ValueError
+            If the hierarchy or parent policy references unknown statement types, omits
+            a configured child type, duplicates a parent type, or defines no root-level
+            child type.
         """
 
         known_statement_types = {
@@ -1657,27 +2206,65 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
                     f"{sorted(known_statement_types)}"
                 )
 
-        if self.sfi_has_child_parent_statement_types:
-            unknown_child_types = sorted(
-                set(self.sfi_has_child_parent_statement_types) - known_statement_types
-            )
-            unknown_parent_types = sorted(
-                {
-                    parent_type
-                    for parent_types in self.sfi_has_child_parent_statement_types.values()
-                    for parent_type in parent_types
-                }
-                - known_statement_types
+        parent_policy = self.sfi_has_child_parent_policy
+        unknown_child_types = sorted(set(parent_policy) - known_statement_types)
+        missing_child_types = sorted(known_statement_types - set(parent_policy))
+        unknown_parent_types = sorted(
+            {
+                entry.parent_statement_type
+                for entries in parent_policy.values()
+                for entry in entries
+            }
+            - known_statement_types
+        )
+
+        if unknown_child_types or missing_child_types or unknown_parent_types:
+            raise ValueError(
+                f"CreateKGConfig.as.sfi_has_child_parent_policy must cover every "
+                f"configured statement_type exactly once and reference only known "
+                f"statement types. "
+                f"Unknown child labels: {unknown_child_types}; "
+                f"missing child labels: {missing_child_types}; "
+                f"unknown parent labels: {unknown_parent_types}; "
+                f"known statement_type labels: {sorted(known_statement_types)}"
             )
 
-            if unknown_child_types or unknown_parent_types:
-                raise ValueError(
-                    f"CreateKGConfig.as.sfi_has_child_parent_statement_types "
-                    f"references unknown statement_type labels. "
-                    f"Unknown child labels: {unknown_child_types}; "
-                    f"unknown parent labels: {unknown_parent_types}; "
-                    f"known statement_type labels: {sorted(known_statement_types)}"
-                )
+        duplicate_parent_types = {
+            child_type: sorted(
+                {
+                    entry.parent_statement_type
+                    for entry in entries
+                    if sum(
+                        candidate.parent_statement_type == entry.parent_statement_type
+                        for candidate in entries
+                    )
+                    > 1
+                }
+            )
+            for child_type, entries in parent_policy.items()
+        }
+        duplicate_parent_types = {
+            child_type: parent_types
+            for child_type, parent_types in duplicate_parent_types.items()
+            if parent_types
+        }
+
+        if duplicate_parent_types:
+            raise ValueError(
+                f"CreateKGConfig.as.sfi_has_child_parent_policy must not repeat one "
+                f"parent statement_type within a child policy. Duplicate entries: "
+                f"{duplicate_parent_types}."
+            )
+
+        root_child_types = sorted(
+            child_type for child_type, entries in parent_policy.items() if not entries
+        )
+
+        if not root_child_types:
+            raise ValueError(
+                "CreateKGConfig.as.sfi_has_child_parent_policy must include at least "
+                "one root-level child statement_type with an empty policy list."
+            )
 
     def _validate_selection_overlap_policy(self) -> None:
         """Ensure table-selection policy does not include and exclude the same value.
@@ -1717,8 +2304,12 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
 
         known = set(self.code_patterns.keys())
         self._validate_code_parent_rules(known)
+        self._validate_code_scope_policy(known)
+        self._validate_dedup_context_statement_types()
+        self._validate_grade_level_mapping()
+        self._validate_grade_level_statement_types()
+        self._validate_identity_scope_policy()
         self._validate_has_child_statement_type_policy()
-        self._validate_included_source_pages()
         self._validate_selection_overlap_policy()
         self._validate_statement_type_policy_code_types(known)
         self._validate_windowing()
@@ -1946,7 +2537,7 @@ class _CreateKGLearningComponentsConfig(BaseSchema):
             The validated and stripped string value.
         """
 
-        return _strip_and_require_non_empty_str(v)
+        return strip_and_require_non_empty_str(v)
 
     @field_validator("lc_source_statement_types")
     @classmethod
@@ -2044,6 +2635,13 @@ class _CreateKGMetadata(BaseSchema):
         default_factory=list,
         description="Grades or stages covered by the framework (e.g., ['Grade 1', 'Grade 2']).",
     )
+    is_current: bool = Field(
+        default=True,
+        description=(
+            "Operator declaration that this is the most up-to-date framework "
+            "represented for its jurisdiction and subject."
+        ),
+    )
     jurisdiction: str = Field(
         description="Jurisdiction that governs the framework (e.g., a national or regional education authority)."
     )
@@ -2090,7 +2688,7 @@ class _CreateKGMetadata(BaseSchema):
             The stripped non-empty string.
         """
 
-        return _strip_and_require_non_empty_str(v)
+        return strip_and_require_non_empty_str(v)
 
     @field_validator("adoption_status", mode="before")
     @classmethod
@@ -2365,9 +2963,9 @@ class VerificationConfig(BaseSchema):
     )
     min_confidence_to_patch: float = Field(
         0.75,
+        description="Only apply compiled continuity decisions/repeats_header patches when verdict.confidence >= this threshold.",
         ge=0.0,
         le=1.0,
-        description="Only apply compiled continuity decisions/repeats_header patches when verdict.confidence >= this threshold.",
     )
     min_confidence_to_select_positive: float = Field(
         0.50,

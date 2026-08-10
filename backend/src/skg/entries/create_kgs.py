@@ -70,6 +70,7 @@ def build_kgs(
     *,
     config: CreateKGConfig,
     document_ir_fp: Path,
+    expected_doc_key: str,
     kg_dirs: KGDirs,
     usage_tracker: KGUsageTracker,
 ) -> Path:
@@ -110,6 +111,8 @@ def build_kgs(
         KG creation configuration from the global runtime config.
     document_ir_fp
         Path to the stitched DocumentIR JSON.
+    expected_doc_key
+        Document key computed from the configured source PDF.
     kg_dirs
         Directories for storing KG run artifacts.
     usage_tracker
@@ -123,7 +126,10 @@ def build_kgs(
 
     # 1.
     kg_run_inputs = load_and_validate_inputs(
-        config=config, document_ir_fp=document_ir_fp, kg_dirs=kg_dirs
+        config=config,
+        document_ir_fp=document_ir_fp,
+        expected_doc_key=expected_doc_key,
+        kg_dirs=kg_dirs,
     )
 
     # 2.
@@ -135,7 +141,7 @@ def build_kgs(
     plan_items = plan_extraction_windows(
         document_ir=kg_run_inputs.document_ir,
         kg_config=kg_run_inputs.kg_config,
-        save_fp=kg_dirs.root / "extraction_window_plan.json",
+        save_fp=kg_dirs.root / "sfi_extraction_window_plan.json",
     )
 
     # 4.
@@ -143,7 +149,7 @@ def build_kgs(
         document_ir=kg_run_inputs.document_ir,
         kg_config=kg_run_inputs.kg_config,
         plan_items=plan_items,
-        save_fp=kg_dirs.root / "extraction_windows.jsonl",
+        save_fp=kg_dirs.root / "sfi_extraction_windows.jsonl",
     )
 
     # 5.
@@ -368,6 +374,7 @@ def create(
         kg_run_manifest_fp = build_kgs(
             config=config,
             document_ir_fp=document_ir_fp,
+            expected_doc_key=computed_doc_key,
             kg_dirs=kg_dirs,
             usage_tracker=usage_tracker,
         )

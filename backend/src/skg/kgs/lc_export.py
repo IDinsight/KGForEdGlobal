@@ -35,7 +35,10 @@ from skg.kgs.schemas import (
     LearningComponent,
     Relationship,
 )
-from skg.kgs.sfi_export import _fingerprint_jsonable
+from skg.kgs.sfi_export import (
+    _fingerprint_jsonable,
+    _get_learning_commons_export_schema_version,
+)
 from skg.kgs.utils import KGDirs, make_dir
 from skg.utils.general import write_to_json
 
@@ -395,6 +398,9 @@ def compile_as_lc_kg(
         validation_report=AcademicStandardsValidationReport(
             errors=errors,
             input_fingerprints=input_fingerprints,
+            learning_commons_export_schema_version=(
+                _get_learning_commons_export_schema_version()
+            ),
             object_counts={
                 "frameworks": 1,
                 "learning_components": len(learning_components),
