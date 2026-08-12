@@ -1,16 +1,17 @@
-"""This module contains LC duplicate-skill grouping for KG creation (step 15).
+"""This module contains LC duplicate-skill grouping for KG creation.
 
 Exact duplicates group by normalized text within the configured dedup scope;
 semantic duplicates are nominated by deterministic blocking (a
 language-independent core, an optional per-language booster pack, and
 similarity-blind neighborhood review sets) and adjudicated by a bounded,
 resumable LLM pair judge — the sfi_dedup pattern applied to generated
-skills. Minting (step 16) collapses each group into one LearningComponent
-keyed on the group's canonical text.
+skills. Minting collapses each group into one LearningComponent keyed on the
+group's canonical text.
 
-Sibling LC modules mirror the sfi_* per-step layout: lc_selection.py
-(steps 11-12), lc_generation.py (steps 13-14), lc_finalization.py
-(steps 16-18), lc_export.py (step 19).
+Sibling LC modules mirror the sfi_* layout: lc_selection.py (LC-source
+selection), lc_generation.py (requests + LLM decomposition),
+lc_finalization.py (mint nodes, supports edges, validate/summarize),
+lc_export.py (AS+LC bundle merge).
 """
 
 # Standard Library
@@ -50,10 +51,6 @@ from skg.schemas import (
 )
 from skg.utils.general import write_to_json
 
-LC_DEDUP_CANDIDATE_PAIRS_FN = "lc_dedup_candidate_pairs.jsonl"
-LC_DEDUP_GROUPS_FN = "lc_dedup_groups.json"
-LC_DEDUP_VERDICTS_FN = "lc_dedup_verdicts.jsonl"
-
 
 class _ScopeFeatures:
     """Precomputed similarity features for one scope's unique texts."""
@@ -69,7 +66,7 @@ class _ScopeFeatures:
 
 
 class _SkillUnit:
-    """One unique normalized skill text within a dedup scope (step 15).
+    """One unique normalized skill text within a dedup scope.
 
     Accumulates every claim of the text: claiming SFIs, raw surface forms,
     tags, direct-parent UUIDs, and source-facing statement types.
@@ -330,9 +327,10 @@ def _collect_skill_units(
     lc_dedup_scope
         Configured merge scope (framework | top_ancestor | parent | none).
     lc_generation_requests
-        Step-13 requests (ancestor paths for scope keys and neighborhoods).
+        LC generation requests (ancestor paths for scope keys and
+        neighborhoods).
     lc_generation_responses
-        Step-14 responses carrying the generated skills.
+        LC generation responses carrying the generated skills.
 
     Returns
     -------
@@ -357,9 +355,9 @@ def _collect_skill_units(
             request_sfi = request_sfis.get(item.sfi_uuid)
             if request_sfi is None:
                 raise ValueError(
-                    f"LC dedup (step 15): response for request "
-                    f"{response.request_id} claims SFI {item.sfi_uuid}, which "
-                    "is absent from the step-13 requests."
+                    f"LC dedup: response for request {response.request_id} claims "
+                    f"SFI {item.sfi_uuid}, which is absent from the LC "
+                    f"generation requests."
                 )
             scope_key = _scope_key_for(
                 lc_dedup_scope=lc_dedup_scope, request_sfi=request_sfi
@@ -487,7 +485,7 @@ def _load_resumable_lc_dedup_responses(
     lc_dedup_requests: Sequence[LCDedupRequest],
     verdicts_fp: Path,
 ) -> dict[str, LCDedupResponse]:
-    """Load completed step-15 adjudications that remain valid for this run.
+    """Load completed LC dedup adjudications that remain valid for this run.
 
     Reads a valid prefix of the verdicts artifact (a truncated or invalid
     trailing line is dropped with a warning). Every parsed response must
@@ -500,7 +498,7 @@ def _load_resumable_lc_dedup_responses(
     lc_dedup_requests
         Current deterministic adjudication requests.
     verdicts_fp
-        Path to the step-15 verdicts JSONL artifact.
+        Path to the LC dedup verdicts JSONL artifact.
 
     Returns
     -------
@@ -532,7 +530,7 @@ def _load_resumable_lc_dedup_responses(
                 logger.warning(
                     f"LC dedup response at {verdicts_fp}:{line_number} has a "
                     f"stale or duplicate request_id {response.request_id!r}; "
-                    "discarding all saved progress."
+                    f"discarding all saved progress."
                 )
                 return {}
             try:
@@ -712,7 +710,7 @@ def _scope_key_for(*, lc_dedup_scope: str, request_sfi: LCRequestSFI) -> str:
     lc_dedup_scope
         Configured merge scope.
     request_sfi
-        The seed's step-13 request entry (ancestor path + status).
+        The seed's LC generation request entry (ancestor path + status).
 
     Returns
     -------
@@ -879,7 +877,7 @@ def group_duplicate_skills(
     overwrite: bool,
     usage_tracker: KGUsageTracker,
 ) -> LCDedupGroups:
-    """Run step 15: group exact and semantic duplicate skills.
+    """Group the exact and semantic duplicate skills.
 
     Exact duplicates collapse by normalized text within `lc_dedup_scope`.
     When `lc_semantic_dedup` is enabled, deterministic blocking nominates
@@ -897,9 +895,9 @@ def group_duplicate_skills(
     lc_config
         Learning Components runtime configuration.
     lc_generation_requests
-        Deterministic step-13 requests.
+        Deterministic LC generation requests.
     lc_generation_responses
-        Validated step-14 responses.
+        Validated LC generation responses.
     overwrite
         When True, discard saved verdicts and re-adjudicate from scratch.
     usage_tracker
@@ -941,8 +939,8 @@ def group_duplicate_skills(
         )
 
     make_dir(kg_dirs.root)
-    pairs_fp = kg_dirs.root / LC_DEDUP_CANDIDATE_PAIRS_FN
-    verdicts_fp = kg_dirs.root / LC_DEDUP_VERDICTS_FN
+    pairs_fp = kg_dirs.root / "lc_dedup_candidate_pairs.jsonl"
+    verdicts_fp = kg_dirs.root / "lc_dedup_verdicts.jsonl"
     write_to_json(fp=pairs_fp, json_info=candidate_pairs)
 
     batch_size = lc_config.lc_dedup_batch_size
@@ -966,7 +964,7 @@ def group_duplicate_skills(
         )
     elif not lc_config.lc_semantic_dedup:
         logger.warning(
-            f"lc_semantic_dedup=False; step 15 groups exact duplicates only "
+            f"lc_semantic_dedup=False; LC dedup groups exact duplicates only "
             f"({len(candidate_pairs)} nominated pairs left unadjudicated)."
         )
 
@@ -987,7 +985,7 @@ def group_duplicate_skills(
         unique_text_count=unique_text_count,
     )
     write_to_json(
-        fp=kg_dirs.root / LC_DEDUP_GROUPS_FN,
+        fp=kg_dirs.root / "lc_dedup_groups.json",
         json_info=dedup_groups.model_dump(mode="json"),
     )
 

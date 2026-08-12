@@ -88,7 +88,8 @@ def build_kgs(
     8. Mint deterministic final SFI records from merge groups.
     9. Resolve source-grounded final hasChild edges.
     10. Compile, validate, and write final Academic Standards KG export artifacts.
-    11. Gate LC generation on the step-10 bundle (validation + unresolved items).
+    11. Gate LC generation on the Academic Standards bundle (validation +
+        unresolved items).
     12. Select eligible LC-source SFIs (profile allowlist or leaf default).
     13. Build deterministic LC generation requests (ancestor paths, framework
         context).

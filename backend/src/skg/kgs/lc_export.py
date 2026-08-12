@@ -1,13 +1,14 @@
-"""This module contains the AS+LC KG bundle merge for KG creation (step 19).
+"""This module contains the AS+LC KG bundle merge for KG creation.
 
-Composes the step-10 Academic Standards bundle, verbatim, with the LC
-layer (steps 16-18) into one self-contained `AcademicStandardsLCKGBundle`
-plus flat node/relationship projections for bulk graph loaders. The
-step-10 bundle file is left untouched.
+Composes the final Academic Standards bundle, verbatim, with the LC layer
+into one self-contained `AcademicStandardsLCKGBundle` plus flat
+node/relationship projections for bulk graph loaders. The Academic
+Standards bundle file is left untouched.
 
-Sibling LC modules mirror the sfi_* per-step layout: lc_selection.py
-(steps 11-12), lc_generation.py (steps 13-14), lc_dedup.py (step 15),
-lc_finalization.py (steps 16-18).
+Sibling LC modules mirror the sfi_* layout: lc_selection.py (LC-source
+selection), lc_generation.py (requests + LLM decomposition), lc_dedup.py
+(duplicate grouping), lc_finalization.py (mint nodes, supports edges,
+validate/summarize).
 """
 
 # Standard Library
@@ -42,10 +43,6 @@ from skg.kgs.sfi_export import (
 from skg.kgs.utils import KGDirs, make_dir
 from skg.utils.general import write_to_json
 
-AS_LC_KG_BUNDLE_FN = "as_lc_kg_bundle.json"
-AS_LC_NODES_FN = "as_lc_nodes.jsonl"
-AS_LC_RELATIONSHIPS_FN = "as_lc_relationships.jsonl"
-
 _MERGED_VALIDATION_CHECKS = [
     "as_bundle_validation_gate",
     "supports_source_existence",
@@ -68,9 +65,9 @@ def _build_merged_entity_provenance(
     Parameters
     ----------
     academic_standards_bundle
-        Final step-10 AS bundle carrying its entity provenance.
+        Final AS bundle carrying its entity provenance.
     lc_entity_provenance
-        Step-18 LC entity-provenance artifact.
+        LC entity-provenance artifact.
 
     Returns
     -------
@@ -87,13 +84,13 @@ def _build_merged_entity_provenance(
     as_provenance = academic_standards_bundle.entity_provenance
     if "learning_components" in as_provenance:
         raise ValueError(
-            "AS+LC merge (step 19): AS entity provenance already contains a "
+            "AS+LC merge: AS entity provenance already contains a "
             "'learning_components' key; refusing to overwrite it."
         )
     as_doc_key = as_provenance.get("framework", {}).get("doc_key")
     if as_doc_key != lc_entity_provenance.get("doc_key"):
         raise ValueError(
-            f"AS+LC merge (step 19): provenance doc_key mismatch: AS "
+            f"AS+LC merge: provenance doc_key mismatch: AS "
             f"{as_doc_key!r} vs LC {lc_entity_provenance.get('doc_key')!r}."
         )
     return {
@@ -115,15 +112,15 @@ def _validate_merged_graph(
     Parameters
     ----------
     academic_standards_bundle
-        Final step-10 AS bundle (items are the supports targets).
+        Final AS bundle (items are the supports targets).
     lc_generation_summary
-        Step-18 phase summary (count alignment).
+        LC generation phase summary (count alignment).
     learning_components
-        Step-16 LearningComponent nodes.
+        Minted LearningComponent nodes.
     merged_entity_provenance
         Merged provenance (every LC must have an entry).
     supports_edges
-        Step-17 primary supports edges.
+        Primary supports edges.
 
     Returns
     -------
@@ -241,10 +238,10 @@ def _write_flat_projections(
         )
     ]
 
-    with (kg_dirs.root / AS_LC_NODES_FN).open("w", encoding="utf-8") as f:
+    with (kg_dirs.root / "as_lc_nodes.jsonl").open("w", encoding="utf-8") as f:
         for node_line in node_lines:
             f.write(json.dumps(node_line, ensure_ascii=False, sort_keys=True) + "\n")
-    with (kg_dirs.root / AS_LC_RELATIONSHIPS_FN).open("w", encoding="utf-8") as f:
+    with (kg_dirs.root / "as_lc_relationships.jsonl").open("w", encoding="utf-8") as f:
         for relationship_line in relationship_lines:
             f.write(
                 json.dumps(relationship_line, ensure_ascii=False, sort_keys=True) + "\n"
@@ -260,10 +257,10 @@ def compile_as_lc_kg(
     overwrite: bool,
     supports_edges: Sequence[Relationship],
 ) -> AcademicStandardsLCKGBundle:
-    """Run step 19: merge the AS bundle and the LC layer into one bundle.
+    """Merge the AS bundle and the LC layer into one bundle.
 
     Requires a passed, error-free AS bundle validation report. Reads the
-    step-14 failures and step-18 entity-provenance artifacts from
+    LC generation failures and LC entity-provenance artifacts from
     ``kg_dirs.root``, composes the merged `AcademicStandardsLCKGBundle`,
     validates the merged graph, and writes the bundle plus flat
     node/relationship projections. With ``overwrite=False`` an existing
@@ -273,18 +270,18 @@ def compile_as_lc_kg(
     Parameters
     ----------
     academic_standards_bundle
-        Final step-10 AS bundle.
+        Final AS bundle.
     kg_dirs
         KG artifact directories; artifacts are read from and written
         under ``kg_dirs.root``.
     lc_generation_summary
-        Step-18 phase summary.
+        LC generation phase summary.
     learning_components
-        Step-16 LearningComponent nodes.
+        Minted LearningComponent nodes.
     overwrite
         When True, recompile even if a fingerprint-matching bundle exists.
     supports_edges
-        Step-17 primary supports edges.
+        Primary supports edges.
 
     Returns
     -------
@@ -302,9 +299,9 @@ def compile_as_lc_kg(
     report = academic_standards_bundle.validation_report
     if not report.passed or report.errors:
         raise ValueError(
-            "AS+LC merge (step 19): the step-10 AS bundle failed validation "
+            f"AS+LC merge: the AS bundle failed validation "
             f"(passed={report.passed}, errors={report.errors[:3]}); refusing "
-            "to merge an invalid standards KG."
+            f"to merge an invalid standards KG."
         )
 
     lc_generation_failures = [
@@ -334,7 +331,7 @@ def compile_as_lc_kg(
         ),
     }
 
-    bundle_fp = kg_dirs.root / AS_LC_KG_BUNDLE_FN
+    bundle_fp = kg_dirs.root / "as_lc_kg_bundle.json"
     if not overwrite and bundle_fp.exists():
         try:
             existing = AcademicStandardsLCKGBundle.model_validate_json(
@@ -343,7 +340,7 @@ def compile_as_lc_kg(
         except ValidationError:
             logger.warning(
                 f"Existing {bundle_fp} is invalid; recompiling the merged "
-                "bundle from scratch."
+                f"bundle from scratch."
             )
         else:
             if existing.validation_report.input_fingerprints == input_fingerprints:
@@ -421,7 +418,7 @@ def compile_as_lc_kg(
 
     if errors:
         raise ValueError(
-            f"AS+LC merge (step 19): merged-graph validation failed with "
+            f"AS+LC merge: merged-graph validation failed with "
             f"{len(errors)} errors (artifacts written for inspection); "
             f"first: {errors[0]}"
         )

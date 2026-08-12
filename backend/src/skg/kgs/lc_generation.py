@@ -1,13 +1,14 @@
 """This module contains LC generation request building and LLM decomposition
-for KG creation (steps 13-14).
+for KG creation.
 
-- 13: deterministic LC generation requests (ancestor-path + framework context).
-- 14: sequential, resumable LLM decomposition of LC-source SFIs into atomic
+- Deterministic LC generation requests (ancestor-path + framework context).
+- Sequential, resumable LLM decomposition of LC-source SFIs into atomic
   skills; isolated failures are recorded and guarded by lc_max_failure_rate.
 
-Sibling LC modules mirror the sfi_* per-step layout: lc_selection.py
-(steps 11-12), lc_dedup.py (step 15: duplicate grouping), lc_finalization.py
-(steps 16-18), lc_export.py (step 19).
+Sibling LC modules mirror the sfi_* layout: lc_selection.py (LC-source
+selection), lc_dedup.py (duplicate grouping), lc_finalization.py (mint
+nodes, supports edges, validate/summarize), lc_export.py (AS+LC bundle
+merge).
 """
 
 # Standard Library
@@ -48,8 +49,6 @@ from skg.schemas import _CreateKGLearningComponentsConfig
 from skg.utils.general import write_to_json
 
 LC_GENERATION_FAILURES_FN = "lc_generation_failures.json"
-LC_GENERATION_REQUESTS_FN = "lc_generation_requests.jsonl"
-LC_GENERATION_RESPONSES_FN = "lc_generation_responses.jsonl"
 
 
 def _build_ancestor_path(
@@ -94,9 +93,9 @@ def _build_ancestor_path(
         edge = edge_by_child.get(current)
         if edge is None:
             raise ValueError(
-                f"LC request building (step 13): SFI {current} on the ancestor "
-                f"path of seed {seed_uuid} has no hasChild edge; every final "
-                "SFI must be attached to the hierarchy after step 10."
+                f"LC request building: SFI {current} on the ancestor path of "
+                f"seed {seed_uuid} has no hasChild edge; every final SFI "
+                f"must be attached to the hierarchy."
             )
         if edge.unresolved_root_fallback:
             status = "unresolved_ancestor_path"
@@ -105,7 +104,7 @@ def _build_ancestor_path(
             break
         if parent_uuid in seen:
             raise ValueError(
-                f"LC request building (step 13): hasChild cycle detected at "
+                f"LC request building: hasChild cycle detected at "
                 f"SFI {parent_uuid} while walking the ancestor path of seed "
                 f"{seed_uuid}."
             )
@@ -113,7 +112,7 @@ def _build_ancestor_path(
         parent_record = records_by_uuid.get(parent_uuid)
         if parent_record is None:
             raise ValueError(
-                f"LC request building (step 13): ancestor SFI {parent_uuid} of "
+                f"LC request building: ancestor SFI {parent_uuid} of "
                 f"seed {seed_uuid} has no final SFI record."
             )
         ancestors.append(_build_context_sfi(parent_record))
@@ -211,7 +210,7 @@ def _load_resumable_lc_generation_responses(
     lc_generation_requests: Sequence[LCGenerationRequest],
     responses_fp: Path,
 ) -> dict[str, LCGenerationResponse]:
-    """Load completed step-14 responses that remain valid for this run.
+    """Load completed LC generation responses that remain valid for this run.
 
     Reads a valid prefix of the responses artifact (a truncated or invalid
     trailing line is dropped with a warning). Every parsed response must
@@ -224,9 +223,9 @@ def _load_resumable_lc_generation_responses(
     lc_config
         Learning Components runtime configuration.
     lc_generation_requests
-        Current deterministic step-13 requests.
+        Current deterministic LC generation requests.
     responses_fp
-        Path to the step-14 responses JSONL artifact.
+        Path to the LC generation responses JSONL artifact.
 
     Returns
     -------
@@ -288,7 +287,7 @@ def build_lc_generation_requests(
     lc_eligible_sfis: Sequence[SFIFinalRecord],
     sfi_final_records: Sequence[SFIFinalRecord],
 ) -> list[LCGenerationRequest]:
-    """Run step 13: build deterministic LC generation requests.
+    """Build the deterministic LC generation requests.
 
     Eligible seeds are chunked in selection order
     into batches of `lc_request_batch_size` (default 1, hasChild parity); each
@@ -302,7 +301,7 @@ def build_lc_generation_requests(
     Parameters
     ----------
     academic_standards_bundle
-        Compiled step-10 Academic Standards KG bundle (framework context).
+        Compiled Academic Standards KG bundle (framework context).
     has_child_edges
         Final resolved hasChild edges (ancestor and sibling computation).
     kg_dirs
@@ -310,7 +309,7 @@ def build_lc_generation_requests(
     lc_config
         Learning Components runtime configuration.
     lc_eligible_sfis
-        Eligible LC-source SFIs from step 12, in selection order.
+        Eligible LC-source SFIs, in selection order.
     sfi_final_records
         All final SFI records (ancestor/sibling context lookup).
 
@@ -340,10 +339,9 @@ def build_lc_generation_requests(
     for edge in has_child_edges:
         if edge.child_final_sfi_uuid in edge_by_child:
             raise ValueError(
-                f"LC request building (step 13): SFI "
-                f"{edge.child_final_sfi_uuid} is the child of more than one "
-                "hasChild edge; ancestor paths require a single parent per "
-                "SFI."
+                f"LC request building: SFI {edge.child_final_sfi_uuid} is the "
+                f"child of more than one hasChild edge; ancestor paths "
+                f"require a single parent per SFI."
             )
         edge_by_child[edge.child_final_sfi_uuid] = edge
         child_uuids_by_parent.setdefault(edge.parent_final_sfi_uuid, []).append(
@@ -397,7 +395,7 @@ def build_lc_generation_requests(
     ]
 
     make_dir(kg_dirs.root)
-    write_to_json(fp=kg_dirs.root / LC_GENERATION_REQUESTS_FN, json_info=requests)
+    write_to_json(fp=kg_dirs.root / "lc_generation_requests.jsonl", json_info=requests)
 
     unresolved_path_count = sum(
         request_sfi.ancestor_path_status == "unresolved_ancestor_path"
@@ -421,7 +419,7 @@ def decompose_lc_source_sfis(
     overwrite: bool,
     usage_tracker: KGUsageTracker,
 ) -> list[LCGenerationResponse]:
-    """Run step 14: decompose LC-source SFIs into atomic skills via LLM.
+    """Decompose the LC-source SFIs into atomic skills via LLM.
 
     Requests run sequentially in request order, one LLM call at a time; each
     validated response is appended to the responses artifact as it completes,
@@ -438,7 +436,7 @@ def decompose_lc_source_sfis(
     lc_config
         Learning Components runtime configuration.
     lc_generation_requests
-        Deterministic step-13 requests, in request order.
+        Deterministic LC generation requests, in request order.
     overwrite
         When True, discard saved responses and regenerate from scratch.
     usage_tracker
@@ -458,7 +456,7 @@ def decompose_lc_source_sfis(
     """
 
     failures_fp = kg_dirs.root / LC_GENERATION_FAILURES_FN
-    responses_fp = kg_dirs.root / LC_GENERATION_RESPONSES_FN
+    responses_fp = kg_dirs.root / "lc_generation_responses.jsonl"
 
     if overwrite:
         logger.info("Starting LC generation from scratch because overwrite=True.")
@@ -536,7 +534,7 @@ def decompose_lc_source_sfis(
             f"({failed_sfi_count}/{total_sfi_count} LC-source SFIs) exceeds "
             f"lc_max_failure_rate={lc_config.lc_max_failure_rate}. See "
             f"{failures_fp} for per-request errors; re-run without overwrite "
-            "to retry only the failed requests."
+            f"to retry only the failed requests."
         )
 
     return responses

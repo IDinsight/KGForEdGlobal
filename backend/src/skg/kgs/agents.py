@@ -36,7 +36,7 @@ def create_lc_dedup_agent(
     model_config: ModelConfig,
     verify_quality_fn: Callable[..., None],
 ) -> Agent:
-    """Create an Agent configured for LC duplicate-pair adjudication (step 15).
+    """Create an Agent configured for LC duplicate-pair adjudication.
 
     The returned agent validates parsed LLM output against the supplied bounded
     adjudication request. Quality failures raise `ModelRetry` so pydantic-ai
@@ -132,7 +132,7 @@ def create_lc_generation_agent(
     model_config: ModelConfig,
     verify_quality_fn: Callable[..., None],
 ) -> Agent:
-    """Create an Agent configured for LC atomic-skill decomposition (step 14).
+    """Create an Agent configured for LC atomic-skill decomposition.
 
     The returned agent validates parsed LLM output against the supplied bounded
     LC generation request. Quality failures raise `ModelRetry` so pydantic-ai

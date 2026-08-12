@@ -5579,7 +5579,7 @@ class AcademicStandardsKGBundle(BaseSchema):
 
 
 class AcademicStandardsLCExportSummary(BaseSchema):
-    """Combined summary for the merged AS+LC KG bundle (step 19)."""
+    """Combined summary for the merged AS+LC KG bundle."""
 
     academic_standards: AcademicStandardsExportSummary
     learning_components: LCGenerationSummary
@@ -5588,9 +5588,9 @@ class AcademicStandardsLCExportSummary(BaseSchema):
 
 
 class AcademicStandardsLCKGBundle(BaseSchema):
-    """Complete merged AS+LC KG bundle for one source framework (step 19).
+    """Complete merged AS+LC KG bundle for one source framework.
 
-    Composes the step-10 Academic Standards bundle content, verbatim, with
+    Composes the final Academic Standards bundle content, verbatim, with
     the LC layer: LearningComponent nodes, primary supports relationships,
     merged entity provenance, combined summary, and a merged-graph
     validation report.
@@ -5608,7 +5608,7 @@ class AcademicStandardsLCKGBundle(BaseSchema):
 
 
 class AcademicStandardsLCUnresolvedItems(BaseSchema):
-    """Unresolved report for the merged AS+LC KG bundle (step 19)."""
+    """Unresolved report for the merged AS+LC KG bundle."""
 
     academic_standards: AcademicStandardsUnresolvedItems
     learning_components: LCUnresolvedItems
@@ -5645,7 +5645,7 @@ LCSelectionMode = Literal["explicit_allowlist", "leaf_default"]
 
 
 class LCAtomicSkill(BaseSchema):
-    """One atomic teachable skill decomposed from an LC-source SFI (step 14)."""
+    """One atomic teachable skill decomposed from an LC-source SFI."""
 
     confidence: float = Field(
         description=(
@@ -5663,7 +5663,7 @@ class LCAtomicSkill(BaseSchema):
         default_factory=list,
         description=(
             "2-5 short lowercase keyword tags in the skill's source language. "
-            "Semantic nomination signal for step-15 dedup blocking and later "
+            "Semantic nomination signal for LC dedup blocking and later "
             "cross-SFI grouping."
         ),
     )
@@ -5678,7 +5678,7 @@ class LCContextSFI(BaseSchema):
 
 
 class LCDedupConflict(BaseSchema):
-    """One merge link dropped by the step-15 chaining guard."""
+    """One merge link dropped by the LC dedup chaining guard."""
 
     reason: str = Field(min_length=1)
     text_a: str = Field(min_length=1)
@@ -5686,7 +5686,7 @@ class LCDedupConflict(BaseSchema):
 
 
 class LCDedupGroup(BaseSchema):
-    """One multi-claim duplicate group after step-15 clustering."""
+    """One multi-claim duplicate group after LC dedup clustering."""
 
     canonical_text: str = Field(min_length=1)
     member_texts: list[str] = Field(min_length=1)
@@ -5695,7 +5695,7 @@ class LCDedupGroup(BaseSchema):
 
 
 class LCDedupGroups(BaseSchema):
-    """Step-15 grouping artifact: exact + semantic duplicate clusters."""
+    """LC dedup grouping artifact: exact + semantic duplicate clusters."""
 
     candidate_pair_count: int = Field(ge=0)
     conflict_count: int = Field(ge=0)
@@ -5708,7 +5708,7 @@ class LCDedupGroups(BaseSchema):
 
 
 class LCDedupPair(BaseSchema):
-    """One nominated candidate pair for step-15 duplicate adjudication."""
+    """One nominated candidate pair for LC duplicate adjudication."""
 
     nomination_rules: list[str] = Field(min_length=1)
     pair_id: int = Field(ge=0)
@@ -5728,14 +5728,14 @@ class LCDedupPairVerdict(BaseSchema):
 
 
 class LCDedupRequest(BaseSchema):
-    """Prompt payload for one batch of step-15 duplicate adjudications."""
+    """Prompt payload for one batch of LC duplicate adjudications."""
 
     pairs: list[LCDedupPair] = Field(min_length=1)
     request_id: str = Field(description="Deterministic request ID.", min_length=1)
 
 
 class LCDedupResponse(BaseSchema):
-    """Structured LLM output for one step-15 adjudication request."""
+    """Structured LLM output for one LC dedup adjudication request."""
 
     request_id: str = Field(
         description="Request ID copied from the prompt.", min_length=1
@@ -5744,7 +5744,7 @@ class LCDedupResponse(BaseSchema):
 
 
 class LCEligibilityReport(BaseSchema):
-    """Coverage report for LC-source SFI selection (LC generation step 12)."""
+    """Coverage report for LC-source SFI selection."""
 
     excluded: list[LCExcludedSFI] = Field(default_factory=list)
     lc_selection_mode: LCSelectionMode
@@ -5775,7 +5775,7 @@ class LCEligibilityReport(BaseSchema):
             != self.total_lc_source_sfis_considered
         ):
             raise ValueError(
-                "LC eligibility counts do not reconcile: eligible "
+                f"LC eligibility counts do not reconcile: eligible "
                 f"({self.total_lc_source_sfis_eligible}) + excluded "
                 f"({self.total_lc_source_sfis_excluded}) != considered "
                 f"({self.total_lc_source_sfis_considered})."
@@ -5808,7 +5808,7 @@ class LCFrameworkContext(BaseSchema):
 
 
 class LCGenerationFailure(BaseSchema):
-    """One LC generation request that produced no valid decomposition (step 14)."""
+    """One LC generation request that produced no valid decomposition."""
 
     error_message: str = Field(min_length=1)
     error_type: str = Field(min_length=1)
@@ -5817,7 +5817,7 @@ class LCGenerationFailure(BaseSchema):
 
 
 class LCGenerationRequest(BaseSchema):
-    """Prompt payload for LLM decomposition of LC-source SFIs (step 13).
+    """Prompt payload for LLM decomposition of LC-source SFIs.
 
     Requests never carry `statement_code` as decomposition input: source PDFs
     can contain malformed or mismatched codes. The SFI text plus ancestor
@@ -5830,10 +5830,11 @@ class LCGenerationRequest(BaseSchema):
 
 
 class LCGenerationResponse(BaseSchema):
-    """Structured LLM output for one LC generation request (step 14).
+    """Structured LLM output for one LC generation request.
 
     Carries raw atomic-skill decompositions, not LearningComponent nodes:
-    step 15 mints LC nodes (deterministic identity, provenance) from these.
+    LC minting derives LC nodes (deterministic identity, provenance) from
+    these.
     """
 
     items: list[LCResponseSFI] = Field(min_length=1)
@@ -5843,7 +5844,7 @@ class LCGenerationResponse(BaseSchema):
 
 
 class LCGenerationSummary(BaseSchema):
-    """Aggregate summary for the LC generation phase (step 18)."""
+    """Aggregate summary for the LC generation phase."""
 
     lc_confidence_distribution: dict[str, int] = Field(
         default_factory=dict,
@@ -5921,7 +5922,7 @@ class LCRequestSFI(BaseSchema):
 
 
 class LCResponseSFI(BaseSchema):
-    """Atomic skills decomposed from one LC-source SFI (step 14).
+    """Atomic skills decomposed from one LC-source SFI.
 
     A single skill is a valid decomposition: an already-atomic SFI yields
     exactly one cleanly restated skill.
@@ -5932,7 +5933,7 @@ class LCResponseSFI(BaseSchema):
 
 
 class LCUnresolvedItems(BaseSchema):
-    """Unresolved report for the LC generation phase (steps 14-18)."""
+    """Unresolved report for the LC generation phase."""
 
     lc_generation_failures: list[LCGenerationFailure] = Field(default_factory=list)
     lc_source_exclusion_reason_counts: dict[str, int] = Field(default_factory=dict)

@@ -872,7 +872,7 @@ def build_lc_dedup_prompt(
     lc_dedup_instructions: Optional[str],
     lc_dedup_request: LCDedupRequest,
 ) -> PromptPair:
-    """Generate prompts for LC duplicate-pair adjudication (step 15).
+    """Generate prompts for LC duplicate-pair adjudication.
 
     Parameters
     ----------
@@ -935,7 +935,7 @@ def build_lc_generation_prompt(
     generation_instructions: str,
     lc_generation_request: LCGenerationRequest,
 ) -> PromptPair:
-    """Generate prompts for LC atomic-skill decomposition (step 14).
+    """Generate prompts for LC atomic-skill decomposition.
 
     Parameters
     ----------
