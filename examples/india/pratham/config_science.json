@@ -543,7 +543,56 @@
 			]
 		},
 		"lc": {
-			"generation_instructions": "Learning Components are out of scope for Academic Standards KG v0 for this CBSE Science run. Do not generate LearningComponent records."
+			"generation_instructions": "Generate Learning Components only from finalized `Indicator` SFIs. Do not generate skills from Class, Content Domain, Chapter, NCERT Learning Outcome, or Content Domain Specific Learning Outcome records, nor from introductory rationale, pedagogy notes, or assessment guidance.\n\nIndicators in this source are already verb-led, measurable, leaf-level expectations ('Explains the need for a stream of electrons and a conductor.'), so most yield exactly one cleanly restated skill. Split only when a single Indicator states several independently teachable actions or enumerated cases ('Separates oxidation from reduction in terms of loss and gain of oxygen'); keep quantities, SI units, chemical formulae, named laws, and organism or material names bound to the skill they qualify. Where an Indicator is stated abstractly, use the parent Content Domain Specific Learning Outcome for disambiguation only, adding nothing the Indicator and its CLO do not state together.\n\nThe leading `C#` code is an identifier, not content, and repeats across Class IX and Class X; never treat it as decomposition input. Class applicability is carried in the SFI grade_level/identity scope ('Class IX', 'Class X'), so do not restate the class inside skill text. Drop parenthetical source and method notes rather than turning them into skills: NCERT activity pointers ('(Refer activity 3.10 in NCERT)'), modality qualifiers ('(Both textually and through observations)', '(Theoretically and experimentally)'), and illustrative '(e.g., ...)' lists. Preserve CBSE and NCERT science terminology and Indian contextual references. Output skills in English.",
+			"lc_dedup_batch_size": 25,
+			"lc_dedup_blocking": {
+				"containment_min_shared_tokens": 2,
+				"containment_threshold": 0.75,
+				"corpus_stopword_df": 0.15,
+				"neighborhood_all_pairs_max_size": 12,
+				"tag_jaccard_threshold": 0.5,
+				"token_jaccard_threshold": 0.55,
+				"trigram_jaccard_threshold": 0.6
+			},
+			"lc_dedup_instructions": null,
+			"lc_dedup_language_pack": {
+				"min_fold_length": 5,
+				"stopwords": [
+					"a",
+					"an",
+					"the",
+					"of",
+					"to",
+					"in",
+					"on",
+					"for",
+					"with",
+					"and",
+					"or",
+					"using",
+					"given",
+					"their",
+					"its"
+				],
+				"strip_prefixes": [],
+				"strip_suffixes": [
+					"ing",
+					"es",
+					"s"
+				]
+			},
+			"lc_dedup_scope": "framework",
+			"lc_include_sibling_context": false,
+			"lc_manual_review_overrides": null,
+			"lc_max_failure_rate": 0.05,
+			"lc_max_skill_text_length": null,
+			"lc_max_skills_per_sfi": null,
+			"lc_min_skill_text_length": null,
+			"lc_request_batch_size": 1,
+			"lc_semantic_dedup": true,
+			"lc_source_statement_types": [
+				"Indicator"
+			]
 		},
 		"metadata": {
 			"adoption_status": "Unknown",

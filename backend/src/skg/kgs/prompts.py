@@ -8,6 +8,8 @@ from typing import Any, Optional
 from skg.kgs.schemas import (
     ExtractionWindow,
     ExtractionWindowTablePayload,
+    LCDedupRequest,
+    LCGenerationRequest,
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
     SFIExtractionResult,
@@ -863,6 +865,137 @@ def _validate_compact_body_row_placement(table: ExtractionWindowTablePayload) ->
             f"at source row indexes {unsafe_row_indexes}. Provide grid_sources so "
             f"visible cells can be assigned to their true expanded-grid columns."
         )
+
+
+def build_lc_dedup_prompt(
+    *,
+    lc_dedup_instructions: Optional[str],
+    lc_dedup_request: LCDedupRequest,
+) -> PromptPair:
+    """Generate prompts for LC duplicate-pair adjudication.
+
+    Parameters
+    ----------
+    lc_dedup_instructions
+        Optional curriculum-specific adjudication policy from the Learning
+        Components runtime configuration, or None for the generic rubric
+        alone.
+    lc_dedup_request
+        Bounded batch of nominated candidate pairs to adjudicate.
+
+    Returns
+    -------
+    PromptPair
+        System and user messages for the LC dedup adjudication agent.
+    """
+
+    user_payload = lc_dedup_request.model_dump(mode="json")
+    instructions_section = (
+        ""
+        if lc_dedup_instructions is None
+        else dedent(
+            f"""
+## Runtime curriculum instructions
+- Treat the following as the authoritative curriculum-specific adjudication policy for this request. If it conflicts with the generic policy above, follow it unless doing so would violate the output contract.
+{lc_dedup_instructions}
+"""
+        )
+    )
+    system_message = dedent(
+        f"""You are a curriculum-deduplication judge for a Learning Commons-shaped Knowledge Graph. For each nominated pair of atomic skill statements, decide whether the two statements describe THE SAME atomic teachable skill.
+
+## Judgment policy
+- Judge SAME only if the action, the object, the direction, and every scope qualifier match.
+- These are DISTINCT: different numeric bounds or ranges (up to 10,000 vs up to 100,000); opposite or different directions (convert X to Y vs convert Y to X; round up vs round down); presence vs absence of a qualifier (with vs without borrowing; with like denominators vs unqualified); different pedagogical actions (develop a formula vs apply a formula; explain vs perform).
+- These are SAME: pure rewording, reordering, or nominalization (add 3-digit numbers vs addition of 3-digit numbers); synonymous verbs for the identical action and object (apply vs use a named strategy); singular/plural, spelling, or inflection differences.
+- When statement types are provided and differ between the two sides (e.g. a knowledge objective vs a skills objective), treat differing knowledge/skill/disposition framing as DISTINCT unless the statements are plain rewordings of each other.
+- When uncertain, answer DISTINCT — a false merge corrupts the graph; a missed merge only leaves one extra node.
+{instructions_section}
+## Output contract
+- Copy request_id exactly.
+- Return exactly one verdict per pair, using each pair's pair_id; cover every pair exactly once and invent none.
+- Give a concise reason for every verdict.
+        """
+    )
+    user_message = dedent(
+        f"""Adjudicate the nominated duplicate-candidate pairs in this bounded request.
+
+## LC dedup request JSON
+{json_dumps(user_payload)}
+        """
+    )
+
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
+    )
+
+
+def build_lc_generation_prompt(
+    *,
+    generation_instructions: str,
+    lc_generation_request: LCGenerationRequest,
+) -> PromptPair:
+    """Generate prompts for LC atomic-skill decomposition.
+
+    Parameters
+    ----------
+    generation_instructions
+        Reviewed curriculum-specific decomposition instructions from the
+        Learning Components runtime configuration.
+    lc_generation_request
+        Bounded LC generation request containing the LC-source SFIs with
+        their framework and ancestor context.
+
+    Returns
+    -------
+    PromptPair
+        System and user messages for the LC generation agent.
+    """
+
+    user_payload = lc_generation_request.model_dump(mode="json")
+    system_message = dedent(
+        f"""You are a curriculum-decomposition agent for a Learning Commons-shaped Knowledge Graph. Decompose each supplied StandardsFrameworkItem (SFI) into atomic teachable skills.
+
+## Task boundary
+- Each skill must be a single atomic, teachable skill — not an activity, resource, assessment prompt, teacher guidance, a prerequisite skill the standard does not state, or a restatement of the whole standard.
+- Each skill must be smaller and more teachable than the standard and directly supported by the standard's own text.
+- Prefer concise teachable components that could support lesson planning or learning resource tagging.
+- A single skill is a valid decomposition: when an SFI is already atomic, return exactly one cleanly restated skill. Never force a split and never pad the skill count.
+- When you do split an SFI into multiple skills, the split replaces the whole: never additionally emit a summary skill that restates the entire SFI.
+- Do not emit both an "understand/concept of X" skill and an "identify/use X" skill for the same X unless the SFI text states both aspects explicitly; one skill per stated competency.
+- Never add materials, tools, or methods the SFI text does not name (e.g. do not turn "practical work" into "concrete objects").
+- Produce each skill in the SFI's source language (its `language` field), unless the runtime curriculum instructions state otherwise.
+
+## Runtime curriculum instructions
+- Treat the following as the authoritative curriculum-specific decomposition policy for this request. If it conflicts with the generic rules above, follow it unless doing so would violate the output contract.
+{generation_instructions}
+
+## Context policy
+- `ancestor_path` is ordered framework root first and is the authoritative source of grade/curriculum scope. Use it to disambiguate terms and scope only; it must not introduce skills absent from the SFI text unless the runtime curriculum instructions explicitly authorize taking a missing verb or object from a named ancestor type.
+- If `ancestor_path_status` is "unresolved_ancestor_path", the ancestor path is incomplete: treat the SFI text as the sole scope authority and do not state any grade, strand, topic, or unit scope the SFI text itself does not carry.
+- `siblings`, when present, show neighbouring standards under the same parent so you avoid claiming skills those standards own. Never derive skill content from siblings.
+- `framework_context` situates the curriculum (jurisdiction, subject, language); it introduces no skills.
+
+## Output contract
+- Copy request_id exactly.
+- Return exactly one items entry per SFI in the request, with sfi_uuid copied exactly; cover every SFI exactly once and invent none.
+- Every skills list must be non-empty.
+- Set confidence in [0, 1] as your confidence that the skill is directly supported by the SFI text.
+- Give each skill 2-5 short lowercase keyword tags in the skill's source language.
+- Never copy source statement codes or list markers into skill text.
+        """
+    )
+    user_message = dedent(
+        f"""Decompose the LC-source SFIs in this bounded request into atomic teachable skills.
+
+## LC generation request JSON
+{json_dumps(user_payload)}
+        """
+    )
+
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
+    )
 
 
 def extract_sfi_candidates_from_window(

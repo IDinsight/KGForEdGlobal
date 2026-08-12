@@ -5578,6 +5578,42 @@ class AcademicStandardsKGBundle(BaseSchema):
     validation_report: AcademicStandardsValidationReport
 
 
+class AcademicStandardsLCExportSummary(BaseSchema):
+    """Combined summary for the merged AS+LC KG bundle."""
+
+    academic_standards: AcademicStandardsExportSummary
+    learning_components: LCGenerationSummary
+    total_node_count: int = Field(ge=0)
+    total_relationship_count: int = Field(ge=0)
+
+
+class AcademicStandardsLCKGBundle(BaseSchema):
+    """Complete merged AS+LC KG bundle for one source framework.
+
+    Composes the final Academic Standards bundle content, verbatim, with
+    the LC layer: LearningComponent nodes, primary supports relationships,
+    merged entity provenance, combined summary, and a merged-graph
+    validation report.
+    """
+
+    entity_provenance: dict[str, Any] = Field(default_factory=dict)
+    framework: StandardsFramework
+    items: list[StandardsFrameworkItem]
+    learning_components: list[LearningComponent]
+    relationships_has_child: list[Relationship]
+    relationships_supports: list[Relationship]
+    summary: AcademicStandardsLCExportSummary
+    unresolved_items: AcademicStandardsLCUnresolvedItems
+    validation_report: AcademicStandardsValidationReport
+
+
+class AcademicStandardsLCUnresolvedItems(BaseSchema):
+    """Unresolved report for the merged AS+LC KG bundle."""
+
+    academic_standards: AcademicStandardsUnresolvedItems
+    learning_components: LCUnresolvedItems
+
+
 class AcademicStandardsUnresolvedItems(BaseSchema):
     """Final unresolved report for Academic Standards export artifacts."""
 
@@ -5594,6 +5630,313 @@ class AcademicStandardsValidationReport(BaseSchema):
     object_counts: dict[str, int] = Field(default_factory=dict)
     passed: bool
     validation_checks: list[str] = Field(default_factory=list)
+
+
+# Schemas for Learning Component generation.
+LCAncestorPathStatus = Literal["resolved", "unresolved_ancestor_path"]
+LCExclusionReason = Literal[
+    "empty_text",
+    "grouping_node",
+    "not_a_leaf",
+    "not_in_allowlist",
+    "unresolved_ancestor_path",
+]
+LCSelectionMode = Literal["explicit_allowlist", "leaf_default"]
+
+
+class LCAtomicSkill(BaseSchema):
+    """One atomic teachable skill decomposed from an LC-source SFI."""
+
+    confidence: float = Field(
+        description=(
+            "Model confidence that this skill is directly supported by the "
+            "source SFI text."
+        ),
+        ge=0.0,
+        le=1.0,
+    )
+    description: str = Field(
+        description="The atomic teachable skill statement, in the SFI's source language.",
+        min_length=1,
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description=(
+            "2-5 short lowercase keyword tags in the skill's source language. "
+            "Semantic nomination signal for LC dedup blocking and later "
+            "cross-SFI grouping."
+        ),
+    )
+
+
+class LCContextSFI(BaseSchema):
+    """One ancestor or sibling SFI carried as disambiguation-only LC context."""
+
+    case_identifier_uuid: UUID
+    description: str = Field(min_length=1)
+    statement_type: str = Field(min_length=1)
+
+
+class LCDedupConflict(BaseSchema):
+    """One merge link dropped by the LC dedup chaining guard."""
+
+    reason: str = Field(min_length=1)
+    text_a: str = Field(min_length=1)
+    text_b: str = Field(min_length=1)
+
+
+class LCDedupGroup(BaseSchema):
+    """One multi-claim duplicate group after LC dedup clustering."""
+
+    canonical_text: str = Field(min_length=1)
+    member_texts: list[str] = Field(min_length=1)
+    scope_key: str = Field(min_length=1)
+    sfi_uuids: list[UUID] = Field(min_length=1)
+
+
+class LCDedupGroups(BaseSchema):
+    """LC dedup grouping artifact: exact + semantic duplicate clusters."""
+
+    candidate_pair_count: int = Field(ge=0)
+    conflict_count: int = Field(ge=0)
+    conflicts: list[LCDedupConflict] = Field(default_factory=list)
+    exact_duplicate_claim_count: int = Field(ge=0)
+    groups: list[LCDedupGroup] = Field(default_factory=list)
+    judged_same_count: int = Field(ge=0)
+    total_claim_count: int = Field(ge=0)
+    unique_text_count: int = Field(ge=0)
+
+
+class LCDedupPair(BaseSchema):
+    """One nominated candidate pair for LC duplicate adjudication."""
+
+    nomination_rules: list[str] = Field(min_length=1)
+    pair_id: int = Field(ge=0)
+    scope_key: str = Field(min_length=1)
+    statement_types_a: list[str] = Field(default_factory=list)
+    statement_types_b: list[str] = Field(default_factory=list)
+    text_a: str = Field(min_length=1)
+    text_b: str = Field(min_length=1)
+
+
+class LCDedupPairVerdict(BaseSchema):
+    """LLM verdict for one nominated duplicate-candidate pair."""
+
+    pair_id: int = Field(ge=0)
+    reason: str = Field(max_length=500, min_length=1)
+    same_skill: bool
+
+
+class LCDedupRequest(BaseSchema):
+    """Prompt payload for one batch of LC duplicate adjudications."""
+
+    pairs: list[LCDedupPair] = Field(min_length=1)
+    request_id: str = Field(description="Deterministic request ID.", min_length=1)
+
+
+class LCDedupResponse(BaseSchema):
+    """Structured LLM output for one LC dedup adjudication request."""
+
+    request_id: str = Field(
+        description="Request ID copied from the prompt.", min_length=1
+    )
+    verdicts: list[LCDedupPairVerdict] = Field(min_length=1)
+
+
+class LCEligibilityReport(BaseSchema):
+    """Coverage report for LC-source SFI selection."""
+
+    excluded: list[LCExcludedSFI] = Field(default_factory=list)
+    lc_selection_mode: LCSelectionMode
+    lc_source_exclusion_reason_counts: dict[str, int] = Field(default_factory=dict)
+    total_lc_source_sfis_considered: int = Field(ge=0)
+    total_lc_source_sfis_eligible: int = Field(ge=0)
+    total_lc_source_sfis_empty_text: int = Field(ge=0)
+    total_lc_source_sfis_excluded: int = Field(ge=0)
+    warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> Self:
+        """Validate that eligibility counts reconcile.
+
+        Returns
+        -------
+        Self
+            The validated eligibility report.
+
+        Raises
+        ------
+        ValueError
+            If counts do not reconcile with the excluded records.
+        """
+
+        if (
+            self.total_lc_source_sfis_eligible + self.total_lc_source_sfis_excluded
+            != self.total_lc_source_sfis_considered
+        ):
+            raise ValueError(
+                f"LC eligibility counts do not reconcile: eligible "
+                f"({self.total_lc_source_sfis_eligible}) + excluded "
+                f"({self.total_lc_source_sfis_excluded}) != considered "
+                f"({self.total_lc_source_sfis_considered})."
+            )
+        if len(self.excluded) != self.total_lc_source_sfis_excluded:
+            raise ValueError(
+                f"LC eligibility excluded records ({len(self.excluded)}) do not "
+                f"match total_lc_source_sfis_excluded "
+                f"({self.total_lc_source_sfis_excluded})."
+            )
+        return self
+
+
+class LCExcludedSFI(BaseSchema):
+    """One SFI excluded from LC-source selection, with the exclusion reason."""
+
+    final_sfi_uuid: UUID
+    normalized_statement_type: NormalizedStatementType
+    reason: LCExclusionReason
+    statement_type: str
+
+
+class LCFrameworkContext(BaseSchema):
+    """Framework context attached once per LC generation request."""
+
+    academic_subject: str = Field(min_length=1)
+    in_language: LanguageField
+    jurisdiction: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+
+
+class LCGenerationFailure(BaseSchema):
+    """One LC generation request that produced no valid decomposition."""
+
+    error_message: str = Field(min_length=1)
+    error_type: str = Field(min_length=1)
+    request_id: str = Field(min_length=1)
+    sfi_uuids: list[UUID] = Field(min_length=1)
+
+
+class LCGenerationRequest(BaseSchema):
+    """Prompt payload for LLM decomposition of LC-source SFIs.
+
+    Requests never carry `statement_code` as decomposition input: source PDFs
+    can contain malformed or mismatched codes. The SFI text plus ancestor
+    context is the semantic source of truth; codes remain metadata.
+    """
+
+    framework_context: LCFrameworkContext
+    request_id: str = Field(description="Deterministic request ID.", min_length=1)
+    sfis: list[LCRequestSFI] = Field(min_length=1)
+
+
+class LCGenerationResponse(BaseSchema):
+    """Structured LLM output for one LC generation request.
+
+    Carries raw atomic-skill decompositions, not LearningComponent nodes:
+    LC minting derives LC nodes (deterministic identity, provenance) from
+    these.
+    """
+
+    items: list[LCResponseSFI] = Field(min_length=1)
+    request_id: str = Field(
+        description="Request ID copied from the prompt.", min_length=1
+    )
+
+
+class LCGenerationSummary(BaseSchema):
+    """Aggregate summary for the LC generation phase."""
+
+    lc_confidence_distribution: dict[str, int] = Field(
+        default_factory=dict,
+        description="Claim decomposition confidences bucketed by first decimal.",
+    )
+    lc_count_by_language: dict[str, int] = Field(default_factory=dict)
+    lc_count_by_source_statement_type: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "LearningComponent counts per claiming source statement type; a "
+            "node claimed by several types counts once per type."
+        ),
+    )
+    lc_dedup_candidate_pair_count: int = Field(ge=0)
+    lc_dedup_conflict_count: int = Field(ge=0)
+    lc_dedup_judged_same_count: int = Field(ge=0)
+    lc_generation_failed_sfis_count: int = Field(ge=0)
+    lc_max_splits_observed: int = Field(ge=0)
+    lc_multi_claim_lc_count: int = Field(ge=0)
+    lc_multi_parent_lc_count: int = Field(ge=0)
+    lc_selection_mode: LCSelectionMode
+    lc_source_exclusion_reason_counts: dict[str, int] = Field(default_factory=dict)
+    lc_splits_distribution: dict[str, int] = Field(
+        default_factory=dict,
+        description="Atomic-skill counts per decomposed seed SFI.",
+    )
+    llm_request_count: int = Field(ge=0)
+    llm_response_count: int = Field(ge=0)
+    manual_review_overrides: Optional[dict[str, Any]] = Field(default=None)
+    total_lc_claims: int = Field(ge=0)
+    total_lc_source_sfis_considered: int = Field(ge=0)
+    total_lc_source_sfis_eligible: int = Field(ge=0)
+    total_lc_source_sfis_empty_text: int = Field(ge=0)
+    total_lc_source_sfis_excluded: int = Field(ge=0)
+    total_lcs: int = Field(ge=0)
+    total_supports_edges: int = Field(ge=0)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class LCRequestSFI(BaseSchema):
+    """One LC-source SFI in a generation request, with its prompt context."""
+
+    ancestor_path: list[LCContextSFI] = Field(
+        default_factory=list,
+        description=(
+            "Resolved hasChild ancestors ordered framework root first, direct "
+            "parent last. Disambiguation-only context and the authoritative "
+            "source of grade/curriculum scope."
+        ),
+    )
+    ancestor_path_status: LCAncestorPathStatus = Field(
+        default="resolved",
+        description=(
+            "'unresolved_ancestor_path' when the seed's ancestor path crosses "
+            "an unresolved root-fallback edge (only possible when the manual-"
+            "review override admits such seeds); its ancestor_path is then "
+            "incomplete and must not be used to derive curriculum scope."
+        ),
+    )
+    description: str = Field(
+        description="Final source-backed SFI description text.", min_length=1
+    )
+    final_sfi_uuid: UUID
+    language: str = Field(
+        description="Source language tag chosen for the final SFI.", min_length=1
+    )
+    siblings: list[LCContextSFI] = Field(
+        default_factory=list,
+        description=(
+            "Sibling SFIs under the same hasChild parent, populated only when "
+            "lc_include_sibling_context is configured. Disambiguation-only."
+        ),
+    )
+    statement_type: str = Field(min_length=1)
+
+
+class LCResponseSFI(BaseSchema):
+    """Atomic skills decomposed from one LC-source SFI.
+
+    A single skill is a valid decomposition: an already-atomic SFI yields
+    exactly one cleanly restated skill.
+    """
+
+    sfi_uuid: UUID = Field(description="Final SFI UUID copied from the request batch.")
+    skills: list[LCAtomicSkill] = Field(min_length=1)
+
+
+class LCUnresolvedItems(BaseSchema):
+    """Unresolved report for the LC generation phase."""
+
+    lc_generation_failures: list[LCGenerationFailure] = Field(default_factory=list)
+    lc_source_exclusion_reason_counts: dict[str, int] = Field(default_factory=dict)
 
 
 # Schemas for nodes.

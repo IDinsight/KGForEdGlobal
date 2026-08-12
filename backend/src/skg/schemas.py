@@ -2316,10 +2316,211 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         return self
 
 
+class _CreateKGLCDedupBlockingConfig(BaseSchema):
+    """LC dedup candidate-nomination thresholds.
+
+    Defaults are empirically calibrated. A curriculum whose calibration
+    warrants different gates overrides them in its own config.
+    """
+
+    containment_min_shared_tokens: int = Field(
+        default=2,
+        description="Minimum shared tokens for the containment rule to fire.",
+        ge=1,
+    )
+    containment_threshold: float = Field(
+        default=0.75,
+        description="Overlap coefficient (shared / smaller token set) gate.",
+        ge=0.0,
+        le=1.0,
+    )
+    corpus_stopword_df: float = Field(
+        default=0.15,
+        description=(
+            "Tokens appearing in more than this fraction of the run's unique "
+            "skill texts are treated as stopwords (language-independent)."
+        ),
+        ge=0.0,
+        le=1.0,
+    )
+    neighborhood_all_pairs_max_size: int = Field(
+        default=12,
+        description=(
+            "Nominate ALL pairs (no similarity gate) among unique texts "
+            "sharing a direct hasChild parent when that neighborhood holds "
+            "at most this many texts; 0 disables the rule."
+        ),
+        ge=0,
+    )
+    tag_jaccard_threshold: float = Field(
+        default=0.5,
+        description="Jaccard gate over folded tag-token bags.",
+        ge=0.0,
+        le=1.0,
+    )
+    token_jaccard_threshold: float = Field(
+        default=0.55,
+        description="Jaccard gate over content-token sets.",
+        ge=0.0,
+        le=1.0,
+    )
+    trigram_jaccard_threshold: float = Field(
+        default=0.6,
+        description="Jaccard gate over character trigrams (language-blind).",
+        ge=0.0,
+        le=1.0,
+    )
+
+
+class _CreateKGLCDedupLanguagePackConfig(BaseSchema):
+    """Language-specific lexical knowledge for LC dedup blocking.
+
+    Declares curated stopwords and affix-folding rules as data in the
+    document profile, so no language ever requires a code change. Omitted
+    means only the language-independent core rules run.
+    """
+
+    min_fold_length: int = Field(
+        default=5,
+        description="Minimum token length before affix folding applies.",
+        ge=1,
+    )
+    stopwords: list[str] = Field(
+        default_factory=list,
+        description="Curated function words excluded from pack token sets.",
+    )
+    strip_prefixes: list[str] = Field(
+        default_factory=list,
+        description="Prefixes folded off tokens (e.g. French elisions).",
+    )
+    strip_suffixes: list[str] = Field(
+        default_factory=list,
+        description="Suffixes folded off tokens (first match wins).",
+    )
+
+
 class _CreateKGLearningComponentsConfig(BaseSchema):
     """Learning Components configuration for KG creation."""
 
     generation_instructions: str
+    lc_dedup_batch_size: int = Field(
+        default=25,
+        description="Candidate pairs per LC dedup adjudication request.",
+        ge=1,
+    )
+    lc_dedup_blocking: _CreateKGLCDedupBlockingConfig = Field(
+        default_factory=_CreateKGLCDedupBlockingConfig,
+        description="LC dedup candidate-nomination thresholds.",
+    )
+    lc_dedup_instructions: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional curriculum-specific adjudication policy appended to the "
+            "LC dedup duplicate-pair judge prompt (local conventions such as "
+            "whether whole numbers include negatives). None runs the generic "
+            "conservative rubric alone."
+        ),
+    )
+    lc_dedup_language_pack: Optional[_CreateKGLCDedupLanguagePackConfig] = Field(
+        default=None,
+        description=(
+            "Language pack for LC dedup blocking, declared entirely in the "
+            "document profile. None runs the language-independent core rules "
+            "alone."
+        ),
+    )
+    lc_dedup_scope: Literal["framework", "top_ancestor", "parent", "none"] = Field(
+        default="framework",
+        description=(
+            "Merge scope for duplicate skills: anywhere in the document "
+            "(framework), only under a shared first hasChild-path node "
+            "(top_ancestor), only among siblings (parent), or no cross-SFI "
+            "merging at all (none)."
+        ),
+    )
+    lc_include_sibling_context: bool = Field(
+        default=False,
+        description=(
+            "Include sibling SFIs under the same hasChild parent in each LC "
+            "generation request as disambiguation-only context. Off by "
+            "default; the prompt forbids deriving skill content from siblings."
+        ),
+    )
+    lc_manual_review_overrides: Optional[dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Optional manual-review record for unresolved Academic Standards "
+            "items. When the final Academic Standards bundle has finalization "
+            "exclusions or unresolved root-fallback edges, LC generation "
+            "always proceeds over the resolved subgraph and reports the gaps "
+            "loudly. Set "
+            "allow_unresolved_ancestor_context=true here (with reviewed_by, "
+            "reviewed_at, review_notes) to additionally include seeds whose "
+            "ancestor path passes through an unresolved root-fallback edge. "
+            "Recorded verbatim in the LC generation summary."
+        ),
+    )
+    lc_max_failure_rate: float = Field(
+        default=0.05,
+        description=(
+            "Maximum fraction of eligible LC-source SFIs allowed to fail LLM "
+            "decomposition before the run raises. Isolated failures are "
+            "recorded and the run continues; set 1.0 to disable the guard."
+        ),
+        ge=0.0,
+        le=1.0,
+    )
+    lc_max_skill_text_length: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional maximum character length for one atomic skill "
+            "statement; the LC generation validator retries responses that "
+            "exceed it. Unset means no length ceiling."
+        ),
+        ge=1,
+    )
+    lc_max_skills_per_sfi: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional hard ceiling on atomic skills per SFI; the LC generation "
+            "validator asks for a coarser decomposition when exceeded. Unset "
+            "means the prompt contract alone governs skill count."
+        ),
+        ge=1,
+    )
+    lc_min_skill_text_length: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional minimum character length for one atomic skill "
+            "statement; the LC generation validator retries responses that "
+            "fall short. Unset means no length floor."
+        ),
+        ge=1,
+    )
+    lc_request_batch_size: int = Field(
+        default=1,
+        description=(
+            "Number of LC-source SFIs per generation request. Default 1 (one "
+            "SFI per request, hasChild parity) scopes retries and resume to a "
+            "single SFI; raising it is a throughput knob, not a schema change."
+        ),
+        ge=1,
+    )
+    lc_semantic_dedup: bool = Field(
+        default=True,
+        description=(
+            "Run LC dedup LLM pair adjudication for semantically equivalent "
+            "skills. False limits dedup to exact normalized-text grouping."
+        ),
+    )
+    lc_source_statement_types: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Source-facing SFI statement types eligible as LC-generation seeds. "
+            "When omitted, selection defaults to leaf SFIs whose normalized "
+            "statement type is 'Standard'. When provided, must be non-empty."
+        ),
+    )
 
     @field_validator("generation_instructions", mode="before")
     @classmethod
@@ -2338,6 +2539,77 @@ class _CreateKGLearningComponentsConfig(BaseSchema):
         """
 
         return strip_and_require_non_empty_str(v)
+
+    @field_validator("lc_source_statement_types")
+    @classmethod
+    def _validate_lc_source_statement_types(
+        cls, v: Optional[list[str]]
+    ) -> Optional[list[str]]:
+        """Validate the LC-source statement-type allowlist when provided.
+
+        Omitted (None) means "use the leaf default"; an explicitly empty or
+        blank-entry list is a configuration mistake and fails loudly.
+
+        Parameters
+        ----------
+        v
+            The configured allowlist, or None when omitted.
+
+        Returns
+        -------
+        Optional[list[str]]
+            The stripped, order-preserving deduplicated allowlist, or None.
+
+        Raises
+        ------
+        ValueError
+            If the provided allowlist is empty or contains blank entries.
+        """
+
+        if v is None:
+            return None
+        cleaned: list[str] = []
+        for entry in v:
+            stripped = entry.strip()
+            if not stripped:
+                raise ValueError(
+                    "lc_source_statement_types must not contain blank entries."
+                )
+            if stripped not in cleaned:
+                cleaned.append(stripped)
+        if not cleaned:
+            raise ValueError(
+                "lc_source_statement_types must be non-empty when provided; omit "
+                "it entirely to use the leaf-node default."
+            )
+        return cleaned
+
+    @model_validator(mode="after")
+    def _validate_skill_text_length_bounds(self) -> Self:
+        """Validate that skill-text length bounds are consistent when both set.
+
+        Returns
+        -------
+        Self
+            The validated Learning Components configuration.
+
+        Raises
+        ------
+        ValueError
+            If lc_min_skill_text_length exceeds lc_max_skill_text_length.
+        """
+
+        if (
+            self.lc_max_skill_text_length is not None
+            and self.lc_min_skill_text_length is not None
+            and self.lc_min_skill_text_length > self.lc_max_skill_text_length
+        ):
+            raise ValueError(
+                f"lc_min_skill_text_length ({self.lc_min_skill_text_length}) "
+                f"must not exceed lc_max_skill_text_length "
+                f"({self.lc_max_skill_text_length})."
+            )
+        return self
 
 
 class _CreateKGMetadata(BaseSchema):

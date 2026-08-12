@@ -28,6 +28,18 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
+from skg.kgs.lc_dedup import group_duplicate_skills
+from skg.kgs.lc_export import compile_as_lc_kg
+from skg.kgs.lc_finalization import (
+    build_lc_supports_edges,
+    mint_learning_components,
+    summarize_learning_components,
+)
+from skg.kgs.lc_generation import (
+    build_lc_generation_requests,
+    decompose_lc_source_sfis,
+)
+from skg.kgs.lc_selection import select_lc_source_sfis
 from skg.kgs.llm import KGUsageTracker
 from skg.kgs.sfi_dedup import merge_sfi_candidates
 from skg.kgs.sfi_export import compile_academic_standards_kg
@@ -62,7 +74,7 @@ def build_kgs(
     kg_dirs: KGDirs,
     usage_tracker: KGUsageTracker,
 ) -> Path:
-    """Build Academic Standards KG artifacts for a DocumentIR and KG config.
+    """Build Academic Standards + Learning Components KG artifacts for a DocumentIR.
 
     The process is as follows:
 
@@ -76,6 +88,23 @@ def build_kgs(
     8. Mint deterministic final SFI records from merge groups.
     9. Resolve source-grounded final hasChild edges.
     10. Compile, validate, and write final Academic Standards KG export artifacts.
+    11. Gate LC generation on the Academic Standards bundle (validation +
+        unresolved items).
+    12. Select eligible LC-source SFIs (profile allowlist or leaf default).
+    13. Build deterministic LC generation requests (ancestor paths, framework
+        context).
+    14. Decompose LC-source SFIs into atomic skills using an LLM (sequential,
+        resumable).
+    15. Group exact + semantic duplicate skills (deterministic blocking, LLM
+        pair adjudication).
+    16. Mint LearningComponent nodes from canonical skill texts
+        (content-addressed, deterministic).
+    17. Emit one primary supports edge per (LearningComponent, claiming
+        SFI) pair (deterministic edge identities).
+    18. Validate run-level LC invariants and persist the phase summary and
+        LC entity provenance.
+    19. Merge the AS bundle and the LC layer into the single AS+LC KG
+        bundle, with flat node/relationship projections.
 
     Parameters
     ----------
@@ -184,6 +213,90 @@ def build_kgs(
         f"frameworks={final_bundle.summary.framework_count}; "
         f"items={final_bundle.summary.final_sfi_count}; "
         f"hasChild_relationships={final_bundle.summary.has_child_relationship_count}"
+    )
+
+    # 11-12.
+    lc_eligible_sfis, lc_eligibility_report = select_lc_source_sfis(
+        academic_standards_bundle=final_bundle,
+        has_child_edges=has_child_edges,
+        kg_dirs=kg_dirs,
+        lc_config=kg_run_inputs.kg_config.learning_components,
+        sfi_final_records=sfi_final_records,
+    )
+
+    # 13.
+    lc_generation_requests = build_lc_generation_requests(
+        academic_standards_bundle=final_bundle,
+        has_child_edges=has_child_edges,
+        kg_dirs=kg_dirs,
+        lc_config=kg_run_inputs.kg_config.learning_components,
+        lc_eligible_sfis=lc_eligible_sfis,
+        sfi_final_records=sfi_final_records,
+    )
+
+    # 14.
+    lc_generation_responses = decompose_lc_source_sfis(
+        kg_dirs=kg_dirs,
+        lc_config=kg_run_inputs.kg_config.learning_components,
+        lc_generation_requests=lc_generation_requests,
+        overwrite=config.overwrite,
+        usage_tracker=usage_tracker,
+    )
+
+    # 15.
+    lc_dedup_groups = group_duplicate_skills(
+        kg_dirs=kg_dirs,
+        lc_config=kg_run_inputs.kg_config.learning_components,
+        lc_generation_requests=lc_generation_requests,
+        lc_generation_responses=lc_generation_responses,
+        overwrite=config.overwrite,
+        usage_tracker=usage_tracker,
+    )
+
+    # 16.
+    learning_components = mint_learning_components(
+        academic_standards_bundle=final_bundle,
+        document_ir=kg_run_inputs.document_ir,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+        lc_dedup_groups=lc_dedup_groups,
+        lc_eligible_sfis=lc_eligible_sfis,
+        lc_generation_requests=lc_generation_requests,
+        lc_generation_responses=lc_generation_responses,
+    )
+
+    # 17.
+    lc_supports_edges = build_lc_supports_edges(
+        document_ir=kg_run_inputs.document_ir,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+        lc_eligible_sfis=lc_eligible_sfis,
+        learning_components=learning_components,
+    )
+
+    # 18.
+    lc_generation_summary = summarize_learning_components(
+        academic_standards_bundle=final_bundle,
+        document_ir=kg_run_inputs.document_ir,
+        kg_dirs=kg_dirs,
+        lc_config=kg_run_inputs.kg_config.learning_components,
+        lc_dedup_groups=lc_dedup_groups,
+        lc_eligibility_report=lc_eligibility_report,
+        lc_eligible_sfis=lc_eligible_sfis,
+        lc_generation_requests=lc_generation_requests,
+        lc_generation_responses=lc_generation_responses,
+        learning_components=learning_components,
+        supports_edges=lc_supports_edges,
+    )
+
+    # 19.
+    compile_as_lc_kg(
+        academic_standards_bundle=final_bundle,
+        kg_dirs=kg_dirs,
+        lc_generation_summary=lc_generation_summary,
+        learning_components=learning_components,
+        overwrite=config.overwrite,
+        supports_edges=lc_supports_edges,
     )
 
     return kg_run_manifest_fp
