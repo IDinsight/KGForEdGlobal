@@ -28,7 +28,13 @@ from skg.schemas import BaseSchema
 # instead. NB: extended thinking is removed on opus-4-7+, so any new flagship model
 # MUST be added here, otherwise it falls back to extended thinking and is rejected.
 _ADAPTIVE_THINKING_MODEL_NAMES: frozenset[str] = frozenset(
-    {"claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-4-6"}
+    {
+        "claude-opus-4-6",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-opus-5",
+        "claude-sonnet-4-6",
+    }
 )
 
 
