@@ -1,16 +1,16 @@
-"""This module contains LC finalization for KG creation (steps 16-18).
+"""This module contains LC finalization for KG creation.
 
-Step 16 mints one LearningComponent node per canonical skill text within
+Minting emits one LearningComponent node per canonical skill text within
 its dedup scope: content-addressed UUIDv5 identity, representative
 surface-form description, attribution inherited from the claiming SFIs,
-and full per-claim provenance in metadata. Step 17 emits one primary
-supports edge per (LearningComponent, claiming SFI) pair with a
-deterministic edge identity mirroring the hasChild scheme. Step 18
-(validation/summary) is wired in as it is built.
+and full per-claim provenance in metadata. Each (LearningComponent,
+claiming SFI) pair then gets one primary supports edge with a deterministic
+edge identity mirroring the hasChild scheme, and the phase closes by
+validating the LC artifacts and persisting the generation summary.
 
-Sibling LC modules mirror the sfi_* per-step layout: lc_selection.py
-(steps 11-12), lc_generation.py (steps 13-14), lc_dedup.py (step 15),
-lc_export.py (step 19).
+Sibling LC modules mirror the sfi_* layout: lc_selection.py (LC-source
+selection), lc_generation.py (requests + LLM decomposition), lc_dedup.py
+(duplicate grouping), lc_export.py (AS+LC bundle merge).
 """
 
 # Standard Library
@@ -54,9 +54,6 @@ from skg.schemas import CreateKGConfig, _CreateKGLearningComponentsConfig
 from skg.utils.general import write_to_json
 
 LC_ENTITY_PROVENANCE_FN = "lc_entity_provenance.json"
-LC_GENERATION_SUMMARY_FN = "lc_generation_summary.json"
-LC_SUPPORTS_EDGES_FN = "lc_supports_edges.json"
-LEARNING_COMPONENTS_FN = "learning_components.jsonl"
 
 _ATTRIBUTION_FIELDS = (
     "academic_subject",
@@ -111,73 +108,12 @@ def _assert_uniform_attribution(
         for field in _ATTRIBUTION_FIELDS:
             if getattr(record, field) != getattr(representative, field):
                 raise ValueError(
-                    f"LC minting (step 16): claiming SFIs for "
+                    f"LC minting: claiming SFIs for "
                     f"{canonical_text!r} disagree on {field}: "
                     f"{getattr(representative, field)!r} vs "
                     f"{getattr(record, field)!r}."
                 )
     return representative
-
-
-def _build_canonical_map(lc_dedup_groups: LCDedupGroups) -> dict[tuple[str, str], str]:
-    """Map every grouped member text to its canonical text, per scope.
-
-    Parameters
-    ----------
-    lc_dedup_groups
-        Step-15 duplicate groups.
-
-    Returns
-    -------
-    dict[tuple[str, str], str]
-        Canonical text keyed by (scope key, member text).
-    """
-
-    return {
-        (group.scope_key, member): group.canonical_text
-        for group in lc_dedup_groups.groups
-        for member in group.member_texts
-    }
-
-
-def _build_lc_entity_provenance(
-    *, document_ir: DocumentIR, learning_components: Sequence[LearningComponent]
-) -> dict[str, Any]:
-    """Build the LearningComponent entity-provenance artifact.
-
-    Mirrors the step-10 entity-provenance shape so the step-19 merge can
-    compose both without translation.
-
-    Parameters
-    ----------
-    document_ir
-        Source document IR (doc key, pdf name).
-    learning_components
-        Minted step-16 LearningComponent nodes.
-
-    Returns
-    -------
-    dict[str, Any]
-        Deterministic provenance entries keyed by LC identifier.
-    """
-
-    return {
-        "doc_key": document_ir.doc_key,
-        "learning_components": {
-            str(component.identifier): {
-                "description": component.description,
-                "identity_key": component.metadata["identity"]["identity_key"],
-                "in_language": component.in_language,
-                "source_context_keys": component.metadata["source_context_keys"],
-                "source_page_indexes": component.metadata["source_page_indexes"],
-                "source_segment_ids": component.metadata["source_segment_ids"],
-                "source_sfi_uuids": component.metadata["source_sfi_uuids"],
-                "source_window_ids": component.metadata["source_window_ids"],
-            }
-            for component in learning_components
-        },
-        "pdf_name": document_ir.pdf_name,
-    }
 
 
 def _build_lc_identity_key(*, doc_key: str, scope_key: str, text: str) -> str:
@@ -218,11 +154,11 @@ def _build_lc_metadata(
     Parameters
     ----------
     academic_standards_bundle
-        Final step-10 AS bundle (source framework UUID).
+        Final AS bundle (source framework UUID).
     accumulator
         Accumulated claims of this canonical text.
     bundle_fingerprint
-        Deterministic fingerprint of the step-10 bundle.
+        Deterministic fingerprint of the AS bundle.
     document_ir
         Source document IR (doc key, pdf name).
     identity_key
@@ -296,13 +232,14 @@ def _collect_lc_claims(
     Parameters
     ----------
     canonical_by_member
-        Step-15 canonical text keyed by (scope key, member text).
+        LC dedup canonical text keyed by (scope key, member text).
     lc_dedup_scope
         Configured merge scope (framework | top_ancestor | parent | none).
     lc_generation_requests
-        Step-13 requests (ancestor paths for scope keys and provenance).
+        LC generation requests (ancestor paths for scope keys and
+        provenance).
     lc_generation_responses
-        Step-14 responses carrying the generated skills.
+        LC generation responses carrying the generated skills.
 
     Returns
     -------
@@ -327,9 +264,9 @@ def _collect_lc_claims(
             request_sfi = request_sfis.get(item.sfi_uuid)
             if request_sfi is None:
                 raise ValueError(
-                    f"LC minting (step 16): response for request "
-                    f"{response.request_id} claims SFI {item.sfi_uuid}, which "
-                    "is absent from the step-13 requests."
+                    f"LC minting: response for request {response.request_id} claims "
+                    f"SFI {item.sfi_uuid}, which is absent from the LC "
+                    f"generation requests."
                 )
             scope_key = _scope_key_for(
                 lc_dedup_scope=lc_dedup_scope, request_sfi=request_sfi
@@ -445,9 +382,9 @@ def _validate_lc_coverage(
     lc_eligible_sfis
         Final records of the eligible LC-source SFIs.
     lc_generation_failures
-        Step-14 per-request decomposition failures.
+        Per-request LC decomposition failures.
     learning_components
-        Minted step-16 LearningComponent nodes.
+        Minted LearningComponent nodes.
 
     Raises
     ------
@@ -469,17 +406,14 @@ def _validate_lc_coverage(
     }
 
     if overlap := sorted(claimed & failed):
-        raise ValueError(
-            f"LC summary (step 18): SFIs both claimed and failed: {overlap}."
-        )
+        raise ValueError(f"LC summary: SFIs both claimed and failed: {overlap}.")
     if stray := sorted((claimed | failed) - eligible):
         raise ValueError(
-            f"LC summary (step 18): claims/failures reference non-eligible "
-            f"SFIs: {stray}."
+            f"LC summary: claims/failures reference non-eligible SFIs: {stray}."
         )
     if unaccounted := sorted(eligible - claimed - failed):
         raise ValueError(
-            f"LC summary (step 18): eligible SFIs neither claimed by any LC "
+            f"LC summary: eligible SFIs neither claimed by any LC "
             f"nor recorded as failed: {unaccounted}."
         )
 
@@ -495,11 +429,11 @@ def _validate_lc_nodes_and_edges(
     Parameters
     ----------
     academic_standards_bundle
-        Final step-10 AS bundle (edge targets must be real items).
+        Final AS bundle (edge targets must be real items).
     learning_components
-        Minted step-16 LearningComponent nodes.
+        Minted LearningComponent nodes.
     supports_edges
-        Step-17 primary supports edges.
+        Primary supports edges.
 
     Raises
     ------
@@ -510,26 +444,26 @@ def _validate_lc_nodes_and_edges(
 
     lc_ids = [str(component.identifier) for component in learning_components]
     if len(set(lc_ids)) != len(lc_ids):
-        raise ValueError("LC summary (step 18): duplicate LC identifiers.")
+        raise ValueError("LC summary: duplicate LC identifiers.")
     for component in learning_components:
         identity_key = component.metadata["identity"]["identity_key"]
         if uuid5(Settings.LC_CANONICAL_NAMESPACE_UUID, identity_key) != (
             component.identifier
         ):
             raise ValueError(
-                f"LC summary (step 18): identifier of LC "
+                f"LC summary: identifier of LC "
                 f"{component.identifier} does not recompute from its "
                 f"identity key {identity_key!r}."
             )
 
     edge_ids = [str(edge.identifier) for edge in supports_edges]
     if len(set(edge_ids)) != len(edge_ids):
-        raise ValueError("LC summary (step 18): duplicate edge identifiers.")
+        raise ValueError("LC summary: duplicate edge identifiers.")
     pairs = [
         (edge.source_entity_value, edge.target_entity_value) for edge in supports_edges
     ]
     if len(set(pairs)) != len(pairs):
-        raise ValueError("LC summary (step 18): duplicate (LC, SFI) supports pairs.")
+        raise ValueError("LC summary: duplicate (LC, SFI) supports pairs.")
 
     lc_id_set = set(lc_ids)
     item_uuids = {
@@ -538,20 +472,19 @@ def _validate_lc_nodes_and_edges(
     for edge in supports_edges:
         if edge.source_entity_value not in lc_id_set:
             raise ValueError(
-                f"LC summary (step 18): edge {edge.identifier} sources "
+                f"LC summary: edge {edge.identifier} sources "
                 f"unknown LC {edge.source_entity_value}."
             )
         if edge.target_entity_value not in item_uuids:
             raise ValueError(
-                f"LC summary (step 18): edge {edge.identifier} targets "
+                f"LC summary: edge {edge.identifier} targets "
                 f"{edge.target_entity_value}, which is not a final bundle "
-                "item."
+                f"item."
             )
 
     if without_edges := sorted(lc_id_set - {pair[0] for pair in pairs}):
         raise ValueError(
-            f"LC summary (step 18): LCs without any primary supports edge: "
-            f"{without_edges}."
+            f"LC summary: LCs without any primary supports edge: {without_edges}."
         )
 
 
@@ -563,7 +496,7 @@ def build_lc_supports_edges(
     lc_eligible_sfis: Sequence[SFIFinalRecord],
     learning_components: Sequence[LearningComponent],
 ) -> list[Relationship]:
-    """Run step 17: emit one primary supports edge per (LC, claiming SFI).
+    """Emit one primary supports edge per (LC, claiming SFI) pair.
 
     Each LearningComponent gets exactly one `supports` relationship to
     every SFI whose decomposition claimed it,
@@ -584,7 +517,7 @@ def build_lc_supports_edges(
     lc_eligible_sfis
         Final records of the eligible LC-source SFIs (edge targets).
     learning_components
-        Minted step-16 LearningComponent nodes.
+        Minted LearningComponent nodes.
 
     Returns
     -------
@@ -610,9 +543,9 @@ def build_lc_supports_edges(
             record = records_by_uuid.get(UUID(sfi_uuid_str))
             if record is None:
                 raise ValueError(
-                    f"LC supports (step 17): LC {component.identifier} "
+                    f"LC supports: LC {component.identifier} "
                     f"claims SFI {sfi_uuid_str}, which is absent from the "
-                    "eligible records."
+                    f"eligible records."
                 )
             sfi_claims = claims_by_sfi[sfi_uuid_str]
             relationship_key = (
@@ -622,7 +555,7 @@ def build_lc_supports_edges(
             identifier = uuid5(Settings.LC_CANONICAL_NAMESPACE_UUID, relationship_key)
             if identifier in edges:
                 raise ValueError(
-                    f"LC supports (step 17): duplicate edge identifier for "
+                    f"LC supports: duplicate edge identifier for "
                     f"{relationship_key!r}."
                 )
             edges[identifier] = Relationship(
@@ -660,7 +593,7 @@ def build_lc_supports_edges(
 
     make_dir(kg_dirs.root)
     write_to_json(
-        fp=kg_dirs.root / LC_SUPPORTS_EDGES_FN,
+        fp=kg_dirs.root / "lc_supports_edges.json",
         json_info=[edge.model_dump(mode="json") for edge in supports_edges],
     )
 
@@ -684,9 +617,9 @@ def mint_learning_components(
     lc_generation_requests: Sequence[LCGenerationRequest],
     lc_generation_responses: Sequence[LCGenerationResponse],
 ) -> list[LearningComponent]:
-    """Run step 16: mint one LearningComponent per canonical skill text.
+    """Mint one LearningComponent per canonical skill text.
 
-    Every claim maps to its step-15 canonical text
+    Every claim maps to its LC dedup canonical text
     (its own normalized text when ungrouped), each canonical mints a
     content-addressed UUIDv5 within its dedup scope, and duplicate claims
     collapse into one node carrying per-claim provenance. Attribution is
@@ -695,7 +628,7 @@ def mint_learning_components(
     Parameters
     ----------
     academic_standards_bundle
-        Final step-10 AS bundle (source framework UUID, fingerprint input).
+        Final AS bundle (source framework UUID, fingerprint input).
     document_ir
         Source document IR (doc key, pdf name).
     kg_config
@@ -704,13 +637,13 @@ def mint_learning_components(
         KG artifact directories; the artifact is written under
         ``kg_dirs.root``.
     lc_dedup_groups
-        Step-15 duplicate groups with canonical texts.
+        LC dedup duplicate groups with canonical texts.
     lc_eligible_sfis
         Final records of the eligible LC-source SFIs.
     lc_generation_requests
-        Deterministic step-13 requests.
+        Deterministic LC generation requests.
     lc_generation_responses
-        Validated step-14 responses.
+        Validated LC generation responses.
 
     Returns
     -------
@@ -727,7 +660,11 @@ def mint_learning_components(
     lc_config = kg_config.learning_components
     records_by_uuid = {record.final_sfi_uuid: record for record in lc_eligible_sfis}
     accumulators = _collect_lc_claims(
-        canonical_by_member=_build_canonical_map(lc_dedup_groups),
+        canonical_by_member={
+            (group.scope_key, member): group.canonical_text
+            for group in lc_dedup_groups.groups
+            for member in group.member_texts
+        },
         lc_dedup_scope=lc_config.lc_dedup_scope,
         lc_generation_requests=lc_generation_requests,
         lc_generation_responses=lc_generation_responses,
@@ -744,7 +681,7 @@ def mint_learning_components(
         missing = [str(u) for u in claim_sfi_uuids if u not in records_by_uuid]
         if missing:
             raise ValueError(
-                f"LC minting (step 16): claiming SFIs {missing} for "
+                f"LC minting: claiming SFIs {missing} for "
                 f"{canonical_text!r} are absent from the eligible records."
             )
         records = [records_by_uuid[sfi_uuid] for sfi_uuid in claim_sfi_uuids]
@@ -757,7 +694,7 @@ def mint_learning_components(
         identifier = uuid5(Settings.LC_CANONICAL_NAMESPACE_UUID, identity_key)
         if identifier in learning_components:
             raise ValueError(
-                f"LC minting (step 16): identifier collision between "
+                f"LC minting: identifier collision between "
                 f"{canonical_text!r} and "
                 f"{learning_components[identifier].description!r}."
             )
@@ -791,7 +728,7 @@ def mint_learning_components(
     ]
 
     make_dir(kg_dirs.root)
-    components_fp = kg_dirs.root / LEARNING_COMPONENTS_FN
+    components_fp = kg_dirs.root / "learning_components.jsonl"
     reset_output_files(output_fps=[components_fp])
     for component in minted:
         append_jsonl_model(fp=components_fp, model=component)
@@ -820,38 +757,39 @@ def summarize_learning_components(
     learning_components: Sequence[LearningComponent],
     supports_edges: Sequence[Relationship],
 ) -> LCGenerationSummary:
-    """Run step 18: validate LC artifacts and persist the phase summary.
+    """Validate the LC artifacts and persist the phase summary.
 
     Verifies run-level invariants (identifier recomputation, edge
     endpoint reality, one primary edge per pair, eligible-SFI coverage),
     then writes the `LCGenerationSummary` and the LC entity-provenance
-    artifact consumed by the step-19 merge.
+    artifact consumed by the AS+LC bundle merge.
 
     Parameters
     ----------
     academic_standards_bundle
-        Final step-10 AS bundle (edge targets must be real items).
+        Final AS bundle (edge targets must be real items).
     document_ir
         Source document IR (doc key, pdf name).
     kg_dirs
-        KG artifact directories; step-14 failures are read from and the
+        KG artifact directories; LC generation failures are read from and
+        the
         summary artifacts written under ``kg_dirs.root``.
     lc_config
         Learning Components runtime configuration (override record).
     lc_dedup_groups
-        Step-15 duplicate groups (dedup counters).
+        LC dedup duplicate groups (dedup counters).
     lc_eligibility_report
-        Step-12 eligibility report (selection counters, warnings).
+        LC-source eligibility report (selection counters, warnings).
     lc_eligible_sfis
         Final records of the eligible LC-source SFIs.
     lc_generation_requests
-        Deterministic step-13 requests (LLM accounting).
+        Deterministic LC generation requests (LLM accounting).
     lc_generation_responses
-        Validated step-14 responses (splits and confidence counters).
+        Validated LC generation responses (splits and confidence counters).
     learning_components
-        Minted step-16 LearningComponent nodes.
+        Minted LearningComponent nodes.
     supports_edges
-        Step-17 primary supports edges.
+        Primary supports edges.
 
     Returns
     -------
@@ -900,7 +838,7 @@ def summarize_learning_components(
     if failed_sfis:
         warnings.append(
             f"{len(failed_sfis)} eligible SFIs failed LLM decomposition and "
-            "have no LearningComponents."
+            f"have no LearningComponents."
         )
 
     summary = LCGenerationSummary(
@@ -970,14 +908,28 @@ def summarize_learning_components(
 
     make_dir(kg_dirs.root)
     write_to_json(
-        fp=kg_dirs.root / LC_GENERATION_SUMMARY_FN,
+        fp=kg_dirs.root / "lc_generation_summary.json",
         json_info=summary.model_dump(mode="json"),
     )
     write_to_json(
         fp=kg_dirs.root / LC_ENTITY_PROVENANCE_FN,
-        json_info=_build_lc_entity_provenance(
-            document_ir=document_ir, learning_components=learning_components
-        ),
+        json_info={
+            "doc_key": document_ir.doc_key,
+            "learning_components": {
+                str(component.identifier): {
+                    "description": component.description,
+                    "identity_key": component.metadata["identity"]["identity_key"],
+                    "in_language": component.in_language,
+                    "source_context_keys": component.metadata["source_context_keys"],
+                    "source_page_indexes": component.metadata["source_page_indexes"],
+                    "source_segment_ids": component.metadata["source_segment_ids"],
+                    "source_sfi_uuids": component.metadata["source_sfi_uuids"],
+                    "source_window_ids": component.metadata["source_window_ids"],
+                }
+                for component in learning_components
+            },
+            "pdf_name": document_ir.pdf_name,
+        },
     )
 
     logger.success(

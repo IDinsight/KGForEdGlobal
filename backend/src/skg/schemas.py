@@ -2303,6 +2303,7 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         """
 
         known = set(self.code_patterns.keys())
+        self._validate_windowing()
         self._validate_code_parent_rules(known)
         self._validate_code_scope_policy(known)
         self._validate_dedup_context_statement_types()
@@ -2312,12 +2313,11 @@ class _CreateKGAcademicStandardsConfig(BaseSchema):
         self._validate_has_child_statement_type_policy()
         self._validate_selection_overlap_policy()
         self._validate_statement_type_policy_code_types(known)
-        self._validate_windowing()
         return self
 
 
 class _CreateKGLCDedupBlockingConfig(BaseSchema):
-    """Step-15 dedup candidate-nomination thresholds.
+    """LC dedup candidate-nomination thresholds.
 
     Defaults are empirically calibrated. A curriculum whose calibration
     warrants different gates overrides them in its own config.
@@ -2373,7 +2373,7 @@ class _CreateKGLCDedupBlockingConfig(BaseSchema):
 
 
 class _CreateKGLCDedupLanguagePackConfig(BaseSchema):
-    """Language-specific lexical knowledge for step-15 dedup blocking.
+    """Language-specific lexical knowledge for LC dedup blocking.
 
     Declares curated stopwords and affix-folding rules as data in the
     document profile, so no language ever requires a code change. Omitted
@@ -2405,18 +2405,18 @@ class _CreateKGLearningComponentsConfig(BaseSchema):
     generation_instructions: str
     lc_dedup_batch_size: int = Field(
         default=25,
-        description="Candidate pairs per step-15 adjudication request.",
+        description="Candidate pairs per LC dedup adjudication request.",
         ge=1,
     )
     lc_dedup_blocking: _CreateKGLCDedupBlockingConfig = Field(
         default_factory=_CreateKGLCDedupBlockingConfig,
-        description="Step-15 candidate-nomination thresholds.",
+        description="LC dedup candidate-nomination thresholds.",
     )
     lc_dedup_instructions: Optional[str] = Field(
         default=None,
         description=(
             "Optional curriculum-specific adjudication policy appended to the "
-            "step-15 duplicate-pair judge prompt (local conventions such as "
+            "LC dedup duplicate-pair judge prompt (local conventions such as "
             "whether whole numbers include negatives). None runs the generic "
             "conservative rubric alone."
         ),
@@ -2424,7 +2424,7 @@ class _CreateKGLearningComponentsConfig(BaseSchema):
     lc_dedup_language_pack: Optional[_CreateKGLCDedupLanguagePackConfig] = Field(
         default=None,
         description=(
-            "Language pack for step-15 blocking, declared entirely in the "
+            "Language pack for LC dedup blocking, declared entirely in the "
             "document profile. None runs the language-independent core rules "
             "alone."
         ),
@@ -2449,10 +2449,11 @@ class _CreateKGLearningComponentsConfig(BaseSchema):
     lc_manual_review_overrides: Optional[dict[str, Any]] = Field(
         default=None,
         description=(
-            "Optional manual-review record for step-10 unresolved items. When "
-            "the step-10 bundle has finalization exclusions or unresolved "
-            "root-fallback edges, LC generation always proceeds over the "
-            "resolved subgraph and reports the gaps loudly. Set "
+            "Optional manual-review record for unresolved Academic Standards "
+            "items. When the final Academic Standards bundle has finalization "
+            "exclusions or unresolved root-fallback edges, LC generation "
+            "always proceeds over the resolved subgraph and reports the gaps "
+            "loudly. Set "
             "allow_unresolved_ancestor_context=true here (with reviewed_by, "
             "reviewed_at, review_notes) to additionally include seeds whose "
             "ancestor path passes through an unresolved root-fallback edge. "
@@ -2473,15 +2474,15 @@ class _CreateKGLearningComponentsConfig(BaseSchema):
         default=None,
         description=(
             "Optional maximum character length for one atomic skill "
-            "statement; the step-14 validator retries responses that exceed "
-            "it. Unset means no length ceiling."
+            "statement; the LC generation validator retries responses that "
+            "exceed it. Unset means no length ceiling."
         ),
         ge=1,
     )
     lc_max_skills_per_sfi: Optional[int] = Field(
         default=None,
         description=(
-            "Optional hard ceiling on atomic skills per SFI; the step-14 "
+            "Optional hard ceiling on atomic skills per SFI; the LC generation "
             "validator asks for a coarser decomposition when exceeded. Unset "
             "means the prompt contract alone governs skill count."
         ),
@@ -2491,8 +2492,8 @@ class _CreateKGLearningComponentsConfig(BaseSchema):
         default=None,
         description=(
             "Optional minimum character length for one atomic skill "
-            "statement; the step-14 validator retries responses that fall "
-            "short. Unset means no length floor."
+            "statement; the LC generation validator retries responses that "
+            "fall short. Unset means no length floor."
         ),
         ge=1,
     )
@@ -2508,7 +2509,7 @@ class _CreateKGLearningComponentsConfig(BaseSchema):
     lc_semantic_dedup: bool = Field(
         default=True,
         description=(
-            "Run step-15 LLM pair adjudication for semantically equivalent "
+            "Run LC dedup LLM pair adjudication for semantically equivalent "
             "skills. False limits dedup to exact normalized-text grouping."
         ),
     )
@@ -2605,7 +2606,7 @@ class _CreateKGLearningComponentsConfig(BaseSchema):
         ):
             raise ValueError(
                 f"lc_min_skill_text_length ({self.lc_min_skill_text_length}) "
-                "must not exceed lc_max_skill_text_length "
+                f"must not exceed lc_max_skill_text_length "
                 f"({self.lc_max_skill_text_length})."
             )
         return self

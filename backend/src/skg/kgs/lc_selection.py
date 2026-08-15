@@ -1,14 +1,13 @@
-"""This module contains LC-source selection for KG creation (steps 11-12).
+"""This module contains LC-source selection for KG creation.
 
-- 11: go/no-go gates on the step-10 Academic Standards KG bundle.
-- 12: deterministic selection of LC-source SFIs (profile allowlist or
-  leaf-node default).
+- Go/no-go gates on the Academic Standards KG bundle.
+- Deterministic selection of LC-source SFIs (profile allowlist or leaf-node
+  default).
 
-Sibling LC modules mirror the sfi_* per-step layout: lc_generation.py
-(steps 13-14: requests + LLM decomposition), lc_dedup.py (step 15: duplicate
-grouping), lc_finalization.py (steps 16-18: mint nodes, supports edges,
-validate/summarize), lc_export.py (step 19:
-AS+LC bundle merge).
+Sibling LC modules mirror the sfi_* layout: lc_generation.py (requests + LLM
+decomposition), lc_dedup.py (duplicate grouping), lc_finalization.py (mint
+nodes, supports edges, validate/summarize), lc_export.py (AS+LC bundle
+merge).
 """
 
 # Standard Library
@@ -33,8 +32,7 @@ from skg.kgs.utils import KGDirs, make_dir
 from skg.schemas import _CreateKGLearningComponentsConfig
 from skg.utils.general import write_to_json
 
-LC_ELIGIBILITY_REPORT_FN = "lc_eligibility_report.json"
-LC_ELIGIBLE_SFIS_FN = "lc_eligible_sfis.json"
+_LC_ELIGIBILITY_REPORT_FN = "lc_eligibility_report.json"
 
 
 def _classify_sfi_for_lc_generation(
@@ -126,12 +124,12 @@ def run_lc_generation_gates(
     academic_standards_bundle: AcademicStandardsKGBundle,
     lc_config: _CreateKGLearningComponentsConfig,
 ) -> list[str]:
-    """Run the step-11 go/no-go gates on the step-10 AS KG bundle.
+    """Run the go/no-go gates on the final AS KG bundle.
 
-    Gate 1 requires a passed, error-free step-10 validation report and fails
+    Gate 1 requires a passed, error-free AS validation report and fails
     loudly otherwise. Gate 2 reports-and-restricts rather than failing:
     finalization exclusions and unresolved root-fallback edges never block the
-    run (the step-10 bundle already passed validation with them recorded) —
+    run (the AS bundle already passed validation with them recorded) —
     generation proceeds over the resolved subgraph by default, and the gap
     counts are surfaced as warnings. A configured manual-review override
     widens scope (``allow_unresolved_ancestor_context``) and is recorded.
@@ -139,7 +137,7 @@ def run_lc_generation_gates(
     Parameters
     ----------
     academic_standards_bundle
-        Compiled step-10 Academic Standards KG bundle.
+        Compiled Academic Standards KG bundle.
     lc_config
         Learning Components runtime configuration.
 
@@ -152,16 +150,16 @@ def run_lc_generation_gates(
     Raises
     ------
     ValueError
-        If step-10 validation failed.
+        If Academic Standards validation failed.
     """
 
     validation_report = academic_standards_bundle.validation_report
     if not validation_report.passed or validation_report.errors:
         raise ValueError(
-            "LC generation blocked (gate 11): step-10 validation_report has "
+            f"LC generation blocked: Academic Standards validation_report has "
             f"passed={validation_report.passed} and "
             f"{len(validation_report.errors)} errors. Never generate LCs from "
-            "an invalid Academic Standards KG."
+            f"an invalid Academic Standards KG."
         )
 
     unresolved_items = academic_standards_bundle.unresolved_items
@@ -175,16 +173,16 @@ def run_lc_generation_gates(
     warnings: list[str] = []
     if exclusions or unresolved_edge_count:
         gap_warning = (
-            "step-10 bundle has finalization exclusions "
+            f"Academic Standards bundle has finalization exclusions "
             f"{exclusions} and {unresolved_edge_count} unresolved "
-            "root-fallback edges; LC generation proceeds over the resolved "
-            "subgraph (seeds with unresolved ancestor paths are excluded)"
+            f"root-fallback edges; LC generation proceeds over the resolved "
+            f"subgraph (seeds with unresolved ancestor paths are excluded)"
         )
         logger.warning(gap_warning)
         warnings.append(gap_warning)
     if lc_config.lc_manual_review_overrides is not None:
         override_warning = (
-            "manual-review overrides recorded: "
+            f"manual-review overrides recorded: "
             f"{lc_config.lc_manual_review_overrides}"
         )
         logger.warning(override_warning)
@@ -201,7 +199,7 @@ def select_lc_source_sfis(
     lc_config: _CreateKGLearningComponentsConfig,
     sfi_final_records: Sequence[SFIFinalRecord],
 ) -> tuple[list[SFIFinalRecord], LCEligibilityReport]:
-    """Run steps 11 (gates) and 12 (LC-source SFI selection).
+    """Run the LC generation gates, then select the LC-source SFIs.
 
     Selection is fully deterministic. With a configured allowlist, SFIs are
     selected by source-facing statement type. Without one, selection defaults
@@ -215,7 +213,7 @@ def select_lc_source_sfis(
     Parameters
     ----------
     academic_standards_bundle
-        Compiled step-10 Academic Standards KG bundle (gates, 11).
+        Compiled Academic Standards KG bundle (gate input).
     has_child_edges
         Final resolved hasChild edges (leaf and ancestor computation).
     kg_dirs
@@ -233,7 +231,7 @@ def select_lc_source_sfis(
     Raises
     ------
     ValueError
-        If step-10 validation failed (11), or selection produced zero
+        If Academic Standards validation failed, or selection produced zero
         eligible SFIs from a non-empty record set.
     """
 
@@ -307,21 +305,21 @@ def select_lc_source_sfis(
 
     make_dir(kg_dirs.root)
     write_to_json(
-        fp=kg_dirs.root / LC_ELIGIBLE_SFIS_FN,
+        fp=kg_dirs.root / "lc_eligible_sfis.json",
         json_info=[record.model_dump(mode="json") for record in eligible],
     )
     write_to_json(
-        fp=kg_dirs.root / LC_ELIGIBILITY_REPORT_FN,
+        fp=kg_dirs.root / _LC_ELIGIBILITY_REPORT_FN,
         json_info=report.model_dump(mode="json"),
     )
 
     if sfi_final_records and not eligible:
         raise ValueError(
-            "LC-source selection produced zero eligible SFIs out of "
+            f"LC-source selection produced zero eligible SFIs out of "
             f"{len(sfi_final_records)} considered "
             f"(mode={selection_mode}; exclusion reasons={reason_counts}). "
-            "Check lc_source_statement_types and the hasChild hierarchy; see "
-            f"{kg_dirs.root / LC_ELIGIBILITY_REPORT_FN} for per-SFI reasons."
+            f"Check lc_source_statement_types and the hasChild hierarchy; see "
+            f"{kg_dirs.root / _LC_ELIGIBILITY_REPORT_FN} for per-SFI reasons."
         )
 
     logger.success(

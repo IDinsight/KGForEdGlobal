@@ -1977,7 +1977,7 @@ def _verify_lc_dedup_coverage(
     lc_dedup_request: LCDedupRequest,
     lc_dedup_response: LCDedupResponse,
 ) -> None:
-    """Verify a step-15 response covers every nominated pair exactly once.
+    """Verify an LC dedup response covers every nominated pair exactly once.
 
     Parameters
     ----------
@@ -2008,7 +2008,7 @@ def _verify_lc_dedup_coverage(
     if duplicate_pair_ids:
         raise QualityError(
             f"duplicate verdicts for pair_ids {sorted(duplicate_pair_ids)}. "
-            "Return exactly one verdict per pair."
+            f"Return exactly one verdict per pair."
         )
     invented_pair_ids = set(returned_pair_ids) - expected_pair_ids
     if invented_pair_ids:
@@ -2020,7 +2020,7 @@ def _verify_lc_dedup_coverage(
     if omitted_pair_ids:
         raise QualityError(
             f"verdicts omit pair_ids {sorted(omitted_pair_ids)}. Cover every "
-            "pair exactly once."
+            f"pair exactly once."
         )
     for verdict in lc_dedup_response.verdicts:
         if not verdict.reason.strip():
@@ -2032,7 +2032,7 @@ def _verify_lc_generation_sfi_coverage(
     lc_generation_request: LCGenerationRequest,
     lc_generation_response: LCGenerationResponse,
 ) -> None:
-    """Verify a step-14 response covers every requested SFI exactly once.
+    """Verify an LC generation response covers every requested SFI exactly once.
 
     Parameters
     ----------
@@ -2067,7 +2067,7 @@ def _verify_lc_generation_sfi_coverage(
     if duplicate_sfi_uuids:
         raise QualityError(
             f"duplicate items for SFIs: {sorted(map(str, duplicate_sfi_uuids))}. "
-            "Return exactly one items entry per SFI."
+            f"Return exactly one items entry per SFI."
         )
     invented_sfi_uuids = set(returned_sfi_uuids) - expected_sfi_uuids
     if invented_sfi_uuids:
@@ -2080,7 +2080,7 @@ def _verify_lc_generation_sfi_coverage(
         raise QualityError(
             f"items omit SFIs from the request: "
             f"{sorted(map(str, omitted_sfi_uuids))}. Cover every SFI exactly "
-            "once; an already-atomic SFI still gets one cleanly restated skill."
+            f"once; an already-atomic SFI still gets one cleanly restated skill."
         )
 
 
@@ -2089,7 +2089,7 @@ def _verify_lc_generation_skill_bounds(
     lc_config: _CreateKGLearningComponentsConfig,
     lc_generation_response: LCGenerationResponse,
 ) -> None:
-    """Verify step-14 skills against the configured count and length bounds.
+    """Verify generated skills against the configured count and length bounds.
 
     Parameters
     ----------
@@ -2113,7 +2113,7 @@ def _verify_lc_generation_skill_bounds(
             raise QualityError(
                 f"SFI {item.sfi_uuid} has {len(item.skills)} skills, above the "
                 f"configured maximum of {max_skills}. Return a coarser-grain "
-                "decomposition with fewer, broader teachable skills."
+                f"decomposition with fewer, broader teachable skills."
             )
         for skill in item.skills:
             skill_text = skill.description.strip()
@@ -2140,7 +2140,7 @@ def verify_lc_dedup_quality(
     lc_dedup_request: LCDedupRequest,
     lc_dedup_response: LCDedupResponse,
 ) -> None:
-    """Verify one LC dedup adjudication response against its request (step 15).
+    """Verify one LC dedup adjudication response against its request.
 
     Parameters
     ----------
@@ -2166,7 +2166,7 @@ def verify_lc_generation_quality(
     lc_generation_request: LCGenerationRequest,
     lc_generation_response: LCGenerationResponse,
 ) -> None:
-    """Verify one LC generation response against its request (step 14).
+    """Verify one LC generation response against its request.
 
     Parameters
     ----------
