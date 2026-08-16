@@ -5674,6 +5674,15 @@ class LCContextSFI(BaseSchema):
 
     case_identifier_uuid: UUID
     description: str = Field(min_length=1)
+    parent_uuids: list[UUID] = Field(
+        default_factory=list,
+        description=(
+            "Final SFI UUIDs of this SFI's direct hasChild parents, empty at "
+            "the framework root. Carries the hierarchy edges themselves, so a "
+            "curriculum that attaches an SFI to more than one parent stays "
+            "fully reconstructible from the context list."
+        ),
+    )
     statement_type: str = Field(min_length=1)
 
 
@@ -5890,9 +5899,11 @@ class LCRequestSFI(BaseSchema):
     ancestor_path: list[LCContextSFI] = Field(
         default_factory=list,
         description=(
-            "Resolved hasChild ancestors ordered framework root first, direct "
-            "parent last. Disambiguation-only context and the authoritative "
-            "source of grade/curriculum scope."
+            "Resolved hasChild ancestors ordered by longest distance from the "
+            "framework root, root first and nearest ancestors last. Ancestors "
+            "at equal distance are co-equal and carry no relative precedence; "
+            "their parent_uuids recover the exact edges. Disambiguation-only "
+            "context and the authoritative source of grade/curriculum scope."
         ),
     )
     ancestor_path_status: LCAncestorPathStatus = Field(
@@ -5911,11 +5922,20 @@ class LCRequestSFI(BaseSchema):
     language: str = Field(
         description="Source language tag chosen for the final SFI.", min_length=1
     )
+    parent_uuids: list[UUID] = Field(
+        default_factory=list,
+        description=(
+            "Final SFI UUIDs of the seed's direct hasChild parents, empty when "
+            "the seed attaches to the framework root. Closes the hierarchy "
+            "walk that ancestor_path entries carry upward."
+        ),
+    )
     siblings: list[LCContextSFI] = Field(
         default_factory=list,
         description=(
-            "Sibling SFIs under the same hasChild parent, populated only when "
-            "lc_include_sibling_context is configured. Disambiguation-only."
+            "Sibling SFIs under every hasChild parent of the seed, populated "
+            "only when lc_include_sibling_context is configured. "
+            "Disambiguation-only."
         ),
     )
     statement_type: str = Field(min_length=1)

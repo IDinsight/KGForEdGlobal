@@ -362,15 +362,14 @@ def _collect_skill_units(
             scope_key = _scope_key_for(
                 lc_dedup_scope=lc_dedup_scope, request_sfi=request_sfi
             )
-            path = request_sfi.ancestor_path
-            parent_uuid = path[-1].case_identifier_uuid if path else None
+            parent_uuids: set[Optional[UUID]] = set(request_sfi.parent_uuids) or {None}
             for skill in item.skills:
                 normalized = _normalize_skill_text(skill.description)
                 unit = units.setdefault(scope_key, {}).setdefault(
                     normalized, _SkillUnit()
                 )
                 unit.claim_count += 1
-                unit.parent_uuids.add(parent_uuid)
+                unit.parent_uuids.update(parent_uuids)
                 unit.sfi_uuids.add(item.sfi_uuid)
                 unit.statement_types.add(request_sfi.statement_type)
                 unit.surface_forms.append(skill.description.strip())
@@ -704,6 +703,8 @@ def _scope_key_for(*, lc_dedup_scope: str, request_sfi: LCRequestSFI) -> str:
 
     Seeds with an empty or unresolved ancestor path fall back to their own
     UUID under scoped modes — an unreliable path must never enable merging.
+    A seed or ancestor with several hasChild parents keys on the whole
+    parent set, so no single branch decides the scope.
 
     Parameters
     ----------
@@ -726,8 +727,16 @@ def _scope_key_for(*, lc_dedup_scope: str, request_sfi: LCRequestSFI) -> str:
     if not path or request_sfi.ancestor_path_status != "resolved":
         return str(request_sfi.final_sfi_uuid)
     if lc_dedup_scope == "top_ancestor":
-        return str(path[0].case_identifier_uuid)
-    return str(path[-1].case_identifier_uuid)
+        scope_uuids = [
+            ancestor.case_identifier_uuid
+            for ancestor in path
+            if not ancestor.parent_uuids
+        ]
+    else:
+        scope_uuids = list(request_sfi.parent_uuids)
+    if not scope_uuids:
+        return str(request_sfi.final_sfi_uuid)
+    return "|".join(sorted(str(scope_uuid) for scope_uuid in scope_uuids))
 
 
 def _token_rule_names(
