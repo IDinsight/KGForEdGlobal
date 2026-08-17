@@ -7,6 +7,7 @@ well.
 # Standard Library
 import uuid
 
+from pathlib import Path
 from typing import Literal
 
 # Third Party Library
@@ -31,6 +32,7 @@ class BackendSettings(BaseSettings):
     LLM_ANTHROPIC_THINKING_BUDGET_TOKENS: int = 16384
     LLM_MAX_OUTPUT_TOKENS: int = 18432
     LLM_KG_MODEL: str = "anthropic:claude-opus-4-8"
+    LLM_LC_EVAL_JUDGE_MODEL: str = "anthropic:claude-opus-5"
     LLM_OPENAI_REASONING_EFFORT: str = "high"
     LLM_OPENAI_TEMPERATURE: float = 0.0
     LLM_OPENAI_TOP_P: float = 0.95
@@ -44,6 +46,9 @@ class BackendSettings(BaseSettings):
     LC_CANONICAL_NAMESPACE_UUID: uuid.UUID = uuid.UUID(
         "3f6b9f2a-7d8a-5d85-a9c3-9f3b8d3c3f4b"
     )
+
+    # Paths
+    PATHS_PROJECT_DIR: Path
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="allow"
@@ -94,6 +99,7 @@ class BackendSettings(BaseSettings):
                 1. "page_ir_extraction" - for page IR extraction agents.
                 2. "page_ir_verification" - for page IR verification agents.
                 3. "kgs" - for knowledge graph construction agents.
+                4. "lc_eval_judge" - for the Learning Components evaluation judge.
 
         Returns
         -------
@@ -109,6 +115,8 @@ class BackendSettings(BaseSettings):
         match model_type:
             case "kgs":
                 return self.LLM_KG_MODEL
+            case "lc_eval_judge":
+                return self.LLM_LC_EVAL_JUDGE_MODEL
             case "page_ir_extraction":
                 return self.LLM_PAGE_IR_EXTRACTION_MODEL
             case "page_ir_verification":
@@ -126,6 +134,7 @@ class BackendSettings(BaseSettings):
                 1. "page_ir_extraction" - for page IR extraction agents.
                 2. "page_ir_verification" - for page IR verification agents.
                 3. "kg" - for knowledge graph construction agents.
+                4. "lc_eval_judge" - for the Learning Components evaluation judge.
 
         Returns
         -------
@@ -144,4 +153,6 @@ class BackendSettings(BaseSettings):
         )
 
 
-Settings: BackendSettings = BackendSettings()
+# Required fields are supplied by the environment, which the pydantic mypy plugin
+# cannot see when it types the synthesized `__init__`.
+Settings: BackendSettings = BackendSettings()  # type: ignore[call-arg]

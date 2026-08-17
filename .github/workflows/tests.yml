@@ -19,6 +19,7 @@ env:
   LEARNING_COMMONS_EXPORT_SCHEMA_VERSION: "2026-07-09"
   LOGGING_LEVEL: DEBUG
   OPENAI_API_KEY: sk-fake  # pragma: allowlist secret
+  PATHS_PROJECT_DIR: ${{ github.workspace }}
 
 jobs:
   changes:
