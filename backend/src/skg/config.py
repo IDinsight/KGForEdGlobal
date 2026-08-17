@@ -7,6 +7,7 @@ well.
 # Standard Library
 import uuid
 
+from pathlib import Path
 from typing import Literal
 
 # Third Party Library
@@ -45,6 +46,9 @@ class BackendSettings(BaseSettings):
     LC_CANONICAL_NAMESPACE_UUID: uuid.UUID = uuid.UUID(
         "3f6b9f2a-7d8a-5d85-a9c3-9f3b8d3c3f4b"
     )
+
+    # Paths
+    PATHS_PROJECT_DIR: Path
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="allow"
@@ -149,4 +153,6 @@ class BackendSettings(BaseSettings):
         )
 
 
-Settings: BackendSettings = BackendSettings()
+# Required fields are supplied by the environment, which the pydantic mypy plugin
+# cannot see when it types the synthesized `__init__`.
+Settings: BackendSettings = BackendSettings()  # type: ignore[call-arg]

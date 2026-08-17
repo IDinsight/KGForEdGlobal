@@ -4,9 +4,6 @@ Sampling is seeded per curriculum and stratum so that adding a curriculum does n
 change which items are drawn for the others.
 """
 
-# Future Library
-from __future__ import annotations
-
 # Standard Library
 import hashlib
 import json

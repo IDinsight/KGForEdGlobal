@@ -1,8 +1,5 @@
 """Agent construction and the resumable judging loop for the rubric evaluation."""
 
-# Future Library
-from __future__ import annotations
-
 # Standard Library
 import asyncio
 import json

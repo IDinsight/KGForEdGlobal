@@ -1,8 +1,5 @@
 """Prompt content for the Learning Components evaluation judges."""
 
-# Future Library
-from __future__ import annotations
-
 # Standard Library
 from typing import Sequence
 

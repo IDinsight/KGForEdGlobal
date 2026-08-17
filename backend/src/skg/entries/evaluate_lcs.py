@@ -7,17 +7,14 @@ python src/skg/entries/evaluate_lcs.py rubric --replicates 3
 python src/skg/entries/evaluate_lcs.py edges --concurrency 16
 """
 
-# Future Library
-from __future__ import annotations
-
 # Standard Library
-from pathlib import Path
 from typing import Optional
 
 # Third Party Library
 import typer
 
 # Package Library
+from skg.config import Settings
 from skg.evals.lc_eval.judge import (
     JUDGE_CONCURRENCY,
     judge_model_config,
@@ -45,37 +42,14 @@ from skg.utils.logging_ import logger
 # Instantiate typer apps for the command line interface.
 cli = typer.Typer(no_args_is_help=True)
 
-DEFAULT_OUTPUT_SUBDIR = "lc_eval"
 DEFAULT_SEED = 20260811
 
-# Anchored to the repository root rather than the working directory, so the default
-# resolves whether the command is invoked from the repository root or from `backend`.
-DEFAULT_RESULTS_ROOT = Path(__file__).resolve().parents[4] / "results"
-
-
-def _resolve_output_dir(*, output_dir: Optional[Path], results_root: Path) -> Path:
-    """Resolve where evaluation artifacts are written.
-
-    Parameters
-    ----------
-    output_dir
-        Explicit output directory, or None to use `<results_root>/lc_eval`.
-    results_root
-        Root directory holding per-curriculum pipeline runs.
-
-    Returns
-    -------
-    Path
-        Directory to write artifacts into.
-    """
-
-    resolved = output_dir or (results_root / DEFAULT_OUTPUT_SUBDIR)
-    make_dir(resolved)
-    return resolved
+RESULTS_ROOT = Settings.PATHS_PROJECT_DIR / "results"
+OUTPUT_DIR = RESULTS_ROOT / "lc_eval"
 
 
 @cli.command()
-def edges(  # pylint: disable=R0917
+def edges(
     concurrency: int = typer.Option(
         JUDGE_CONCURRENCY, help="Maximum judge calls in flight at once."
     ),
@@ -86,14 +60,8 @@ def edges(  # pylint: disable=R0917
             "curriculum with generated components."
         ),
     ),
-    output_dir: Optional[Path] = typer.Option(
-        None, help="Where to write artifacts. Defaults to <results-root>/lc_eval."
-    ),
     replicates: int = typer.Option(
         1, help="Times each item is judged, for self-consistency."
-    ),
-    results_root: Path = typer.Option(
-        DEFAULT_RESULTS_ROOT, help="Root directory of pipeline run results."
     ),
     seed: int = typer.Option(DEFAULT_SEED, help="Seed for distractors and ordering."),
 ) -> None:
@@ -114,28 +82,24 @@ def edges(  # pylint: disable=R0917
     curricula
         Curriculum directory names, or None to use every curriculum with generated
         components.
-    output_dir
-        Where to write artifacts, or None for the default.
-    results_root
-        Root directory of pipeline run results.
     replicates
         Times each item is judged.
     seed
         Seed for distractor selection and option ordering.
     """
 
-    resolved = _resolve_output_dir(output_dir=output_dir, results_root=results_root)
+    make_dir(OUTPUT_DIR)
     items = build_edge_items(
-        curricula=curricula or discover_curricula(results_root=results_root),
-        results_root=results_root,
+        curricula=curricula or discover_curricula(results_root=RESULTS_ROOT),
+        results_root=RESULTS_ROOT,
         seed=seed,
     )
-    write_edge_items(items=items, output_dir=resolved)
+    write_edge_items(items=items, output_dir=OUTPUT_DIR)
     judgements = run_edge_judging(
         concurrency=concurrency,
         items=items,
         model_config=judge_model_config(),
-        output_dir=resolved,
+        output_dir=OUTPUT_DIR,
         replicates=replicates,
     )
     report = build_edge_report(
@@ -143,7 +107,7 @@ def edges(  # pylint: disable=R0917
         judge_model=judge_model_config().model,
         judgements=judgements,
     )
-    write_edge_report(output_dir=resolved, report=report)
+    write_edge_report(output_dir=OUTPUT_DIR, report=report)
     for direction, scores in report.scores_by_direction.items():
         for score in scores:
             logger.success(
@@ -178,14 +142,8 @@ def rubric(  # pylint: disable=R0917
             "curriculum with generated components."
         ),
     ),
-    output_dir: Optional[Path] = typer.Option(
-        None, help="Where to write artifacts. Defaults to <results-root>/lc_eval."
-    ),
     replicates: int = typer.Option(
         1, help="Times each item is judged, for self-consistency. Must be odd."
-    ),
-    results_root: Path = typer.Option(
-        DEFAULT_RESULTS_ROOT, help="Root directory of pipeline run results."
     ),
     seed: int = typer.Option(DEFAULT_SEED, help="Seed for sampling and corruptions."),
 ) -> None:
@@ -210,13 +168,9 @@ def rubric(  # pylint: disable=R0917
     curricula
         Curriculum directory names, or None to use every curriculum with generated
         components.
-    output_dir
-        Where to write artifacts, or None for the default.
     replicates
         Times each item is judged. Must be odd, so that every criterion has a majority
         across replicates and no item has to be dropped or tie-broken arbitrarily.
-    results_root
-        Root directory of pipeline run results.
     seed
         Seed for sampling and corruption selection.
 
@@ -232,10 +186,10 @@ def rubric(  # pylint: disable=R0917
             f"replicates; got {replicates}."
         )
 
-    resolved = _resolve_output_dir(output_dir=output_dir, results_root=results_root)
+    make_dir(OUTPUT_DIR)
     population = load_population(
-        curricula=curricula or discover_curricula(results_root=results_root),
-        results_root=results_root,
+        curricula=curricula or discover_curricula(results_root=RESULTS_ROOT),
+        results_root=RESULTS_ROOT,
     )
     sample = sample_rubric_items(
         control_per_type=controls_per_type, population=population, seed=seed
@@ -247,14 +201,14 @@ def rubric(  # pylint: disable=R0917
         if baselines_per_curriculum
         else []
     )
-    write_rubric_sample(output_dir=resolved, sample=sample)
+    write_rubric_sample(output_dir=OUTPUT_DIR, sample=sample)
 
     items = list(sample.items) + baselines
     judgements = run_rubric_judging(
         concurrency=concurrency,
         items=items,
         model_config=judge_model_config(),
-        output_dir=resolved,
+        output_dir=OUTPUT_DIR,
         replicates=replicates,
     )
     report = build_rubric_report(
@@ -265,7 +219,7 @@ def rubric(  # pylint: disable=R0917
         replicates=replicates,
         seed=seed,
     )
-    write_rubric_report(output_dir=resolved, report=report)
+    write_rubric_report(output_dir=OUTPUT_DIR, report=report)
     for score in report.scores_overall:
         logger.success(
             f"{score.criterion}: n={score.n} pass={score.pass_rate:.3f} "

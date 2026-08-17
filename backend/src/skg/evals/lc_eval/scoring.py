@@ -1,8 +1,5 @@
 """Aggregation of judge verdicts into the evaluation report."""
 
-# Future Library
-from __future__ import annotations
-
 # Standard Library
 import random
 import re
