@@ -232,7 +232,7 @@ def _collect_siblings(
     seen: set[UUID] = {seed_uuid}
     siblings: list[LCContextSFI] = []
     for edge in edges_by_child[seed_uuid]:
-        for sibling_uuid in child_uuids_by_parent.get(edge.parent_final_sfi_uuid, []):
+        for sibling_uuid in child_uuids_by_parent[edge.parent_final_sfi_uuid]:
             if sibling_uuid in seen:
                 continue
             seen.add(sibling_uuid)
@@ -358,7 +358,7 @@ def _longest_root_distances(
         for ancestor_uuid in sorted(pending, key=str):
             parent_uuids = [
                 edge.parent_final_sfi_uuid
-                for edge in edges_by_child.get(ancestor_uuid, [])
+                for edge in edges_by_child[ancestor_uuid]
                 if edge.parent_final_sfi_uuid is not None
             ]
             if any(parent_uuid not in root_distances for parent_uuid in parent_uuids):
@@ -404,7 +404,7 @@ def _parent_uuids(
     return sorted(
         {
             edge.parent_final_sfi_uuid
-            for edge in edges_by_child.get(sfi_uuid, [])
+            for edge in edges_by_child[sfi_uuid]
             if edge.parent_final_sfi_uuid is not None
         },
         key=str,

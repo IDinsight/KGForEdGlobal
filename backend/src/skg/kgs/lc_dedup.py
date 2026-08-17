@@ -734,8 +734,6 @@ def _scope_key_for(*, lc_dedup_scope: str, request_sfi: LCRequestSFI) -> str:
         ]
     else:
         scope_uuids = list(request_sfi.parent_uuids)
-    if not scope_uuids:
-        return str(request_sfi.final_sfi_uuid)
     return "|".join(sorted(str(scope_uuid) for scope_uuid in scope_uuids))
 
 
