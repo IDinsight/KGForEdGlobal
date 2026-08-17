@@ -53,20 +53,25 @@ LC_GENERATION_FAILURES_FN = "lc_generation_failures.json"
 
 def _build_ancestor_path(
     *,
-    edge_by_child: dict[UUID, SFIHasChildEdge],
+    edges_by_child: dict[UUID, list[SFIHasChildEdge]],
     records_by_uuid: dict[UUID, SFIFinalRecord],
     seed_uuid: UUID,
 ) -> tuple[list[LCContextSFI], LCAncestorPathStatus]:
-    """Recover one seed's hasChild ancestor path from the resolved edges.
+    """Recover one seed's hasChild ancestors from the resolved edges.
 
-    The path is walked seed -> framework root and returned root-first. Any
-    unresolved root-fallback edge on the walk marks the path unresolved (only
-    reachable when the manual-review override admits such seeds).
+    Every distinct SFI reachable by walking seed -> framework root is
+    collected, so a seed whose hierarchy branches carries the ancestors of
+    all of its branches. The result is ordered by longest hasChild distance
+    from the framework root; ancestors at equal distance are co-equal and are
+    ordered by UUID so that no branch is preferred over another. Any
+    unresolved root-fallback edge on any walked branch marks the path
+    unresolved (only reachable when the manual-review override admits such
+    seeds).
 
     Parameters
     ----------
-    edge_by_child
-        Final hasChild edge keyed by its child final SFI UUID.
+    edges_by_child
+        Final hasChild edges keyed by their child final SFI UUID.
     records_by_uuid
         Final SFI records keyed by final SFI UUID.
     seed_uuid
@@ -75,57 +80,77 @@ def _build_ancestor_path(
     Returns
     -------
     tuple[list[LCContextSFI], LCAncestorPathStatus]
-        Ancestor context ordered framework root first, direct parent last,
-        and the path status.
+        Ancestor context ordered framework root first, nearest ancestors
+        last, and the path status.
 
     Raises
     ------
     ValueError
-        If a walked SFI has no hasChild edge, an ancestor has no final
-        record, or the walk revisits an SFI (cycle).
+        If a walked SFI has no hasChild edge, or an ancestor has no final
+        record.
     """
 
-    ancestors: list[LCContextSFI] = []
+    ancestor_uuids: set[UUID] = set()
     status: LCAncestorPathStatus = "resolved"
-    current = seed_uuid
-    seen = {seed_uuid}
-    while True:
-        edge = edge_by_child.get(current)
-        if edge is None:
+    frontier = [seed_uuid]
+    walked: set[UUID] = set()
+    while frontier:
+        current = frontier.pop()
+        if current in walked:
+            continue
+        walked.add(current)
+        edges = edges_by_child.get(current)
+        if not edges:
             raise ValueError(
                 f"LC request building: SFI {current} on the ancestor path of "
                 f"seed {seed_uuid} has no hasChild edge; every final SFI "
                 f"must be attached to the hierarchy."
             )
-        if edge.unresolved_root_fallback:
-            status = "unresolved_ancestor_path"
-        parent_uuid = edge.parent_final_sfi_uuid
-        if parent_uuid is None:
-            break
-        if parent_uuid in seen:
-            raise ValueError(
-                f"LC request building: hasChild cycle detected at "
-                f"SFI {parent_uuid} while walking the ancestor path of seed "
-                f"{seed_uuid}."
-            )
-        seen.add(parent_uuid)
-        parent_record = records_by_uuid.get(parent_uuid)
-        if parent_record is None:
-            raise ValueError(
-                f"LC request building: ancestor SFI {parent_uuid} of "
-                f"seed {seed_uuid} has no final SFI record."
-            )
-        ancestors.append(_build_context_sfi(parent_record))
-        current = parent_uuid
-    ancestors.reverse()
+        for edge in edges:
+            if edge.unresolved_root_fallback:
+                status = "unresolved_ancestor_path"
+            parent_uuid = edge.parent_final_sfi_uuid
+            if parent_uuid is None:
+                continue
+            if parent_uuid not in records_by_uuid:
+                raise ValueError(
+                    f"LC request building: ancestor SFI {parent_uuid} of "
+                    f"seed {seed_uuid} has no final SFI record."
+                )
+            ancestor_uuids.add(parent_uuid)
+            frontier.append(parent_uuid)
+
+    root_distances = _longest_root_distances(
+        ancestor_uuids=ancestor_uuids,
+        edges_by_child=edges_by_child,
+        seed_uuid=seed_uuid,
+    )
+    ancestors = [
+        _build_context_sfi(
+            edges_by_child=edges_by_child, record=records_by_uuid[ancestor_uuid]
+        )
+        for ancestor_uuid in sorted(
+            ancestor_uuids,
+            key=lambda ancestor_uuid: (
+                root_distances[ancestor_uuid],
+                str(ancestor_uuid),
+            ),
+        )
+    ]
     return ancestors, status
 
 
-def _build_context_sfi(record: SFIFinalRecord) -> LCContextSFI:
+def _build_context_sfi(
+    *,
+    edges_by_child: dict[UUID, list[SFIHasChildEdge]],
+    record: SFIFinalRecord,
+) -> LCContextSFI:
     """Build one disambiguation-only context entry from a final SFI record.
 
     Parameters
     ----------
+    edges_by_child
+        Final hasChild edges keyed by their child final SFI UUID.
     record
         The final SFI record to project.
 
@@ -138,6 +163,9 @@ def _build_context_sfi(record: SFIFinalRecord) -> LCContextSFI:
     return LCContextSFI(
         case_identifier_uuid=record.case_identifier_uuid,
         description=record.description,
+        parent_uuids=_parent_uuids(
+            edges_by_child=edges_by_child, sfi_uuid=record.final_sfi_uuid
+        ),
         statement_type=record.statement_type,
     )
 
@@ -172,19 +200,24 @@ def _build_request_id(sfi_uuids: Sequence[UUID]) -> str:
 def _collect_siblings(
     *,
     child_uuids_by_parent: dict[Optional[UUID], list[UUID]],
-    edge_by_child: dict[UUID, SFIHasChildEdge],
+    edges_by_child: dict[UUID, list[SFIHasChildEdge]],
     records_by_uuid: dict[UUID, SFIFinalRecord],
     seed_uuid: UUID,
 ) -> list[LCContextSFI]:
-    """Collect sibling SFIs under the seed's hasChild parent.
+    """Collect sibling SFIs under every hasChild parent of the seed.
+
+    A seed with more than one parent contributes the children of all of its
+    parents. Each sibling appears once, in parent-UUID order and then in edge
+    order within a parent.
 
     Parameters
     ----------
     child_uuids_by_parent
         Child final SFI UUIDs per parent (None = framework root), in edge
         order.
-    edge_by_child
-        Final hasChild edge keyed by its child final SFI UUID.
+    edges_by_child
+        Final hasChild edges keyed by their child final SFI UUID, each list
+        ordered by parent UUID.
     records_by_uuid
         Final SFI records keyed by final SFI UUID.
     seed_uuid
@@ -196,12 +229,20 @@ def _collect_siblings(
         Sibling context entries in edge order, excluding the seed itself.
     """
 
-    parent_uuid = edge_by_child[seed_uuid].parent_final_sfi_uuid
-    return [
-        _build_context_sfi(records_by_uuid[sibling_uuid])
-        for sibling_uuid in child_uuids_by_parent.get(parent_uuid, [])
-        if sibling_uuid != seed_uuid
-    ]
+    seen: set[UUID] = {seed_uuid}
+    siblings: list[LCContextSFI] = []
+    for edge in edges_by_child[seed_uuid]:
+        for sibling_uuid in child_uuids_by_parent[edge.parent_final_sfi_uuid]:
+            if sibling_uuid in seen:
+                continue
+            seen.add(sibling_uuid)
+            siblings.append(
+                _build_context_sfi(
+                    edges_by_child=edges_by_child,
+                    record=records_by_uuid[sibling_uuid],
+                )
+            )
+    return siblings
 
 
 def _load_resumable_lc_generation_responses(
@@ -278,6 +319,98 @@ def _load_resumable_lc_generation_responses(
     return completed
 
 
+def _longest_root_distances(
+    *,
+    ancestor_uuids: set[UUID],
+    edges_by_child: dict[UUID, list[SFIHasChildEdge]],
+    seed_uuid: UUID,
+) -> dict[UUID, int]:
+    """Measure each ancestor's longest hasChild distance from the framework root.
+
+    The longest distance is used rather than the shortest so that an SFI
+    reachable at several depths still sorts behind every one of its own
+    ancestors.
+
+    Parameters
+    ----------
+    ancestor_uuids
+        Final SFI UUIDs of the ancestors to measure.
+    edges_by_child
+        Final hasChild edges keyed by their child final SFI UUID.
+    seed_uuid
+        Final SFI UUID of the LC-source seed.
+
+    Returns
+    -------
+    dict[UUID, int]
+        Longest root distance keyed by ancestor final SFI UUID.
+
+    Raises
+    ------
+    ValueError
+        If the ancestors contain a hasChild cycle.
+    """
+
+    root_distances: dict[UUID, int] = {}
+    pending = set(ancestor_uuids)
+    while pending:
+        resolved_this_pass = False
+        for ancestor_uuid in sorted(pending, key=str):
+            parent_uuids = [
+                edge.parent_final_sfi_uuid
+                for edge in edges_by_child[ancestor_uuid]
+                if edge.parent_final_sfi_uuid is not None
+            ]
+            if any(parent_uuid not in root_distances for parent_uuid in parent_uuids):
+                continue
+            root_distances[ancestor_uuid] = (
+                1 + max(root_distances[parent_uuid] for parent_uuid in parent_uuids)
+                if parent_uuids
+                else 0
+            )
+            pending.discard(ancestor_uuid)
+            resolved_this_pass = True
+        if not resolved_this_pass:
+            raise ValueError(
+                f"LC request building: hasChild cycle detected among the "
+                f"ancestors of seed {seed_uuid}; "
+                f"{sorted(str(pending_uuid) for pending_uuid in pending)} have no "
+                f"path to the framework root."
+            )
+    return root_distances
+
+
+def _parent_uuids(
+    *, edges_by_child: dict[UUID, list[SFIHasChildEdge]], sfi_uuid: UUID
+) -> list[UUID]:
+    """List one SFI's direct hasChild parents, excluding the framework root.
+
+    Co-parents are ordered by UUID so that no branch of the hierarchy is
+    preferred over another.
+
+    Parameters
+    ----------
+    edges_by_child
+        Final hasChild edges keyed by their child final SFI UUID.
+    sfi_uuid
+        Final SFI UUID whose direct parents are listed.
+
+    Returns
+    -------
+    list[UUID]
+        Direct parent final SFI UUIDs, empty at the framework root.
+    """
+
+    return sorted(
+        {
+            edge.parent_final_sfi_uuid
+            for edge in edges_by_child[sfi_uuid]
+            if edge.parent_final_sfi_uuid is not None
+        },
+        key=str,
+    )
+
+
 def build_lc_generation_requests(
     *,
     academic_standards_bundle: AcademicStandardsKGBundle,
@@ -292,11 +425,13 @@ def build_lc_generation_requests(
     Eligible seeds are chunked in selection order
     into batches of `lc_request_batch_size` (default 1, hasChild parity); each
     request carries a deterministic request ID, the framework context, and
-    per seed its source text, language tag, and hasChild ancestor path
-    (disambiguation-only context and the authoritative source of grade/
-    curriculum scope). Sibling context is added only when
-    `lc_include_sibling_context` is configured. Requests never carry
-    statement codes as decomposition input.
+    per seed its source text, language tag, direct parents, and hasChild
+    ancestor path (disambiguation-only context and the authoritative source of
+    grade/curriculum scope). A seed or ancestor may have several hasChild
+    parents; every parent's ancestors are carried, and each context entry
+    keeps its own parent UUIDs so the hierarchy stays reconstructible. Sibling
+    context is added only when `lc_include_sibling_context` is configured.
+    Requests never carry statement codes as decomposition input.
 
     Parameters
     ----------
@@ -321,9 +456,8 @@ def build_lc_generation_requests(
     Raises
     ------
     ValueError
-        If a final SFI is the child of more than one hasChild edge, or an
-        ancestor path cannot be recovered (missing edge, missing record, or
-        cycle).
+        If an ancestor path cannot be recovered (missing edge, missing record,
+        or cycle).
     """
 
     framework = academic_standards_bundle.framework
@@ -335,32 +469,28 @@ def build_lc_generation_requests(
     )
 
     child_uuids_by_parent: dict[Optional[UUID], list[UUID]] = {}
-    edge_by_child: dict[UUID, SFIHasChildEdge] = {}
+    edges_by_child: dict[UUID, list[SFIHasChildEdge]] = {}
     for edge in has_child_edges:
-        if edge.child_final_sfi_uuid in edge_by_child:
-            raise ValueError(
-                f"LC request building: SFI {edge.child_final_sfi_uuid} is the "
-                f"child of more than one hasChild edge; ancestor paths "
-                f"require a single parent per SFI."
-            )
-        edge_by_child[edge.child_final_sfi_uuid] = edge
+        edges_by_child.setdefault(edge.child_final_sfi_uuid, []).append(edge)
         child_uuids_by_parent.setdefault(edge.parent_final_sfi_uuid, []).append(
             edge.child_final_sfi_uuid
         )
+    for child_edges in edges_by_child.values():
+        child_edges.sort(key=lambda edge: str(edge.parent_final_sfi_uuid))
 
     records_by_uuid = {record.final_sfi_uuid: record for record in sfi_final_records}
 
     request_sfis: list[LCRequestSFI] = []
     for record in lc_eligible_sfis:
         ancestor_path, ancestor_path_status = _build_ancestor_path(
-            edge_by_child=edge_by_child,
+            edges_by_child=edges_by_child,
             records_by_uuid=records_by_uuid,
             seed_uuid=record.final_sfi_uuid,
         )
         siblings = (
             _collect_siblings(
                 child_uuids_by_parent=child_uuids_by_parent,
-                edge_by_child=edge_by_child,
+                edges_by_child=edges_by_child,
                 records_by_uuid=records_by_uuid,
                 seed_uuid=record.final_sfi_uuid,
             )
@@ -374,6 +504,9 @@ def build_lc_generation_requests(
                 description=record.description,
                 final_sfi_uuid=record.final_sfi_uuid,
                 language=record.language,
+                parent_uuids=_parent_uuids(
+                    edges_by_child=edges_by_child, sfi_uuid=record.final_sfi_uuid
+                ),
                 siblings=siblings,
                 statement_type=record.statement_type,
             )

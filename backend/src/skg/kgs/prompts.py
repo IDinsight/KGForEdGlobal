@@ -971,7 +971,8 @@ def build_lc_generation_prompt(
 {generation_instructions}
 
 ## Context policy
-- `ancestor_path` is ordered framework root first and is the authoritative source of grade/curriculum scope. Use it to disambiguate terms and scope only; it must not introduce skills absent from the SFI text unless the runtime curriculum instructions explicitly authorize taking a missing verb or object from a named ancestor type.
+- `ancestor_path` is ordered framework root first and nearest ancestors last, and is the authoritative source of grade/curriculum scope. Use it to disambiguate terms and scope only; it must not introduce skills absent from the SFI text unless the runtime curriculum instructions explicitly authorize taking a missing verb or object from a named ancestor type.
+- A curriculum may attach one standard to several parents, so `ancestor_path` can list co-equal ancestors at the same level whose relative order carries no meaning. Each entry's `parent_uuids`, together with the SFI's own `parent_uuids`, are the exact hierarchy edges: rely on them, not on adjacency in the list, whenever you need to know which ancestor sits under which.
 - If `ancestor_path_status` is "unresolved_ancestor_path", the ancestor path is incomplete: treat the SFI text as the sole scope authority and do not state any grade, strand, topic, or unit scope the SFI text itself does not carry.
 - `siblings`, when present, show neighbouring standards under the same parent so you avoid claiming skills those standards own. Never derive skill content from siblings.
 - `framework_context` situates the curriculum (jurisdiction, subject, language); it introduces no skills.
