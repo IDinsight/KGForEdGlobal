@@ -8,7 +8,7 @@
 		],
 		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results/kg_for_ed",
 		"overwrite": false,
-		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/ghana/ghana_english.pdf",
+		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/ghana/ghana.pdf",
 		"start_page": 0,
 		"use_extracted_hints": true,
 		"year": 2019
@@ -26,7 +26,7 @@
 		"keep_artifacts": false,
 		"max_section_path_length": 40,
 		"min_link_score": 1.0,
-		"overwrite": true,
+		"overwrite": false,
 		"repair_hyphenation": true,
 		"sort_items_by_bbox": true,
 		"table_filldown_enabled": true,
@@ -611,7 +611,54 @@
 			"table_section_pattern_page_lookback": 1
 		},
 		"lc": {
-			"generation_instructions": "Decompose each final Ghana English Language Standard SFI into one or more atomic language or literacy skills/concepts. Do not create classroom activities, exemplar steps, sample questions, assessment tasks, resources, or competency labels as LearningComponents."
+			"generation_instructions": "Decompose each Ghana English Language Indicator SFI into atomic language or literacy skills supported by the Indicator's own text.\n\nDefault to a single skill. Many Indicators in this curriculum are already atomic ('Write simple familiar words', 'Tell stories from cultural background'): emit exactly one clean skill and never force a split.\n\n'and' is the main trap in this source, because it joins objects or modifiers far more often than it joins actions. 'Use dictionaries, glossaries and internet to clarify word meanings', 'Copy words in lower and upper case using correct spacing', 'Recognise one hundred and twenty sight words', and 'Use knowledge of prefixes and suffixes to interpret unfamiliar words' are each ONE skill. Split only when both sides of 'and' are distinct observable actions: 'Ask and answer factual questions', 'Make and respond to polite requests', 'Listen to and reproduce narrative texts', 'Identify and spell simple words correctly'.\n\nNever split a comprehension half from its application half. 'Understand and use many of the frequently occurring words', 'Identify and use the apostrophe to show possession', and 'Identify and use prepositions to indicate position' are one competency each, not a knowing skill plus a using skill.\n\nKeep 'e.g.' and parenthetical elaborations attached to the skill they qualify. In this source they always enumerate the scope of one skill and never introduce a second: 'Identify the structure of a story e.g. beginning part, middle and the end' is one skill, not three, and '(Phoneme deletion, addition, substitution)' qualifies the skill it follows.\n\nSkills are what a learner can do, not what a lesson does: exemplars, teacher prompts, classroom activities, resources, assessment tasks, core competencies and subject-specific practices are never LearningComponents.\n\nPreserve NaCCA wording and British spelling exactly (summarise, recognise, practise, dramatise), including source spellings such as 'diagraphs'. Output skills in English.",
+			"lc_dedup_batch_size": 25,
+			"lc_dedup_blocking": {
+				"containment_min_shared_tokens": 2,
+				"containment_threshold": 0.75,
+				"corpus_stopword_df": 0.15,
+				"neighborhood_all_pairs_max_size": 12,
+				"tag_jaccard_threshold": 0.5,
+				"token_jaccard_threshold": 0.55,
+				"trigram_jaccard_threshold": 0.6
+			},
+			"lc_dedup_instructions": "Two skills are the same only when a learner who has mastered one has necessarily mastered the other. This curriculum spirals: the same wording recurs across Basic 1-3 with a widened object or audience, and those are the same skill when the stated action and object match. Do not merge skills that differ in the language level they operate on (phoneme vs syllable vs word vs sentence vs paragraph vs text), in modality (listening, speaking, reading, writing), or in whether the learner recognises versus produces the form.",
+			"lc_dedup_language_pack": {
+				"min_fold_length": 5,
+				"stopwords": [
+					"a",
+					"an",
+					"the",
+					"of",
+					"to",
+					"in",
+					"on",
+					"for",
+					"with",
+					"and",
+					"or",
+					"using",
+					"given",
+					"their",
+					"its"
+				],
+				"strip_prefixes": [],
+				"strip_suffixes": [
+					"ing",
+					"es",
+					"s"
+				]
+			},
+			"lc_dedup_scope": "framework",
+			"lc_include_sibling_context": false,
+			"lc_manual_review_overrides": null,
+			"lc_max_failure_rate": 0.05,
+			"lc_max_skill_text_length": null,
+			"lc_max_skills_per_sfi": null,
+			"lc_min_skill_text_length": null,
+			"lc_request_batch_size": 1,
+			"lc_semantic_dedup": true,
+			"lc_source_statement_types": null
 		},
 		"metadata": {
 			"adoption_status": "Adopted",
