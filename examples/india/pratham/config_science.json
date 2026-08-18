@@ -6,9 +6,9 @@
 		"languages": [
 			"en"
 		],
-		"output_dir": "/Users/mustafa/IDinsight/SenegalKG/results/india/pratham",
+		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results/kg_for_ed",
 		"overwrite": false,
-		"pdf_fp": "/Users/mustafa/IDinsight/SenegalKG/data/india/pratham/learning_standards_science.pdf",
+		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/india/pratham/learning_standards_science.pdf",
 		"start_page": 0,
 		"use_extracted_hints": true,
 		"year": 2025

@@ -26,7 +26,7 @@
 		"keep_artifacts": false,
 		"max_section_path_length": 24,
 		"min_link_score": 1.0,
-		"overwrite": true,
+		"overwrite": false,
 		"repair_hyphenation": true,
 		"sort_items_by_bbox": true,
 		"table_filldown_enabled": true,
