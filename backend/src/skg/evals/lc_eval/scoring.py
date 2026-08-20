@@ -334,6 +334,25 @@ def _sd(values: Sequence[float]) -> float:
     return round((sum((v - mean) ** 2 for v in values) / len(values)) ** 0.5, 5)
 
 
+def _ordered_replicate_groups(
+    groups: dict[int, list[RubricVerdict]],
+) -> list[Sequence[RubricVerdict]]:
+    """Return verdict groups ordered by replicate index.
+
+    Parameters
+    ----------
+    groups
+        Verdicts keyed by replicate index.
+
+    Returns
+    -------
+    list[Sequence[RubricVerdict]]
+        Verdict groups in replicate order.
+    """
+
+    return [groups[replicate] for replicate in sorted(groups)]
+
+
 def _score_criterion(
     *,
     criterion: str,
@@ -677,6 +696,12 @@ def build_rubric_report(
     control_hits: dict[str, list[bool]] = defaultdict(list)
     real_verdicts: list[RubricVerdict] = []
     replicate_groups: dict[int, list[RubricVerdict]] = defaultdict(list)
+    replicate_groups_by_curriculum: dict[str, dict[int, list[RubricVerdict]]] = (
+        defaultdict(lambda: defaultdict(list))
+    )
+    replicate_groups_by_stratum: dict[str, dict[int, list[RubricVerdict]]] = (
+        defaultdict(lambda: defaultdict(list))
+    )
     unstable = 0
 
     for item_id, verdicts_by_replicate in sorted(verdicts_by_item.items()):
@@ -701,6 +726,8 @@ def build_rubric_report(
 
         for replicate, verdict in verdicts_by_replicate.items():
             replicate_groups[replicate].append(verdict)
+            replicate_groups_by_curriculum[item.curriculum][replicate].append(verdict)
+            replicate_groups_by_stratum[item.stratum][replicate].append(verdict)
 
         if not stable:
             unstable += 1
@@ -728,15 +755,27 @@ def build_rubric_report(
         judge_model=judge_model,
         replicates=replicates,
         scores_by_curriculum={
-            curriculum: _score_slice(seed=seed, verdicts=slice_verdicts)
+            curriculum: _score_slice(
+                replicate_verdicts=_ordered_replicate_groups(
+                    replicate_groups_by_curriculum[curriculum]
+                ),
+                seed=seed,
+                verdicts=slice_verdicts,
+            )
             for curriculum, slice_verdicts in sorted(by_curriculum.items())
         },
         scores_by_stratum={
-            stratum: _score_slice(seed=seed, verdicts=slice_verdicts)
+            stratum: _score_slice(
+                replicate_verdicts=_ordered_replicate_groups(
+                    replicate_groups_by_stratum[stratum]
+                ),
+                seed=seed,
+                verdicts=slice_verdicts,
+            )
             for stratum, slice_verdicts in sorted(by_stratum.items())
         },
         scores_overall=_score_slice(
-            replicate_verdicts=[replicate_groups[i] for i in sorted(replicate_groups)],
+            replicate_verdicts=_ordered_replicate_groups(replicate_groups),
             seed=seed,
             verdicts=real_verdicts,
         ),
