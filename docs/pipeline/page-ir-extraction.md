@@ -164,3 +164,9 @@ content on adjacent pages.
 The next stage, **Page IR continuity verification**, evaluates those page breaks using
 bounded evidence from both pages before continuity metadata is allowed to influence
 document stitching.
+
+---
+
+## Next
+
+[Page IR Verification →](page-ir-verification.md)

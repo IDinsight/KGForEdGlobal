@@ -92,8 +92,9 @@ kgs
   lc   # Learning Components construction
 ```
 
-The same source PDF and output root are shared across the run, while each stage receives
-its own behavior, thresholds, model settings, and curriculum-specific policies.
+The same source PDF and output root are shared across the run, while the stage-specific
+configuration controls behavior, thresholds, and curriculum-specific policies. Model
+selection is configured separately through the backend settings/environment.
 
 The KG configuration is optional at the global schema level. Page extraction,
 continuity verification, and DocumentIR construction can therefore be run without
@@ -371,3 +372,9 @@ docs/pipeline/learning-components.md
 
 These pages provide the implementation details, configuration behavior, validation
 rules, and artifact contracts that this overview intentionally keeps concise.
+
+---
+
+## Next
+
+[Page IR Extraction →](page-ir-extraction.md)

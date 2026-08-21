@@ -168,3 +168,9 @@ reviewed and confidence-gated.
 
 The next stage, **Document IR construction**, uses these verified boundaries to stitch
 page-local structures into document-level segments while preserving source provenance.
+
+---
+
+## Next
+
+[Document IR →](document-ir.md)

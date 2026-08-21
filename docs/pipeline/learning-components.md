@@ -203,3 +203,9 @@ through them, to the original document evidence.
 The `as_lc_kg_bundle.json` contains the Academic Standards framework and items,
 Learning Components, `hasChild` relationships, `supports` relationships, unresolved
 records, provenance, summaries, and validation results for the combined graph.
+
+---
+
+## Next
+
+[Pipeline Overview ←](index.md)

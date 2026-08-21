@@ -169,3 +169,9 @@ The next stage, **Academic Standards KG construction**, consumes `document_ir.js
 is the first stage that identifies source-facing curriculum statements, resolves their
 identity and hierarchy, and constructs Academic Standards entities and `hasChild`
 relationships.
+
+---
+
+## Next
+
+[Academic Standards KG →](academic-standards.md)

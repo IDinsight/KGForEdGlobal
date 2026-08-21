@@ -40,7 +40,7 @@ From the `backend/` directory, run:
 python src/skg/entries/create_kgs.py <config.json>
 ```
 
-The command reads the `kgs.academic_standards` section of the shared `RunConfig`.
+The command reads the `kgs.as` section of the shared `RunConfig`.
 Important settings include:
 
 | Setting | Purpose |
@@ -213,3 +213,9 @@ The next stage, **Learning Components KG construction**, selects eligible finali
 SFIs from this validated graph, decomposes them into Learning Components, deduplicates
 those skills, and connects them back to the source standards with `supports`
 relationships.
+
+---
+
+## Next
+
+[Learning Components KG →](learning-components.md)
