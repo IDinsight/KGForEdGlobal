@@ -6,9 +6,9 @@
 		"languages": [
 			"en"
 		],
-		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results/kg_for_ed",
+		"output_dir": "/Users/mustafa/IDinsight/SenegalKG/results/ghana_english",
 		"overwrite": false,
-		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/ghana/ghana.pdf",
+		"pdf_fp": "/Users/mustafa/IDinsight/SenegalKG/data/ghana/ghana_english.pdf",
 		"start_page": 0,
 		"use_extracted_hints": true,
 		"year": 2019
@@ -611,7 +611,7 @@
 			"table_section_pattern_page_lookback": 1
 		},
 		"lc": {
-			"generation_instructions": "Decompose each Ghana English Language Indicator SFI into atomic language or literacy skills supported by the Indicator's own text.\n\nDefault to a single skill. Many Indicators in this curriculum are already atomic ('Write simple familiar words', 'Tell stories from cultural background'): emit exactly one clean skill and never force a split.\n\n'and' is the main trap in this source, because it joins objects or modifiers far more often than it joins actions. 'Use dictionaries, glossaries and internet to clarify word meanings', 'Copy words in lower and upper case using correct spacing', 'Recognise one hundred and twenty sight words', and 'Use knowledge of prefixes and suffixes to interpret unfamiliar words' are each ONE skill. Split only when both sides of 'and' are distinct observable actions: 'Ask and answer factual questions', 'Make and respond to polite requests', 'Listen to and reproduce narrative texts', 'Identify and spell simple words correctly'.\n\nNever split a comprehension half from its application half. 'Understand and use many of the frequently occurring words', 'Identify and use the apostrophe to show possession', and 'Identify and use prepositions to indicate position' are one competency each, not a knowing skill plus a using skill.\n\nKeep 'e.g.' and parenthetical elaborations attached to the skill they qualify. In this source they always enumerate the scope of one skill and never introduce a second: 'Identify the structure of a story e.g. beginning part, middle and the end' is one skill, not three, and '(Phoneme deletion, addition, substitution)' qualifies the skill it follows.\n\nSkills are what a learner can do, not what a lesson does: exemplars, teacher prompts, classroom activities, resources, assessment tasks, core competencies and subject-specific practices are never LearningComponents.\n\nPreserve NaCCA wording and British spelling exactly (summarise, recognise, practise, dramatise), including source spellings such as 'diagraphs'. Output skills in English.",
+			"generation_instructions": "Decompose each Ghana English Language Indicator SFI into atomic language or literacy skills supported by the Indicator's own text.\n\nDefault to a single skill. Many Indicators in this curriculum are already atomic ('Write simple familiar words', 'Tell stories from cultural background'): emit exactly one clean skill for these and never pad the skill count.\n\n'and' is the main trap in this source, because it joins objects or modifiers far more often than it joins actions. 'Use dictionaries, glossaries and internet to clarify word meanings', 'Copy words in lower and upper case using correct spacing', 'Recognise one hundred and twenty sight words', and 'Use knowledge of prefixes and suffixes to interpret unfamiliar words' are each ONE skill. An Indicator of the form 'Identify and use X' names two separable actions and always yields two skills. More generally, split when the Indicator names distinct actions, or distinct objects or aspects, on either side of 'and': 'Ask and answer factual questions', 'Make and respond to polite requests', 'Listen to and reproduce narrative texts', 'Identify and spell simple words correctly'.\n\nNever split a comprehension half from its application half. 'Understand and use many of the frequently occurring words', 'Identify and use the apostrophe to show possession', and 'Identify and use prepositions to indicate position' are one competency each, not a knowing skill plus a using skill.\n\nKeep 'e.g.' and parenthetical elaborations attached to the skill they qualify. In this source they always enumerate the scope of one skill and never introduce a second: 'Identify the structure of a story e.g. beginning part, middle and the end' is one skill, not three, and '(Phoneme deletion, addition, substitution)' qualifies the skill it follows.\n\nSkills are what a learner can do, not what a lesson does: exemplars, teacher prompts, classroom activities, resources, assessment tasks, core competencies and subject-specific practices are never LearningComponents.\n\nPreserve NaCCA wording and British spelling exactly (summarise, recognise, practise, dramatise), including source spellings such as 'diagraphs'. Output skills in English.",
 			"lc_dedup_batch_size": 25,
 			"lc_dedup_blocking": {
 				"containment_min_shared_tokens": 2,
@@ -650,6 +650,7 @@
 				]
 			},
 			"lc_dedup_scope": "framework",
+			"lc_generation_validation_instructions": null,
 			"lc_include_sibling_context": false,
 			"lc_manual_review_overrides": null,
 			"lc_max_failure_rate": 0.05,
