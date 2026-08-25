@@ -14,6 +14,7 @@ from skg.kgs.schemas import (
     LCDedupResponse,
     LCGenerationRequest,
     LCGenerationResponse,
+    LCGenerationValidationVerdict,
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
     SFIDedupValidationVerdict,
@@ -221,6 +222,111 @@ def create_lc_generation_agent(
 
         attempt_counter["value"] += 1
 
+        return output
+
+    return agent
+
+
+def create_lc_generation_validation_agent(
+    *,
+    draft_response: LCGenerationResponse,
+    instructions: str,
+    lc_config: _CreateKGLearningComponentsConfig,
+    lc_generation_request: LCGenerationRequest,
+    max_retries: int = 3,
+    model_config: ModelConfig,
+    verify_integrity_fn: Callable[..., None],
+) -> Agent:
+    """Create an Agent configured for independent LC decomposition validation.
+
+    The returned agent audits a producer draft and returns a verdict that either
+    accepts it or carries a complete corrected response. Integrity failures raise
+    `ModelRetry` so pydantic-ai can ask the model to repair its verdict before the
+    corrected response is accepted.
+
+    Parameters
+    ----------
+    draft_response
+        Complete producer response under audit.
+    instructions
+        System-level LC validation instructions.
+    lc_config
+        Runtime Learning Components configuration used for deterministic
+        contract validation.
+    lc_generation_request
+        Bounded LC generation request that produced the draft.
+    max_retries
+        Maximum number of integrity-error retries.
+    model_config
+        Model configuration containing the model name and model settings helpers.
+    verify_integrity_fn
+        Callable with signature `(*, draft_response, lc_config,
+        lc_generation_request, validation_verdict)` that raises `QualityError`
+        on failure.
+
+    Returns
+    -------
+    Agent
+        Configured LC generation validation agent.
+    """
+
+    attempt_counter: dict[str, int] = {"value": 0}
+    agent = Agent(
+        model_config.model,
+        instructions=instructions,
+        model_settings=model_config.kgs_settings("learning_components"),
+        output_retries=max_retries,
+        output_type=model_config.wrap_output_type(LCGenerationValidationVerdict),
+    )
+
+    @agent.output_validator
+    def validate_lc_generation_verdict_integrity(
+        output: LCGenerationValidationVerdict,
+    ) -> LCGenerationValidationVerdict:
+        """Validate one parsed LC generation validation verdict.
+
+        Parameters
+        ----------
+        output
+            Parsed validation verdict from the model.
+
+        Returns
+        -------
+        LCGenerationValidationVerdict
+            Validated verdict.
+
+        Raises
+        ------
+        ModelRetry
+            If the verdict or corrected response violates a universal integrity rule.
+        """
+
+        attempt = attempt_counter["value"]
+        try:
+            verify_integrity_fn(
+                draft_response=draft_response,
+                lc_config=lc_config,
+                lc_generation_request=lc_generation_request,
+                validation_verdict=output,
+            )
+        except QualityError as e:
+            truncated_msg = str(e)[:500]
+            logger.error(
+                f"LC generation validation integrity check failed for request "
+                f"{lc_generation_request.request_id} attempt {attempt + 1}: "
+                f"{truncated_msg}"
+            )
+            attempt_counter["value"] += 1
+            raise ModelRetry(
+                f"Your LC generation validation verdict violates a universal "
+                f"integrity rule and must be corrected.\n"
+                f"ERROR: {str(e)}\n\n"
+                f"Return a complete LCGenerationValidationVerdict. When passed is "
+                f"false, corrected_response must be a complete response that copies "
+                f"the exact request_id and covers every SFI in the request exactly "
+                f"once with a non-empty skills list."
+            ) from e
+        attempt_counter["value"] += 1
         return output
 
     return agent

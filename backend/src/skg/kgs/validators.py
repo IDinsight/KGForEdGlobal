@@ -20,6 +20,7 @@ from skg.kgs.schemas import (
     LCDedupResponse,
     LCGenerationRequest,
     LCGenerationResponse,
+    LCGenerationValidationVerdict,
     SFICandidate,
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
@@ -2190,6 +2191,85 @@ def verify_lc_generation_quality(
     )
     _verify_lc_generation_skill_bounds(
         lc_config=lc_config, lc_generation_response=lc_generation_response
+    )
+
+
+def verify_lc_generation_validation_integrity(
+    *,
+    draft_response: LCGenerationResponse,
+    lc_config: _CreateKGLearningComponentsConfig,
+    lc_generation_request: LCGenerationRequest,
+    validation_verdict: LCGenerationValidationVerdict,
+) -> None:
+    """Validate universal integrity of one LC generation validation verdict.
+
+    This function intentionally avoids decomposition semantics, granularity
+    judgments, and wording heuristics. Those decisions belong to the
+    producer/validator LLM flow under the runtime curriculum instructions.
+
+    Parameters
+    ----------
+    draft_response
+        Producer response under audit.
+    lc_config
+        Learning Components runtime configuration.
+    lc_generation_request
+        Bounded LC generation request supplied to both agents.
+    validation_verdict
+        Parsed validation verdict to check.
+
+    Raises
+    ------
+    QualityError
+        If verdict identity, issue references, or the selected final response
+        violates universal LC generation response integrity.
+    """
+
+    if validation_verdict.request_id != lc_generation_request.request_id:
+        raise QualityError(
+            f"LC validation request_id {validation_verdict.request_id!r} does not "
+            f"match request_id {lc_generation_request.request_id!r}."
+        )
+
+    request_sfi_uuids = {
+        request_sfi.final_sfi_uuid for request_sfi in lc_generation_request.sfis
+    }
+    for issue in validation_verdict.issues:
+        if issue.sfi_uuid is not None and issue.sfi_uuid not in request_sfi_uuids:
+            raise QualityError(
+                f"LC validation issue references SFI {issue.sfi_uuid} which is absent "
+                f"from request {lc_generation_request.request_id!r}."
+            )
+
+    if validation_verdict.passed and validation_verdict.corrected_response is not None:
+        raise QualityError(
+            "A passing LC validation verdict must not provide a corrected response."
+        )
+
+    if not validation_verdict.passed and not any(
+        issue.severity == "error" for issue in validation_verdict.issues
+    ):
+        raise QualityError(
+            "A failing LC validation verdict must report at least one error issue."
+        )
+
+    selected_response = (
+        draft_response
+        if validation_verdict.passed
+        else validation_verdict.corrected_response
+    )
+    if selected_response is None:
+        raise QualityError(
+            "A failing LC validation verdict must provide a complete corrected "
+            "response."
+        )
+
+    _verify_lc_generation_sfi_coverage(
+        lc_generation_request=lc_generation_request,
+        lc_generation_response=selected_response,
+    )
+    _verify_lc_generation_skill_bounds(
+        lc_config=lc_config, lc_generation_response=selected_response
     )
 
 

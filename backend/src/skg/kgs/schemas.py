@@ -5893,6 +5893,83 @@ class LCGenerationSummary(BaseSchema):
     warnings: list[str] = Field(default_factory=list)
 
 
+class LCGenerationValidationIssue(BaseSchema):
+    """One seed-grounded issue found by the LC generation validation agent."""
+
+    issue_type: str = Field(
+        description=(
+            "Short general issue category, such as over_split, under_split, or "
+            "unsupported_content."
+        ),
+        min_length=1,
+    )
+    message: str = Field(
+        description="Specific seed-grounded description of the issue.", min_length=1
+    )
+    severity: Literal["error", "warning"] = Field(
+        description="Whether the issue requires correction or is advisory only."
+    )
+    sfi_uuid: Optional[UUID] = Field(default=None)
+
+    @field_validator("issue_type", "message", mode="before")
+    @classmethod
+    def clean_required_issue_strings(cls, v: str) -> str:
+        """Strip and require non-empty validation issue text.
+
+        Parameters
+        ----------
+        v
+            Raw issue text.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty issue text.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+
+class LCGenerationValidationVerdict(BaseSchema):
+    """Independent validation verdict for one draft LC generation response."""
+
+    corrected_response: Optional[LCGenerationResponse] = Field(
+        default=None,
+        description=(
+            "Complete corrected LC generation response when passed is false; null "
+            "when the producer draft is accepted unchanged."
+        ),
+    )
+    issues: list[LCGenerationValidationIssue] = Field(default_factory=list)
+    passed: bool = Field(
+        description="True when the producer draft requires no material correction."
+    )
+    rationale: str = Field(
+        description="Concise overall assessment of the producer draft.", min_length=20
+    )
+    request_id: str = Field(
+        description="Request ID copied from the original request.", min_length=1
+    )
+
+    @field_validator("rationale", "request_id", mode="before")
+    @classmethod
+    def clean_required_verdict_strings(cls, v: str) -> str:
+        """Strip and require non-empty validation verdict text.
+
+        Parameters
+        ----------
+        v
+            Raw verdict text.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty verdict text.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+
 class LCRequestSFI(BaseSchema):
     """One LC-source SFI in a generation request, with its prompt context."""
 

@@ -15,7 +15,7 @@ merge).
 import hashlib
 
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Optional, Sequence, TypeVar
 from uuid import UUID
 
 # Third Party Library
@@ -23,7 +23,11 @@ from loguru import logger
 from pydantic import ValidationError
 
 # Package Library
-from skg.kgs.llm import KGUsageTracker, generate_learning_components_for_request
+from skg.kgs.llm import (
+    KGUsageTracker,
+    LCGenerationRun,
+    generate_learning_components_for_request,
+)
 from skg.kgs.schemas import (
     AcademicStandardsKGBundle,
     LCAncestorPathStatus,
@@ -32,6 +36,7 @@ from skg.kgs.schemas import (
     LCGenerationFailure,
     LCGenerationRequest,
     LCGenerationResponse,
+    LCGenerationValidationVerdict,
     LCRequestSFI,
     SFIFinalRecord,
     SFIHasChildEdge,
@@ -49,6 +54,10 @@ from skg.schemas import _CreateKGLearningComponentsConfig
 from skg.utils.general import write_to_json
 
 LC_GENERATION_FAILURES_FN = "lc_generation_failures.json"
+
+_LCArtifactModelT = TypeVar(
+    "_LCArtifactModelT", LCGenerationResponse, LCGenerationValidationVerdict
+)
 
 
 def _build_ancestor_path(
@@ -245,77 +254,137 @@ def _collect_siblings(
     return siblings
 
 
-def _load_resumable_lc_generation_responses(
-    *,
-    lc_config: _CreateKGLearningComponentsConfig,
-    lc_generation_requests: Sequence[LCGenerationRequest],
-    responses_fp: Path,
-) -> dict[str, LCGenerationResponse]:
-    """Load completed LC generation responses that remain valid for this run.
+def _load_lc_jsonl_prefix(
+    *, fp: Path, model_type: type[_LCArtifactModelT]
+) -> list[_LCArtifactModelT]:
+    """Load the valid leading prefix of one LC generation JSONL artifact.
 
-    Reads a valid prefix of the responses artifact (a truncated or invalid
-    trailing line is dropped with a warning). Every parsed response must
-    match a current request by ``request_id`` and pass the quality checks
-    against it; any stale, duplicate, or invalid response discards ALL
-    progress with a warning so the run restarts cleanly.
+    A truncated or invalid trailing line ends the prefix with a warning.
 
     Parameters
     ----------
-    lc_config
-        Learning Components runtime configuration.
-    lc_generation_requests
-        Current deterministic LC generation requests.
-    responses_fp
-        Path to the LC generation responses JSONL artifact.
+    fp
+        Path to the JSONL artifact.
+    model_type
+        Model class each line is validated against.
 
     Returns
     -------
-    dict[str, LCGenerationResponse]
-        Valid completed responses keyed by request ID (empty when no progress
-        is reusable).
+    list[_LCArtifactModelT]
+        Parsed models from the valid leading prefix.
     """
 
-    if not responses_fp.exists() or responses_fp.stat().st_size == 0:
-        return {}
+    if not fp.exists() or fp.stat().st_size == 0:
+        return []
 
-    requests_by_id = {request.request_id: request for request in lc_generation_requests}
-    completed: dict[str, LCGenerationResponse] = {}
-    with responses_fp.open("r", encoding="utf-8") as f:
+    loaded: list[_LCArtifactModelT] = []
+    with fp.open("r", encoding="utf-8") as f:
         for line_number, line in enumerate(f, start=1):
             stripped = line.strip()
             if not stripped:
                 continue
             try:
-                response = LCGenerationResponse.model_validate_json(stripped)
+                loaded.append(model_type.model_validate_json(stripped))
             except ValidationError:
                 logger.warning(
-                    f"Dropping invalid/truncated LC generation response at "
-                    f"{responses_fp}:{line_number}; resuming from the "
-                    f"{len(completed)} valid responses before it."
+                    f"Dropping invalid/truncated LC generation artifact line at "
+                    f"{fp}:{line_number}; resuming from the {len(loaded)} valid "
+                    f"entries before it."
                 )
                 break
-            request = requests_by_id.get(response.request_id)
-            if request is None or response.request_id in completed:
-                logger.warning(
-                    f"LC generation response at {responses_fp}:{line_number} "
-                    f"has a stale or duplicate request_id "
-                    f"{response.request_id!r}; discarding all saved progress."
-                )
-                return {}
-            try:
-                verify_lc_generation_quality(
-                    lc_config=lc_config,
-                    lc_generation_request=request,
-                    lc_generation_response=response,
-                )
-            except QualityError as e:
-                logger.warning(
-                    f"Saved LC generation response for request "
-                    f"{response.request_id!r} no longer passes quality checks "
-                    f"({str(e)[:200]}); discarding all saved progress."
-                )
-                return {}
-            completed[response.request_id] = response
+    return loaded
+
+
+def _load_resumable_lc_generation_runs(
+    *,
+    draft_responses_fp: Path,
+    lc_config: _CreateKGLearningComponentsConfig,
+    lc_generation_requests: Sequence[LCGenerationRequest],
+    responses_fp: Path,
+    verdicts_fp: Path,
+) -> dict[str, LCGenerationRun]:
+    """Load completed LC generation runs that remain valid for this run.
+
+    A run is reusable only when its draft response, validation verdict, and
+    final response are all present, agree on the request ID, and pass the
+    quality checks against the current request. Any stale, duplicate,
+    inconsistent, or invalid entry discards ALL progress with a warning so the
+    run restarts cleanly and the three artifacts never disagree.
+
+    Parameters
+    ----------
+    draft_responses_fp
+        Path to the LC generation draft responses JSONL artifact.
+    lc_config
+        Learning Components runtime configuration.
+    lc_generation_requests
+        Current deterministic LC generation requests.
+    responses_fp
+        Path to the accepted LC generation responses JSONL artifact.
+    verdicts_fp
+        Path to the LC generation validation verdicts JSONL artifact.
+
+    Returns
+    -------
+    dict[str, LCGenerationRun]
+        Valid completed runs keyed by request ID (empty when no progress is
+        reusable).
+    """
+
+    drafts = _load_lc_jsonl_prefix(
+        fp=draft_responses_fp, model_type=LCGenerationResponse
+    )
+    finals = _load_lc_jsonl_prefix(fp=responses_fp, model_type=LCGenerationResponse)
+    verdicts = _load_lc_jsonl_prefix(
+        fp=verdicts_fp, model_type=LCGenerationValidationVerdict
+    )
+
+    reusable = min(len(drafts), len(finals), len(verdicts))
+    if reusable == 0:
+        return {}
+    if not len(drafts) == len(finals) == len(verdicts):
+        logger.warning(
+            f"LC generation artifacts disagree in length "
+            f"(drafts={len(drafts)}, verdicts={len(verdicts)}, "
+            f"responses={len(finals)}); resuming from the first {reusable} "
+            f"complete runs."
+        )
+
+    requests_by_id = {request.request_id: request for request in lc_generation_requests}
+    completed: dict[str, LCGenerationRun] = {}
+    for index in range(reusable):
+        draft, verdict, final = drafts[index], verdicts[index], finals[index]
+        request_id = final.request_id
+        if draft.request_id != request_id or verdict.request_id != request_id:
+            logger.warning(
+                f"LC generation artifacts disagree at position {index} "
+                f"(draft={draft.request_id!r}, verdict={verdict.request_id!r}, "
+                f"response={request_id!r}); discarding all saved progress."
+            )
+            return {}
+        request = requests_by_id.get(request_id)
+        if request is None or request_id in completed:
+            logger.warning(
+                f"LC generation artifacts contain a stale or duplicate "
+                f"request_id {request_id!r}; discarding all saved progress."
+            )
+            return {}
+        try:
+            verify_lc_generation_quality(
+                lc_config=lc_config,
+                lc_generation_request=request,
+                lc_generation_response=final,
+            )
+        except QualityError as e:
+            logger.warning(
+                f"Saved LC generation response for request {request_id!r} no "
+                f"longer passes quality checks ({str(e)[:200]}); discarding all "
+                f"saved progress."
+            )
+            return {}
+        completed[request_id] = LCGenerationRun(
+            draft_response=draft, final_response=final, validation_verdict=verdict
+        )
     return completed
 
 
@@ -588,32 +657,47 @@ def decompose_lc_source_sfis(
         ``lc_max_failure_rate`` (raised after all artifacts are written).
     """
 
+    draft_responses_fp = kg_dirs.root / "lc_generation_draft_responses.jsonl"
     failures_fp = kg_dirs.root / LC_GENERATION_FAILURES_FN
     responses_fp = kg_dirs.root / "lc_generation_responses.jsonl"
+    verdicts_fp = kg_dirs.root / "lc_generation_validation_verdicts.jsonl"
+    corrected_count = 0
 
     if overwrite:
         logger.info("Starting LC generation from scratch because overwrite=True.")
-        reset_output_files(output_fps=[failures_fp, responses_fp])
-        completed: dict[str, LCGenerationResponse] = {}
+        reset_output_files(
+            output_fps=[draft_responses_fp, failures_fp, responses_fp, verdicts_fp]
+        )
+        completed: dict[str, LCGenerationRun] = {}
     else:
-        completed = _load_resumable_lc_generation_responses(
+        completed = _load_resumable_lc_generation_runs(
+            draft_responses_fp=draft_responses_fp,
             lc_config=lc_config,
             lc_generation_requests=lc_generation_requests,
             responses_fp=responses_fp,
+            verdicts_fp=verdicts_fp,
         )
-        reset_output_files(output_fps=[failures_fp, responses_fp])
-        for response in completed.values():
-            append_jsonl_model(fp=responses_fp, model=response)
+        reset_output_files(
+            output_fps=[draft_responses_fp, failures_fp, responses_fp, verdicts_fp]
+        )
+        for completed_run in completed.values():
+            append_jsonl_model(
+                fp=draft_responses_fp, model=completed_run.draft_response
+            )
+            append_jsonl_model(fp=verdicts_fp, model=completed_run.validation_verdict)
+            append_jsonl_model(fp=responses_fp, model=completed_run.final_response)
 
     failures: list[LCGenerationFailure] = []
     responses: list[LCGenerationResponse] = []
     for request in lc_generation_requests:
-        cached_response = completed.get(request.request_id)
-        if cached_response is not None:
-            responses.append(cached_response)
+        cached_run = completed.get(request.request_id)
+        if cached_run is not None:
+            responses.append(cached_run.final_response)
+            if not cached_run.validation_verdict.passed:
+                corrected_count += 1
             continue
         try:
-            response = generate_learning_components_for_request(
+            generation_run = generate_learning_components_for_request(
                 lc_config=lc_config,
                 lc_generation_request=request,
                 usage_tracker=usage_tracker,
@@ -634,8 +718,13 @@ def decompose_lc_source_sfis(
                 )
             )
             continue
+        response = generation_run.final_response
+        append_jsonl_model(fp=draft_responses_fp, model=generation_run.draft_response)
+        append_jsonl_model(fp=verdicts_fp, model=generation_run.validation_verdict)
         append_jsonl_model(fp=responses_fp, model=response)
         responses.append(response)
+        if not generation_run.validation_verdict.passed:
+            corrected_count += 1
 
     make_dir(kg_dirs.root)
     write_to_json(
@@ -654,6 +743,7 @@ def decompose_lc_source_sfis(
         f"succeeded={len(responses)}; "
         f"failed_requests={len(failures)}; "
         f"failed_sfis={failed_sfi_count}; "
+        f"validator_corrected={corrected_count}; "
         f"atomic_skills={skill_count}"
     )
 

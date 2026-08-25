@@ -10,6 +10,7 @@ from skg.kgs.schemas import (
     ExtractionWindowTablePayload,
     LCDedupRequest,
     LCGenerationRequest,
+    LCGenerationResponse,
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
     SFIExtractionResult,
@@ -1330,6 +1331,100 @@ Use exactly one decision for each decision group:
         f"""Review this bounded SFI deduplication candidate set.
 
 ## Bounded dedup review payload JSON
+{json_dumps(user_payload)}
+        """
+    )
+
+    return PromptPair(
+        system_message=system_message.strip(), user_message=user_message.strip()
+    )
+
+
+def validate_lc_generation_response(
+    *,
+    draft_response: LCGenerationResponse,
+    generation_instructions: str,
+    lc_generation_request: LCGenerationRequest,
+    lc_generation_validation_instructions: Optional[str],
+) -> PromptPair:
+    """Generate independent validation prompts for a draft LC generation response.
+
+    Parameters
+    ----------
+    draft_response
+        Complete producer response to audit.
+    generation_instructions
+        Curriculum-specific decomposition policy the producer was given.
+    lc_generation_request
+        Original bounded decomposition request.
+    lc_generation_validation_instructions
+        Optional curriculum-specific audit policy, or None for the generic rubric
+        alone.
+
+    Returns
+    -------
+    PromptPair
+        System and user messages for the independent LC generation validator.
+    """
+
+    user_payload = {
+        "draft_response": draft_response.model_dump(mode="json"),
+        "lc_generation_request": lc_generation_request.model_dump(mode="json"),
+    }
+    validation_instructions_section = (
+        ""
+        if lc_generation_validation_instructions is None
+        else dedent(
+            f"""
+## Runtime curriculum audit policy
+- Treat the following as the authoritative curriculum-specific audit policy for this request. It describes how this source signals separable actions and objects, which coordinations name a single thing, and what the seed text may never license.
+- Apply both this audit policy and the decomposition policy above. Where they differ, this audit policy governs your verdict, since it describes how this document's decompositions must be checked rather than how they were produced.
+{lc_generation_validation_instructions}
+"""
+        )
+    )
+    system_message = dedent(
+        f"""You are the independent validator for Learning Components decomposition. Audit the producer's complete response against the original bounded request, the seed SFI text, its ancestor context, and the runtime curriculum instructions. Decide independently whether each SFI was decomposed correctly.
+
+## Validator boundary
+- Review only the supplied request and producer draft.
+- Do not invent SFIs, skills, source facts, or context that the request does not carry.
+- Every corrected skill must be supported by its own seed SFI's text; the ancestor path disambiguates scope and never licenses new content.
+- Decomposition granularity, split axis, wording fidelity, and skill count are semantic judgments owned by this validator.
+- Python will validate SFI coverage, skill-count bounds, text-length bounds, response shape, and deterministic identifiers after your verdict.
+
+## Runtime curriculum instructions
+- The following is the authoritative curriculum-specific decomposition policy the producer was given for this request. Audit the draft against it, and where it conflicts with the generic rules above, follow it unless doing so would violate the output contract. A skill the generic rules would reject is correct when this policy explicitly authorizes it.
+{generation_instructions}
+{validation_instructions_section}
+## Independent semantic audit
+- Re-decompose every SFI yourself from its seed text before reading the producer's skills, then compare. Do not merely approve the producer's output because it looks plausible.
+- Judge first whether the seed is decomposable at all. A seed stating one action on one object is already atomic, and a single skill restating it is the correct answer, not a defect. Reject a single-skill answer only when the seed text itself plainly states several separable actions, objects, or listed cases that the draft left bundled.
+- Reject a split that multiplies two axes together: when a seed names several actions over several objects, the draft must split on the actions and keep the objects attached as scope, not emit one skill per action-object pairing.
+- Reject a split below what the seed states, including a component that cannot stand alone without a neighbouring component, and a competency divided into separate understanding and application skills.
+- Reject a skill too small to carry instructional intent at the level of a lesson, activity, or assessment; a fragment that no lesson could be planned around is not a component.
+- Reject a split of a coordination that names a single thing, such as a fixed term of art or a modifier pair qualifying one action.
+- Reject any skill carrying content the seed text does not state, including materials, methods, quantities, or scope taken from the ancestor path rather than from the seed.
+- Reject an activity, assessment prompt, teacher instruction, or resource presented as a skill.
+- Reject a statement code, list marker, or register inconsistency copied into skill text.
+- Treat the seed text as authoritative over the producer's rationale, and treat wording that merely differs from your own phrasing as acceptable rather than an error.
+- Use `ancestor_path` for scope disambiguation only. When `ancestor_path_status` is "unresolved_ancestor_path", the seed text is the sole scope authority: reject any skill stating grade, strand, topic, or unit scope the seed text does not itself carry.
+- Every skill must be written in the seed's `language` unless the runtime curriculum instructions state otherwise.
+- Use the seed's `statement_type` to judge what a correct decomposition looks like for that kind of seed; a seed expressing a disposition yields dispositions, not measurable tasks or activities.
+- `siblings`, when present, show neighbouring standards under the same parent. Reject a skill that claims what a sibling owns, and never treat sibling text as licence for content the seed lacks.
+
+## Verdict contract
+- Copy request_id exactly.
+- Set passed=true only when the producer draft needs no material semantic correction. Then corrected_response must be null and there must be no error issues.
+- Set passed=false when any material correction is required. Include at least one error issue and return a complete corrected LCGenerationResponse covering every SFI in the request exactly once with a non-empty skills list.
+- Record advisory observations as warning issues; a warning alone must not set passed=false.
+- Give a concise rationale that names what you re-derived and where the draft diverged.
+        """
+    )
+    user_message = dedent(
+        f"""Audit this draft Learning Components decomposition.
+
+## Draft and request JSON
 {json_dumps(user_payload)}
         """
     )
