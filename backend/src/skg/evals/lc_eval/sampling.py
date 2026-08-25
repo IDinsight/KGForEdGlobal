@@ -12,7 +12,7 @@ import random
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 # Package Library
 from skg.evals.lc_eval.schemas import (
@@ -30,19 +30,20 @@ from skg.utils.general import write_to_json
 
 _DISTRACTOR_COUNT = 6
 _TIER_QUOTAS: dict[str, int] = {"distant": 2, "near": 2, "sibling": 2}
+
+_DISTANCE_ORDER: tuple[EdgeDistance, ...] = ("sibling", "near", "distant")
+"""Distance tiers from closest to furthest."""
+
+_Option = tuple[str, tuple[Ancestor, ...]]
+"""Candidate text paired with the ancestor path shown alongside it."""
 _CONTROL_TYPES: tuple[Corruption, ...] = (
+    "bundled_components",
+    "collapsed_set",
     "cross_strand_swap",
     "forced_redundancy",
     "invented_specificity",
     "truncation",
     "under_decomposition",
-)
-_INVENTED_SPECIFICITY_SUFFIXES: tuple[str, ...] = (
-    " using base-ten blocks",
-    " to three decimal places",
-    " within a two-minute time limit",
-    " in groups of exactly four pupils",
-    " using a metre rule marked in millimetres",
 )
 _STRATUM_ALLOCATION: dict[Stratum, int] = {
     "one_component": 25,
@@ -75,20 +76,23 @@ def _ancestors_for(standards: dict, uuid: str) -> list[Ancestor]:
 
 def _assemble_options(
     *,
-    distractors: Sequence[tuple[EdgeDistance, str]],
+    distractors: Sequence[tuple[EdgeDistance, _Option]],
     rng: random.Random,
-    true_texts: Sequence[str],
+    true_options: Sequence[_Option],
 ) -> list[EdgeCandidate]:
     """Combine asserted options with tiered distractors into a shuffled option list.
+
+    Every option carries its own ancestor path, so no option is distinguishable from
+    the others by how much context accompanies it.
 
     Parameters
     ----------
     distractors
-        Candidate distractor texts paired with their distance from the anchor.
+        Candidate distractor options paired with their distance from the anchor.
     rng
         Seeded random source controlling tier sampling and presentation order.
-    true_texts
-        Texts of the pairings the pipeline asserts.
+    true_options
+        Options for the pairings the pipeline asserts.
 
     Returns
     -------
@@ -97,10 +101,19 @@ def _assemble_options(
     """
 
     options = [
-        EdgeCandidate(candidate_id="", is_true=True, text=text) for text in true_texts
+        EdgeCandidate(
+            ancestor_path=list(path), candidate_id="", is_true=True, text=text
+        )
+        for text, path in true_options
     ] + [
-        EdgeCandidate(candidate_id="", distance=tier, is_true=False, text=text)
-        for tier, text in _pick_tiered(pool=distractors, rng=rng)
+        EdgeCandidate(
+            ancestor_path=list(path),
+            candidate_id="",
+            distance=tier,
+            is_true=False,
+            text=text,
+        )
+        for tier, (text, path) in _pick_tiered(pool=distractors, rng=rng)
     ]
     rng.shuffle(options)
     return [
@@ -171,6 +184,73 @@ def _build_item_id(
     texts = "|".join(component.text for component in components)
     basis = f"{curriculum}|{sfi_uuid}|{corruption or 'none'}|{texts}"
     return "lc_eval_item_" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+
+
+def _corrupt_bundled_components(
+    *, item: RubricItem, rng: random.Random
+) -> Optional[RubricItem]:
+    """Merge two components of one item into a single bundled component.
+
+    The merge joins the two texts with a semicolon rather than a conjunction so
+    the control stays language-agnostic; the resulting component still describes
+    two skills, which is what atomicity must catch.
+
+    Parameters
+    ----------
+    item
+        Item to corrupt.
+    rng
+        Seeded random source.
+
+    Returns
+    -------
+    Optional[RubricItem]
+        Corrupted item, or None when the item has fewer than two components.
+    """
+
+    if len(item.components) < 2:
+        return None
+
+    first, second = rng.sample(range(len(item.components)), 2)
+    merged = Component(
+        component_id=item.components[first].component_id,
+        text=f"{item.components[first].text.rstrip('.')}; {item.components[second].text}",
+    )
+    components = [
+        merged if index == first else component
+        for index, component in enumerate(item.components)
+        if index != second
+    ]
+    return _rebuild(components=components, corruption="bundled_components", item=item)
+
+
+def _corrupt_collapsed_set(*, item: RubricItem) -> Optional[RubricItem]:
+    """Collapse a whole component set into one component carrying every skill.
+
+    Every component's text is retained, so the set still covers the standard and
+    the defect is granularity alone rather than coverage. The join uses a
+    semicolon rather than a conjunction so the control stays language-agnostic.
+
+    Parameters
+    ----------
+    item
+        Item to corrupt.
+
+    Returns
+    -------
+    Optional[RubricItem]
+        Corrupted item, or None when the item has fewer than two components.
+    """
+
+    if len(item.components) < 2:
+        return None
+
+    collapsed = "; ".join(component.text.rstrip(".") for component in item.components)
+    return _rebuild(
+        components=[Component(component_id="c1", text=collapsed)],
+        corruption="collapsed_set",
+        item=item,
+    )
 
 
 def _corrupt_cross_strand_swap(
@@ -244,9 +324,15 @@ def _corrupt_forced_redundancy(
 
 
 def _corrupt_invented_specificity(
-    *, item: RubricItem, rng: random.Random
+    *, item: RubricItem, rng: random.Random, sources: Sequence[RubricItem]
 ) -> Optional[RubricItem]:
-    """Append fabricated specificity that the source standard does not contain.
+    """Graft a qualifying detail from another standard onto one component.
+
+    The detail is taken from a different standard in the same curriculum, so it
+    matches the source language and subject register while remaining absent from
+    this standard. It is appended parenthetically, which keeps the component
+    grammatical in any language and so isolates faithfulness from
+    well-formedness.
 
     Parameters
     ----------
@@ -254,24 +340,37 @@ def _corrupt_invented_specificity(
         Item to corrupt.
     rng
         Seeded random source.
+    sources
+        Population of items to draw the grafted detail from.
 
     Returns
     -------
     Optional[RubricItem]
-        Corrupted item, or None when the item has no components.
+        Corrupted item, or None when no donor detail is available.
     """
 
     if not item.components:
         return None
 
+    own = {component.text for component in item.components}
+    details: list[str] = []
+    for other in sources:
+        if other.sfi_uuid == item.sfi_uuid:
+            continue
+        for component in other.components:
+            if component.text in own:
+                continue
+            tail = component.text.rstrip(".").rsplit(",", 1)[-1].strip()
+            if len(tail.split()) >= 3:
+                details.append(tail)
+    if not details:
+        return None
+
     index = rng.randrange(len(item.components))
-    suffix = _INVENTED_SPECIFICITY_SUFFIXES[
-        rng.randrange(len(_INVENTED_SPECIFICITY_SUFFIXES))
-    ]
     components = list(item.components)
     components[index] = Component(
         component_id=components[index].component_id,
-        text=components[index].text.rstrip(".") + suffix,
+        text=f"{components[index].text.rstrip('.')} ({rng.choice(details)})",
     )
     return _rebuild(components=components, corruption="invented_specificity", item=item)
 
@@ -334,6 +433,34 @@ def _corrupt_under_decomposition(*, item: RubricItem) -> Optional[RubricItem]:
     )
 
 
+def _closest_distance(
+    *, anchors: Sequence[Sequence[Ancestor]], other: Sequence[Ancestor]
+) -> EdgeDistance:
+    """Classify a candidate against whichever anchor it sits closest to.
+
+    A component that supports several standards has no single position in the
+    framework, so tiering it against one of them would label a candidate distant
+    merely for being near a different supported standard.
+
+    Parameters
+    ----------
+    anchors
+        Ancestor levels of each standard the anchor component supports.
+    other
+        Ancestor levels of the candidate standard.
+
+    Returns
+    -------
+    EdgeDistance
+        Closest distance across the anchors.
+    """
+
+    return min(
+        (_distance(anchor=anchor, other=other) for anchor in anchors),
+        key=_DISTANCE_ORDER.index,
+    )
+
+
 def _distance(*, anchor: Sequence[Ancestor], other: Sequence[Ancestor]) -> EdgeDistance:
     """Classify how far one standard sits from another in the framework.
 
@@ -360,8 +487,8 @@ def _distance(*, anchor: Sequence[Ancestor], other: Sequence[Ancestor]) -> EdgeD
 
 
 def _pick_tiered(
-    *, pool: Sequence[tuple[EdgeDistance, str]], rng: random.Random
-) -> list[tuple[EdgeDistance, str]]:
+    *, pool: Sequence[tuple[EdgeDistance, _Option]], rng: random.Random
+) -> list[tuple[EdgeDistance, _Option]]:
     """Draw distractors across all three distance tiers.
 
     Each tier is sampled to its quota; any shortfall is backfilled from the remaining
@@ -378,15 +505,15 @@ def _pick_tiered(
 
     Returns
     -------
-    list[tuple[EdgeDistance, str]]
+    list[tuple[EdgeDistance, _Option]]
         Selected distractors with their tiers.
     """
 
-    by_tier: dict[str, list[tuple[EdgeDistance, str]]] = defaultdict(list)
+    by_tier: dict[str, list[tuple[EdgeDistance, _Option]]] = defaultdict(list)
     for entry in pool:
         by_tier[entry[0]].append(entry)
 
-    chosen: list[tuple[EdgeDistance, str]] = []
+    chosen: list[tuple[EdgeDistance, _Option]] = []
     for tier, quota in _TIER_QUOTAS.items():
         available = list(by_tier.get(tier, []))
         rng.shuffle(available)
@@ -664,12 +791,16 @@ def build_edge_items(
                 if cid not in component_ids
             ]
             options = _assemble_options(
-                distractors=[(tier, component_text[cid]) for tier, cid in tiered],
+                distractors=[(tier, (component_text[cid], ())) for tier, cid in tiered],
                 rng=random.Random(f"{seed}|a|{standard_uuid}"),
-                true_texts=[component_text[cid] for cid in sorted(set(component_ids))],
+                true_options=[
+                    (component_text[cid], ()) for cid in sorted(set(component_ids))
+                ],
             )
             items.append(
                 EdgeItem(
+                    anchor_statement_type=standard[standard_uuid].get("statement_type")
+                    or "",
                     anchor_text=standard[standard_uuid]["description"],
                     ancestor_path=ancestors,
                     candidates=options,
@@ -686,19 +817,28 @@ def build_edge_items(
 
         for component_id, parent_uuids in sorted(standards_by_component.items()):
             parents = sorted(set(parent_uuids))
-            ancestors = ancestors_for(parents[0])
+            anchor_paths = [ancestors_for(parent) for parent in parents]
             tiered = [
-                (_distance(anchor=ancestors, other=ancestors_for(uuid)), uuid)
+                (
+                    _closest_distance(anchors=anchor_paths, other=ancestors_for(uuid)),
+                    uuid,
+                )
                 for uuid in components_by_standard
                 if uuid not in parents and uuid in standard
             ]
             options = _assemble_options(
                 distractors=[
-                    (tier, standard[uuid]["description"]) for tier, uuid in tiered
+                    (
+                        tier,
+                        (standard[uuid]["description"], tuple(ancestors_for(uuid))),
+                    )
+                    for tier, uuid in tiered
                 ],
                 rng=random.Random(f"{seed}|b|{component_id}"),
-                true_texts=[
-                    standard[p]["description"] for p in parents if p in standard
+                true_options=[
+                    (standard[p]["description"], tuple(ancestors_for(p)))
+                    for p in parents
+                    if p in standard
                 ],
             )
             if not any(c.is_true for c in options):
@@ -706,11 +846,10 @@ def build_edge_items(
             items.append(
                 EdgeItem(
                     anchor_text=component_text[component_id],
-                    ancestor_path=ancestors,
                     candidates=options,
                     curriculum=curriculum,
                     direction="component_to_standards",
-                    is_multi_parent=len(parents) > 1,
+                    supports_multiple_standards=len(parents) > 1,
                     item_id=_build_edge_item_id(
                         candidates=options,
                         direction="component_to_standards",
@@ -757,25 +896,37 @@ def build_negative_controls(
     controls: list[RubricItem] = []
     used: set[str] = set()
 
-    for corruption in _CONTROL_TYPES:
+    builders: dict[str, Callable[[RubricItem, random.Random], Optional[RubricItem]]] = {
+        "bundled_components": lambda i, r: _corrupt_bundled_components(item=i, rng=r),
+        "collapsed_set": lambda i, r: _corrupt_collapsed_set(item=i),
+        "cross_strand_swap": lambda i, r: _corrupt_cross_strand_swap(
+            item=i, rng=r, sources=population
+        ),
+        "forced_redundancy": lambda i, r: _corrupt_forced_redundancy(item=i, rng=r),
+        "invented_specificity": lambda i, r: _corrupt_invented_specificity(
+            item=i, rng=r, sources=population
+        ),
+        "truncation": lambda i, r: _corrupt_truncation(item=i, rng=r),
+        "under_decomposition": lambda i, r: _corrupt_under_decomposition(item=i),
+    }
+
+    eligibility = {
+        corruption: sum(
+            builders[corruption](item, random.Random(f"{seed}|probe|{corruption}"))
+            is not None
+            for item in population
+        )
+        for corruption in _CONTROL_TYPES
+    }
+    ordered_types = sorted(_CONTROL_TYPES, key=lambda c: (eligibility[c], c))
+    for corruption in ordered_types:
         rng = random.Random(f"{seed}|control|{corruption}")
         pool = [item for item in population if item.sfi_uuid not in used]
         rng.shuffle(pool)
         built = 0
 
         for item in pool:
-            if corruption == "cross_strand_swap":
-                corrupted = _corrupt_cross_strand_swap(
-                    item=item, rng=rng, sources=population
-                )
-            elif corruption == "forced_redundancy":
-                corrupted = _corrupt_forced_redundancy(item=item, rng=rng)
-            elif corruption == "invented_specificity":
-                corrupted = _corrupt_invented_specificity(item=item, rng=rng)
-            elif corruption == "truncation":
-                corrupted = _corrupt_truncation(item=item, rng=rng)
-            else:
-                corrupted = _corrupt_under_decomposition(item=item)
+            corrupted = builders[corruption](item, rng)
 
             if corrupted is None:
                 continue

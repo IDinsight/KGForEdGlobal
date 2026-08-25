@@ -4,30 +4,49 @@
 from typing import Sequence
 
 # Package Library
-from skg.evals.lc_eval.schemas import Component, EdgeItem, RubricItem
+from skg.evals.lc_eval.schemas import (
+    Component,
+    EdgeCandidate,
+    EdgeItem,
+    RubricItem,
+)
 
 EDGE_SYSTEM_MESSAGE = """\
-You decide which of several options genuinely pair with an anchor item from a school \
-mathematics curriculum.
+You decide which of several options a supports relationship genuinely holds for, given \
+an anchor item from a school curriculum.
+
+A Learning Component is a single, well-defined skill or concept that students are \
+expected to learn: a granular unit of learning that describes instructional intent at \
+the level of a lesson, activity, or assessment.
+
+A learning component supports a standard when it contributes to the understanding, \
+mastery, or achievement of the goals that standard defines.
 
 You will be shown either a curriculum standard and several candidate learning \
 components, or a learning component and several candidate standards. Select every \
-option that genuinely pairs with the anchor, and only those.
-
-A learning component pairs with a standard when mastering that component is part of \
-what the standard requires. A component may legitimately pair with more than one \
-standard, for instance when the same skill recurs across grades. Select as many or as \
-few options as genuinely apply; there is no fixed number of correct answers, and \
-selecting none is valid if none apply.
+option the supports relationship holds for, and only those. A component may \
+legitimately support more than one standard, for instance when the same skill recurs \
+across grades. Select as many or as few options as genuinely apply; there is no fixed \
+number of correct answers, and selecting none is valid if none apply.
 
 The options include deliberately close distractors drawn from neighbouring parts of \
-the same curriculum. Being on the same topic is not sufficient. Return the ids of the \
-options you accept.
+the same curriculum. Being on the same topic is not sufficient. Judge only the text you \
+are shown: do not accept an option because it is plausible for the subject, and do not \
+credit an option with content it does not state.
+
+Return the ids of the options you accept.
 """
 
 RUBRIC_SYSTEM_MESSAGE = """\
 You evaluate whether a curriculum standard has been correctly decomposed into atomic \
 learning components.
+
+A Learning Component is a single, well-defined skill or concept that students are \
+expected to learn: a granular unit of learning that describes instructional intent at \
+the level of a lesson, activity, or assessment, breaking a broad standard into \
+teachable and measurable parts.
+
+A component may never introduce anything its source does not carry.
 
 You are shown one standard, the ancestor path giving its curricular context, and the \
 components that were generated from it. Judge only what you are shown. Do not assume \
@@ -44,8 +63,8 @@ does not call for is extrapolated rather than grounded.
 invented numeric bound, method, manipulative, time limit, or grouping.
   unsupported: contradicts the source, or introduces content unrelated to it.
 
-ATOMICITY — does the component describe exactly one skill? It fails when it joins \
-distinct actions with a conjunction, or bundles a skill with a separable context.
+ATOMICITY — does the component describe exactly one skill or concept? It fails when it \
+joins distinct actions with a conjunction, or bundles a skill with a separable context.
 
 WELL_FORMEDNESS — is it a complete, teachable skill? It fails when it is an activity, \
 resource, teacher guidance, worked example, assessment task, or a fragment cut off \
@@ -67,11 +86,13 @@ the standard rather than accompanying it.
 
 GRANULARITY — Each component should be one teachable skill, no larger than what the \
 standard's own text supports.
-  too_coarse: a component leaves bundled what the standard states separately, such as \
-distinct actions, objects, or listed cases named in its text.
-  too_fine: a component splits below what the standard states, so it cannot stand on \
-its own without a neighbouring component, or one stated competency was split into \
-separate understanding and application components.
+  too_coarse: the standard's own text supports a finer decomposition than this set \
+provides, so a component still covers more than one of the single, well-defined skills \
+the standard names.
+  too_fine: a component is smaller than a single well-defined skill: it cannot stand \
+on its own without a neighbouring component, it carries too little instructional intent \
+to plan a lesson or write an assessment item around, or one stated competency was split \
+into separate understanding and application components.
   appropriate: everything else.
 A standard that is itself a single skill is correctly rendered as one component. \
 Decomposition must not invent structure the standard does not carry, so judge \
@@ -82,6 +103,31 @@ thereby too_coarse or too_fine.
 
 Return a verdict for every component you were shown, using the component ids given.
 """
+
+
+def _render_candidate(candidate: EdgeCandidate) -> str:
+    """Render one option, with its curricular context when it carries one.
+
+    Parameters
+    ----------
+    candidate
+        Option to render.
+
+    Returns
+    -------
+    str
+        Rendered option.
+    """
+
+    line = f"  [{candidate.candidate_id}] {candidate.text}"
+    if not candidate.ancestor_path:
+        return line
+    context = " > ".join(
+        f"{ancestor.statement_type}: {ancestor.description}"
+        for ancestor in candidate.ancestor_path
+    )
+
+    return f"{line}\n      context: {context}"
 
 
 def build_edge_user_message(item: EdgeItem) -> str:
@@ -107,12 +153,14 @@ def build_edge_user_message(item: EdgeItem) -> str:
         if item.direction == "standard_to_components"
         else ("LEARNING COMPONENT", "CANDIDATE STANDARDS")
     )
-    options = "\n".join(f"  [{c.candidate_id}] {c.text}" for c in item.candidates)
-    return (
-        f"CURRICULAR CONTEXT:\n{path}\n\n"
-        f"{anchor_label}:\n  {item.anchor_text}\n\n"
-        f"{option_label}:\n{options}\n"
-    )
+    if item.anchor_statement_type:
+        anchor_label = f"{anchor_label} ({item.anchor_statement_type})"
+    options = "\n".join(_render_candidate(c) for c in item.candidates)
+    anchor = f"{anchor_label}:\n  {item.anchor_text}\n\n{option_label}:\n{options}\n"
+    if not item.ancestor_path:
+        return anchor
+
+    return f"CURRICULAR CONTEXT:\n{path}\n\n{anchor}"
 
 
 def build_rubric_user_message(
