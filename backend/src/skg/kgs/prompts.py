@@ -959,8 +959,12 @@ def build_lc_generation_prompt(
 ## Task boundary
 - Each skill must be a single atomic, teachable skill — not an activity, resource, assessment prompt, teacher guidance, a prerequisite skill the standard does not state, or a restatement of the whole standard.
 - Each skill must be smaller and more teachable than the standard and directly supported by the standard's own text.
-- Prefer concise teachable components that could support lesson planning or learning resource tagging.
-- A single skill is a valid decomposition: when an SFI is already atomic, return exactly one cleanly restated skill. Never force a split and never pad the skill count.
+- Size each skill to instructional intent at the level of a lesson, activity, or assessment: a skill too small to plan a lesson or write an assessment item around is a fragment, not a component.
+- A single skill is a valid decomposition only when the standard itself states one action on one object; returning a standard that states several as one skill is a restatement, not a decomposition.
+- A standard can be cut along two axes: the actions it names, and the objects, aspects or listed cases those actions apply to. Split along one axis only, choosing the axis that leaves each resulting skill a single well-defined thing students learn. Coordination is the usual signal — "X and Y", a comma list, a slash pair.
+- When the standard names several actions, split on the actions and keep its objects, cases and qualifiers attached to each resulting skill. Split on the objects, aspects or listed cases instead only when the standard names a single action over several of them.
+- Never split on both axes at once. A standard naming N actions over M objects yields N skills, not N x M.
+- Split only on what the text states, never on how finely the skill could in principle be taught. Do not split a coordination that names a single thing, such as a fixed term of art or a modifier pair qualifying one action, and never split one stated competency into separate understanding and application skills. Never pad the skill count.
 - When you do split an SFI into multiple skills, the split replaces the whole: never additionally emit a summary skill that restates the entire SFI.
 - Do not emit both an "understand/concept of X" skill and an "identify/use X" skill for the same X unless the SFI text states both aspects explicitly; one skill per stated competency.
 - Never add materials, tools, or methods the SFI text does not name (e.g. do not turn "practical work" into "concrete objects").
@@ -984,6 +988,7 @@ def build_lc_generation_prompt(
 - Set confidence in [0, 1] as your confidence that the skill is directly supported by the SFI text.
 - Give each skill 2-5 short lowercase keyword tags in the skill's source language.
 - Never copy source statement codes or list markers into skill text.
+- Write every skill in one consistent register: begin it with a capital letter where the skill's language distinguishes letter case, and do not end it with a full stop.
         """
     )
     user_message = dedent(
