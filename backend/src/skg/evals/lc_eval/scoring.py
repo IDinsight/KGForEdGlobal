@@ -25,12 +25,15 @@ from skg.utils.general import write_to_json
 
 _BASELINE_STRATEGIES: tuple[str, ...] = (
     "above_mean_lexical",
+    "largest_path_group",
     "select_all",
     "top_1_lexical",
 )
 _BOOTSTRAP_ITERATIONS = 2000
 _COMPONENT_CRITERIA: tuple[str, ...] = ("atomicity", "faithfulness", "well_formedness")
 _CONTROL_TARGETS: dict[str, str] = {
+    "bundled_components": "atomicity",
+    "collapsed_set": "granularity",
     "cross_strand_swap": "faithfulness",
     "forced_redundancy": "non_redundancy",
     "invented_specificity": "faithfulness",
@@ -61,6 +64,10 @@ def _baseline_selections(
         `select_all` accepts everything, establishing the degenerate floor.
         `top_1_lexical` accepts the single highest token-overlap candidate.
         `above_mean_lexical` accepts every candidate scoring above the item's mean.
+        `largest_path_group` accepts the largest set of candidates sharing an
+        ancestor path, reading no text at all. Sibling distractors share the true
+        standard's path, so this measures what the candidate context alone gives
+        away.
 
     Returns
     -------
@@ -81,6 +88,17 @@ def _baseline_selections(
 
     selections: dict[str, set[str]] = {}
     for item in items:
+        if strategy == "largest_path_group":
+            groups: dict[tuple[tuple[str, str], ...], set[str]] = defaultdict(set)
+            for candidate in item.candidates:
+                groups[
+                    tuple(
+                        (ancestor.statement_type, ancestor.description)
+                        for ancestor in candidate.ancestor_path
+                    )
+                ].add(candidate.candidate_id)
+            selections[item.item_id] = max(groups.values(), key=len)
+            continue
         overlaps = {
             candidate.candidate_id: _token_overlap(item.anchor_text, candidate.text)
             for candidate in item.candidates
@@ -610,10 +628,13 @@ def build_edge_report(
         ]
         if direction == "component_to_standards":
             for label, subset in (
-                ("multi-parent", [i for i in direction_items if i.is_multi_parent]),
                 (
-                    "single-parent",
-                    [i for i in direction_items if not i.is_multi_parent],
+                    "multi-standard",
+                    [i for i in direction_items if i.supports_multiple_standards],
+                ),
+                (
+                    "single-standard",
+                    [i for i in direction_items if not i.supports_multiple_standards],
                 ),
             ):
                 if subset:

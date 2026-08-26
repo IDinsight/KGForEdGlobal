@@ -2438,6 +2438,16 @@ class _CreateKGLearningComponentsConfig(BaseSchema):
             "merging at all (none)."
         ),
     )
+    lc_generation_validation_instructions: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional curriculum-specific audit policy for the independent LC "
+            "generation validation agent, including how this source signals "
+            "separable actions and objects, which coordinations name a single "
+            "thing, and what the seed text may never license. None runs the "
+            "generic validation rubric alone."
+        ),
+    )
     lc_include_sibling_context: bool = Field(
         default=False,
         description=(

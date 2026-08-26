@@ -13,6 +13,8 @@ from pydantic import Field
 from skg.schemas import BaseSchema
 
 Corruption = Literal[
+    "bundled_components",
+    "collapsed_set",
     "cross_strand_swap",
     "forced_redundancy",
     "invented_specificity",
@@ -103,6 +105,13 @@ class CriterionScore(BaseSchema):
 class EdgeCandidate(BaseSchema):
     """One option offered in a discrimination item."""
 
+    ancestor_path: list[Ancestor] = Field(
+        default_factory=list,
+        description=(
+            "Curricular context for this candidate, empty when the candidate is a "
+            "component."
+        ),
+    )
     candidate_id: str = Field(description="Identifier the judge selects by.")
     distance: EdgeDistance = Field(
         default="asserted",
@@ -122,6 +131,13 @@ class EdgeCandidate(BaseSchema):
 class EdgeItem(BaseSchema):
     """One discrimination item: an anchor plus true options and hard negatives."""
 
+    anchor_statement_type: str = Field(
+        default="",
+        description=(
+            "Framework statement type of the anchor, empty when the anchor is a "
+            "component."
+        ),
+    )
     anchor_text: str = Field(
         description="Standard text or component text the candidates are judged against."
     )
@@ -133,15 +149,15 @@ class EdgeItem(BaseSchema):
     )
     curriculum: str = Field(description="Curriculum the anchor belongs to.")
     direction: EdgeDirection = Field(description="Which way the item is posed.")
-    is_multi_parent: bool = Field(
+    item_id: str = Field(description="Deterministic identifier used to cache verdicts.")
+    source_id: str = Field(description="Identifier of the anchor entity.")
+    supports_multiple_standards: bool = Field(
         default=False,
         description=(
             "For component anchors, whether the component supports more than one "
-            "standard. These arise from dedup merges and carry the untested risk."
+            "standard. These arise from dedup merges, not from framework fan-in."
         ),
     )
-    item_id: str = Field(description="Deterministic identifier used to cache verdicts.")
-    source_id: str = Field(description="Identifier of the anchor entity.")
 
 
 class EdgeJudgement(BaseSchema):

@@ -19,6 +19,7 @@ from skg.config import Settings
 from skg.kgs.agents import (
     create_lc_dedup_agent,
     create_lc_generation_agent,
+    create_lc_generation_validation_agent,
     create_sfi_dedup_agent,
     create_sfi_dedup_validation_agent,
     create_sfi_extraction_agent,
@@ -32,6 +33,7 @@ from skg.kgs.prompts import (
     extract_sfi_candidates_from_window,
     resolve_sfi_has_child_parents,
     review_sfi_dedup_candidates,
+    validate_lc_generation_response,
     validate_sfi_dedup_response,
     validate_sfi_extraction_result,
     validate_sfi_has_child_response,
@@ -42,6 +44,7 @@ from skg.kgs.schemas import (
     LCDedupResponse,
     LCGenerationRequest,
     LCGenerationResponse,
+    LCGenerationValidationVerdict,
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
     SFIDedupValidationVerdict,
@@ -54,6 +57,7 @@ from skg.kgs.schemas import (
 from skg.kgs.validators import (
     verify_lc_dedup_quality,
     verify_lc_generation_quality,
+    verify_lc_generation_validation_integrity,
     verify_sfi_dedup_review_integrity,
     verify_sfi_dedup_validation_integrity,
     verify_sfi_extraction_integrity,
@@ -63,6 +67,15 @@ from skg.kgs.validators import (
 )
 from skg.schemas import CreateKGConfig, _CreateKGLearningComponentsConfig
 from skg.utils.general import AgentUsageBucket
+
+
+@dataclass(frozen=True)
+class LCGenerationRun:
+    """Producer/validator outputs for one bounded LC generation request."""
+
+    draft_response: LCGenerationResponse
+    final_response: LCGenerationResponse
+    validation_verdict: LCGenerationValidationVerdict
 
 
 @dataclass(frozen=True)
@@ -80,6 +93,7 @@ class KGUsageTracker:
 
     lc_dedup: AgentUsageBucket
     lc_generation: AgentUsageBucket
+    lc_generation_validation: AgentUsageBucket
     sfi_dedup: AgentUsageBucket
     sfi_dedup_validation: AgentUsageBucket
     sfi_extraction: AgentUsageBucket
@@ -92,6 +106,9 @@ class KGUsageTracker:
 
         self.lc_dedup = AgentUsageBucket(agent_name="lc_dedup")
         self.lc_generation = AgentUsageBucket(agent_name="lc_generation")
+        self.lc_generation_validation = AgentUsageBucket(
+            agent_name="lc_generation_validation"
+        )
         self.sfi_dedup = AgentUsageBucket(agent_name="sfi_dedup")
         self.sfi_dedup_validation = AgentUsageBucket(agent_name="sfi_dedup_validation")
         self.sfi_extraction = AgentUsageBucket(agent_name="sfi_extraction")
@@ -149,6 +166,53 @@ class KGUsageTracker:
             },
             "totals": totals,
         }
+
+
+def _run_lc_generation_validation(
+    *,
+    draft_response: LCGenerationResponse,
+    lc_config: _CreateKGLearningComponentsConfig,
+    lc_generation_request: LCGenerationRequest,
+    usage_tracker: KGUsageTracker,
+) -> LCGenerationValidationVerdict:
+    """Audit one draft LC generation response with the independent validator.
+
+    Parameters
+    ----------
+    draft_response
+        Producer response to audit.
+    lc_config
+        Learning Components runtime configuration.
+    lc_generation_request
+        Original bounded LC generation request.
+    usage_tracker
+        Usage tracker for validator token accounting.
+
+    Returns
+    -------
+    LCGenerationValidationVerdict
+        Parsed and integrity-validated verdict.
+    """
+
+    prompts = validate_lc_generation_response(
+        draft_response=draft_response,
+        generation_instructions=lc_config.generation_instructions,
+        lc_generation_request=lc_generation_request,
+        lc_generation_validation_instructions=(
+            lc_config.lc_generation_validation_instructions
+        ),
+    )
+    agent = create_lc_generation_validation_agent(
+        draft_response=draft_response,
+        instructions=prompts.system_message,
+        lc_config=lc_config,
+        lc_generation_request=lc_generation_request,
+        model_config=Settings.llm_config("kgs"),
+        verify_integrity_fn=verify_lc_generation_validation_integrity,
+    )
+    result = agent.run_sync(prompts.user_message)
+    usage_tracker.lc_generation_validation.add_run_usage(result.usage())
+    return result.output
 
 
 def _run_sfi_dedup_validation(
@@ -384,7 +448,7 @@ def generate_learning_components_for_request(
     lc_config: _CreateKGLearningComponentsConfig,
     lc_generation_request: LCGenerationRequest,
     usage_tracker: KGUsageTracker,
-) -> LCGenerationResponse:
+) -> LCGenerationRun:
     """Decompose one bounded LC generation request into atomic skills via LLM.
 
     Parameters
@@ -399,8 +463,14 @@ def generate_learning_components_for_request(
 
     Returns
     -------
-    LCGenerationResponse
-        Parsed and quality-validated atomic-skills response.
+    LCGenerationRun
+        Producer draft, validation verdict, and accepted or corrected final
+        response.
+
+    Raises
+    ------
+    ValueError
+        If a failing validation verdict omits its complete corrected response.
     """
 
     prompts = build_lc_generation_prompt(
@@ -414,9 +484,37 @@ def generate_learning_components_for_request(
         model_config=Settings.llm_config("kgs"),
         verify_quality_fn=verify_lc_generation_quality,
     )
-    result = agent.run_sync(prompts.user_message)
-    usage_tracker.lc_generation.add_run_usage(result.usage())
-    return result.output
+    producer_run = agent.run_sync(prompts.user_message)
+    usage_tracker.lc_generation.add_run_usage(producer_run.usage())
+    draft_response = producer_run.output
+
+    validation_verdict = _run_lc_generation_validation(
+        draft_response=draft_response,
+        lc_config=lc_config,
+        lc_generation_request=lc_generation_request,
+        usage_tracker=usage_tracker,
+    )
+    if validation_verdict.passed:
+        final_response = draft_response
+    else:
+        corrected_response = validation_verdict.corrected_response
+        if corrected_response is None:
+            raise ValueError(
+                f"A failing LC generation validation verdict must include a "
+                f"complete corrected response; request "
+                f"{lc_generation_request.request_id!r} returned none."
+            )
+        final_response = corrected_response
+        logger.info(
+            f"LC generation validator corrected request "
+            f"{lc_generation_request.request_id}: {validation_verdict.rationale}"
+        )
+
+    return LCGenerationRun(
+        draft_response=draft_response,
+        final_response=final_response,
+        validation_verdict=validation_verdict,
+    )
 
 
 def resolve_sfi_has_child_parent_request(

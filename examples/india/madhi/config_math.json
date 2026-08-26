@@ -6,9 +6,9 @@
 		"languages": [
 			"en"
 		],
-		"output_dir": "/Users/tzz/Projects/private/idi/SenegalKG/results/kg_for_ed",
+		"output_dir": "/Users/mustafa/IDinsight/SenegalKG/results/tamil_nadu",
 		"overwrite": false,
-		"pdf_fp": "/Users/tzz/Projects/private/idi/SenegalKG/data/india/madhi/mathematics.pdf",
+		"pdf_fp": "/Users/mustafa/IDinsight/SenegalKG/data/tamil_nadu/mathematics.pdf",
 		"start_page": 0,
 		"use_extracted_hints": true,
 		"year": 2025
@@ -365,7 +365,7 @@
 			"table_section_pattern_page_lookback": 1
 		},
 		"lc": {
-			"generation_instructions": "Generate Learning Components only from finalized `Content` SFIs. Do not generate skills from Curricular Goal, Competency, scope-only Class vocabulary, introductory rationale, Pedagogical Approaches, or Assessment Strategies.\n\nEach Content SFI should normally correspond to one source bullet, but a bullet may contain several atomic expectations. Split along independently teachable actions, listed cases, comparisons, units, operations, or conversions while keeping qualifiers, numeric ranges, and measurement units attached to the relevant skill. When a Content item is a bare noun or short topic, use the source-backed parent Competency to supply only the action explicitly licensed by that competency; do not add objectives not supported by the Content and Competency together.\n\nClass applicability is carried in the SFI grade_level/identity scope (`Class-1` through `Class-5`), so do not unnecessarily repeat the class in every skill. Preserve Indian and source-specific terminology, including ₹ and Rs amounts, Indo-Arabic numerals, railway time/24-hour clock, metre/centimetre spellings, hand span, cubit, and simple balance. Do not turn pedagogical method notes, examples, or draft-source errors into additional learning expectations, and do not silently correct source anomalies unless a normalized skill can preserve the same meaning without inventing content. Output skills in English.",
+			"generation_instructions": "Generate Learning Components only from finalized `Content` SFIs. Do not generate skills from Curricular Goal, Competency, scope-only Class vocabulary, introductory rationale, Pedagogical Approaches, or Assessment Strategies.\n\nEach Content SFI should normally correspond to one source bullet, but a bullet may contain several atomic expectations. Split along independently teachable actions, listed cases, comparisons, units, operations, or conversions while keeping qualifiers, numeric ranges, and measurement units attached to the relevant skill. Distinguish enumerations from illustrations: items introduced by 'such as', 'like', or 'e.g.' are examples of one expectation and stay attached as scope, never split into separate skills, whereas a bare comma or slash list of distinct actions ('Draws / makes') does split. When a Content item is a bare noun or short topic, use the source-backed parent Competency to supply only the action explicitly licensed by that competency; do not add objectives not supported by the Content and Competency together.\n\nClass applicability is carried in the SFI grade_level/identity scope (`Class-1` through `Class-5`), so do not unnecessarily repeat the class in every skill. Preserve Indian and source-specific terminology, including ₹ and Rs amounts, Indo-Arabic numerals, railway time/24-hour clock, metre/centimetre spellings, hand span, cubit, and simple balance. Do not turn pedagogical method notes, examples, or draft-source errors into additional learning expectations, and do not silently correct source anomalies unless a normalized skill can preserve the same meaning without inventing content. Output skills in English.",
 			"lc_dedup_batch_size": 25,
 			"lc_dedup_blocking": {
 				"containment_min_shared_tokens": 2,
@@ -404,6 +404,7 @@
 				]
 			},
 			"lc_dedup_scope": "framework",
+			"lc_generation_validation_instructions": null,
 			"lc_include_sibling_context": false,
 			"lc_manual_review_overrides": null,
 			"lc_max_failure_rate": 0.05,
