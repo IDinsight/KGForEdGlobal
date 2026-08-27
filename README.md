@@ -68,6 +68,7 @@ contracts.
 - [Architecture](docs/architecture.md)
 - [Pipeline overview](docs/pipeline/index.md)
 - [Add a new curriculum](docs/guides/adding-a-curriculum.md)
+- [Run, resume, and debug](docs/guides/running-and-debugging.md)
 - [Local development setup](docs/development/local-setup.md)
 - [Contributing](docs/contributing.md)
 

@@ -388,6 +388,13 @@ python src/skg/entries/stitch_document_ir.py <config.json>
 python src/skg/entries/create_kgs.py <config.json>
 ```
 
+For an end-to-end calibration run, keep the selected verified page range contiguous and
+starting at page index `0`. A non-zero slice is still useful for PageIR
+extraction/verification inspection, but the current DocumentIR loader cannot stitch
+that slice by itself. To test a middle section end to end, use a separate cropped test
+PDF whose first page is index `0`. See
+[Run, Resume, and Debug](running-and-debugging.md#page-ranges-and-calibration-runs).
+
 Do not tune the final graph first. Find the **earliest stage where the representation
 becomes wrong** and fix the profile or source interpretation there.
 
@@ -506,6 +513,8 @@ of the curriculum. One surprising pair is not enough evidence for a corpus-wide 
 - [Architecture](../architecture.md) — understand stage boundaries, provenance, and
   deterministic invariants.
 - [Pipeline Overview](../pipeline/index.md) — inspect every stage and its artifacts.
+- [Run, Resume, and Debug](running-and-debugging.md) — recover interrupted runs,
+  choose overwrite behavior, and trace failures to the earliest wrong artifact.
 - [Academic Standards](../pipeline/academic-standards.md) — detailed AS construction
   behavior.
 - [Learning Components](../pipeline/learning-components.md) — detailed LC generation,

@@ -30,6 +30,7 @@ nav:
 
   - Guides:
       - Add a new curriculum: guides/adding-a-curriculum.md
+      - Run, resume, and debug: guides/running-and-debugging.md
 
   - Development:
       - development/index.md

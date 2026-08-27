@@ -378,7 +378,9 @@ progression or association relationships.
 
 ## Where to inspect a run
 
-When debugging, start with the artifact closest to the stage where behavior diverged:
+When debugging, start with the artifact closest to the stage where behavior diverged.
+For resume behavior, overwrite decisions, partial-run recovery, and rerun scope, see
+[Run, Resume, and Debug](../guides/running-and-debugging.md).
 
 | Question | Start here |
 | --- | --- |
