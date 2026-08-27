@@ -10,9 +10,8 @@ from loguru import logger
 
 # Package Library
 from skg.document_ir.utils import (
+    canonicalize_local_code_for_compare,
     compatible_kinds_for_stitch,
-    extract_table_or_figure_local_code,
-    normalize_local_code,
     row_signature,
 )
 from skg.page_ir_extraction.schemas import Block, ListItem, PageIR, Table, TextUnit
@@ -232,18 +231,32 @@ def _apply_page_boundary_state_guardrails(
     # caption local_code is weaker evidence than a matching table local_code--captions
     # are short, frequently duplicated, and less likely to represent true cross-page
     # continuations when neither page claims boundary continuity.
-    prev_codes = {
-        normalize_local_code(prev_page_items[prev_index][1].local_code)
-        for prev_index in prev_candidate_indices
-        if isinstance(prev_page_items[prev_index][1], Table)
-        and normalize_local_code(prev_page_items[prev_index][1].local_code)
-    }
-    next_codes = {
-        normalize_local_code(next_page_items[next_index][1].local_code)
-        for next_index in next_candidate_indices
-        if isinstance(next_page_items[next_index][1], Table)
-        and normalize_local_code(next_page_items[next_index][1].local_code)
-    }
+    prev_codes: set[str] = set()
+
+    for prev_index in prev_candidate_indices:
+        prev_item = prev_page_items[prev_index][1]
+
+        if not isinstance(prev_item, Table):
+            continue
+
+        prev_code = canonicalize_local_code_for_compare(prev_item.local_code)
+
+        if prev_code:
+            prev_codes.add(prev_code)
+
+    next_codes: set[str] = set()
+
+    for next_index in next_candidate_indices:
+        next_item = next_page_items[next_index][1]
+
+        if not isinstance(next_item, Table):
+            continue
+
+        next_code = canonicalize_local_code_for_compare(next_item.local_code)
+
+        if next_code:
+            next_codes.add(next_code)
+
     common_codes = prev_codes & next_codes
 
     if not common_codes:
@@ -263,13 +276,15 @@ def _apply_page_boundary_state_guardrails(
         pidx
         for pidx in prev_candidate_indices
         if isinstance(prev_page_items[pidx][1], Table)
-        and normalize_local_code(prev_page_items[pidx][1].local_code) in common_codes
+        and canonicalize_local_code_for_compare(prev_page_items[pidx][1].local_code)
+        in common_codes
     ]
     filtered_next = [
         nidx
         for nidx in next_candidate_indices
         if isinstance(next_page_items[nidx][1], Table)
-        and normalize_local_code(next_page_items[nidx][1].local_code) in common_codes
+        and canonicalize_local_code_for_compare(next_page_items[nidx][1].local_code)
+        in common_codes
     ]
 
     return filtered_prev, filtered_next, True
@@ -657,21 +672,18 @@ def _caption_anchor(item: Block) -> str:
         The caption anchor.
     """
 
-    # Strongest anchor: local_code (already canonicalized upstream).
+    # Strongest anchor: local_code. The stored value may be raw, so canonicalize it for
+    # comparison instead of assuming upstream canonicalization.
     if item.local_code and item.local_code.strip():
-        return normalize_local_code(item.local_code) or ""
+        return canonicalize_local_code_for_compare(item.local_code) or ""
 
     # Fallback: parse prefix like "Table 4"/"Figure 2" from caption text.
     text_or_none = item.text
     text = (
         (text_or_none.text or "").strip() if isinstance(text_or_none, TextUnit) else ""
     )
-    code = extract_table_or_figure_local_code(text)
 
-    if not code:
-        return ""
-
-    return normalize_local_code(code) or ""
+    return canonicalize_local_code_for_compare(text) or ""
 
 
 def _column_signature(*, mode: str, table: Table) -> str:
@@ -749,9 +761,9 @@ def _debug_features_for_pair(
 
     # local_code signal (works for both blocks and tables if present).
     if prev_item.local_code and next_item.local_code:
-        output["same_local_code"] = normalize_local_code(
+        output["same_local_code"] = canonicalize_local_code_for_compare(
             prev_item.local_code
-        ) == normalize_local_code(next_item.local_code)
+        ) == canonicalize_local_code_for_compare(next_item.local_code)
 
     # Column signature signals (tables only). Mirrors _score_table_match: strong first,
     # weak fallback.
@@ -1558,6 +1570,51 @@ def _process_page_pair(
     return links
 
 
+def _record_missing_edge_verdict(
+    *,
+    current_page_index: int,
+    next_page_index: int,
+    page_pair_debug: list[dict[str, Any]],
+    warnings: list[str],
+) -> None:
+    """Record a missing page-break verdict as an explicit no-continuation decision.
+
+    Missing edge verdicts can occur when the previous verification step intentionally
+    skips a page pair, most commonly because one side of the pair is blank. The
+    stitching policy is conservative: absence of a verifier record is treated as
+    absence of continuation evidence, so no link is emitted for that page break.
+
+    Parameters
+    ----------
+    current_page_index
+        The 0-based page index for the page before the page break.
+    next_page_index
+        The 0-based page index for the page after the page break.
+    page_pair_debug
+        A list to append a structured page-pair debug record to.
+    warnings
+        A list to append the human-readable warning message to.
+    """
+
+    msg = (
+        f"Missing edge verdict for adjacent page pair "
+        f"{current_page_index}->{next_page_index}; assuming no continuation. "
+        f"This commonly occurs when one side is a blank/skipped page."
+    )
+    logger.warning(msg)
+    warnings.append(msg)
+    page_pair_debug.append(
+        {
+            "from_page": current_page_index,
+            "to_page": next_page_index,
+            "verdict_override": False,
+            "verdict_missing": True,
+            "chosen_links": [],
+            "note": "missing_verdict_assumed_no_continuation",
+        }
+    )
+
+
 def _safe_to_ignore_between_pages(item: Block | Table) -> bool:
     """Return True if this item is safe to ignore as 'between' content when determining
     whether an edge continuation item should be considered a candidate.
@@ -1728,13 +1785,12 @@ def _score_block_match(
         return score
 
     # Generic local code match.
-    if (
-        prev_item.local_code
-        and next_item.local_code
-        and normalize_local_code(prev_item.local_code)
-        == normalize_local_code(next_item.local_code)
-    ):
-        score += 1
+    if prev_item.local_code and next_item.local_code:
+        prev_local_code = canonicalize_local_code_for_compare(prev_item.local_code)
+        next_local_code = canonicalize_local_code_for_compare(next_item.local_code)
+
+        if prev_local_code and next_local_code and prev_local_code == next_local_code:
+            score += 1
 
     return score
 
@@ -1801,8 +1857,12 @@ def _score_table_match(
 
     score = 0.0
 
-    prev_local_code = normalize_local_code(prev_item.local_code)
-    next_local_code = normalize_local_code(next_item.local_code)
+    prev_local_code = canonicalize_local_code_for_compare(
+        local_code=prev_item.local_code
+    )
+    next_local_code = canonicalize_local_code_for_compare(
+        local_code=next_item.local_code
+    )
 
     # Strong textual/schema signals.
     if prev_local_code and next_local_code and prev_local_code == next_local_code:
@@ -1964,8 +2024,9 @@ def compute_page_break_links(
 
     With `verdicts`, high-confidence verdicts take priority over heuristic scoring. If
     a verdict's confidence is at or above `verdict_confidence_threshold`, the verdict's
-    decision (stitch or skip) is applied directly. Otherwise, the existing boundary
-    flag and scoring heuristics are used.
+    decision (stitch or skip) is applied directly. If an adjacent page pair has no
+    verdict record, the linker assumes no continuation and records a debug note instead
+    of raising. Otherwise, the existing boundary flag and scoring heuristics are used.
 
     NB: compute_page_break_links() does not operate on raw PageIR.items. It operates on
     items_mapping, which is created immediately before linking by
@@ -2042,10 +2103,13 @@ def compute_page_break_links(
         edge_record = verdicts.get((cur_page_index, next_page_index))
 
         if edge_record is None:
-            raise ValueError(
-                f"Missing edge verdict for adjacent page pair "
-                f"{cur_page_index}->{next_page_index}."
+            _record_missing_edge_verdict(
+                current_page_index=cur_page_index,
+                next_page_index=next_page_index,
+                page_pair_debug=page_pair_debug,
+                warnings=warnings,
             )
+            continue
 
         page_pair_links = _process_page_pair(
             current_page_ir=current_page_ir,

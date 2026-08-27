@@ -1,0 +1,714 @@
+{
+	"page_ir_extraction": {
+		"country": "Rwanda",
+		"dpi": 250,
+		"end_page": null,
+		"languages": [
+			"en"
+		],
+		"output_dir": "/Users/mustafa/IDinsight/SenegalKG/results/rwanda",
+		"overwrite": false,
+		"pdf_fp": "/Users/mustafa/IDinsight/SenegalKG/data/rwanda/rwanda_math_p1_p3.pdf",
+		"start_page": 0,
+		"use_extracted_hints": true,
+		"year": 2025
+	},
+	"page_ir_verification": {
+		"end_page": null,
+		"min_confidence_to_patch": 0.5,
+		"min_confidence_to_select_positive": 0.5,
+		"min_confidence_to_stop_negative_search": 0.9,
+		"next_page_crop_padding_px": 120,
+		"overwrite": false,
+		"start_page": 0
+	},
+	"document_ir": {
+		"keep_artifacts": false,
+		"max_section_path_length": 24,
+		"min_link_score": 1.0,
+		"overwrite": false,
+		"repair_hyphenation": true,
+		"sort_items_by_bbox": true,
+		"table_filldown_enabled": true,
+		"table_filldown_group_cols_max": 1,
+		"verification_auto_stitch_confidence": 0.7
+	},
+	"kgs": {
+		"overwrite": false,
+		"as": {
+			"bilingual_pair_policy": null,
+			"code_parent_rules": [],
+			"code_patterns": {},
+			"excluded_table_columns_signatures": [],
+			"excluded_table_section_patterns": [
+				"(?i)(SUBJECTS AND WEEKLY TIME ALLOCATION|weekly\\s+time\\s+allocation)"
+			],
+			"grade_level_mapping": {
+				"P1": [
+					"1"
+				],
+				"P2": [
+					"2"
+				],
+				"P3": [
+					"3"
+				]
+			},
+			"grade_level_statement_types": [
+				"Grade"
+			],
+			"identity_scope_statement_types": {
+				"Topic Area": [
+					"Grade"
+				],
+				"Sub-Topic Area": [
+					"Grade",
+					"Topic Area"
+				],
+				"Unit": [
+					"Grade"
+				],
+				"Grade Key Competence": [
+					"Grade"
+				],
+				"Key Unit Competence": [
+					"Grade",
+					"Unit"
+				],
+				"Knowledge Objective": [
+					"Grade",
+					"Unit"
+				],
+				"Skills Objective": [
+					"Grade",
+					"Unit"
+				],
+				"Attitudes and Values Objective": [
+					"Grade",
+					"Unit"
+				]
+			},
+			"included_table_columns_signatures": [],
+			"included_table_section_patterns": [
+				"(?i)(6\\.2\\.2|6\\.3\\.2|6\\.4\\.2|Mathematics units for Primary One|Mathematics Units for Primary Two|Mathematics Units for Primary Three|SYLLABUS UNITS FOR GRADE ONE|Mathematics Syllabus for Primary \\(P2\\)|Mathematics Syllabus for P3)"
+			],
+			"max_dedup_review_set_candidates": 16,
+			"max_has_child_parent_candidates": 24,
+			"max_has_child_section_path_labels": 12,
+			"max_rows_per_table_window": 24,
+			"row_overlap": 2,
+			"sfi_dedup_context_statement_types": [],
+			"sfi_dedup_context_window_radius": 3,
+			"sfi_dedup_instructions": "Merge candidates only when they represent the same source-visible curriculum item, using the curriculum hierarchy rather than the extraction window alone. For same-type candidates, identity_scope_key and identity_scope_values are authoritative merge boundaries. Candidates with different identity scope must remain separate. Matching identity scope is necessary for a merge but is not sufficient evidence that the candidates are duplicates. Merge repeated Grade labels when they have the same canonical grade value (P1, P2, or P3). Merge repeated Topic Area labels within the same Grade when they have the same canonical or normalized topic value; do not require the same Unit context, because Topic Area is a parent of Unit. Merge repeated Sub-Topic Area labels within the same Grade and parent Topic Area when they have the same canonical or normalized sub-topic value; do not require the same Unit context, because Sub-Topic Area is a parent of Unit. Keep Topic Area and Sub-Topic Area labels distinct across different grades or different parent topic areas. Do not merge different Units across grades or across different unit numbers/titles merely because wording repeats. Grade Key Competences are scoped to Grade, not Unit. Keep independently printed Grade Key Competence statements separate even when they belong to the same Grade. Merge them only when the evidence shows duplicate extraction, overlap, or continuation of the same printed grade-level competence. Key Unit Competences and all three learning-objective types are unit-local. Treat their configured Grade plus Unit identity scope as a hard semantic boundary: independently printed statements in different Units remain separate even when their wording is identical. Merge them only when the evidence shows overlap copies, continuation fragments, or duplicate extraction of the same cited source occurrence in the same Unit context. Known source anomaly: P3 Unit 5 'Relationship between length measurements' has a visible Sub-Topic Area 'Length Measurements' but no visible Topic Area header. Do not treat any source-order carryforward of the previous P3 Topic Area 'Numbers and Operations' as reliable evidence for deduplication or hierarchy. For the visible P3 Unit 5 'Length Measurements' Sub-Topic Area candidate, use the authorized repaired identity scope Grade='P3' and Topic Area='Measurement'. Do not emit or imply a synthetic source occurrence for the missing Topic Area. When candidates in one review set cite the same source occurrence but carry different statement types, use the actual table column or source role to select the canonical type. Treat a same_source_occurrence_cross_type signal as retrieval evidence only, not as proof that the candidates are duplicates. In a multi-column table, verify that the candidates represent the same exact visible source statement, not merely different cells that share the same cited row. Candidates from different learning-objective columns or independently printed cells are separate curriculum items even when their wording is identical. When the bounded evidence does not establish that differently typed candidates are copies of the same exact source statement, return keep_separate or needs_review rather than merge. Do not merge independently printed items from different objective columns or different Units merely to reconcile a type disagreement.",
+			"sfi_extraction_instructions": "Extract Academic Standards SFIs only from Section 6 syllabus-unit content. Treat source-visible Grade/P1-P3, Topic Area, Sub-Topic Area, and Unit labels as Standard Grouping SFIs. Treat grade-level key competences, Key Unit Competence statements, and Learning Objectives under Knowledge and Understanding, Skills, and Attitudes and Values as Standard SFIs. Do not extract Content, Learning Activities, Links to other subjects, Assessment criteria, Teaching/learning aids, examples, Number of Periods, front matter, pedagogy, resources, assessment approach, acknowledgements, references, or weekly time allocation as SFIs. Do not infer absent parent labels. Preserve source-visible wording and table row/header evidence. Do not emit Grade SFIs from numbered section headings or section-title context such as '6.2 SYLLABUS UNITS FOR GRADE ONE/P1', '6.3 Mathematics Syllabus for Primary (P2)', '6.4 Mathematics Syllabus for P3', or 'Mathematics units for Primary One/Two/Three'; treat those headings as context only. Emit Grade SFIs only from source-visible unit-table grade header cells such as 'P1 MATHEMATICS', 'P2 Mathematics', and 'P3 Mathematics'. For every Key Unit Competence and every Knowledge Objective, Skills Objective, or Attitudes and Values Objective candidate, identity_scope_values must contain exactly Grade and Unit in configured order. Select the Unit from the active source-visible Unit heading in the same table and return its canonical value 'Unit N' (Unit 1 through Unit 14). Do not carry Unit scope from a preceding or following table. Known source anomaly / authorized semantic-scope repair for Rwanda Lower Primary Mathematics P3 Unit 5: the source PDF table for 'P3 Mathematics UNIT 5: Relationship between length measurements' shows 'SUB-TOPIC AREA: LENGTH MEASUREMENTS' but omits a source-visible Topic Area header. Do not inherit the preceding P3 Topic Area 'Numbers and Operations' for this table. Do not fabricate a source-visible Topic Area SFI from absent text. Extract the visible Sub-Topic Area and Unit normally. For the 'Length Measurements' Sub-Topic Area candidate's identity_scope_values only, use Grade='P3' and Topic Area='Measurement'. This is an authorized semantic identity repair, not quoted source evidence and not permission to emit a Measurement Topic Area candidate from absent text. The three Learning Objectives columns are independent vertical lists. Do not combine horizontally aligned Knowledge and Understanding, Skills, Attitudes and Values, Content, or Learning Activities cells into one candidate, and do not infer that entries sharing a physical table row form a semantic tuple. When overlapping table windows expose the same source cell more than once, classify that occurrence consistently from its actual source column.",
+			"sfi_extraction_validation_instructions": "Independently validate the draft against the source-visible Academic Standards content in Section 6 and correct every material omission, false positive, misclassification, truncation, or source-location error. Eligible SFI source regions are limited to: (1) the numbered grade-level competence lists under 6.2.1, 6.3.1, and 6.4.1, where each distinct numbered list item is one Grade Key Competence; and (2) the unit tables under 6.2.2, 6.3.2, and 6.4.2. Do not extract SFIs from Section 6.1 explanatory text, the sentence summarizing the number of units, the 6.2/6.3/6.4 or 6.2.1/6.3.1/6.4.1/6.2.2/6.3.2/6.4.2 headings themselves, table-of-contents entries, repeated page headers or footers, or material outside these eligible regions. In each unit table, retain only source-visible candidates for the Grade cell, Topic Area, Sub-Topic Area or SUB-TOPIC label, the complete Unit number and title, the complete Key Unit Competence statement, and each distinct learning objective appearing in the Knowledge and Understanding, Skills, or Attitudes and Values columns. The 'Learning objectives' heading and the three objective-column headings are classification context, not SFIs. Classify objective statements by their actual source column: Knowledge Objective, Skills Objective, or Attitudes and Values Objective. Treat each distinct bullet or separately expressed statement in those columns as its own objective, even when a bullet marker is missing because of table layout. Join text only when it is clearly one statement continued across adjacent cells, rows, or pages; do not merge separate bullets, separate objective columns, or neighboring statements. Remove all candidates derived from Content or Contents, Learning Activities or Learners activities, Links to other subjects, Assessment criteria, Teaching/learning aids, examples, Number of Periods or Periods, lesson-allocation information, pedagogy, resources, acknowledgements, references, weekly time allocation, or generic and broad competences outside the three grade-level competence lists. These excluded fields may contain imperative or outcome-like wording such as 'learners can', but their table or section role makes them non-SFIs. Do not create a Grade SFI from numbered section headings, section-title context, the document title, or the repeated 'Primary 1 - 3' page footer. Grade SFIs must come only from visible unit-table grade cells such as 'P1 MATHEMATICS', 'P2 Mathematics', or 'P3 Mathematics'. Do not treat the grade-level competence heading itself as a Grade Key Competence; only its numbered list items qualify. Do not treat section numbers, list numbers, Unit numbers, or period numbers as statement_code values. Preserve the complete exact source-visible wording, spelling, capitalization, punctuation, and language. Do not silently correct grammar, normalize controlled values, paraphrase, translate, or replace source wording. A Unit candidate must contain the complete visible Unit number and title but must not absorb the Grade cell or period label. A Key Unit Competence or objective must not be truncated at a visual line, cell, row, window, or page break and must not include text from Content, Learning Activities, examples, or other neighboring columns. Verify that every Key Unit Competence and objective candidate has exactly Grade and Unit identity scope, with Unit canonicalized to 'Unit N' from the active source-visible Unit heading in the same table. Reject scope carried from a different unit table. Verify that every table candidate cites the raw source-visible header and/or body rows that contain its wording; do not use canonical headers, section-path text, or filldown helper values as quoted evidence unless the same wording is also visible in the raw table cells. Do not invent an absent grouping merely to complete the expected hierarchy. For P3 Unit 5, 'Relationship between length measurements', the source-visible table contains 'SUB-TOPIC AREA: LENGTH MEASUREMENTS' but no Topic Area row. Preserve the visible P3 Grade, Sub-Topic Area, complete Unit, Key Unit Competence, and eligible objectives, but do not create or inherit any Topic Area candidate for this table, including 'Numbers and Operations' or 'Measurement'. For the visible 'Length Measurements' Sub-Topic Area candidate only, require the authorized semantic identity scope Grade='P3' and Topic Area='Measurement'. Treat that scope value as a documented repair rather than source-visible quoted evidence. Treat the three objective columns as independent vertical lists: horizontal alignment does not create a combined objective, a cross-column pair, or a relationship. If an overlapping extraction window repeats the same source cell, the source-facing statement type must remain the type of that cell's actual column. Correct any draft that assigns one source occurrence to a different objective type because of neighboring or horizontally aligned text.",
+			"sfi_has_child_instructions": "Rwanda uses a strict single-parent curriculum tree. For every resolved child, select exactly one direct parent endpoint; never select multiple direct parents. Resolve direct hasChild parents using the source hierarchy: StandardsFramework root -> Grade -> Topic Area -> Sub-Topic Area -> Unit. Grade Key Competence attaches to Grade. Key Unit Competence attaches to Unit. Knowledge Objective, Skills Objective, and Attitudes and Values Objective attach to the Key Unit Competence from the same Unit. Treat the finalized child's identity_scope_values as authoritative semantic parent context whenever those values name the child's configured direct parent type. For a Topic Area or Grade Key Competence whose scope names a Grade, select the Grade candidate with the matching canonical value. For a Sub-Topic Area whose scope names a Topic Area, select the Topic Area candidate with the matching canonical value. For a Key Unit Competence whose scope names a Unit, select the Unit candidate with the matching canonical value. Do not select a conflicting parent based on preceding order, proximity, active-outline carry-forward, repeated wording, or semantic similarity. For Knowledge Objectives, Skills Objectives, and Attitudes and Values Objectives, select only the Key Unit Competence from the same Unit. Prefer the Key Unit Competence sharing the child's source segment, extraction window, and unit-table context. Never attach an objective to a Key Unit Competence from another Unit, even when wording is identical or that competence is nearer in global source order. Prefer source-visible table/section context, source order, shared window/segment/table evidence, canonical controlled values, finalized identity scope, and nearby source-context evidence when those signals do not conflict with the authoritative rules above. Do not choose parents by repeated text or unit number alone. Use an unresolved root fallback only when no supplied SFI parent is source-supported. Source-repair exception: for P3 Unit 5 'Relationship between length measurements', the PDF omits the Topic Area header even though the visible sub-topic is Length Measurements. For this documented exception, the repaired identity-scope value Topic Area='Measurement' is authoritative for parent selection. Select the existing P3 Measurement Topic Area as the parent of the Length Measurements Sub-Topic Area even when that Topic Area's visible source occurrence appears in a later unit table and does not share the same window or preceding outline state. Do not require preceding or same-window evidence for this exception. Do not attach the Sub-Topic Area or Unit under Numbers and Operations merely because that was the previous source-visible Topic Area. If the P3 Measurement endpoint is not present in the supplied parent candidates, return unresolved; never select Numbers and Operations. The Knowledge and Understanding, Skills, and Attitudes and Values columns are independent lists. Horizontal table-row alignment across those columns is not parentage evidence; each objective attaches to the Key Unit Competence from its own Unit. For every Unit, select the source-visible Sub-Topic Area printed in the same unit table. Do not replace a printed organizer with a semantically more plausible organizer inferred from the Unit title, Key Unit Competence, objectives, or nearby tables. In particular, keep P2 Unit 10 under the printed Sub-Topic Area 'Directions and Shapes' and keep P3 Unit 14 under the printed Sub-Topic Area 'Drawings and Geometrical Figures'. Grade Key Competences appear before the first unit-table Grade occurrence for each grade; select the matching P1, P2, or P3 Grade candidate even when that parent occurs later in source order.",
+			"sfi_has_child_parent_policy": {
+				"Grade": [],
+				"Topic Area": [
+					{
+						"max_count": 1,
+						"min_count": 1,
+						"parent_statement_type": "Grade"
+					}
+				],
+				"Sub-Topic Area": [
+					{
+						"max_count": 1,
+						"min_count": 1,
+						"parent_statement_type": "Topic Area"
+					}
+				],
+				"Unit": [
+					{
+						"max_count": 1,
+						"min_count": 1,
+						"parent_statement_type": "Sub-Topic Area"
+					}
+				],
+				"Grade Key Competence": [
+					{
+						"max_count": 1,
+						"min_count": 1,
+						"parent_statement_type": "Grade"
+					}
+				],
+				"Key Unit Competence": [
+					{
+						"max_count": 1,
+						"min_count": 1,
+						"parent_statement_type": "Unit"
+					}
+				],
+				"Knowledge Objective": [
+					{
+						"max_count": 1,
+						"min_count": 1,
+						"parent_statement_type": "Key Unit Competence"
+					}
+				],
+				"Skills Objective": [
+					{
+						"max_count": 1,
+						"min_count": 1,
+						"parent_statement_type": "Key Unit Competence"
+					}
+				],
+				"Attitudes and Values Objective": [
+					{
+						"max_count": 1,
+						"min_count": 1,
+						"parent_statement_type": "Key Unit Competence"
+					}
+				]
+			},
+			"sfi_has_child_statement_type_hierarchy": [
+				"Grade",
+				"Topic Area",
+				"Sub-Topic Area",
+				"Unit",
+				"Key Unit Competence"
+			],
+			"sfi_has_child_validation_instructions": "Independently audit every child-parent decision as a Rwanda Lower Primary Mathematics hierarchy decision. Enforce a strict single-parent tree: every resolved child must select exactly one direct parent endpoint, never multiple parents. Grades attach only to the StandardsFramework root. Topic Areas attach to the Grade matching the Topic Area's finalized Grade scope. Sub-Topic Areas attach to the Topic Area matching both the child's finalized Grade and Topic Area scope. Units attach to the source-visible Sub-Topic Area printed in the same unit table. Grade Key Competences attach to the Grade matching their finalized Grade scope. Key Unit Competences attach to the Unit matching both finalized Grade and Unit scope. Knowledge Objectives, Skills Objectives, and Attitudes and Values Objectives attach to the Key Unit Competence from the same finalized Grade and Unit and the same unit-table source context. Reject any cross-grade, cross-topic, cross-unit, or wrong-level parent even when wording, unit number, proximity, active outline state, or cumulative section-path labels appear similar. Treat the child's and parent's finalized identity_scope_values, canonical controlled values, and scope_comparison as high-value semantic evidence, while still checking exact source structure. Repeated organizer labels must be resolved using their complete Grade and Topic Area scope, not text alone. Do not infer relationships between Knowledge, Skills, and Attitudes and Values objectives from horizontal row alignment; they are parallel children of the same Unit's Key Unit Competence. Grade Key Competence lists occur before the first visible unit-table Grade node for P1, P2, and P3. Accept the later-occurring matching Grade candidate as the direct parent; do not choose root or unresolved merely because the Grade parent follows the competence list in source order. Preserve source-visible organizer anomalies rather than repairing them from semantic plausibility: P2 Unit 10 remains under the printed Sub-Topic Area 'Directions and Shapes' within Geometry, and P3 Unit 14 remains under the printed Sub-Topic Area 'Drawings and Geometrical Figures' within Statistics. Numeric-range inconsistencies in P1 Unit 6 and P3 Unit 2 do not change their printed hierarchy. For the documented P3 Unit 5 anomaly, the visible 'Length Measurements' Sub-Topic Area has finalized scope Grade='P3' and Topic Area='Measurement'. Its direct parent must be the existing P3 Measurement Topic Area even though that Topic Area's visible occurrence appears later in P3 Unit 6. Never accept Numbers and Operations for that Sub-Topic Area. The P3 Unit 5 Unit must attach to the visible Length Measurements Sub-Topic Area, and its Key Unit Competence and objectives must remain within P3 Unit 5. If the required P3 Measurement Topic Area endpoint is absent from the supplied bounded candidate set, mark that Sub-Topic Area unresolved rather than forcing a conflicting parent. Root is a resolved parent only for Grade. For every non-Grade child, reject a resolved root selection when a defensible supplied direct parent exists; use unresolved only when no supplied candidate can be supported safely. Set passed=true only when all of these checks hold for the producer draft; otherwise return a complete corrected response.",
+			"statement_type_policy": [
+				{
+					"aliases": [
+						"P1 MATHEMATICS",
+						"P1 Mathematics",
+						"P2 Mathematics",
+						"P2  Mathematics",
+						"P3 Mathematics"
+					],
+					"controlled_values": [
+						{
+							"canonical_value": "P1",
+							"aliases": [
+								"P1",
+								"P1 MATHEMATICS",
+								"P1 Mathematics"
+							]
+						},
+						{
+							"canonical_value": "P2",
+							"aliases": [
+								"P2",
+								"P2 Mathematics",
+								"P2  Mathematics"
+							]
+						},
+						{
+							"canonical_value": "P3",
+							"aliases": [
+								"P3",
+								"P3 Mathematics"
+							]
+						}
+					],
+					"description": "Use only for source-visible unit-table grade header cells such as 'P1 MATHEMATICS', 'P2 Mathematics', or 'P3 Mathematics'. Do not use for numbered section headings such as '6.2 SYLLABUS UNITS FOR GRADE ONE/P1', '6.3 Mathematics Syllabus for Primary (P2)', '6.4 Mathematics Syllabus for P3', or 'Mathematics units for Primary One/Two/Three'; those headings are context only.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Grade"
+				},
+				{
+					"aliases": [
+						"TOPIC AREA"
+					],
+					"controlled_values": [
+						{
+							"canonical_value": "Numbers and Operations",
+							"aliases": [
+								"NUMBERS AND OPERATIONS",
+								"TOPIC AREA: NUMBERS AND OPERATIONS",
+								"TOPIC AREA:NUMBERS AND OPERATIONS"
+							]
+						},
+						{
+							"canonical_value": "Algebra",
+							"aliases": [
+								"ALGEBRA",
+								"TOPIC AREA: ALGEBRA",
+								"TOPIC AREA:ALGEBRA"
+							]
+						},
+						{
+							"canonical_value": "Measurement",
+							"aliases": [
+								"MEASUREMENT",
+								"TOPIC AREA: MEASUREMENT",
+								"TOPIC AREA:MEASUREMENT",
+								"MEASUREMENTS",
+								"TOPIC AREA: MEASUREMENTS",
+								"TOPIC AREA:MEASUREMENTS"
+							]
+						},
+						{
+							"canonical_value": "Geometry",
+							"aliases": [
+								"GEOMETRY",
+								"TOPIC AREA: GEOMETRY",
+								"TOPIC AREA:GEOMETRY"
+							]
+						},
+						{
+							"canonical_value": "Statistics",
+							"aliases": [
+								"STATISTICS",
+								"TOPIC AREA: STATISTICS",
+								"TOPIC AREA:STATISTICS"
+							]
+						}
+					],
+					"description": "Use for source-visible TOPIC AREA labels that organize units within a grade. Topic Area is a parent of Unit; repeated matching Topic Area labels within the same Grade should canonicalize to the same value and be eligible to merge across multiple unit tables.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Topic Area"
+				},
+				{
+					"aliases": [
+						"SUB-TOPIC AREA",
+						"SUB-TOPIC"
+					],
+					"controlled_values": [
+						{
+							"canonical_value": "Whole Numbers",
+							"aliases": [
+								"WHOLE NUMBERS",
+								"SUB-TOPIC AREA: WHOLE NUMBERS",
+								"SUB-TOPIC AREA:WHOLE NUMBERS",
+								"SUB-TOPIC: WHOLE NUMBERS",
+								"SUB-TOPIC:WHOLE NUMBERS",
+								"WHOLE NUMBERS FROM 0 TO 10000",
+								"SUB-TOPIC AREA: WHOLE NUMBERS FROM 0 TO 10000",
+								"SUB-TOPIC AREA:WHOLE NUMBERS FROM 0 TO 10000",
+								"SUB-TOPIC: WHOLE NUMBERS FROM 0 TO 10000",
+								"SUB-TOPIC:WHOLE NUMBERS FROM 0 TO 10000"
+							]
+						},
+						{
+							"canonical_value": "Fractions",
+							"aliases": [
+								"FRACTIONS",
+								"SUB-TOPIC AREA: FRACTIONS",
+								"SUB-TOPIC AREA:FRACTIONS",
+								"SUB-TOPIC: FRACTIONS",
+								"SUB-TOPIC:FRACTIONS"
+							]
+						},
+						{
+							"canonical_value": "Number Pattern",
+							"aliases": [
+								"NUMBER PATTERN",
+								"SUB-TOPIC AREA: NUMBER PATTERN",
+								"SUB-TOPIC AREA:NUMBER PATTERN",
+								"SUB-TOPIC: NUMBER PATTERN",
+								"SUB-TOPIC:NUMBER PATTERN",
+								"NUMBER PATTERNS",
+								"SUB-TOPIC AREA: NUMBER PATTERNS",
+								"SUB-TOPIC AREA:NUMBER PATTERNS",
+								"SUB-TOPIC: NUMBER PATTERNS",
+								"SUB-TOPIC:NUMBER PATTERNS"
+							]
+						},
+						{
+							"canonical_value": "Length Measurements",
+							"aliases": [
+								"LENGTH MEASUREMENTS",
+								"SUB-TOPIC AREA: LENGTH MEASUREMENTS",
+								"SUB-TOPIC AREA:LENGTH MEASUREMENTS",
+								"SUB-TOPIC: LENGTH MEASUREMENTS",
+								"SUB-TOPIC:LENGTH MEASUREMENTS"
+							]
+						},
+						{
+							"canonical_value": "Rwandan Currency",
+							"aliases": [
+								"RWANDAN CURRENCY",
+								"SUB-TOPIC AREA: RWANDAN CURRENCY",
+								"SUB-TOPIC AREA:RWANDAN CURRENCY",
+								"SUB-TOPIC: RWANDAN CURRENCY",
+								"SUB-TOPIC:RWANDAN CURRENCY",
+								"CURRENCY",
+								"SUB-TOPIC AREA: CURRENCY",
+								"SUB-TOPIC AREA:CURRENCY",
+								"SUB-TOPIC: CURRENCY",
+								"SUB-TOPIC:CURRENCY",
+								"RWANDAN MONEY",
+								"SUB-TOPIC AREA: RWANDAN MONEY",
+								"SUB-TOPIC AREA:RWANDAN MONEY",
+								"SUB-TOPIC: RWANDAN MONEY",
+								"SUB-TOPIC:RWANDAN MONEY"
+							]
+						},
+						{
+							"canonical_value": "Capacity Measurements",
+							"aliases": [
+								"CAPACITY MEASUREMENTS",
+								"SUB-TOPIC AREA: CAPACITY MEASUREMENTS",
+								"SUB-TOPIC AREA:CAPACITY MEASUREMENTS",
+								"SUB-TOPIC: CAPACITY MEASUREMENTS",
+								"SUB-TOPIC:CAPACITY MEASUREMENTS"
+							]
+						},
+						{
+							"canonical_value": "Mass Measurements",
+							"aliases": [
+								"MASS MEASUREMENTS",
+								"SUB-TOPIC AREA: MASS MEASUREMENTS",
+								"SUB-TOPIC AREA:MASS MEASUREMENTS",
+								"SUB-TOPIC: MASS MEASUREMENTS",
+								"SUB-TOPIC:MASS MEASUREMENTS"
+							]
+						},
+						{
+							"canonical_value": "Time Measurements",
+							"aliases": [
+								"TIME MEASUREMENTS",
+								"SUB-TOPIC AREA: TIME MEASUREMENTS",
+								"SUB-TOPIC AREA:TIME MEASUREMENTS",
+								"SUB-TOPIC: TIME MEASUREMENTS",
+								"SUB-TOPIC:TIME MEASUREMENTS"
+							]
+						},
+						{
+							"canonical_value": "Directions and Lines",
+							"aliases": [
+								"DIRECTIONS AND LINES",
+								"SUB-TOPIC AREA: DIRECTIONS AND LINES",
+								"SUB-TOPIC AREA:DIRECTIONS AND LINES",
+								"SUB-TOPIC: DIRECTIONS AND LINES",
+								"SUB-TOPIC:DIRECTIONS AND LINES"
+							]
+						},
+						{
+							"canonical_value": "Directions and Shapes",
+							"aliases": [
+								"DIRECTIONS AND SHAPES",
+								"SUB-TOPIC AREA: DIRECTIONS AND SHAPES",
+								"SUB-TOPIC AREA:DIRECTIONS AND SHAPES",
+								"SUB-TOPIC: DIRECTIONS AND SHAPES",
+								"SUB-TOPIC:DIRECTIONS AND SHAPES"
+							]
+						},
+						{
+							"canonical_value": "Angles and Shapes",
+							"aliases": [
+								"ANGLES AND SHAPES",
+								"SUB-TOPIC AREA: ANGLES AND SHAPES",
+								"SUB-TOPIC AREA:ANGLES AND SHAPES",
+								"SUB-TOPIC: ANGLES AND SHAPES",
+								"SUB-TOPIC:ANGLES AND SHAPES"
+							]
+						},
+						{
+							"canonical_value": "Shapes",
+							"aliases": [
+								"SHAPES",
+								"SUB-TOPIC AREA: SHAPES",
+								"SUB-TOPIC AREA:SHAPES",
+								"SUB-TOPIC: SHAPES",
+								"SUB-TOPIC:SHAPES"
+							]
+						},
+						{
+							"canonical_value": "Types of Lines and Angles",
+							"aliases": [
+								"TYPES OF LINES AND ANGLES",
+								"SUB-TOPIC AREA: TYPES OF LINES AND ANGLES",
+								"SUB-TOPIC AREA:TYPES OF LINES AND ANGLES",
+								"SUB-TOPIC: TYPES OF LINES AND ANGLES",
+								"SUB-TOPIC:TYPES OF LINES AND ANGLES"
+							]
+						},
+						{
+							"canonical_value": "Geometrical Figures and a Circle",
+							"aliases": [
+								"GEOMETRICAL FIGURES AND A CIRCLE",
+								"SUB-TOPIC AREA: GEOMETRICAL FIGURES AND A CIRCLE",
+								"SUB-TOPIC AREA:GEOMETRICAL FIGURES AND A CIRCLE",
+								"SUB-TOPIC: GEOMETRICAL FIGURES AND A CIRCLE",
+								"SUB-TOPIC:GEOMETRICAL FIGURES AND A CIRCLE"
+							]
+						},
+						{
+							"canonical_value": "Directions",
+							"aliases": [
+								"DIRECTIONS",
+								"SUB-TOPIC AREA: DIRECTIONS",
+								"SUB-TOPIC AREA:DIRECTIONS",
+								"SUB-TOPIC: DIRECTIONS",
+								"SUB-TOPIC:DIRECTIONS"
+							]
+						},
+						{
+							"canonical_value": "Equation",
+							"aliases": [
+								"EQUATION",
+								"SUB-TOPIC AREA: EQUATION",
+								"SUB-TOPIC AREA:EQUATION",
+								"SUB-TOPIC: EQUATION",
+								"SUB-TOPIC:EQUATION",
+								"EQUATIONS",
+								"SUB-TOPIC AREA: EQUATIONS",
+								"SUB-TOPIC AREA:EQUATIONS",
+								"SUB-TOPIC: EQUATIONS",
+								"SUB-TOPIC:EQUATIONS"
+							]
+						},
+						{
+							"canonical_value": "Reading a Pictograph",
+							"aliases": [
+								"READING A PICTOGRAPH",
+								"SUB-TOPIC AREA: READING A PICTOGRAPH",
+								"SUB-TOPIC AREA:READING A PICTOGRAPH",
+								"SUB-TOPIC: READING A PICTOGRAPH",
+								"SUB-TOPIC:READING A PICTOGRAPH"
+							]
+						},
+						{
+							"canonical_value": "Drawings and Geometrical Figures",
+							"aliases": [
+								"DRAWINGS AND GEOMETRICAL FIGURES",
+								"SUB-TOPIC AREA: DRAWINGS AND GEOMETRICAL FIGURES",
+								"SUB-TOPIC AREA:DRAWINGS AND GEOMETRICAL FIGURES",
+								"SUB-TOPIC: DRAWINGS AND GEOMETRICAL FIGURES",
+								"SUB-TOPIC:DRAWINGS AND GEOMETRICAL FIGURES"
+							]
+						}
+					],
+					"description": "Use for source-visible SUB-TOPIC AREA or SUB-TOPIC labels that organize units below a topic area. Sub-Topic Area is a parent of Unit; repeated matching Sub-Topic Area labels within the same Grade and Topic Area should canonicalize to the same value and be eligible to merge across multiple unit tables. Do not use source-order carryforward to infer a missing Topic Area. Authorized source repair for P3 Unit 5 only: keep 'Length Measurements' as the source-visible Sub-Topic Area candidate, emit no absent Topic Area candidate, and use Grade='P3' plus Topic Area='Measurement' in that candidate's semantic identity scope.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Sub-Topic Area"
+				},
+				{
+					"aliases": [
+						"Unit",
+						"UNIT"
+					],
+					"description": "Use for source-visible unit headings, including the unit number and title. Preserve the complete visible title in the candidate description, for example 'Unit 1: Numbers from 1 to 5'. For controlled identity scope, map the active source-visible unit number to the canonical value 'Unit N' (Unit 1 through Unit 14). Grade is a separate scope dimension, so the same unit number in different grades remains distinct. Select Unit scope only from the active unit table; do not carry a Unit value across unrelated tables. Do not treat the unit number as an official statement_code.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Unit",
+					"controlled_values": [
+						{
+							"canonical_value": "Unit 1",
+							"aliases": [
+								"Unit1",
+								"Unit 1: Numbers from 1 to 5",
+								"Unit 1: Numbers from 0 to 200.",
+								"UNIT 1: Numbers from 0 to 2000"
+							]
+						},
+						{
+							"canonical_value": "Unit 2",
+							"aliases": [
+								"Unit2",
+								"Unit 2: Numbers from 1 to 9.",
+								"Unit 2: Numbers from 0 to 500",
+								"Unit 2: Numbers from 0 to 5000"
+							]
+						},
+						{
+							"canonical_value": "Unit 3",
+							"aliases": [
+								"Unit3",
+								"Unit 3: Numbers from 0 up to 10",
+								"Unit 3: Numbers from 0 to 1000",
+								"UNIT 3: Numbers from 0 to 10000"
+							]
+						},
+						{
+							"canonical_value": "Unit 4",
+							"aliases": [
+								"Unit4",
+								"Unit 4: Numbers from 0 up to 20",
+								"Unit 4: Fractions 1/2, 1/4 and 1/8.",
+								"Unit4: Fractions having a numerator less than or equal to 10."
+							]
+						},
+						{
+							"canonical_value": "Unit 5",
+							"aliases": [
+								"Unit5",
+								"Unit 5:Numbers from 0 to 50.",
+								"Unit 5: Length measurements: m, dm, and cm.",
+								"UNIT 5: Relationship between length measurements."
+							]
+						},
+						{
+							"canonical_value": "Unit 6",
+							"aliases": [
+								"Unit6",
+								"Unit 6: Numbers from 0 to 100.",
+								"Unit 6: Standard unit of capacity measurements “litre”.",
+								"Unit 6: Mass measurements from kilogram (Kg) to gram (g)."
+							]
+						},
+						{
+							"canonical_value": "Unit 7",
+							"aliases": [
+								"Unit7",
+								"Unit 7: Number patterns",
+								"Unit 7: Mass measurements “Kg”.",
+								"Unit 7: Capacity Measurements."
+							]
+						},
+						{
+							"canonical_value": "Unit 8",
+							"aliases": [
+								"Unit8",
+								"Unit 8: Measuring the length less than or equal to 10 m.",
+								"Unit 8: Rwandan currency from 1Frw to 1000 Frw.",
+								"UNIT 8: Rwandan money from 1Frw to 5000 Frw."
+							]
+						},
+						{
+							"canonical_value": "Unit 9",
+							"aliases": [
+								"Unit9",
+								"Unit 9: Rwandan currency from 1Frw to 100 Frw",
+								"Unit 9: Hours, Months of the Year, and Days in Each Month.",
+								"Unit 9: Time measurement."
+							]
+						},
+						{
+							"canonical_value": "Unit 10",
+							"aliases": [
+								"Unit10",
+								"Unit 10: Location of objects and lines",
+								"Unit 10: Types of lines and angles."
+							]
+						},
+						{
+							"canonical_value": "Unit 11",
+							"aliases": [
+								"Unit11",
+								"Unit 11: Right angle, Square, and Rectangle",
+								"Unit 11: Square, rectangle, and triangle.",
+								"Unit 11: Square, rectangle, triangle, and circle."
+							]
+						},
+						{
+							"canonical_value": "Unit 12",
+							"aliases": [
+								"Unit12",
+								"Unit 12: Missing numbers in addition, subtraction, multiplication, and division.",
+								"Unit 12: Grid."
+							]
+						},
+						{
+							"canonical_value": "Unit 13",
+							"aliases": [
+								"Unit13",
+								"Unit 13: Pictographs / Simple graphs",
+								"Unit 13: Missing numbers in addition, subtraction, multiplication, and division."
+							]
+						},
+						{
+							"canonical_value": "Unit 14",
+							"aliases": [
+								"Unit14",
+								"Unit 14: Pictograph used in counting."
+							]
+						}
+					]
+				},
+				{
+					"aliases": [
+						"Key competences at the end of Grade",
+						"Key competences at the end of P2",
+						"Key competences"
+					],
+					"description": "Use only for numbered key competences listed at the end of each grade-level introduction, not for generic broad competences in the front matter.",
+					"normalized_statement_type": "Standard",
+					"statement_type": "Grade Key Competence"
+				},
+				{
+					"aliases": [
+						"Key Unit Competence",
+						"Key unit competence",
+						"Unit Key Competence"
+					],
+					"description": "Use for the source-visible Key Unit Competence statement inside each unit table.",
+					"normalized_statement_type": "Standard",
+					"statement_type": "Key Unit Competence"
+				},
+				{
+					"aliases": [
+						"Knowledge and Understanding",
+						"Knowledge and understanding",
+						"Knowledge"
+					],
+					"description": "Use for each distinct learning-objective bullet or separately expressed statement in the Knowledge and Understanding column. Do not use for Content column bullets, and do not combine the objective with horizontally aligned Skills, Attitudes and Values, Content, or Learning Activities text.",
+					"normalized_statement_type": "Standard",
+					"statement_type": "Knowledge Objective"
+				},
+				{
+					"aliases": [
+						"Skills"
+					],
+					"description": "Use for each distinct learning-objective bullet or separately expressed statement in the Skills column. Do not use for Learning Activities column bullets, and do not combine the objective with horizontally aligned Knowledge and Understanding, Attitudes and Values, Content, or Learning Activities text.",
+					"normalized_statement_type": "Standard",
+					"statement_type": "Skills Objective"
+				},
+				{
+					"aliases": [
+						"Attitudes and Values",
+						"Attitudes and values"
+					],
+					"description": "Use for each distinct learning-objective bullet or separately expressed statement in the Attitudes and Values column. Do not use for general pedagogy or front-matter values discussion, and do not combine the objective with horizontally aligned Knowledge and Understanding, Skills, Content, or Learning Activities text.",
+					"normalized_statement_type": "Standard",
+					"statement_type": "Attitudes and Values Objective"
+				}
+			],
+			"synthetic_merge_key_fields": [
+				"country",
+				"subject",
+				"normalized_statement_type",
+				"statement_type",
+				"identity_scope",
+				"normalized_text"
+			],
+			"table_section_pattern_page_lookback": 2
+		},
+		"lc": {
+			"generation_instructions": "Decompose each Rwanda P1-P3 Mathematics objective SFI according to its type. Knowledge and understanding objectives ('Explain...', 'Differentiate...') yield conceptual components; Skills objectives ('Count...', 'Convert...', 'Draw...') yield procedural components; Attitudes and Values objectives ('Appreciate...', 'Develop...') yield disposition components - preserve the disposition meaning and never convert it into an activity or measurable task. Strip leading dash/bullet markers from seed text. A single objective often bundles a comma enumeration ('Draw right, acute, and obtuse angles'): split such enumerations into atomic components. Ultra-terse objectives ('Estimate.', 'Locate objects.') state an action whose object lives in the ancestors: this is the one case where ancestor content is licensed, so take the object and scope from the ancestor Unit and Key Unit Competence (e.g. estimating length measurements in m, dm and cm under a length-measurement unit), and add nothing beyond what that Unit scope supports. Never generate skills from Content listings, Learning activities, Assessment criteria, Links to other subjects, or Teaching aids. Normalize source typos ('substract') without inventing new skills. Preserve CBC terminology (Key Unit Competence, competence), comparison symbols (<, >, =), and Rwandan currency (Frw). Output skills in English.",
+			"lc_dedup_batch_size": 25,
+			"lc_dedup_blocking": {"containment_min_shared_tokens": 2, "containment_threshold": 0.75, "corpus_stopword_df": 0.15, "neighborhood_all_pairs_max_size": 12, "tag_jaccard_threshold": 0.5, "token_jaccard_threshold": 0.55, "trigram_jaccard_threshold": 0.6},
+			"lc_dedup_instructions": null,
+			"lc_dedup_language_pack": {"min_fold_length": 5, "stopwords": ["a", "an", "the", "of", "to", "in", "on", "for", "with", "and", "or", "using", "given", "their", "its"], "strip_prefixes": [], "strip_suffixes": ["ing", "es", "s"]},
+			"lc_dedup_scope": "framework",
+			"lc_generation_validation_instructions": null,
+			"lc_include_sibling_context": false,
+			"lc_manual_review_overrides": null,
+			"lc_max_failure_rate": 0.05,
+			"lc_max_skill_text_length": null,
+			"lc_max_skills_per_sfi": null,
+			"lc_min_skill_text_length": null,
+			"lc_request_batch_size": 1,
+			"lc_semantic_dedup": true,
+			"lc_source_statement_types": [
+				"Knowledge Objective",
+				"Skills Objective",
+				"Attitudes and Values Objective"
+			]
+		},
+		"metadata": {
+			"adoption_status": "Adopted",
+			"attribution_statement": "© 2025 Rwanda Basic Education Board, Kigali. Credit must be provided to REB when the content is quoted.",
+			"author": "Rwanda Basic Education Board (REB)",
+			"country": "Rwanda",
+			"framework_title": "Mathematics Syllabus for Lower Primary | Primary 1 - 3",
+			"grades_or_stages": [
+				"P1",
+				"P2",
+				"P3"
+			],
+			"is_current": true,
+			"jurisdiction": "Rwanda",
+			"languages": [
+				"en"
+			],
+			"license": "© 2025 Rwanda Basic Education Board, Kigali. All rights reserved.",
+			"primary_language": "en",
+			"provider": "Rwanda Basic Education Board (REB)",
+			"subject": "Mathematics"
+		}
+	}
+}

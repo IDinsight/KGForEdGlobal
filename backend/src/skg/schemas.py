@@ -2,11 +2,11 @@
 
 # Standard Library
 import re
+import unicodedata
 
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any, Literal, Optional, Self, cast
-from uuid import UUID
+from typing import Annotated, Any, Literal, Optional, Self
 
 # Third Party Library
 import langcodes
@@ -22,13 +22,7 @@ from pydantic import (
 )
 
 # Package Library
-from skg.utils.constants import (
-    DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER,
-    NodeRole,
-    SegmentDecisionType,
-    StatementRole,
-)
-from skg.utils.general import make_dir
+from skg.utils.general import make_dir, strip_and_require_non_empty_str
 
 
 def _validate_bcp47(code: str) -> str:
@@ -66,139 +60,36 @@ def _validate_bcp47(code: str) -> str:
         raise ValueError(f"Unparseable language tag: '{code}'") from exc
 
 
-def _validate_lp_role(*, field_name: str, role: NodeRole) -> NodeRole:
-    """Validate that a learning progression role config field uses a concrete hierarchy
-    role.
+def normalize_controlled_value_key(value: str) -> str:
+    """Build a Unicode-aware comparison key for controlled values and aliases.
+
+    The normalization preserves Unicode letters and numbers while collapsing
+    punctuation, symbols, and whitespace into single spaces. NFKC normalization makes
+    compatibility forms comparable without transliterating or discarding
+    source-language characters.
 
     Parameters
     ----------
-    field_name
-        The config field name for error messages.
-    role
-        The role value to validate.
+    value
+        Controlled value, alias, statement type, or other source-facing label.
 
     Returns
     -------
-    NodeRole
-        The validated role.
-
-    Raises
-    ------
-    ValueError
-        If the role is too generic to be useful for learning progression bucketing.
+    str
+        NFKC-normalized, casefolded key containing Unicode letters, numbers, and
+        combining marks.
     """
 
-    disallowed_roles = {NodeRole.FRAMEWORK, NodeRole.UNRESOLVED}
-
-    if role in disallowed_roles:
-        disallowed_values = ", ".join(sorted(item.value for item in disallowed_roles))
-        raise ValueError(
-            f"{field_name} cannot contain {role.value!r}. Use a concrete hierarchy role "
-            f"such as 'subject', 'learning_area', 'strand', or 'theme'. "
-            f"Disallowed roles: {disallowed_values}."
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    letters_numbers_marks_or_spaces = "".join(
+        (
+            character
+            if character.isalnum() or unicodedata.category(character).startswith("M")
+            else " "
         )
-
-    return role
-
-
-def _validate_lp_roles(
-    *, field_name: str, roles: Optional[list[NodeRole]]
-) -> Optional[list[NodeRole]]:
-    """Validate a learning progression role list for non-empty, unique, concrete roles.
-
-    Parameters
-    ----------
-    field_name
-        The config field name for error messages.
-    roles
-        The ordered role list to validate.
-
-    Returns
-    -------
-    Optional[list[NodeRole]]
-        The validated role list.
-
-    Raises
-    ------
-    ValueError
-        If the list contains duplicates or disallowed roles.
-    """
-
-    if roles is None:
-        return roles
-
-    validated_roles: list[NodeRole] = []
-    seen_roles: set[NodeRole] = set()
-
-    for role in roles:
-        validated_role = _validate_lp_role(field_name=field_name, role=role)
-
-        if validated_role in seen_roles:
-            raise ValueError(
-                f"{field_name} must not contain duplicate roles. "
-                f"Duplicate value: {validated_role.value}."
-            )
-
-        seen_roles.add(validated_role)
-        validated_roles.append(validated_role)
-
-    return validated_roles
-
-
-def _validate_regex_prefixed_patterns(
-    *, field_name: str, patterns: list[str]
-) -> list[str]:
-    """Validate regex-based path patterns in LC source filtering config.
-
-    LC source path pattern fields support three pattern styles: plain substring,
-    shell-style glob, and regex when prefixed with `re:`. Only regex-prefixed patterns
-    need compilation validation; substring/glob patterns are returned unchanged.
-
-    Parameters
-    ----------
-    field_name
-        The config field name used in validation error messages.
-    patterns
-        Pattern strings from the config field.
-
-    Returns
-    -------
-    list[str]
-        The original pattern list, unchanged.
-
-    Raises
-    ------
-    TypeError
-        If a configured path pattern is not a string.
-    ValueError
-        If a regex-prefixed pattern is empty or cannot be compiled by `re`.
-    """
-
-    for idx, pattern in enumerate(patterns or []):
-        if not isinstance(pattern, str):
-            raise TypeError(
-                f"{field_name}[{idx}] must be a string. Got {type(pattern).__name__}."
-            )
-
-        if not pattern.startswith("re:"):
-            continue
-
-        regex_body = pattern[3:]
-
-        if not regex_body:
-            raise ValueError(
-                f"{field_name}[{idx}] is an empty regex pattern. "
-                f"Use a non-empty pattern after the 're:' prefix."
-            )
-
-        try:
-            re.compile(regex_body)
-        except re.error as exc:
-            raise ValueError(
-                f"Invalid regex in {field_name}[{idx}] ({pattern!r}): {exc}"
-            ) from exc
-
-    return patterns
+        for character in normalized
+    )
+    return " ".join(letters_numbers_marks_or_spaces.split())
 
 
 def validate_bbox_order(bbox: list[float]) -> list[float]:
@@ -243,12 +134,7 @@ def validate_bbox_order(bbox: list[float]) -> list[float]:
 
 
 # Common fields with descriptions.
-_AuxStatementHandling = Literal[
-    "drop", "export_as_sfi_other", "attach_to_expectation_metadata"
-]
 _BCP47Str = Annotated[str, AfterValidator(_validate_bcp47)]
-_ExportDialect = Literal["lc_public_strict", "global_relaxed"]
-_LCSourceNormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
 BBox = Annotated[
     list[float],
     AfterValidator(validate_bbox_order),
@@ -264,6 +150,23 @@ LanguageField = Annotated[
         description="Strict BCP-47 language code (e.g., 'en', 'sw'). Use 'und' if unknown; use 'mul' if mixed languages.",
     ),
 ]
+LearningCommonsGradeLevel = Literal[
+    "PK",
+    "K",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+]
+NormalizedStatementType = Literal["Standard", "Standard Grouping", "Other"]
 
 
 class BaseSchema(BaseModel):
@@ -272,7 +175,2656 @@ class BaseSchema(BaseModel):
     model_config = ConfigDict(extra="forbid", from_attributes=True)
 
 
+# Schemas for KG configuration fields.
+class _AcademicStandardControlledValueItem(BaseSchema):
+    """Canonical source-facing organizer value for a statement type.
+
+    Controlled values let a curriculum preserve visible source strings while using a
+    stable value for deduplication and final identity. For example, source-visible
+    variants such as `PRIMARY THREE` and `PRIMARY: THREE` can both map to the canonical
+    grade value `PRIMARY THREE`.
+    """
+
+    aliases: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Alternative source-visible spellings, punctuation variants, or OCR "
+            "variants that should map to canonical_value."
+        ),
+    )
+    canonical_value: str = Field(
+        description="Canonical source-facing value used for controlled deduplication.",
+        min_length=1,
+    )
+
+    @field_validator("aliases")
+    @classmethod
+    def validate_aliases(cls, v: list[str]) -> list[str]:
+        """Clean and de-duplicate controlled-value aliases.
+
+        Parameters
+        ----------
+        v
+            Raw alias strings.
+
+        Returns
+        -------
+        list[str]
+            Cleaned aliases in stable order.
+
+        Raises
+        ------
+        TypeError
+            If any alias is not a string.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for alias in v or []:
+            if not isinstance(alias, str):
+                raise TypeError(
+                    "_AcademicStandardControlledValueItem.aliases must contain strings."
+                )
+
+            alias_clean = alias.strip()
+
+            if not alias_clean or alias_clean in seen:
+                continue
+
+            cleaned.append(alias_clean)
+            seen.add(alias_clean)
+
+        return cleaned
+
+    @field_validator("canonical_value", mode="before")
+    @classmethod
+    def validate_canonical_value(cls, v: str) -> str:
+        """Clean and require a canonical controlled value.
+
+        Parameters
+        ----------
+        v
+            Raw canonical value.
+
+        Returns
+        -------
+        str
+            Cleaned canonical value.
+
+        Raises
+        ------
+        ValueError
+            If the canonical value is blank.
+        """
+
+        value = str(v or "").strip()
+
+        if not value:
+            raise ValueError(
+                "_AcademicStandardControlledValueItem.canonical_value is required."
+            )
+
+        return value
+
+
+class _AcademicStandardStatementTypePolicyItem(BaseSchema):
+    """Canonical statement-type label allowed for SFI extraction.
+
+    The policy is runtime-configured so each curriculum can preserve its own
+    source-facing vocabulary while still forcing LLM outputs into a stable set of
+    canonical labels.
+    """
+
+    aliases: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Alternative source-facing or model-prone spellings that should map to "
+            "statement_type. Examples include lowercase, snake_case, or document-local "
+            "variants."
+        ),
+    )
+    code_type: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional KG config code-pattern key that usually supports this statement "
+            "type, such as 'indicator' or 'content_standard'."
+        ),
+    )
+    controlled_values: list[_AcademicStandardControlledValueItem] = Field(
+        default_factory=list,
+        description=(
+            "Optional canonical source-facing values and aliases for this statement "
+            "type. These values are used for registry bucketing, dedup review set "
+            "construction, and final identity; original source-visible text is still "
+            "preserved in candidate and source evidence fields."
+        ),
+    )
+    description: str = Field(
+        description="Brief curriculum-specific guidance for when to use this statement type."
+    )
+    normalized_statement_type: NormalizedStatementType = Field(
+        description="Global normalized SFI class expected for this statement type."
+    )
+    statement_type: str = Field(
+        description="Canonical source-facing statement_type label the LLM must output."
+    )
+
+    @field_validator("controlled_values")
+    @classmethod
+    def validate_controlled_values(
+        cls, v: list[_AcademicStandardControlledValueItem]
+    ) -> list[_AcademicStandardControlledValueItem]:
+        """Validate controlled-value aliases within one statement type.
+
+        Parameters
+        ----------
+        v
+            Configured controlled-value items.
+
+        Returns
+        -------
+        list[_AcademicStandardControlledValueItem]
+            Validated controlled values in configured order.
+
+        Raises
+        ------
+        ValueError
+            If a controlled value or alias maps to more than one canonical value.
+        """
+
+        alias_to_canonical: dict[str, str] = {}
+
+        for item in v or []:
+            canonical_key = normalize_controlled_value_key(item.canonical_value)
+
+            if not canonical_key:
+                raise ValueError(
+                    "_AcademicStandardStatementTypePolicyItem.controlled_values "
+                    "contains a blank canonical value."
+                )
+
+            for alias in [item.canonical_value, *item.aliases]:
+                alias_key = normalize_controlled_value_key(alias)
+
+                if not alias_key:
+                    continue
+
+                existing = alias_to_canonical.get(alias_key)
+
+                if existing is not None and existing != item.canonical_value:
+                    raise ValueError(
+                        f"_AcademicStandardStatementTypePolicyItem.controlled_values "
+                        f"alias conflict: {alias!r} maps to both {existing!r} and "
+                        f"{item.canonical_value!r}."
+                    )
+
+                alias_to_canonical[alias_key] = item.canonical_value
+
+        return v
+
+    @field_validator("aliases")
+    @classmethod
+    def validate_aliases(cls, v: list[str]) -> list[str]:
+        """Clean and de-duplicate statement-type aliases.
+
+        Parameters
+        ----------
+        v
+            Raw alias strings.
+
+        Returns
+        -------
+        list[str]
+            Cleaned aliases in stable order.
+
+        Raises
+        ------
+        TypeError
+            If any alias is not a string.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for alias in v or []:
+            if not isinstance(alias, str):
+                raise TypeError(
+                    "_AcademicStandardStatementTypePolicyItem.aliases must contain strings."
+                )
+
+            alias_clean = alias.strip()
+
+            if not alias_clean or alias_clean in seen:
+                continue
+
+            cleaned.append(alias_clean)
+            seen.add(alias_clean)
+
+        return cleaned
+
+    @field_validator("code_type", mode="before")
+    @classmethod
+    def validate_code_type(cls, v: Optional[str]) -> Optional[str]:
+        """Clean an optional code-pattern key.
+
+        Parameters
+        ----------
+        v
+            Raw optional code-pattern key.
+
+        Returns
+        -------
+        Optional[str]
+            Cleaned key, or None when blank.
+
+        Raises
+        ------
+        TypeError
+            If the value is not a string or None.
+        """
+
+        if v is None:
+            return None
+
+        if not isinstance(v, str):
+            raise TypeError(
+                "_AcademicStandardStatementTypePolicyItem.code_type must be a string or None."
+            )
+
+        v_clean = v.strip()
+        return v_clean if v_clean else None
+
+    @field_validator("description", "statement_type", mode="before")
+    @classmethod
+    def validate_required_strings(cls, v: str) -> str:
+        """Strip and require non-empty statement-type policy strings.
+
+        Parameters
+        ----------
+        v
+            Raw string value.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty string.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+
+class _ContextHeadingRule(BaseSchema):
+    """Rule for deriving structured window context from heading text.
+
+    The window builder applies these rules to heading-like DocumentIR segments in
+    document order. Matches update the active structured context that is attached to
+    extraction windows. The rule describes the *grammar* of the curriculum document;
+    it does not hardcode page numbers, segment IDs, or row ranges.
+    """
+
+    label_template: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional Python-format template for the display label. Regex capture "
+            "groups are available as {1}, {2}, etc. If omitted, use the matched text."
+        ),
+    )
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    name: str = Field(description="Stable config-local rule name.")
+    normalized_statement_type: NormalizedStatementType = Field(
+        default="Standard Grouping",
+        description="Expected normalized statement type for groupings created from this context.",
+    )
+    pattern: str = Field(
+        description=(
+            "Regex pattern applied to heading text. Inline flags such as (?im) are "
+            "allowed. For multi-line headings, the window builder may apply the same "
+            "rule to each line and/or to the full heading text."
+        )
+    )
+    priority: int = Field(
+        default=0,
+        description="Higher priority rules win if multiple rules match the same heading fragment.",
+    )
+    role: str = Field(
+        description="Context role emitted by this rule, e.g. grade_level, strand, substrand.",
+    )
+    statement_type: str = Field(
+        description="Source-facing SFI statement type to use if this context becomes a grouping SFI.",
+    )
+
+    @field_validator("name", "pattern", "role", "statement_type", mode="before")
+    @classmethod
+    def _strip_and_require_non_empty(cls, v: str) -> str:
+        """Strip whitespace and require non-empty strings for required fields.
+
+        Parameters
+        ----------
+        v
+            The input string value to validate.
+
+        Returns
+        -------
+        str
+            The validated and stripped string value.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+    @field_validator("label_template", mode="before")
+    @classmethod
+    def _strip_optional_template(cls, v: Optional[str]) -> Optional[str]:
+        """Strip the optional label template, coercing blanks to None.
+
+        Parameters
+        ----------
+        v
+            The label template value to validate, or None.
+
+        Returns
+        -------
+        Optional[str]
+            The stripped template, or None if the input was None or blank.
+
+        Raises
+        ------
+        TypeError
+            If the input is neither a string nor None.
+        """
+
+        if v is None:
+            return None
+
+        if not isinstance(v, str):
+            raise TypeError("label_template must be a string or None")
+
+        v2 = v.strip()
+        return v2 if v2 else None
+
+    @field_validator("pattern")
+    @classmethod
+    def _validate_pattern(cls, v: str) -> str:
+        """Validate that the heading pattern is a compilable regular expression.
+
+        Parameters
+        ----------
+        v
+            The regex pattern applied to heading text.
+
+        Returns
+        -------
+        str
+            The validated regex pattern.
+
+        Raises
+        ------
+        ValueError
+            If the pattern is not a valid regular expression.
+        """
+
+        try:
+            re.compile(v)
+        except re.error as exc:
+            raise ValueError(
+                f"Invalid context heading regex pattern: {v!r}: {exc}"
+            ) from exc
+        return v
+
+
+class _ContextResetRule(BaseSchema):
+    """Rule for clearing lower-level context when a higher-level role changes."""
+
+    on_role: str = Field(
+        description="When this role is updated, clear all roles listed in reset_roles."
+    )
+    reset_roles: list[str] = Field(default_factory=list)
+
+    @field_validator("on_role", mode="before")
+    @classmethod
+    def _strip_on_role(cls, v: str) -> str:
+        """Strip whitespace and require a non-empty on_role value.
+
+        Parameters
+        ----------
+        v
+            The on_role string value to validate.
+
+        Returns
+        -------
+        str
+            The validated and stripped on_role value.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+    @field_validator("reset_roles")
+    @classmethod
+    def _validate_reset_roles(cls, v: list[str]) -> list[str]:
+        """Clean and de-duplicate reset_roles, dropping blanks.
+
+        Parameters
+        ----------
+        v
+            The list of role names to clear when on_role updates.
+
+        Returns
+        -------
+        list[str]
+            Cleaned, non-empty role names in stable order with duplicates removed.
+
+        Raises
+        ------
+        TypeError
+            If any element is not a string.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for role in v or []:
+            if not isinstance(role, str):
+                raise TypeError(
+                    "ContextResetRule.reset_roles must contain only strings"
+                )
+
+            role_clean = role.strip()
+
+            if not role_clean:
+                continue
+
+            if role_clean not in seen:
+                cleaned.append(role_clean)
+                seen.add(role_clean)
+
+        return cleaned
+
+
+class _ContextSpineConfig(BaseSchema):
+    """Configuration for structured extraction window context."""
+
+    description: Optional[str] = None
+    heading_rules: list[_ContextHeadingRule] = Field(default_factory=list)
+    include_nearby_headings: bool = Field(
+        default=True,
+        description="Whether windows should also carry raw nearby headings for debug/fallback.",
+    )
+    max_nearby_headings: int = Field(default=8, ge=0)
+    reset_rules: list[_ContextResetRule] = Field(default_factory=list)
+    role_order: list[str] = Field(default_factory=list)
+    split_multiline_headings: bool = Field(
+        default=True,
+        description="Apply heading rules to individual lines in multi-line heading blocks.",
+    )
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _strip_optional_description(cls, v: Optional[str]) -> Optional[str]:
+        """Strip the optional description, coercing blanks to None.
+
+        Parameters
+        ----------
+        v
+            The description value to validate, or None.
+
+        Returns
+        -------
+        Optional[str]
+            The stripped description, or None if the input was None or blank.
+
+        Raises
+        ------
+        TypeError
+            If the input is neither a string nor None.
+        """
+
+        if v is None:
+            return None
+
+        if not isinstance(v, str):
+            raise TypeError("description must be a string or None")
+
+        v2 = v.strip()
+        return v2 if v2 else None
+
+    @field_validator("role_order")
+    @classmethod
+    def _validate_role_order(cls, v: list[str]) -> list[str]:
+        """Clean and de-duplicate role_order, dropping blanks.
+
+        Parameters
+        ----------
+        v
+            The ordered list of context role names.
+
+        Returns
+        -------
+        list[str]
+            Cleaned, non-empty role names in stable order with duplicates removed.
+
+        Raises
+        ------
+        TypeError
+            If any element is not a string.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for role in v or []:
+            if not isinstance(role, str):
+                raise TypeError(
+                    "ContextSpineConfig.role_order must contain only strings"
+                )
+
+            role_clean = role.strip()
+
+            if not role_clean:
+                continue
+
+            if role_clean not in seen:
+                cleaned.append(role_clean)
+                seen.add(role_clean)
+
+        return cleaned
+
+    @model_validator(mode="after")
+    def _validate_context_references(self) -> Self:
+        """Validate that reset rules reference known context roles.
+
+        Returns
+        -------
+        Self
+            The validated context spine configuration.
+
+        Raises
+        ------
+        ValueError
+            If a reset rule's on_role or any of its reset_roles are not produced by the
+            configured heading_rules or role_order.
+        """
+
+        known_roles = {rule.role for rule in self.heading_rules} | set(self.role_order)
+
+        for reset_rule in self.reset_rules:
+            if reset_rule.on_role not in known_roles:
+                raise ValueError(
+                    f"Context reset rule references unknown on_role: {reset_rule.on_role!r}"
+                )
+
+            unknown_reset_roles = sorted(set(reset_rule.reset_roles) - known_roles)
+
+            if unknown_reset_roles:
+                raise ValueError(
+                    f"Context reset rule for {reset_rule.on_role!r} references unknown reset_roles: "
+                    f"{unknown_reset_roles}"
+                )
+
+        return self
+
+
+class _SFIHasChildParentPolicyEntry(BaseSchema):
+    """Cardinality policy for one allowed direct-parent statement type."""
+
+    max_count: Optional[int] = Field(default=None, ge=1)
+    min_count: int = Field(ge=0)
+    parent_statement_type: str = Field(min_length=1)
+
+    @field_validator("parent_statement_type", mode="before")
+    @classmethod
+    def validate_parent_statement_type(cls, v: str) -> str:
+        """Clean and require the direct-parent statement-type label.
+
+        Parameters
+        ----------
+        v
+            Raw parent statement-type label.
+
+        Returns
+        -------
+        str
+            Cleaned non-empty parent statement-type label.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+    @model_validator(mode="after")
+    def validate_cardinality(self) -> Self:
+        """Validate that the configured maximum is not below the minimum.
+
+        Returns
+        -------
+        Self
+            Validated parent-policy entry.
+
+        Raises
+        ------
+        ValueError
+            If max_count is smaller than min_count.
+        """
+
+        if self.max_count is not None and self.max_count < self.min_count:
+            raise ValueError("max_count must be greater than or equal to min_count.")
+
+        return self
+
+
+class _CreateKGAcademicStandardsConfig(BaseSchema):
+    """Academic Standards extraction configuration for KG creation."""
+
+    bilingual_pair_policy: str | None = None
+    code_parent_rules: list[dict[str, str]] = Field(default_factory=list)
+    code_patterns: dict[str, str] = Field(default_factory=dict)
+    code_scope_statement_types: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Ordered source-facing Standard Grouping statement types that the SFI "
+            "producer/checker must return in a coded candidate's code_scope_values. "
+            "A candidate code is unique only within this reviewed semantic scope. "
+            "The registry validates and canonicalizes the supplied values but does not "
+            "infer code scope from row text, section paths, or candidate wording. Omit "
+            "a code type from this mapping when its codes are document-global."
+        ),
+    )
+    excluded_table_columns_signatures: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Column signatures that should never be sent through the table SFI "
+            "extraction path, even if another table rule would otherwise include them."
+        ),
+    )
+    excluded_table_section_patterns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Regex patterns over bounded nearby heading/section text that exclude "
+            "tables from SFI extraction, even if their column signature is otherwise "
+            "eligible."
+        ),
+    )
+    grade_level_mapping: dict[str, list[LearningCommonsGradeLevel]] = Field(
+        default_factory=dict,
+        description=(
+            "Maps source-canonical local grade, class, year, stage, or band values "
+            "to zero or more Learning Commons grade values. Keys must use canonical "
+            "controlled values rather than aliases. An explicit empty target list "
+            "means the local value was reviewed but intentionally has no Learning "
+            "Commons grade equivalent."
+        ),
+    )
+    grade_level_statement_types: list[str] = Field(
+        description=(
+            "Ordered canonical statement_type labels whose own values or identity "
+            "scope values populate StandardsFrameworkItem.grade_level. Supply an "
+            "explicit empty list when the framework has no applicable grade, year, "
+            "class, stage, band, or equivalent item-level dimension."
+        )
+    )
+    identity_scope_statement_types: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Ordered source-facing Standard Grouping statement types that the SFI "
+            "producer/checker must return in each candidate's identity_scope_values. "
+            "The registry validates the exact configured dimensions, mechanically "
+            "canonicalizes configured aliases, and constructs a deterministic key; it "
+            "does not independently infer semantic scope."
+        ),
+    )
+    included_table_columns_signatures: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Column signatures that identify table segments eligible for SFI extraction."
+        ),
+    )
+    included_table_section_patterns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Regex patterns over bounded nearby heading/section text that can include "
+            "tables when column signatures alone are not sufficient."
+        ),
+    )
+    max_dedup_review_set_candidates: Optional[int] = Field(
+        default=None,
+        description=(
+            "Maximum number of SFI registry candidates to include in one dedup "
+            "LLM review set. Set to null to use the full length of each connected "
+            "candidate set."
+        ),
+        ge=2,
+    )
+    max_has_child_parent_candidates: int = Field(
+        default=24,
+        description=(
+            "Maximum number of parent candidates to include in one hasChild "
+            "parent-selection set, including the StandardsFramework root fallback."
+        ),
+        ge=2,
+    )
+    max_has_child_section_path_labels: int = Field(
+        default=12,
+        description=(
+            "Maximum number of recent section-path labels to expose and use as "
+            "hasChild section-path evidence after reversing DocumentIR section paths "
+            "so nearest/current labels come first."
+        ),
+        ge=1,
+    )
+    max_rows_per_table_window: Optional[int] = Field(
+        default=20,
+        description=(
+            "Maximum number of table body rows per extraction window. Set to null "
+            "to emit one whole-table window per selected table."
+        ),
+    )
+    row_overlap: int = Field(default=1, ge=0)
+    sfi_dedup_context_statement_types: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Statement types to include as context-bearing items in nearby SFI "
+            "dedup source windows. When empty, use all statement types whose "
+            "configured normalized_statement_type is 'Standard Grouping'."
+        ),
+    )
+    sfi_dedup_context_window_radius: int = Field(
+        default=1,
+        description=(
+            "Number of extraction windows before and after each reviewed candidate's "
+            "window to include as shared source context for the SFI dedup producer "
+            "and checker. This setting does not change candidate identity, duplicate "
+            "buckets, review signals, or review-component membership, but changing "
+            "the available context may change an LLM dedup decision."
+        ),
+        ge=0,
+    )
+    sfi_dedup_instructions: str
+    sfi_extraction_instructions: str
+    sfi_extraction_validation_instructions: str = Field(
+        description=(
+            "Curriculum-specific instructions for the second-stage SFI validation "
+            "LLM, including known source anomalies, edge cases, and distinctions "
+            "that require semantic review beyond universal Python integrity checks."
+        )
+    )
+    sfi_has_child_instructions: str
+    sfi_has_child_parent_policy: dict[str, list[_SFIHasChildParentPolicyEntry]] = Field(
+        description=(
+            "Complete direct hasChild parent policy keyed by child statement_type. "
+            "Every listed parent type is allowed; min_count and max_count define "
+            "the cardinality required for a resolved child. An empty list means the "
+            "child statement_type attaches directly to the StandardsFramework root."
+        )
+    )
+    sfi_has_child_statement_type_hierarchy: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional broad-to-narrow statement_type ordering used only for "
+            "active-outline retrieval and ranking. If omitted, statement_type_policy "
+            "order is used. Direct-parent eligibility and cardinality come exclusively "
+            "from sfi_has_child_parent_policy."
+        ),
+    )
+    sfi_has_child_validation_instructions: str = Field(
+        description=(
+            "Curriculum-specific instructions for the independent hasChild checker, "
+            "including known source-order anomalies, repeated-label distinctions, "
+            "scope conflicts, and unresolved-parent policy that require semantic "
+            "review beyond universal Python integrity checks."
+        )
+    )
+    statement_type_policy: list[_AcademicStandardStatementTypePolicyItem] = Field(
+        description=(
+            "Canonical curriculum-specific statement_type labels allowed in "
+            "SFIExtractionResult.sfi_candidates. The LLM must output only these "
+            "labels; aliases are used only for prompt guidance and validation errors."
+        ),
+        min_length=1,
+    )
+    synthetic_merge_key_fields: list[str] = Field(
+        default_factory=lambda: [
+            "country",
+            "subject",
+            "normalized_statement_type",
+            "statement_type",
+            "identity_scope",
+            "normalized_text",
+        ]
+    )
+    table_section_pattern_page_lookback: int = Field(
+        default=2,
+        description=(
+            "Maximum number of pages before a table's start page from which "
+            "DocumentIR section-path headings may be used for included/excluded "
+            "table section-pattern matching. If no heading falls within the bounded "
+            "page range, the nearest preceding section-path heading is used."
+        ),
+        ge=0,
+    )
+
+    @field_validator("sfi_has_child_parent_policy", mode="before")
+    @classmethod
+    def validate_sfi_has_child_parent_policy(cls, v: Any) -> dict[str, Any]:
+        """Clean child statement-type keys in the unified parent policy.
+
+        Parameters
+        ----------
+        v
+            Raw mapping from child statement types to parent-policy entries.
+
+        Returns
+        -------
+        dict[str, Any]
+            Mapping with stripped non-empty child labels.
+
+        Raises
+        ------
+        TypeError
+            If the policy is not a mapping, a child label is not a string, or a child
+            policy is not a list.
+        ValueError
+            If a child label is blank or duplicated after stripping.
+        """
+
+        if not isinstance(v, dict):
+            raise TypeError(
+                "CreateKGConfig.as.sfi_has_child_parent_policy must be a mapping "
+                "from child statement_type labels to parent-policy entry lists."
+            )
+
+        cleaned: dict[str, Any] = {}
+
+        for child_statement_type, parent_policy_entries in v.items():
+            if not isinstance(child_statement_type, str):
+                raise TypeError(
+                    "CreateKGConfig.as.sfi_has_child_parent_policy keys must be "
+                    "strings."
+                )
+
+            child_statement_type_clean = child_statement_type.strip()
+
+            if not child_statement_type_clean:
+                raise ValueError(
+                    "CreateKGConfig.as.sfi_has_child_parent_policy keys must be "
+                    "non-empty after stripping."
+                )
+
+            if child_statement_type_clean in cleaned:
+                raise ValueError(
+                    f"CreateKGConfig.as.sfi_has_child_parent_policy contains duplicate "
+                    f"child label {child_statement_type_clean!r} after stripping."
+                )
+
+            if not isinstance(parent_policy_entries, list):
+                raise TypeError(
+                    "CreateKGConfig.as.sfi_has_child_parent_policy values must be "
+                    "lists of parent-policy entries."
+                )
+
+            cleaned[child_statement_type_clean] = parent_policy_entries
+
+        return cleaned
+
+    @field_validator("sfi_dedup_context_statement_types")
+    @classmethod
+    def validate_sfi_dedup_context_statement_types(cls, v: list[str]) -> list[str]:
+        """Clean configured statement types used as SFI dedup context items.
+
+        Parameters
+        ----------
+        v
+            Optional statement-type labels to include in compact dedup context windows.
+
+        Returns
+        -------
+        list[str]
+            Cleaned labels in stable order. An empty list selects all configured
+            Standard Grouping statement types at runtime.
+
+        Raises
+        ------
+        TypeError
+            If any configured value is not a string.
+        """
+
+        return cls._clean_selection_string_list(
+            field_name="sfi_dedup_context_statement_types", values=v
+        )
+
+    @field_validator("sfi_has_child_statement_type_hierarchy")
+    @classmethod
+    def validate_sfi_has_child_statement_type_hierarchy(cls, v: list[str]) -> list[str]:
+        """Clean and de-duplicate the optional hasChild statement-type hierarchy.
+
+        Parameters
+        ----------
+        v
+            Configured statement_type hierarchy labels from broadest parent to
+            narrowest child.
+
+        Returns
+        -------
+        list[str]
+            Cleaned hierarchy labels in stable order. Empty means use
+            statement_type_policy order.
+
+        Raises
+        ------
+        TypeError
+            If any hierarchy item is not a string.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for statement_type in v or []:
+            if not isinstance(statement_type, str):
+                raise TypeError(
+                    "CreateKGConfig.as.sfi_has_child_statement_type_hierarchy "
+                    "must contain only strings."
+                )
+
+            statement_type_clean = statement_type.strip()
+
+            if not statement_type_clean or statement_type_clean in seen:
+                continue
+
+            cleaned.append(statement_type_clean)
+            seen.add(statement_type_clean)
+
+        return cleaned
+
+    @field_validator(
+        "sfi_dedup_instructions",
+        "sfi_extraction_instructions",
+        "sfi_extraction_validation_instructions",
+        "sfi_has_child_instructions",
+        "sfi_has_child_validation_instructions",
+        mode="before",
+    )
+    @classmethod
+    def _strip_and_require_non_empty(cls, v: str) -> str:
+        """Strip whitespace and require non-empty strings for required fields.
+
+        Parameters
+        ----------
+        v
+            The input string value to validate.
+
+        Returns
+        -------
+        str
+            The validated and stripped string value.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+    @field_validator("bilingual_pair_policy", mode="before")
+    @classmethod
+    def _strip_optional_strings(cls, v: str | None) -> str | None:
+        """Strip optional string fields and normalize blank strings to None.
+
+        Parameters
+        ----------
+        v
+            The input optional string value.
+
+        Returns
+        -------
+        str | None
+            The stripped string, or None for blank/None values.
+
+        Raises
+        ------
+        TypeError
+            If the input is not a string or None.
+        """
+
+        if v is None:
+            return None
+
+        if not isinstance(v, str):
+            raise TypeError("Expected a string or None")
+
+        v2 = v.strip()
+        return v2 if v2 else None
+
+    @staticmethod
+    def _clean_selection_pattern_list(
+        *, field_name: str, values: list[str]
+    ) -> list[str]:
+        """Clean, de-duplicate, and compile-check selection regex patterns.
+
+        Parameters
+        ----------
+        field_name
+            Human-readable field name used in error messages.
+        values
+            Configured regex pattern strings.
+
+        Returns
+        -------
+        list[str]
+            Cleaned and de-duplicated regex patterns in stable order.
+
+        Raises
+        ------
+        TypeError
+            If any pattern is not a string.
+        ValueError
+            If any non-empty pattern does not compile.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for pattern in values or []:
+            if not isinstance(pattern, str):
+                raise TypeError(
+                    f"CreateKGConfig.as.{field_name} must contain only strings."
+                )
+
+            pattern_clean = pattern.strip()
+
+            if not pattern_clean:
+                continue
+
+            try:
+                re.compile(pattern_clean)
+            except re.error as exc:
+                raise ValueError(
+                    f"Invalid regex in CreateKGConfig.as.{field_name}: "
+                    f"{pattern_clean!r}: {exc}"
+                ) from exc
+
+            if pattern_clean not in seen:
+                cleaned.append(pattern_clean)
+                seen.add(pattern_clean)
+
+        return cleaned
+
+    @staticmethod
+    def _clean_selection_string_list(
+        *, field_name: str, values: list[str]
+    ) -> list[str]:
+        """Clean and de-duplicate KG config selection string lists.
+
+        Parameters
+        ----------
+        field_name
+            Human-readable field name used in error messages.
+        values
+            Configured string values.
+
+        Returns
+        -------
+        list[str]
+            Cleaned and de-duplicated strings in stable order.
+
+        Raises
+        ------
+        TypeError
+            If any value is not a string.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for value in values or []:
+            if not isinstance(value, str):
+                raise TypeError(
+                    f"CreateKGConfig.as.{field_name} must contain only strings."
+                )
+
+            value_clean = value.strip()
+
+            if not value_clean:
+                continue
+
+            if value_clean not in seen:
+                cleaned.append(value_clean)
+                seen.add(value_clean)
+
+        return cleaned
+
+    @staticmethod
+    def _clean_grade_level_mapping_targets(
+        *, local_value: str, raw_targets: object
+    ) -> list[str]:
+        """Clean the target grade values configured for a single local grade.
+
+        Parameters
+        ----------
+        local_value
+            Normalized source-canonical local grade key the targets map to, used only
+            in error messages.
+        raw_targets
+            Raw target collection configured for `local_value`.
+
+        Returns
+        -------
+        list[str]
+            Stripped target values in input order.
+
+        Raises
+        ------
+        TypeError
+            If the target collection or any target value is not the correct type.
+        ValueError
+            If the target list contains duplicates after whitespace normalization.
+        """
+
+        if not isinstance(raw_targets, list):
+            raise TypeError(
+                "CreateKGConfig.as.grade_level_mapping values must be lists."
+            )
+
+        targets: list[str] = []
+        seen_targets: set[str] = set()
+
+        for raw_target in raw_targets:
+            if not isinstance(raw_target, str):
+                raise TypeError(
+                    "CreateKGConfig.as.grade_level_mapping target values must "
+                    "be strings."
+                )
+
+            target = raw_target.strip()
+
+            if target in seen_targets:
+                raise ValueError(
+                    "CreateKGConfig.as.grade_level_mapping target lists must not "
+                    f"contain duplicates: {local_value!r} -> {target!r}."
+                )
+
+            targets.append(target)
+            seen_targets.add(target)
+
+        return targets
+
+    @field_validator("grade_level_statement_types")
+    @classmethod
+    def validate_grade_level_statement_types(cls, v: list[str]) -> list[str]:
+        """Clean statement types mapped to LC grade-level output.
+
+        Parameters
+        ----------
+        v
+            Ordered canonical statement_type labels configured for grade-level export.
+
+        Returns
+        -------
+        list[str]
+            Stripped, non-blank labels de-duplicated in input order.
+
+        Raises
+        ------
+        TypeError
+            If any configured value is not a string.
+        """
+
+        return cls._clean_selection_string_list(
+            field_name="grade_level_statement_types", values=v
+        )
+
+    @field_validator("grade_level_mapping", mode="before")
+    @classmethod
+    def validate_grade_level_mapping(
+        cls, value: dict[str, list[str]] | None
+    ) -> dict[str, list[str]]:
+        """Validate and normalize configured local-to-Learning-Commons grade mappings.
+
+        Parameters
+        ----------
+        value
+            Raw mapping from source-canonical local grade values to Learning Commons
+            grade values.
+
+        Returns
+        -------
+        dict[str, list[str]]
+            Cleaned mapping with stripped keys and stable target ordering.
+
+        Raises
+        ------
+        TypeError
+            If the mapping, a mapping key, or a target collection has the wrong type.
+        ValueError
+            If a key is blank or a target list contains duplicates.
+        """
+
+        if value is None:
+            return {}
+
+        if not isinstance(value, dict):
+            raise TypeError("CreateKGConfig.as.grade_level_mapping must be a mapping.")
+
+        cleaned: dict[str, list[str]] = {}
+
+        for raw_local_value, raw_targets in value.items():
+            if not isinstance(raw_local_value, str):
+                raise TypeError(
+                    "CreateKGConfig.as.grade_level_mapping keys must be strings."
+                )
+
+            local_value = raw_local_value.strip()
+
+            if not local_value:
+                raise ValueError(
+                    "CreateKGConfig.as.grade_level_mapping keys must be non-empty."
+                )
+
+            if local_value in cleaned:
+                raise ValueError(
+                    "CreateKGConfig.as.grade_level_mapping contains duplicate keys "
+                    f"after whitespace normalization: {local_value!r}."
+                )
+
+            cleaned[local_value] = cls._clean_grade_level_mapping_targets(
+                local_value=local_value, raw_targets=raw_targets
+            )
+
+        return cleaned
+
+    @field_validator(
+        "excluded_table_columns_signatures", "included_table_columns_signatures"
+    )
+    @classmethod
+    def validate_selection_string_lists(cls, v: list[str]) -> list[str]:
+        """Validate non-regex selection string lists.
+
+        Parameters
+        ----------
+        v
+            Configured selection strings.
+
+        Returns
+        -------
+        list[str]
+            Cleaned and de-duplicated strings in stable order.
+        """
+
+        return cls._clean_selection_string_list(
+            field_name="selection string list", values=v
+        )
+
+    @field_validator(
+        "excluded_table_section_patterns", "included_table_section_patterns"
+    )
+    @classmethod
+    def validate_selection_pattern_lists(cls, v: list[str]) -> list[str]:
+        """Validate regex-based selection pattern lists.
+
+        Parameters
+        ----------
+        v
+            Configured regex patterns.
+
+        Returns
+        -------
+        list[str]
+            Cleaned and de-duplicated regex patterns in stable order.
+        """
+
+        return cls._clean_selection_pattern_list(
+            field_name="selection pattern list", values=v
+        )
+
+    @field_validator("code_scope_statement_types")
+    @classmethod
+    def validate_code_scope_statement_types(
+        cls, v: dict[str, list[str]]
+    ) -> dict[str, list[str]]:
+        """Validate and clean configured code-scope statement-type lists.
+
+        Parameters
+        ----------
+        v
+            Mapping from code-pattern keys to ordered scope statement-type labels.
+
+        Returns
+        -------
+        dict[str, list[str]]
+            Cleaned mapping preserving configured key and scope order.
+
+        Raises
+        ------
+        TypeError
+            If keys, values, or scope labels have invalid types.
+        ValueError
+            If a code type or scope label is blank, or if a scope list contains
+            duplicate labels.
+        """
+
+        cleaned: dict[str, list[str]] = {}
+
+        for code_type, scope_statement_types in v.items():
+            if not isinstance(code_type, str):
+                raise TypeError(
+                    "CreateKGConfig.as.code_scope_statement_types keys must be strings."
+                )
+
+            code_type_clean = code_type.strip()
+
+            if not code_type_clean:
+                raise ValueError(
+                    "CreateKGConfig.as.code_scope_statement_types cannot contain a "
+                    "blank code type."
+                )
+
+            if code_type_clean in cleaned:
+                raise ValueError(
+                    f"CreateKGConfig.as.code_scope_statement_types contains duplicate "
+                    f"code type {code_type_clean!r} after stripping whitespace."
+                )
+
+            if not isinstance(scope_statement_types, list):
+                raise TypeError(
+                    "CreateKGConfig.as.code_scope_statement_types values must be "
+                    "lists of statement_type labels."
+                )
+
+            cleaned_scope_statement_types: list[str] = []
+            seen_scope_statement_types: set[str] = set()
+
+            for scope_statement_type in scope_statement_types:
+                if not isinstance(scope_statement_type, str):
+                    raise TypeError(
+                        "CreateKGConfig.as.code_scope_statement_types scope labels "
+                        "must be strings."
+                    )
+
+                scope_statement_type_clean = scope_statement_type.strip()
+
+                if (
+                    not scope_statement_type_clean
+                    or scope_statement_type_clean in seen_scope_statement_types
+                ):
+                    detail = (
+                        "a blank scope statement_type label."
+                        if not scope_statement_type_clean
+                        else (
+                            f"a duplicate scope label "
+                            f"{scope_statement_type_clean!r} for code type "
+                            f"{code_type_clean!r}."
+                        )
+                    )
+                    raise ValueError(
+                        f"CreateKGConfig.as.code_scope_statement_types contains {detail}"
+                    )
+
+                cleaned_scope_statement_types.append(scope_statement_type_clean)
+                seen_scope_statement_types.add(scope_statement_type_clean)
+
+            if not cleaned_scope_statement_types:
+                raise ValueError(
+                    "CreateKGConfig.as.code_scope_statement_types entries must "
+                    "contain at least one scope statement_type label. Omit a code "
+                    "type entirely when its codes are document-global."
+                )
+
+            cleaned[code_type_clean] = cleaned_scope_statement_types
+
+        return cleaned
+
+    @staticmethod
+    def _clean_identity_scope_statement_type_list(
+        *, scope_statement_types: object, target_statement_type: str
+    ) -> list[str]:
+        """Clean and validate one target's identity-scope statement-type list.
+
+        Parameters
+        ----------
+        scope_statement_types
+            Raw configured value for the target; expected to be a list of labels.
+        target_statement_type
+            Already-cleaned target statement type, used only in error messages.
+
+        Returns
+        -------
+        list[str]
+            Whitespace-stripped scope labels in configured order, de-duplicated of
+            nothing (duplicates are rejected rather than dropped).
+
+        Raises
+        ------
+        TypeError
+            If the value is not a list or a scope label is not a string.
+        ValueError
+            If a scope label is blank, the list is empty, or it contains duplicates.
+        """
+
+        if not isinstance(scope_statement_types, list):
+            raise TypeError(
+                "CreateKGConfig.as.identity_scope_statement_types values must be "
+                "lists of statement_type labels."
+            )
+
+        cleaned_scope_statement_types: list[str] = []
+        seen_scope_statement_types: set[str] = set()
+
+        for scope_statement_type in scope_statement_types:
+            if not isinstance(scope_statement_type, str):
+                raise TypeError(
+                    "CreateKGConfig.as.identity_scope_statement_types scope labels "
+                    "must be strings."
+                )
+
+            scope_statement_type_clean = scope_statement_type.strip()
+
+            if not scope_statement_type_clean:
+                raise ValueError(
+                    "CreateKGConfig.as.identity_scope_statement_types cannot "
+                    "contain a blank scope statement_type label."
+                )
+
+            if scope_statement_type_clean in seen_scope_statement_types:
+                raise ValueError(
+                    f"CreateKGConfig.as.identity_scope_statement_types contains "
+                    f"duplicate scope label {scope_statement_type_clean!r} for "
+                    f"target statement_type {target_statement_type!r}."
+                )
+
+            cleaned_scope_statement_types.append(scope_statement_type_clean)
+            seen_scope_statement_types.add(scope_statement_type_clean)
+
+        if not cleaned_scope_statement_types:
+            raise ValueError(
+                "CreateKGConfig.as.identity_scope_statement_types entries must "
+                "contain at least one scope statement_type label."
+            )
+
+        return cleaned_scope_statement_types
+
+    @field_validator("identity_scope_statement_types")
+    @classmethod
+    def validate_identity_scope_statement_types(
+        cls, v: dict[str, list[str]]
+    ) -> dict[str, list[str]]:
+        """Validate configured semantic identity-scope statement-type lists.
+
+        Parameters
+        ----------
+        v
+            Mapping from candidate statement types to ordered identity-scope labels.
+
+        Returns
+        -------
+        dict[str, list[str]]
+            Cleaned mapping preserving configured target and scope order.
+
+        Raises
+        ------
+        TypeError
+            If keys, values, or scope labels have invalid types.
+        ValueError
+            If a target or scope label is blank, or a scope list is empty or contains
+            duplicate labels.
+        """
+
+        cleaned: dict[str, list[str]] = {}
+
+        for statement_type, scope_statement_types in v.items():
+            if not isinstance(statement_type, str):
+                raise TypeError(
+                    "CreateKGConfig.as.identity_scope_statement_types keys must be "
+                    "strings."
+                )
+
+            statement_type_clean = statement_type.strip()
+
+            if not statement_type_clean:
+                raise ValueError(
+                    "CreateKGConfig.as.identity_scope_statement_types cannot contain "
+                    "a blank target statement_type."
+                )
+
+            if statement_type_clean in cleaned:
+                raise ValueError(
+                    f"CreateKGConfig.as.identity_scope_statement_types contains "
+                    f"duplicate target statement_type {statement_type_clean!r} after "
+                    f"stripping whitespace."
+                )
+
+            cleaned[statement_type_clean] = (
+                cls._clean_identity_scope_statement_type_list(
+                    scope_statement_types=scope_statement_types,
+                    target_statement_type=statement_type_clean,
+                )
+            )
+
+        return cleaned
+
+    @field_validator("code_patterns")
+    @classmethod
+    def validate_code_patterns(cls, v: dict[str, str]) -> dict[str, str]:
+        """Validate that all configured code patterns compile as regular expressions.
+
+        Parameters
+        ----------
+        v
+            Mapping of code pattern name to regular expression string.
+
+        Returns
+        -------
+        dict[str, str]
+            The original pattern mapping.
+
+        Raises
+        ------
+        TypeError
+            If a code pattern value is not a string.
+        ValueError
+            If a code pattern is empty or does not compile.
+        """
+
+        for name, pattern in v.items():
+            if not isinstance(pattern, str):
+                raise TypeError(
+                    f"as.code_patterns[{name!r}] must be a string. "
+                    f"Got {type(pattern).__name__}."
+                )
+
+            if not pattern.strip():
+                raise ValueError(f"as.code_patterns[{name!r}] must be non-empty.")
+
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f"Invalid regex for as.code_patterns[{name!r}]: {exc}"
+                ) from exc
+
+        return v
+
+    @field_validator("synthetic_merge_key_fields")
+    @classmethod
+    def validate_synthetic_merge_key_fields(cls, v: list[str]) -> list[str]:
+        """Validate synthetic merge key fields are non-empty strings.
+
+        Parameters
+        ----------
+        v
+            Configured synthetic merge key field names.
+
+        Returns
+        -------
+        list[str]
+            Cleaned and de-duplicated field names in stable order.
+        """
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for field_name in v or []:
+            if not isinstance(field_name, str):
+                raise TypeError(
+                    "CreateKGConfig.as.synthetic_merge_key_fields must contain only strings."
+                )
+
+            field_name_clean = field_name.strip()
+
+            if not field_name_clean:
+                continue
+
+            if field_name_clean not in seen:
+                cleaned.append(field_name_clean)
+                seen.add(field_name_clean)
+
+        if not cleaned:
+            raise ValueError(
+                "CreateKGConfig.as.synthetic_merge_key_fields must contain at least one value."
+            )
+
+        return cleaned
+
+    @staticmethod
+    def _statement_type_policy_key(value: str) -> str:
+        """Build a stable comparison key for statement-type labels and aliases.
+
+        Parameters
+        ----------
+        value
+            Statement-type label or alias.
+
+        Returns
+        -------
+        str
+            Casefolded key with non-alphanumeric runs collapsed to one space.
+        """
+
+        return re.sub(r"[^0-9a-z]+", " ", str(value or "").casefold()).strip()
+
+    @field_validator("statement_type_policy")
+    @classmethod
+    def validate_statement_type_policy(
+        cls, v: list[_AcademicStandardStatementTypePolicyItem]
+    ) -> list[_AcademicStandardStatementTypePolicyItem]:
+        """Validate canonical statement-type policy labels and aliases.
+
+        Parameters
+        ----------
+        v
+            Configured statement-type policy items.
+
+        Returns
+        -------
+        list[_AcademicStandardStatementTypePolicyItem]
+            Validated policy items in configured order.
+
+        Raises
+        ------
+        ValueError
+            If canonical labels or aliases conflict.
+        """
+
+        if not v:
+            raise ValueError("CreateKGConfig.as.statement_type_policy is required.")
+
+        alias_to_statement_type: dict[str, str] = {}
+        canonical_keys: set[str] = set()
+
+        for item in v:
+            canonical_key = cls._statement_type_policy_key(item.statement_type)
+
+            if canonical_key in canonical_keys:
+                raise ValueError(
+                    "CreateKGConfig.as.statement_type_policy contains duplicate "
+                    f"statement_type labels after normalization: {item.statement_type!r}"
+                )
+
+            canonical_keys.add(canonical_key)
+
+            for alias in [item.statement_type, *item.aliases]:
+                alias_key = cls._statement_type_policy_key(alias)
+
+                if not alias_key:
+                    continue
+
+                existing = alias_to_statement_type.get(alias_key)
+
+                if existing is not None and existing != item.statement_type:
+                    raise ValueError(
+                        "CreateKGConfig.as.statement_type_policy alias conflict: "
+                        f"{alias!r} maps to both {existing!r} and "
+                        f"{item.statement_type!r}."
+                    )
+
+                alias_to_statement_type[alias_key] = item.statement_type
+
+        return v
+
+    def _validate_windowing(self) -> None:
+        """Ensure table row windowing configuration is internally consistent.
+
+        Raises
+        ------
+        ValueError
+            If max_rows_per_table_window is non-positive, or if row_overlap is not
+            smaller than max_rows_per_table_window when chunking is enabled.
+        """
+
+        if self.max_rows_per_table_window is None:
+            return
+
+        if self.max_rows_per_table_window <= 0:
+            raise ValueError(
+                "CreateKGConfig.as.max_rows_per_table_window must be positive or null."
+            )
+
+        if self.row_overlap >= self.max_rows_per_table_window:
+            raise ValueError(
+                "CreateKGConfig.as.row_overlap must be smaller than "
+                "as.max_rows_per_table_window."
+            )
+
+    @staticmethod
+    def _validate_code_parent_rule(
+        *, idx: int, known: set[str], rule: dict[str, Any]
+    ) -> None:
+        """Validate a single code parent rule.
+
+        Parameters
+        ----------
+        idx
+            Index of the rule, used in error messages.
+        known
+            Set of known code pattern names.
+        rule
+            The code parent rule mapping to validate.
+
+        Raises
+        ------
+        ValueError
+            If the rule references unknown patterns, uses a method other than
+            `regex_substitution`, is missing required substitution fields, or has an
+            invalid regex.
+        """
+
+        child = rule.get("child")
+        parent = rule.get("parent")
+        method = rule.get("method")
+
+        if child not in known:
+            raise ValueError(
+                f"as.code_parent_rules[{idx}] unknown child pattern: {child!r}"
+            )
+
+        if parent not in known:
+            raise ValueError(
+                f"as.code_parent_rules[{idx}] unknown parent pattern: {parent!r}"
+            )
+
+        if method != "regex_substitution":
+            raise ValueError(
+                f"as.code_parent_rules[{idx}] invalid method: {method!r}. "
+                "Only 'regex_substitution' is supported."
+            )
+
+        if "regex" not in rule or "replacement" not in rule:
+            raise ValueError(
+                f"as.code_parent_rules[{idx}] regex_substitution requires regex and replacement"
+            )
+
+        re.compile(rule["regex"])
+
+    def _validate_code_parent_rules(self, known: set[str]) -> None:
+        """Validate all configured code parent rules.
+
+        Parameters
+        ----------
+        known
+            Set of known code pattern names.
+        """
+
+        for idx, rule in enumerate(self.code_parent_rules):
+            self._validate_code_parent_rule(idx=idx, known=known, rule=rule)
+
+    def _validate_statement_type_policy_code_types(self, known: set[str]) -> None:
+        """Validate statement-type policy code_type references.
+
+        Parameters
+        ----------
+        known
+            Known KG config code-pattern keys.
+
+        Raises
+        ------
+        ValueError
+            If a statement-type policy item references an unknown code_type.
+        """
+
+        for item in self.statement_type_policy:
+            if item.code_type is not None and item.code_type not in known:
+                raise ValueError(
+                    "CreateKGConfig.as.statement_type_policy references unknown "
+                    f"code_type {item.code_type!r} for statement_type "
+                    f"{item.statement_type!r}. Known code types: {sorted(known)}"
+                )
+
+    def _validate_code_scope_policy(self, known: set[str]) -> None:
+        """Validate code-scope references against code and statement-type policy.
+
+        Parameters
+        ----------
+        known
+            Known configured code-pattern keys.
+
+        Raises
+        ------
+        ValueError
+            If a scope mapping references an unknown or unused code type, an unknown
+            statement type, a non-grouping statement type, or a grouping statement
+            type without controlled values.
+        """
+
+        policy_by_statement_type = {
+            item.statement_type: item for item in self.statement_type_policy
+        }
+        used_code_types = {
+            item.code_type
+            for item in self.statement_type_policy
+            if item.code_type is not None
+        }
+
+        for code_type, scope_statement_types in self.code_scope_statement_types.items():
+            if code_type not in known:
+                raise ValueError(
+                    f"CreateKGConfig.as.code_scope_statement_types references unknown "
+                    f"code type {code_type!r}. Known code types: {sorted(known)}"
+                )
+
+            if code_type not in used_code_types:
+                raise ValueError(
+                    f"CreateKGConfig.as.code_scope_statement_types references code "
+                    f"type {code_type!r}, but no statement_type_policy item uses it."
+                )
+
+            for scope_statement_type in scope_statement_types:
+                policy_item = policy_by_statement_type.get(scope_statement_type)
+
+                if policy_item is None:
+                    raise ValueError(
+                        f"CreateKGConfig.as.code_scope_statement_types references "
+                        f"unknown statement_type {scope_statement_type!r}. Known "
+                        f"statement types: {sorted(policy_by_statement_type)}"
+                    )
+
+                if policy_item.normalized_statement_type != "Standard Grouping":
+                    raise ValueError(
+                        f"CreateKGConfig.as.code_scope_statement_types scope "
+                        f"statement_type {scope_statement_type!r} must normalize to "
+                        f"'Standard Grouping'."
+                    )
+
+                if not policy_item.controlled_values:
+                    raise ValueError(
+                        f"CreateKGConfig.as.code_scope_statement_types scope "
+                        f"statement_type {scope_statement_type!r} must define "
+                        f"controlled_values for deterministic resolution."
+                    )
+
+    def _validate_identity_scope_policy(self) -> None:
+        """Validate checker-selected identity-scope policy and identity-key usage.
+
+        Raises
+        ------
+        ValueError
+            If a target or scope statement type is unknown, a scope type is not a
+            controlled Standard Grouping, or configured identity scope is omitted from
+            the synthetic identity recipe.
+        """
+
+        policy_by_statement_type = {
+            item.statement_type: item for item in self.statement_type_policy
+        }
+
+        for (
+            statement_type,
+            scope_statement_types,
+        ) in self.identity_scope_statement_types.items():
+            if statement_type not in policy_by_statement_type:
+                raise ValueError(
+                    f"CreateKGConfig.as.identity_scope_statement_types references "
+                    f"unknown target statement_type {statement_type!r}. Known "
+                    f"statement types: {sorted(policy_by_statement_type)}"
+                )
+
+            for scope_statement_type in scope_statement_types:
+                policy_item = policy_by_statement_type.get(scope_statement_type)
+
+                if policy_item is None:
+                    raise ValueError(
+                        f"CreateKGConfig.as.identity_scope_statement_types references "
+                        f"unknown scope statement_type {scope_statement_type!r}. Known "
+                        f"statement types: {sorted(policy_by_statement_type)}"
+                    )
+
+                if policy_item.normalized_statement_type != "Standard Grouping":
+                    raise ValueError(
+                        f"CreateKGConfig.as.identity_scope_statement_types scope "
+                        f"statement_type {scope_statement_type!r} must normalize to "
+                        f"'Standard Grouping'."
+                    )
+
+                if not policy_item.controlled_values:
+                    raise ValueError(
+                        f"CreateKGConfig.as.identity_scope_statement_types scope "
+                        f"statement_type {scope_statement_type!r} must define "
+                        f"controlled_values so producer/checker outputs can use "
+                        f"configured canonical scope values."
+                    )
+
+        if (
+            self.identity_scope_statement_types
+            and "identity_scope" not in self.synthetic_merge_key_fields
+        ):
+            raise ValueError(
+                "CreateKGConfig.as.synthetic_merge_key_fields must include "
+                "'identity_scope' when identity_scope_statement_types is configured."
+            )
+
+    def _validate_dedup_context_statement_types(self) -> None:
+        """Validate explicitly configured SFI dedup context statement types.
+
+        An empty list is valid and means all configured statement types normalized as
+        `Standard Grouping` are selected when the registry is built.
+
+        Raises
+        ------
+        ValueError
+            If an explicitly configured context statement type is absent from
+            `statement_type_policy`.
+        """
+
+        if not self.sfi_dedup_context_statement_types:
+            return
+
+        known_statement_types = {
+            item.statement_type for item in self.statement_type_policy
+        }
+        unknown_statement_types = sorted(
+            set(self.sfi_dedup_context_statement_types) - known_statement_types
+        )
+
+        if unknown_statement_types:
+            raise ValueError(
+                f"CreateKGConfig.as.sfi_dedup_context_statement_types references "
+                f"unknown statement_type labels: {unknown_statement_types}. Known "
+                f"statement_type labels: {sorted(known_statement_types)}"
+            )
+
+    def _validate_grade_level_statement_types(self) -> None:
+        """Validate statement types mapped to LC grade-level output.
+
+        Raises
+        ------
+        ValueError
+            If the mapping references a statement_type absent from
+            statement_type_policy.
+        """
+
+        known_statement_types = {
+            item.statement_type for item in self.statement_type_policy
+        }
+        unknown_statement_types = sorted(
+            set(self.grade_level_statement_types) - known_statement_types
+        )
+
+        if unknown_statement_types:
+            raise ValueError(
+                f"CreateKGConfig.as.grade_level_statement_types references unknown "
+                f"statement_type labels: {unknown_statement_types}. Known "
+                f"statement_type labels: {sorted(known_statement_types)}"
+            )
+
+    def _validate_grade_level_mapping(self) -> None:
+        """Validate that grade mapping keys use configured canonical values.
+
+        When configured grade statement types define controlled values, every mapping
+        key must be one of those canonical values. Open-vocabulary grade statement
+        types remain valid and are checked against observed values during export.
+
+        Raises
+        ------
+        ValueError
+            If a mapping key is an alias or otherwise absent from the canonical values
+            configured for grade-level statement types.
+        """
+
+        if not self.grade_level_mapping:
+            return
+
+        canonical_values: set[str] = set()
+        has_controlled_values = False
+
+        for policy in self.statement_type_policy:
+            if policy.statement_type not in self.grade_level_statement_types:
+                continue
+
+            if policy.controlled_values:
+                has_controlled_values = True
+                canonical_values.update(
+                    item.canonical_value for item in policy.controlled_values
+                )
+
+        if not has_controlled_values:
+            return
+
+        unknown_values = sorted(set(self.grade_level_mapping) - canonical_values)
+
+        if unknown_values:
+            raise ValueError(
+                f"CreateKGConfig.as.grade_level_mapping keys must use canonical "
+                f"controlled values from the configured grade-level statement types. "
+                f"Unknown keys: {unknown_values}. Canonical values: "
+                f"{sorted(canonical_values)}"
+            )
+
+    def _validate_has_child_statement_type_policy(self) -> None:
+        """Validate the unified hasChild parent policy and hierarchy ordering.
+
+        Raises
+        ------
+        ValueError
+            If the hierarchy or parent policy references unknown statement types, omits
+            a configured child type, duplicates a parent type, or defines no root-level
+            child type.
+        """
+
+        known_statement_types = {
+            item.statement_type for item in self.statement_type_policy
+        }
+
+        if self.sfi_has_child_statement_type_hierarchy:
+            unknown_statement_types = sorted(
+                set(self.sfi_has_child_statement_type_hierarchy) - known_statement_types
+            )
+
+            if unknown_statement_types:
+                raise ValueError(
+                    f"CreateKGConfig.as.sfi_has_child_statement_type_hierarchy "
+                    f"references unknown statement_type labels: "
+                    f"{unknown_statement_types}. Known statement_type labels: "
+                    f"{sorted(known_statement_types)}"
+                )
+
+        parent_policy = self.sfi_has_child_parent_policy
+        unknown_child_types = sorted(set(parent_policy) - known_statement_types)
+        missing_child_types = sorted(known_statement_types - set(parent_policy))
+        unknown_parent_types = sorted(
+            {
+                entry.parent_statement_type
+                for entries in parent_policy.values()
+                for entry in entries
+            }
+            - known_statement_types
+        )
+
+        if unknown_child_types or missing_child_types or unknown_parent_types:
+            raise ValueError(
+                f"CreateKGConfig.as.sfi_has_child_parent_policy must cover every "
+                f"configured statement_type exactly once and reference only known "
+                f"statement types. "
+                f"Unknown child labels: {unknown_child_types}; "
+                f"missing child labels: {missing_child_types}; "
+                f"unknown parent labels: {unknown_parent_types}; "
+                f"known statement_type labels: {sorted(known_statement_types)}"
+            )
+
+        duplicate_parent_types = {
+            child_type: sorted(
+                {
+                    entry.parent_statement_type
+                    for entry in entries
+                    if sum(
+                        candidate.parent_statement_type == entry.parent_statement_type
+                        for candidate in entries
+                    )
+                    > 1
+                }
+            )
+            for child_type, entries in parent_policy.items()
+        }
+        duplicate_parent_types = {
+            child_type: parent_types
+            for child_type, parent_types in duplicate_parent_types.items()
+            if parent_types
+        }
+
+        if duplicate_parent_types:
+            raise ValueError(
+                f"CreateKGConfig.as.sfi_has_child_parent_policy must not repeat one "
+                f"parent statement_type within a child policy. Duplicate entries: "
+                f"{duplicate_parent_types}."
+            )
+
+        root_child_types = sorted(
+            child_type for child_type, entries in parent_policy.items() if not entries
+        )
+
+        if not root_child_types:
+            raise ValueError(
+                "CreateKGConfig.as.sfi_has_child_parent_policy must include at least "
+                "one root-level child statement_type with an empty policy list."
+            )
+
+    def _validate_selection_overlap_policy(self) -> None:
+        """Ensure table-selection policy does not include and exclude the same value.
+
+        Raises
+        ------
+        ValueError
+            If a table columns_signature appears in both included and excluded lists.
+        """
+
+        overlapping_table_signatures = sorted(
+            set(self.included_table_columns_signatures)
+            & set(self.excluded_table_columns_signatures)
+        )
+
+        if overlapping_table_signatures:
+            raise ValueError(
+                f"CreateKGConfig.as table-selection policy cannot include and exclude "
+                f"the same columns_signature values: "
+                f"{overlapping_table_signatures}"
+            )
+
+    @model_validator(mode="after")
+    def validate_academic_standards_configuration(self) -> Self:
+        """Validate cross-field Academic Standards extraction configuration.
+
+        Returns
+        -------
+        Self
+            The validated Academic Standards configuration.
+
+        Raises
+        ------
+        ValueError
+            If code handling, parent rules, table selection, or windowing is invalid.
+        """
+
+        known = set(self.code_patterns.keys())
+        self._validate_windowing()
+        self._validate_code_parent_rules(known)
+        self._validate_code_scope_policy(known)
+        self._validate_dedup_context_statement_types()
+        self._validate_grade_level_mapping()
+        self._validate_grade_level_statement_types()
+        self._validate_identity_scope_policy()
+        self._validate_has_child_statement_type_policy()
+        self._validate_selection_overlap_policy()
+        self._validate_statement_type_policy_code_types(known)
+        return self
+
+
+class _CreateKGLCDedupBlockingConfig(BaseSchema):
+    """LC dedup candidate-nomination thresholds.
+
+    Defaults are empirically calibrated. A curriculum whose calibration
+    warrants different gates overrides them in its own config.
+    """
+
+    containment_min_shared_tokens: int = Field(
+        default=2,
+        description="Minimum shared tokens for the containment rule to fire.",
+        ge=1,
+    )
+    containment_threshold: float = Field(
+        default=0.75,
+        description="Overlap coefficient (shared / smaller token set) gate.",
+        ge=0.0,
+        le=1.0,
+    )
+    corpus_stopword_df: float = Field(
+        default=0.15,
+        description=(
+            "Tokens appearing in more than this fraction of the run's unique "
+            "skill texts are treated as stopwords (language-independent)."
+        ),
+        ge=0.0,
+        le=1.0,
+    )
+    neighborhood_all_pairs_max_size: int = Field(
+        default=12,
+        description=(
+            "Nominate ALL pairs (no similarity gate) among unique texts "
+            "sharing a direct hasChild parent when that neighborhood holds "
+            "at most this many texts; 0 disables the rule."
+        ),
+        ge=0,
+    )
+    tag_jaccard_threshold: float = Field(
+        default=0.5,
+        description="Jaccard gate over folded tag-token bags.",
+        ge=0.0,
+        le=1.0,
+    )
+    token_jaccard_threshold: float = Field(
+        default=0.55,
+        description="Jaccard gate over content-token sets.",
+        ge=0.0,
+        le=1.0,
+    )
+    trigram_jaccard_threshold: float = Field(
+        default=0.6,
+        description="Jaccard gate over character trigrams (language-blind).",
+        ge=0.0,
+        le=1.0,
+    )
+
+
+class _CreateKGLCDedupLanguagePackConfig(BaseSchema):
+    """Language-specific lexical knowledge for LC dedup blocking.
+
+    Declares curated stopwords and affix-folding rules as data in the
+    document profile, so no language ever requires a code change. Omitted
+    means only the language-independent core rules run.
+    """
+
+    min_fold_length: int = Field(
+        default=5,
+        description="Minimum token length before affix folding applies.",
+        ge=1,
+    )
+    stopwords: list[str] = Field(
+        default_factory=list,
+        description="Curated function words excluded from pack token sets.",
+    )
+    strip_prefixes: list[str] = Field(
+        default_factory=list,
+        description="Prefixes folded off tokens (e.g. French elisions).",
+    )
+    strip_suffixes: list[str] = Field(
+        default_factory=list,
+        description="Suffixes folded off tokens (first match wins).",
+    )
+
+
+class _CreateKGLearningComponentsConfig(BaseSchema):
+    """Learning Components configuration for KG creation."""
+
+    generation_instructions: str
+    lc_dedup_batch_size: int = Field(
+        default=25,
+        description="Candidate pairs per LC dedup adjudication request.",
+        ge=1,
+    )
+    lc_dedup_blocking: _CreateKGLCDedupBlockingConfig = Field(
+        default_factory=_CreateKGLCDedupBlockingConfig,
+        description="LC dedup candidate-nomination thresholds.",
+    )
+    lc_dedup_instructions: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional curriculum-specific adjudication policy appended to the "
+            "LC dedup duplicate-pair judge prompt (local conventions such as "
+            "whether whole numbers include negatives). None runs the generic "
+            "conservative rubric alone."
+        ),
+    )
+    lc_dedup_language_pack: Optional[_CreateKGLCDedupLanguagePackConfig] = Field(
+        default=None,
+        description=(
+            "Language pack for LC dedup blocking, declared entirely in the "
+            "document profile. None runs the language-independent core rules "
+            "alone."
+        ),
+    )
+    lc_dedup_scope: Literal["framework", "top_ancestor", "parent", "none"] = Field(
+        default="framework",
+        description=(
+            "Merge scope for duplicate skills: anywhere in the document "
+            "(framework), only under a shared first hasChild-path node "
+            "(top_ancestor), only among siblings (parent), or no cross-SFI "
+            "merging at all (none)."
+        ),
+    )
+    lc_generation_validation_instructions: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional curriculum-specific audit policy for the independent LC "
+            "generation validation agent, including how this source signals "
+            "separable actions and objects, which coordinations name a single "
+            "thing, and what the seed text may never license. None runs the "
+            "generic validation rubric alone."
+        ),
+    )
+    lc_include_sibling_context: bool = Field(
+        default=False,
+        description=(
+            "Include sibling SFIs under the same hasChild parent in each LC "
+            "generation request as disambiguation-only context. Off by "
+            "default; the prompt forbids deriving skill content from siblings."
+        ),
+    )
+    lc_manual_review_overrides: Optional[dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Optional manual-review record for unresolved Academic Standards "
+            "items. When the final Academic Standards bundle has finalization "
+            "exclusions or unresolved root-fallback edges, LC generation "
+            "always proceeds over the resolved subgraph and reports the gaps "
+            "loudly. Set "
+            "allow_unresolved_ancestor_context=true here (with reviewed_by, "
+            "reviewed_at, review_notes) to additionally include seeds whose "
+            "ancestor path passes through an unresolved root-fallback edge. "
+            "Recorded verbatim in the LC generation summary."
+        ),
+    )
+    lc_max_failure_rate: float = Field(
+        default=0.05,
+        description=(
+            "Maximum fraction of eligible LC-source SFIs allowed to fail LLM "
+            "decomposition before the run raises. Isolated failures are "
+            "recorded and the run continues; set 1.0 to disable the guard."
+        ),
+        ge=0.0,
+        le=1.0,
+    )
+    lc_max_skill_text_length: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional maximum character length for one atomic skill "
+            "statement; the LC generation validator retries responses that "
+            "exceed it. Unset means no length ceiling."
+        ),
+        ge=1,
+    )
+    lc_max_skills_per_sfi: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional hard ceiling on atomic skills per SFI; the LC generation "
+            "validator asks for a coarser decomposition when exceeded. Unset "
+            "means the prompt contract alone governs skill count."
+        ),
+        ge=1,
+    )
+    lc_min_skill_text_length: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional minimum character length for one atomic skill "
+            "statement; the LC generation validator retries responses that "
+            "fall short. Unset means no length floor."
+        ),
+        ge=1,
+    )
+    lc_request_batch_size: int = Field(
+        default=1,
+        description=(
+            "Number of LC-source SFIs per generation request. Default 1 (one "
+            "SFI per request, hasChild parity) scopes retries and resume to a "
+            "single SFI; raising it is a throughput knob, not a schema change."
+        ),
+        ge=1,
+    )
+    lc_semantic_dedup: bool = Field(
+        default=True,
+        description=(
+            "Run LC dedup LLM pair adjudication for semantically equivalent "
+            "skills. False limits dedup to exact normalized-text grouping."
+        ),
+    )
+    lc_source_statement_types: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Source-facing SFI statement types eligible as LC-generation seeds. "
+            "When omitted, selection defaults to leaf SFIs whose normalized "
+            "statement type is 'Standard'. When provided, must be non-empty."
+        ),
+    )
+
+    @field_validator("generation_instructions", mode="before")
+    @classmethod
+    def _strip_and_require_non_empty(cls, v: str) -> str:
+        """Strip whitespace and require non-empty strings for required fields.
+
+        Parameters
+        ----------
+        v
+            The input string value to validate.
+
+        Returns
+        -------
+        str
+            The validated and stripped string value.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+    @field_validator("lc_source_statement_types")
+    @classmethod
+    def _validate_lc_source_statement_types(
+        cls, v: Optional[list[str]]
+    ) -> Optional[list[str]]:
+        """Validate the LC-source statement-type allowlist when provided.
+
+        Omitted (None) means "use the leaf default"; an explicitly empty or
+        blank-entry list is a configuration mistake and fails loudly.
+
+        Parameters
+        ----------
+        v
+            The configured allowlist, or None when omitted.
+
+        Returns
+        -------
+        Optional[list[str]]
+            The stripped, order-preserving deduplicated allowlist, or None.
+
+        Raises
+        ------
+        ValueError
+            If the provided allowlist is empty or contains blank entries.
+        """
+
+        if v is None:
+            return None
+        cleaned: list[str] = []
+        for entry in v:
+            stripped = entry.strip()
+            if not stripped:
+                raise ValueError(
+                    "lc_source_statement_types must not contain blank entries."
+                )
+            if stripped not in cleaned:
+                cleaned.append(stripped)
+        if not cleaned:
+            raise ValueError(
+                "lc_source_statement_types must be non-empty when provided; omit "
+                "it entirely to use the leaf-node default."
+            )
+        return cleaned
+
+    @model_validator(mode="after")
+    def _validate_skill_text_length_bounds(self) -> Self:
+        """Validate that skill-text length bounds are consistent when both set.
+
+        Returns
+        -------
+        Self
+            The validated Learning Components configuration.
+
+        Raises
+        ------
+        ValueError
+            If lc_min_skill_text_length exceeds lc_max_skill_text_length.
+        """
+
+        if (
+            self.lc_max_skill_text_length is not None
+            and self.lc_min_skill_text_length is not None
+            and self.lc_min_skill_text_length > self.lc_max_skill_text_length
+        ):
+            raise ValueError(
+                f"lc_min_skill_text_length ({self.lc_min_skill_text_length}) "
+                f"must not exceed lc_max_skill_text_length "
+                f"({self.lc_max_skill_text_length})."
+            )
+        return self
+
+
+class _CreateKGMetadata(BaseSchema):
+    """Framework-level metadata for a KG creation run."""
+
+    adoption_status: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional adoption or approval status of the framework (e.g., 'adopted', "
+            "'draft', 'under review'). Blank strings are normalized to None."
+        ),
+    )
+    attribution_statement: str = Field(
+        description="Required attribution or citation statement to credit the source of the framework."
+    )
+    author: str = Field(
+        description="Author or issuing body responsible for the framework."
+    )
+    country: str = Field(description="Country the framework applies to.")
+    framework_title: str = Field(
+        description="Human-readable title of the academic standards framework."
+    )
+    grades_or_stages: list[str] = Field(
+        default_factory=list,
+        description="Grades or stages covered by the framework (e.g., ['Grade 1', 'Grade 2']).",
+    )
+    is_current: bool = Field(
+        default=True,
+        description=(
+            "Operator declaration that this is the most up-to-date framework "
+            "represented for its jurisdiction and subject."
+        ),
+    )
+    jurisdiction: str = Field(
+        description="Jurisdiction that governs the framework (e.g., a national or regional education authority)."
+    )
+    languages: list[str] = Field(
+        description="Languages present in the framework. Must contain at least one non-empty value."
+    )
+    license: str = Field(
+        description="License under which the framework content is published or used."
+    )
+    primary_language: str = Field(
+        description="Primary language of the framework content."
+    )
+    provider: str = Field(
+        description="Provider or organization supplying the framework data."
+    )
+    subject: str = Field(
+        description="Academic subject the framework covers (e.g., 'Mathematics', 'English')."
+    )
+
+    @field_validator(
+        "attribution_statement",
+        "author",
+        "country",
+        "framework_title",
+        "jurisdiction",
+        "license",
+        "primary_language",
+        "provider",
+        "subject",
+        mode="before",
+    )
+    @classmethod
+    def _strip_and_require_non_empty(cls, v: str) -> str:
+        """Strip whitespace and require non-empty strings for required metadata fields.
+
+        Parameters
+        ----------
+        v
+            Raw value for a required string metadata field.
+
+        Returns
+        -------
+        str
+            The stripped non-empty string.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+    @field_validator("adoption_status", mode="before")
+    @classmethod
+    def _strip_optional_strings(cls, v: Optional[str]) -> Optional[str]:
+        """Strip optional string fields and normalize blank strings to None.
+
+        Parameters
+        ----------
+        v
+            Raw optional adoption-status value.
+
+        Returns
+        -------
+        Optional[str]
+            The stripped string, or None when the value is None or blank.
+
+        Raises
+        ------
+        TypeError
+            If the value is not a string or None.
+        """
+
+        if v is None:
+            return None
+
+        if not isinstance(v, str):
+            raise TypeError("Expected a string or None")
+
+        v2 = v.strip()
+        return v2 if v2 else None
+
+    @field_validator("languages")
+    @classmethod
+    def validate_languages(cls, v: list[str]) -> list[str]:
+        """Validate configured metadata languages are present and de-duplicated.
+
+        Parameters
+        ----------
+        v
+            Raw list of language strings.
+
+        Returns
+        -------
+        list[str]
+            Cleaned, de-duplicated languages in stable order.
+
+        Raises
+        ------
+        TypeError
+            If any language is not a string.
+        ValueError
+            If the list is empty or contains no non-empty values after stripping.
+        """
+
+        if not v:
+            raise ValueError(
+                "CreateKGMetadata.languages must contain at least one value."
+            )
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for language in v:
+            if not isinstance(language, str):
+                raise TypeError("CreateKGMetadata.languages must contain only strings.")
+
+            language_clean = language.strip()
+
+            if not language_clean:
+                continue
+
+            if language_clean not in seen:
+                cleaned.append(language_clean)
+                seen.add(language_clean)
+
+        if not cleaned:
+            raise ValueError(
+                "CreateKGMetadata.languages must contain at least one non-empty value."
+            )
+
+        return cleaned
+
+
 # Config schemas.
+class CreateKGConfig(BaseSchema):
+    """Configuration for knowledge graph creation from DocumentIR.
+
+    The runtime config uses short namespaces under `kgs`:
+
+    - `as` for Academic Standards extraction settings.
+    - `lc` for Learning Components settings.
+
+    Python code accesses those namespaces through the valid attribute names
+    `academic_standards` and `learning_components`.
+    """
+
+    # GENERAL ATTRIBUTES #
+    overwrite: bool = Field(
+        False, description="Overwrite existing knowledge graph artifacts."
+    )
+
+    # ACADEMIC STANDARDS #
+    academic_standards: _CreateKGAcademicStandardsConfig = Field(
+        alias="as",
+        description="Academic Standards extraction settings from the kgs.as config namespace.",
+    )
+
+    # LEARNING COMPONENTS #
+    learning_components: _CreateKGLearningComponentsConfig = Field(
+        alias="lc",
+        description="Learning Components settings from the kgs.lc config namespace.",
+    )
+
+    # FRAMEWORK METADATA #
+    metadata: _CreateKGMetadata
+
+    model_config = ConfigDict(
+        extra="forbid",
+        from_attributes=True,
+        serialize_by_alias=True,
+        validate_by_alias=True,
+        validate_by_name=False,
+    )
+
+
 class ExtractionConfig(BaseSchema):
     """Configuration for page IR extraction from a PDF document."""
 
@@ -357,6 +2909,63 @@ class ExtractionConfig(BaseSchema):
         return v
 
 
+class StitchingConfig(BaseSchema):
+    """Configuration for document IR stitching from verified page IR JSONs.
+
+    NB: `table_filldown_group_cols_max` (fill-down/rowspan reconstruction)
+
+    1. Many curriculum PDFs use **merged cells/rowspans** in the *leftmost grouping
+        columns* (e.g., **Topic**, **Sub-topic**, **Strand**, **Theme**). When
+        extracted, those merged cells often appear as **blank cells** on subsequent
+        rows.
+    2. `table_filldown_group_cols_max` controls **how many leading columns** should
+        have these visually empty cells **filled down** from the most recent non-empty
+        value above. This reconstructs the intended grouping structure without changing
+        the underlying table content.
+            - Only the **first `table_filldown_group_cols_max` columns** are eligible
+                for fill-down.
+            - Columns beyond this are treated as **leaf/content columns** (e.g.,
+                competences/outcomes, activities, expected standards), where blanks
+                typically mean **“no content / not applicable”**, not “repeat previous”.
+    3. Why not set it very large (e.g., 10)? Because non-grouping columns often contain
+        legitimate blanks (or extraction misses). A large value can silently “invent”
+        repeated activities/standards by copying prior rows, corrupting the extracted
+        table semantics.
+    """
+
+    keep_artifacts: bool = Field(
+        False,
+        description="Whether to keep artifacts such as page numbers, headers, footers, etc. after stitching.",
+    )
+    max_section_path_length: int = Field(
+        12,
+        description="Maximum number of section paths in the stack to maintain. For most PDFs, 12 is a good number that will capture enough breadcrumb context for heading traces.",
+    )
+    min_link_score: float = Field(
+        1.0, description="Minimum link score to consider for stitching.", ge=0
+    )
+    overwrite: bool = Field(False, description="Overwrite existing document IR JSON.")
+    repair_hyphenation: bool = Field(
+        True, description="Whether to repair hyphenation for stitched text."
+    )
+    sort_items_by_bbox: bool = Field(
+        False,
+        description="Whether to sort items by their bounding box positions before stitching.",
+    )
+    table_filldown_enabled: bool = Field(
+        True, description="Whether to enable table filldown during stitching."
+    )
+    table_filldown_group_cols_max: int = Field(
+        1, description="Maximum number of group columns for table filldown.", ge=0
+    )
+    verification_auto_stitch_confidence: float = Field(
+        0.75,
+        description="If a verified link has confidence >= this value, it will be automatically stitched.",
+        ge=0,
+        le=1,
+    )
+
+
 class VerificationConfig(BaseSchema):
     """Configuration for page IR verification from a PDF document."""
 
@@ -365,9 +2974,9 @@ class VerificationConfig(BaseSchema):
     )
     min_confidence_to_patch: float = Field(
         0.75,
+        description="Only apply compiled continuity decisions/repeats_header patches when verdict.confidence >= this threshold.",
         ge=0.0,
         le=1.0,
-        description="Only apply compiled continuity decisions/repeats_header patches when verdict.confidence >= this threshold.",
     )
     min_confidence_to_select_positive: float = Field(
         0.50,
@@ -451,1167 +3060,6 @@ class VerificationConfig(BaseSchema):
         return self
 
 
-class StitchingConfig(BaseSchema):
-    """Configuration for document IR stitching from verified page IR JSONs.
-
-    NB: `table_filldown_group_cols_max` (fill-down/rowspan reconstruction)
-
-    1. Many curriculum PDFs use **merged cells/rowspans** in the *leftmost grouping
-        columns* (e.g., **Topic**, **Sub-topic**, **Strand**, **Theme**). When
-        extracted, those merged cells often appear as **blank cells** on subsequent
-        rows.
-    2. `table_filldown_group_cols_max` controls **how many leading columns** should
-        have these visually empty cells **filled down** from the most recent non-empty
-        value above. This reconstructs the intended grouping structure without changing
-        the underlying table content.
-            - Only the **first `table_filldown_group_cols_max` columns** are eligible
-                for fill-down.
-            - Columns beyond this are treated as **leaf/content columns** (e.g.,
-                competences/outcomes, activities, expected standards), where blanks
-                typically mean **“no content / not applicable”**, not “repeat previous”.
-    3. Why not set it very large (e.g., 10)? Because non-grouping columns often contain
-        legitimate blanks (or extraction misses). A large value can silently “invent”
-        repeated activities/standards by copying prior rows, corrupting the extracted
-        table semantics.
-    """
-
-    keep_artifacts: bool = Field(
-        False,
-        description="Whether to keep artifacts such as page numbers, headers, footers, etc. after stitching.",
-    )
-    max_section_path_length: int = Field(
-        12,
-        description="Maximum number of section paths in the stack to maintain. For most PDFs, 12 is a good number that will capture enough breadcrumb context for heading traces.",
-    )
-    min_link_score: float = Field(
-        1.0, description="Minimum link score to consider for stitching.", ge=0
-    )
-    overwrite: bool = Field(False, description="Overwrite existing document IR JSON.")
-    repair_hyphenation: bool = Field(
-        True, description="Whether to repair hyphenation for stitched text."
-    )
-    sort_items_by_bbox: bool = Field(
-        False,
-        description="Whether to sort items by their bounding box positions before stitching.",
-    )
-    table_filldown_enabled: bool = Field(
-        True, description="Whether to enable table filldown during stitching."
-    )
-    table_filldown_group_cols_max: int = Field(
-        1, description="Maximum number of group columns for table filldown.", ge=0
-    )
-    verification_auto_stitch_confidence: float = Field(
-        0.75,
-        description="If a verified link has confidence >= this value, it will be automatically stitched.",
-        ge=0,
-        le=1,
-    )
-
-
-class CreateCanonicalConfig(BaseSchema):
-    """Configuration for canonical IR creation from document IR."""
-
-    bind_unknown_caption: bool = Field(
-        True,
-        description="Whether to bind captions whose kind cannot be confidently classified during deterministic caption→table binding.",
-    )
-    caption_max_gap_segments: int = Field(
-        2,
-        description="Maximum number of non-table segments allowed between a caption block and the table it binds to.",
-        ge=0,
-    )
-    caption_max_page_distance: int = Field(
-        1,
-        description="Maximum page distance allowed between a caption block and the table it binds to.",
-        ge=0,
-    )
-    curriculum_skeleton_fp: FilePath = Field(
-        ...,
-        description="Filesystem path to the CurriculumSkeleton JSON used for deterministic segment decisions.",
-    )
-    max_skip_distance: int = Field(
-        2,
-        description="Maximum number of curriculum skeleton nodes to probe ahead during forward-only matching.",
-        ge=1,
-    )
-    overwrite: bool = Field(
-        False,
-        description="Overwrite existing canonical IR artifacts on disk (e.g., segment decisions/canonical IR JSON).",
-    )
-
-
-class AcademicStandardsDefaultLevelContext(BaseSchema):
-    """Document-level fallback level context for Academic Standards export.
-
-    This is useful when the source curriculum has a clear document-wide level (e.g., a
-    single-grade CE1 PDF) but the canonical hierarchy does not contain an explicit
-    grade/stage ancestor above every expectation. Explicit ancestor-derived grade/stage
-    context remains the preferred source of truth when `apply_when_missing_only` is
-    True.
-
-    Examples
-    --------
-    1. Single-grade Senegal reading PDF
-        A PDF title says "2ème étape (CE1)", but most extracted expectations live under
-        section/palier/week nodes rather than an explicit `grade_level` ancestor. Use:
-
-            {
-                "kind": "grade_level",
-                "label": "CE1",
-                "ordinal_low": 1,
-                "ordinal_high": 1,
-                "source": "config: framework title says 2ème étape (CE1)",
-                "apply_to_roles": ["expectation"],
-                "apply_when_missing_only": true
-            }
-
-        Exported expectation SFIs without explicit level context receive
-        `grade_key='CE1'` and grade ordinals `1..1` in `metadata.progression_context`.
-
-    2. Banded stage-only framework
-        A framework covers Standards III–VI as one band. Use:
-
-            {
-                "kind": "stage",
-                "label": "Standard III–VI",
-                "ordinal_low": 3,
-                "ordinal_high": 6,
-                "source": "config: document scope",
-                "apply_to_roles": ["expectation"],
-                "apply_when_missing_only": true
-            }
-
-        Exported expectation SFIs without explicit level context receive
-        `stage_key='Standard III–VI'` and stage ordinals `3..6`.
-    """
-
-    apply_to_roles: set[StatementRole] = Field(
-        default_factory=lambda: {StatementRole.EXPECTATION},
-        description=(
-            "Canonical statement roles that receive this default when their explicit "
-            "grade/stage context is missing. Default applies only to expectation nodes."
-        ),
-    )
-    apply_when_missing_only: bool = Field(
-        default=True,
-        description=(
-            "If true, preserve explicit ancestor-derived grade/stage context and use "
-            "this default only when no level context is present. If false, this default "
-            "can override explicit context for the configured roles."
-        ),
-    )
-    kind: Literal["grade_level", "stage"] = Field(
-        default="grade_level",
-        description=(
-            "Which progression-context fields this default populates: grade_* for "
-            "'grade_level' or stage_* for 'stage'."
-        ),
-    )
-    label: str = Field(
-        description="Human-readable level label, e.g. 'CE1' or 'Standard III–VI'.",
-        min_length=1,
-    )
-    ordinal_high: int = Field(
-        description="Highest ordinal for this level or band.", ge=0
-    )
-    ordinal_low: int = Field(description="Lowest ordinal for this level or band.", ge=0)
-    source: str = Field(
-        default="config",
-        description=(
-            "Human-readable provenance for the default, e.g. 'config: document title' "
-            "or 'human_review'."
-        ),
-        min_length=1,
-    )
-
-    @field_validator("label", "source", mode="before")
-    @classmethod
-    def _strip_default_level_strings(cls, v: Any, info: Any) -> str:
-        """Strip required default-level strings and reject empty values.
-
-        Parameters
-        ----------
-        v
-            The configured value for the field being validated.
-        info
-            Pydantic field validation info; used to name the bad field in errors.
-
-        Returns
-        -------
-        str
-            The stripped, non-empty string value.
-
-        Raises
-        ------
-        TypeError
-            If the configured value is not a string.
-        ValueError
-            If the configured value is empty after stripping whitespace.
-        """
-
-        if not isinstance(v, str):
-            raise TypeError(
-                f"as_default_level_context.{info.field_name} must be a string. "
-                f"Got {type(v).__name__}."
-            )
-
-        v2 = v.strip()
-
-        if not v2:
-            raise ValueError(
-                f"as_default_level_context.{info.field_name} must be non-empty."
-            )
-
-        return v2
-
-    @model_validator(mode="after")
-    def _validate_ordinal_bounds(self) -> Self:
-        """Validate that the low ordinal is not greater than the high ordinal.
-
-        Returns
-        -------
-        Self
-            The validated DefaultLevelContext object.
-
-        Raises
-        ------
-        ValueError
-            If `ordinal_low` is greater than `ordinal_high`.
-        """
-
-        if self.ordinal_low > self.ordinal_high:
-            raise ValueError(
-                "as_default_level_context.ordinal_low must be <= "
-                "as_default_level_context.ordinal_high."
-            )
-
-        return self
-
-
-class CreateKGConfig(BaseSchema):
-    """Configuration for knowledge graph creation from canonical IR.
-
-    Notes
-    -----
-    1. as_export_dialect defaults to "global_relaxed". We *can* keep "lc_public_strict" as
-        an option for internal experiments, but the schemas/models are intentionally
-        non-US-centric.
-    2. namespace_uuid MUST be pinned and never changed once you start generating IDs.
-    """
-
-    as_academic_subject_default: str = Field(
-        description=(
-            "Default high-level academic subject classification for the framework "
-            "(e.g., Mathematics, English Language Arts, Science). Used when canonical "
-            "IR does not provide a subject (or when exporting a single subject partition)."
-        ),
-    )
-    as_adoption_status: str = Field(
-        description=(
-            "Adoption status of the framework (e.g., Draft, Adopted). "
-            "In `lc_public_strict`, this should conform to LC enum values; "
-            "in `global_relaxed`, free-form values are allowed."
-        ),
-    )
-    as_attribution_statement: str = Field(
-        description=(
-            "Attribution text required to credit the original publisher/owner "
-            "of the standards framework (e.g., Ministry of Education, year, source)."
-        ),
-    )
-    as_author: str = Field(
-        description=(
-            "Human or organization name considered the author/owner of the framework "
-            "(e.g., 'Ministry of Education (Zambia)')."
-        ),
-    )
-    as_aux_statement_parenting: Literal["as_siblings", "under_expectation"] = Field(
-        default="as_siblings",
-        description=(
-            "If exporting guidance/descriptors as SFIs, choose whether they remain "
-            "siblings under the grouping parent or are re-parented under the "
-            "expectation they belong to."
-        ),
-    )
-    as_case_uri_base: str = Field(
-        default="urn:lc:case:",
-        description="Stable CASE identifier URI prefix (e.g., urn:lc:case:).",
-    )
-    as_default_level_context: Optional[AcademicStandardsDefaultLevelContext] = Field(
-        default=None,
-        description=(
-            "Optional document-level fallback level context for Academic Standards "
-            "export. Use for single-grade/single-stage PDFs where the document scope "
-            "is clear but not represented as an explicit grade/stage ancestor above "
-            "every expectation. The fallback is written into SFI grade_level and "
-            "metadata.progression_context so Learning Progressions can bucket "
-            "within-grade standards."
-        ),
-    )
-    as_description_text_policy: Literal["source", "prefer_text_en"] = Field(
-        default="source",
-        description=(
-            "How to populate the 'description' text on exported SFIs. "
-            "'source' uses the original-language body text; "
-            "'prefer_text_en' uses the English translation when available."
-        ),
-    )
-    as_descriptor_handling: _AuxStatementHandling = Field(
-        default="export_as_sfi_other",
-        description="How to handle descriptor statements during KG export.",
-    )
-    as_export_dialect: _ExportDialect = Field(
-        default="global_relaxed",
-        description=(
-            "Export schema dialect. 'lc_public_strict' enforces LC KG public schema "
-            "constraints (US-centric CASE conventions); 'global_relaxed' permits "
-            "non-US metadata shapes and free-form fields for international curricula."
-        ),
-    )
-    as_framework_name: Optional[str] = Field(
-        default=None,
-        description=(
-            "Optional explicit title for the exported StandardsFramework root node. "
-            "Use this when the canonical IR root label is a filename or other "
-            "non-human-readable placeholder. If omitted, the exporter falls back to "
-            "the canonical root node display text, then the PDF filename."
-        ),
-    )
-    as_grouping_role_policy: Literal["loose", "whitelist"] = Field(
-        default="whitelist",
-        description=(
-            "How to interpret node roles as hierarchy groupings during standards export. "
-            "'whitelist' is the safer default for international curricula: only roles in "
-            "as_grouping_roles_whitelist are treated as hierarchy groupings. "
-            "'loose' is opt-in legacy behavior where any non-statement role becomes a grouping."
-        ),
-    )
-    as_grouping_roles_whitelist: set[NodeRole] = Field(
-        default_factory=lambda: set(DEFAULT_CONTEXT_GROUPINGS_ROLE_ORDER)
-        - {NodeRole.PROSE},
-        description=(
-            "When as_grouping_role_policy='whitelist', only these roles count as groupings "
-            "(emitted as normalizedStatementType='Standard Grouping', eligible for pruning, "
-            "and used as aux-parenting anchors). Default excludes PROSE."
-        ),
-    )
-    as_guidance_handling: _AuxStatementHandling = Field(
-        default="drop",
-        description="How to handle guidance statements during KG export.",
-    )
-    as_jurisdiction_default: str = Field(
-        description=(
-            "Default jurisdiction that issued the framework (e.g., Zambia, Uganda). "
-            "Used when canonical IR does not provide jurisdiction."
-        ),
-    )
-    as_language_default: LanguageField = Field(
-        description=(
-            "Default BCP-47 language code used as the fallback `in_language` when the "
-            "language of the exported framework/item text cannot be determined reliably."
-        ),
-    )
-    as_license: str = Field(
-        description=(
-            "License string for the framework content. This may be an SPDX-like label "
-            "or a publisher-defined license statement; must be present even if it is "
-            "a conservative placeholder."
-        ),
-    )
-    as_non_grouping_role_handling: Literal["drop", "export_as_sfi_other"] = Field(
-        default="drop",
-        description=(
-            "When as_grouping_role_policy='whitelist': what to do with nodes that are neither "
-            "statement roles (expectation/descriptor/guidance) nor allowed groupings. "
-            "'drop' removes them. 'export_as_sfi_other' is leaf-only: the node may be "
-            "emitted as an SFI with type 'Other' only when it has no canonical children; "
-            "structural non-grouping parents are dropped and their children are hoisted "
-            "to the nearest surviving ancestor during export."
-        ),
-    )
-    as_non_standard_columns_signature: set[str] = Field(
-        default_factory=set,
-        description=(
-            "Normalized columns signature that identify non-standards tables when "
-            "using by_columns_signature. Example columns signature: "
-            "'cinyanja term 2 - weekly schedule|||monday|tuesday|wednesday|thursday|friday'."
-        ),
-    )
-    as_non_standard_decision_types: set[SegmentDecisionType] = Field(
-        default_factory=lambda: {SegmentDecisionType.IGNORE},
-        description=(
-            "Decision types that should be treated as non-standards and dropped "
-            "when using by_decision_type."
-        ),
-    )
-    as_non_standard_segment_drop_policy: list[
-        Literal["by_columns_signature", "by_decision_type"]
-    ] = Field(
-        default_factory=lambda: cast(
-            list[Literal["by_columns_signature", "by_decision_type"]],
-            ["by_decision_type"],
-        ),
-        description=(
-            "One or more policies used to drop non-standards segments from KG export. "
-            "Policies are OR'ed together (if any policy matches -> drop)."
-        ),
-    )
-    as_provider: str = Field(
-        description=(
-            "Provider/host name for the exported KG dataset (often the organization/product). "
-            "Used for attribution and provenance in downstream systems."
-        ),
-    )
-    as_prune_empty_groupings: bool = Field(
-        default=True,
-        description="If true, drop grouping StandardsFrameworkItems that have zero exported children after filtering and after reattachment hoists children of dropped nodes to their nearest surviving ancestor, repeating to a fixpoint.",
-    )
-    generate_learning_progressions: bool = Field(
-        default=True,
-        description=(
-            "Whether to run LLM-based learning progression inference (buildsTowards / relatesTo) "
-            "after exporting the standards hierarchy. Disable to skip learning progression "
-            "generation entirely (useful for quick re-exports or debugging)."
-        ),
-    )
-    lc_atomic_skills_batch_size: int = Field(
-        default=5,
-        description="Number of expectation SFIs to send per LLM call when lc_policy='llm_atomic_skills'.",
-        ge=1,
-        le=50,
-    )
-    lc_atomic_skills_include_aux_statements: bool = Field(
-        default=True,
-        description="If True, include SFI.metadata['aux_statements'] as additional context for atomic skills decomposition.",
-    )
-    lc_atomic_skills_include_topic_context: bool = Field(
-        default=True,
-        description="If True, include SFI.metadata['progression_context'] topic/grade hints in the atomic skills prompt.",
-    )
-    lc_atomic_skills_min_per_sfi: int = Field(
-        default=1,
-        description=(
-            "Minimum number of atomic skills required per SFI in the LLM response. "
-            "If unmet, the batch will be corrected/retried; if still failing, the "
-            "export falls back to a 1-to-1 LC for the affected batch."
-        ),
-        ge=1,
-        le=25,
-    )
-    lc_atomic_skills_require_rationale: bool = Field(
-        default=True,
-        description="If True, require a short rationale for each atomic skill in the LLM response.",
-    )
-    lc_max_splits_per_standard: int = Field(
-        default=25,
-        description="Maximum number of LearningComponents to emit per Standard SFI when splitting.",
-        ge=1,
-    )
-    lc_output_language_policy: Literal["english", "explicit_tag", "source"] = Field(
-        default="source",
-        description=(
-            "Controls both the output-language instruction sent to the LearningComponents "
-            "LLM prompt and the emitted `in_language` tag on derived LearningComponents. "
-            "'source' uses the source SFI/framework language metadata; if that resolves to "
-            "'mul', the prompt instructs the model to use the same language(s) as the input "
-            "text rather than the raw tag. 'english' forces English output and emits "
-            "`in_language='en'`. 'explicit_tag' forces a specific BCP-47 tag from "
-            "`lc_output_language_tag`."
-        ),
-    )
-    lc_output_language_tag: Optional[LanguageField] = Field(
-        default=None,
-        description=(
-            "Explicit BCP-47 language tag used when lc_output_language_policy='explicit_tag' "
-            "(for example 'fr', 'wo', or 'en'). Ignored otherwise."
-        ),
-    )
-    lc_policy: Literal["1_to_1", "split_bullets", "llm_atomic_skills"] = Field(
-        default="1_to_1",
-        description=(
-            "LearningComponent creation strategy. "
-            "'1_to_1' creates exactly one LC per expectation SFI; "
-            "'split_bullets' splits multi-bullet expectation bodies into separate LCs; "
-            "'llm_atomic_skills' uses an LLM to decompose each expectation into 1–N atomic skill LCs."
-        ),
-    )
-    lc_source_labels_exclude: set[str] = Field(
-        default_factory=set,
-        description=(
-            "Optional blocklist of SFI metadata.source_label values excluded from LC "
-            "generation."
-        ),
-    )
-    lc_source_labels_include: set[str] = Field(
-        default_factory=set,
-        description=(
-            "Optional allowlist of SFI metadata.source_label values eligible for LC "
-            "generation. Empty set means no source-label allowlist restriction."
-        ),
-    )
-    lc_source_max_path_depth: Optional[int] = Field(
-        default=None,
-        description=(
-            "Optional maximum canonical_path_key depth for LC source eligibility. "
-            "Use with care; statement type/source-label filters are usually clearer."
-        ),
-        ge=0,
-    )
-    lc_source_min_path_depth: Optional[int] = Field(
-        default=None,
-        description=(
-            "Optional minimum canonical_path_key depth for LC source eligibility. "
-            "Use with care; statement type/source-label filters are usually clearer."
-        ),
-        ge=0,
-    )
-    lc_source_normalized_statement_types: set[_LCSourceNormalizedStatementType] = Field(
-        default_factory=lambda: cast(
-            set[_LCSourceNormalizedStatementType], {"Standard"}
-        ),
-        description=(
-            "Normalized StandardsFrameworkItem types eligible to generate "
-            "LearningComponents. This is an LC-source decision, not an Academic "
-            "Standards export decision. Default keeps current behavior by considering "
-            "only normative Standard SFIs."
-        ),
-    )
-    lc_source_path_patterns_exclude: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Optional exclude patterns for SFI metadata.canonical_path_key or its "
-            "role-only path pattern. Supported forms: substring, glob (*, ?, []), or "
-            "regex prefixed with 're:'."
-        ),
-    )
-    lc_source_path_patterns_include: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Optional include patterns for SFI metadata.canonical_path_key or its "
-            "role-only path pattern. Supported forms: substring, glob (*, ?, []), or "
-            "regex prefixed with 're:'. Empty list means no path include restriction."
-        ),
-    )
-    lc_source_roles_exclude: set[str] = Field(
-        default_factory=set,
-        description=(
-            "SFI metadata.role values that must never generate LearningComponents. "
-            "Compared case-insensitively after whitespace normalization."
-        ),
-    )
-    lc_source_roles_include: set[str] = Field(
-        default_factory=lambda: {"expectation"},
-        description=(
-            "SFI metadata.role values eligible to generate LearningComponents. "
-            "Empty set means no role include restriction. Default is {'expectation'}."
-        ),
-    )
-    lc_source_statement_types_exclude: set[str] = Field(
-        default_factory=set,
-        description=(
-            "Optional blocklist of SFI.statement_type values excluded from LC generation. "
-            "Use this to keep broad competency Standards in Academic Standards while "
-            "preventing them from becoming LC sources."
-        ),
-    )
-    lc_source_statement_types_include: set[str] = Field(
-        default_factory=set,
-        description=(
-            "Optional allowlist of SFI.statement_type values eligible for LC generation. "
-            "Empty set means no statement-type allowlist restriction."
-        ),
-    )
-    lp_builds_towards_min_confidence: float = Field(
-        default=0.60,
-        description="Minimum confidence to emit buildsTowards relationships.",
-        ge=0.0,
-        le=1.0,
-    )
-    lp_cross_level_builds_towards: bool = Field(
-        default=True,
-        description="Enable cross-level buildsTowards progression inference between adjacent single-level level buckets.",
-    )
-    lp_cross_level_relates_to: bool = Field(
-        default=True,
-        description="Enable cross-level relatesTo progression inference between adjacent single-level level buckets.",
-    )
-    lp_cross_level_relates_to_max_items_per_subject: int = Field(
-        default=10,
-        description="Cross-level relatesTo: max sampled Standards per subject per level.",
-        ge=1,
-    )
-    lp_cross_level_thread_roles: Optional[list[NodeRole]] = Field(
-        default=None,
-        description=(
-            "Ordered list of canonical IR node roles whose labels form the "
-            "cross-level thread identity for LP Phases 2 and 4. Only entries in "
-            "progression_context.topic_path_parts with a role in this list are "
-            "included in the LP thread key. Example: ['strand'] matches "
-            "'Activités numériques' across adjacent levels. When None, uses "
-            "thread_key from progression_context."
-        ),
-        min_length=1,
-    )
-    lp_cross_stage_builds_towards: bool = Field(
-        default=False,
-        description=(
-            "Cross-level buildsTowards fallback: if either adjacent level bucket is "
-            "banded (low != high), infer buildsTowards across adjacent level ranges "
-            "(e.g., I–II -> III–VI)."
-        ),
-    )
-    lp_cross_stage_relates_to: bool = Field(
-        default=False,
-        description=(
-            "Cross-level relatesTo fallback: if either adjacent level bucket is banded "
-            "(low!=high), infer relatesTo across adjacent level ranges "
-            "(e.g., I–II <-> III–VI)."
-        ),
-    )
-    lp_excluded_subject_labels: list[str] = Field(
-        default=["UNSPECIFIED_SUBJECT"],
-        description=(
-            "Subject labels to exclude from Phase 3 (within-level cross-subject "
-            "relatesTo) and Phase 4 (cross-level same-subject relatesTo) "
-            "sampling. Default excludes 'UNSPECIFIED_SUBJECT' since including "
-            "unmapped items in cross-subject pairing adds noise without value."
-        ),
-    )
-    lp_level_label_map: Optional[dict[str, int]] = Field(
-        default=None,
-        description=(
-            "Explicit mapping from level labels to integer ordinals for LP inference. "
-            "Keys are matched against progression_context.grade_key first, then "
-            "progression_context.stage_key; keys must be normalized. Ordinals represent "
-            "each level's position in the sequence (not necessarily the level number); "
-            "adjacency is determined by ordinals differing by exactly 1. Multiple level "
-            "labels may map to the same ordinal to merge subtrees "
-            "(e.g., 'paliers du niveau ce1' and 'planification ce1' both -> 1). "
-            "When None, LP inference relies on already-populated integer ordinals in "
-            "progression_context.grade_ordinal_low/high or "
-            "progression_context.stage_ordinal_low/high; label parsing is not "
-            "attempted during LP export."
-        ),
-    )
-    lp_relates_to_max_edges_per_sfi: int = Field(
-        default=3,
-        ge=1,
-        description="Cap the number of relatesTo edges per SFI (undirected cap).",
-    )
-    lp_relates_to_min_confidence: float = Field(
-        default=0.80,
-        ge=0.0,
-        le=1.0,
-        description="Minimum confidence to emit relatesTo relationships (kept higher to avoid over-linking).",
-    )
-    lp_source_statement_types_exclude: set[str] = Field(
-        default_factory=set,
-        description=(
-            "Optional blocklist of SFI.statement_type values excluded from Learning "
-            "Progressions inference. Use this to keep broad competency or structural "
-            "Standards in Academic Standards while preventing them from becoming LP "
-            "candidate items. Compared case-insensitively after whitespace "
-            "normalization. Exclude takes precedence over include."
-        ),
-    )
-    lp_source_statement_types_include: set[str] = Field(
-        default_factory=set,
-        description=(
-            "Optional allowlist of SFI.statement_type values eligible for Learning "
-            "Progressions inference. Empty set means no statement-type allowlist "
-            "restriction. Compared case-insensitively after whitespace normalization."
-        ),
-    )
-    lp_subject_role: Optional[NodeRole] = Field(
-        default=None,
-        description=(
-            "Canonical IR node role to use as the 'subject' for Phase 3 "
-            "(within-level cross-subject relatesTo) and Phase 4 "
-            "(cross-level same-subject relatesTo). When set, the LP bucketing "
-            "code looks for this role in each expectation's "
-            "progression_context.topic_path_parts and uses the first matching "
-            "label as subject_label. When None, defaults to searching for "
-            "'subject' then 'learning_area' roles."
-        ),
-    )
-    lp_within_level_allow_banded_levels: bool = Field(
-        default=False,
-        description=(
-            "If false (default), Phase 1 and Phase 3 within-level inference only runs "
-            "on single-level buckets where level_ordinal_low == level_ordinal_high. "
-            "If true, allow within-level inference to also run on banded/stage buckets "
-            "(low != high), e.g., 'Std I–II'."
-        ),
-    )
-    lp_within_level_bucket_roles: Optional[list[NodeRole]] = Field(
-        default=None,
-        description=(
-            "Ordered list of canonical IR node roles whose labels form the "
-            "within-level bucket identity for Phase 1 within-level buildsTowards "
-            "and Phase 3 within-level relatesTo sampling. Use this to decide which "
-            "items are allowed to be compared inside the same level. Example: "
-            "['strand'] groups all items in the same strand across smaller units, "
-            "weeks, topics, or substages. When None, uses thread_key from "
-            "progression_context."
-        ),
-        min_length=1,
-    )
-    lp_within_level_builds_towards: bool = Field(
-        default=True,
-        description="Enable within-level buildsTowards progression inference (sequential standards within the same level/grade/subject thread).",
-    )
-    lp_within_level_fallback_fields: list[
-        Literal["statement_type", "statement_code", "source_label", "academic_subject"]
-    ] = Field(
-        default_factory=list,
-        description=(
-            "Ordered source fields used as fallback within-level bucket segments "
-            "when `lp_within_level_bucket_roles` cannot produce a key for an item. "
-            "This is useful when the hierarchy path is shallow but source fields "
-            "such as statement_type identify stable skill tracks. Empty list means "
-            "no source-field fallback."
-        ),
-    )
-    lp_within_level_relates_to: bool = Field(
-        default=True,
-        description=(
-            "Enable within-level relatesTo inference (cross-subject only). "
-            "Threads within the same subject are skipped to reduce noise."
-        ),
-    )
-    lp_within_level_relates_to_max_items_per_subject: int = Field(
-        default=5,
-        description=(
-            "Within-level relatesTo (cross-subject only): max sampled standards per "
-            "subject (keeps LLM calls bounded). Smaller values gives higher precision "
-            "but lower recall and vice versa."
-        ),
-        ge=1,
-    )
-    namespace_uuid: UUID = Field(
-        default=UUID("b9a2b2d5-0f6c-4f3f-8d32-b7a66f999c5a"),
-        description="Pinned UUID namespace used with uuid5 for deterministic IDs.",
-    )
-    overwrite: bool = Field(False, description="Overwrite existing knowledge graphs.")
-
-    @field_validator(
-        "as_academic_subject_default",
-        "as_adoption_status",
-        "as_attribution_statement",
-        "as_author",
-        "as_case_uri_base",
-        "as_jurisdiction_default",
-        "as_license",
-        "as_provider",
-        mode="before",
-    )
-    @classmethod
-    def _strip_and_require_non_empty_kg_strings(cls, v: Any, info: Any) -> str:
-        """Strip required KG string config fields and reject empty values.
-
-        These fields are copied into required LC KG entity fields during export.
-        Validating them at config-load time catches bad run configs before the exporter
-        starts writing nodes, relationships, or intermediate artifacts.
-
-        Parameters
-        ----------
-        v
-            The configured value for the field being validated.
-        info
-            Pydantic field validation info; used to name the bad field in errors.
-
-        Returns
-        -------
-        str
-            The stripped, non-empty string value.
-
-        Raises
-        ------
-        TypeError
-            If the configured value is not a string.
-        ValueError
-            If the configured value is None or empty after stripping whitespace.
-        """
-
-        if v is None:
-            raise ValueError(f"{info.field_name} must be a non-empty string.")
-
-        if not isinstance(v, str):
-            raise TypeError(
-                f"{info.field_name} must be a string. Got {type(v).__name__}."
-            )
-
-        v2 = v.strip()
-
-        if not v2:
-            raise ValueError(f"{info.field_name} must be a non-empty string.")
-
-        return v2
-
-    @model_validator(mode="after")
-    def _validate_atomic_skills_bounds(self) -> Self:
-        """Validate that `lc_atomic_skills_min_per_sfi` is less than or equal to
-        `lc_max_splits_per_standard` when using `llm_atomic_skills`.
-
-        Returns
-        -------
-        Self
-            The validated CreateKGConfig object.
-
-        Raises
-        ------
-        ValueError
-            If `lc_atomic_skills_min_per_sfi` is greater than
-            `lc_max_splits_per_standard`.
-        """
-
-        if (
-            self.lc_policy == "llm_atomic_skills"
-            and self.lc_atomic_skills_min_per_sfi > self.lc_max_splits_per_standard
-        ):
-            raise ValueError(
-                f"lc_atomic_skills_min_per_sfi ({self.lc_atomic_skills_min_per_sfi}) "
-                f"must be <= lc_max_splits_per_standard ({self.lc_max_splits_per_standard})."
-            )
-
-        return self
-
-    @model_validator(mode="after")
-    def _validate_lc_output_language_policy(self) -> Self:
-        """Validate LC output-language settings.
-
-        Returns
-        -------
-        Self
-            The validated CreateKGConfig object.
-
-        Raises
-        ------
-        ValueError
-            If lc_output_language_policy='explicit_tag' but lc_output_language_tag is
-            missing.
-        """
-
-        if (
-            self.lc_output_language_policy == "explicit_tag"
-            and not self.lc_output_language_tag
-        ):
-            raise ValueError(
-                "lc_output_language_policy='explicit_tag' requires "
-                "lc_output_language_tag to be provided."
-            )
-
-        return self
-
-    @model_validator(mode="after")
-    def _validate_lc_source_path_depth_bounds(self) -> Self:
-        """Validate optional LC source path-depth bounds.
-
-        Raises
-        ------
-        ValueError
-            If both `lc_source_min_path_depth` and `lc_source_max_path_depth` are
-            provided but min > max.
-        """
-
-        if (
-            self.lc_source_min_path_depth is not None
-            and self.lc_source_max_path_depth is not None
-            and self.lc_source_min_path_depth > self.lc_source_max_path_depth
-        ):
-            raise ValueError(
-                "lc_source_min_path_depth must be <= lc_source_max_path_depth."
-            )
-
-        return self
-
-    @field_validator(
-        "lc_source_path_patterns_exclude", "lc_source_path_patterns_include"
-    )
-    @classmethod
-    def _validate_lc_source_regex_path_patterns(
-        cls, v: list[str], info: Any
-    ) -> list[str]:
-        """Validate regex-prefixed LC source path patterns at config-load time.
-
-        Parameters
-        ----------
-        v
-            The configured path pattern list. Entries that start with `re:` are
-            compiled to ensure malformed regexes fail fast before KG export.
-        info
-            Pydantic field validation info; used to report the field name.
-
-        Returns
-        -------
-        list[str]
-            The original pattern list, unchanged.
-
-        Raises
-        ------
-        ValueError
-            If a regex-prefixed path pattern is empty or invalid.
-        """
-
-        return _validate_regex_prefixed_patterns(field_name=info.field_name, patterns=v)
-
-    @field_validator("lp_within_level_fallback_fields")
-    @classmethod
-    def _validate_lp_within_level_fallback_fields_unique(
-        cls, v: list[str], info: Any
-    ) -> list[str]:
-        """Validate that fallback source fields are unique while preserving order.
-
-        The fallback field list is ordered and each entry contributes one segment to a
-        within-level fallback bucket key. Duplicates would produce redundant key
-        segments such as ``statement_type=grammaire|statement_type=grammaire`` and do
-        not add information, so they are rejected at config-load time.
-
-        Parameters
-        ----------
-        v
-            The ordered fallback field list used when hierarchy-derived within-level
-            bucket roles do not produce a key.
-        info
-            Pydantic field validation info used to report the field name.
-
-        Returns
-        -------
-        list[str]
-            The original fallback field list, unchanged, if all entries are unique.
-
-        Raises
-        ------
-        ValueError
-            If the fallback field list contains duplicates.
-        """
-
-        seen_fields: set[str] = set()
-
-        for field_name in v or []:
-            if field_name in seen_fields:
-                raise ValueError(
-                    f"{info.field_name} must not contain duplicate fields. "
-                    f"Duplicate value: {field_name}."
-                )
-
-            seen_fields.add(field_name)
-
-        return v
-
-    @field_validator("lp_within_level_bucket_roles", "lp_cross_level_thread_roles")
-    @classmethod
-    def _validate_lp_bucket_or_thread_roles(
-        cls, v: Optional[list[NodeRole]], info: Any
-    ) -> Optional[list[NodeRole]]:
-        """Validate learning progression bucket/thread-key roles.
-
-        Parameters
-        ----------
-        v
-            The ordered role list that defines a within-level bucket identity or a
-            cross-level thread identity.
-        info
-            Pydantic field validation info used to report the field name.
-
-        Returns
-        -------
-        Optional[list[NodeRole]]
-            The validated role list.
-
-        Raises
-        ------
-        ValueError
-            If the role list contains duplicates or disallowed roles.
-        """
-
-        return _validate_lp_roles(field_name=info.field_name, roles=v)
-
-    @field_validator("lp_subject_role")
-    @classmethod
-    def _validate_lp_subject_role(cls, v: Optional[NodeRole]) -> Optional[NodeRole]:
-        """Validate the configured subject-like bucketing role.
-
-        Parameters
-        ----------
-        v
-            The role used to derive subject buckets for learning progression inference.
-
-        Returns
-        -------
-        Optional[NodeRole]
-            The validated subject role.
-
-        Raises
-        ------
-        ValueError
-            If the role is too generic to support learning progression bucketing.
-        """
-
-        if v is None:
-            return v
-
-        return _validate_lp_role(field_name="lp_subject_role", role=v)
-
-    @field_validator("as_framework_name", mode="before")
-    @classmethod
-    def _validate_framework_name(cls, v: Optional[str]) -> Optional[str]:
-        """Trim optional `as_framework_name` and treat empty strings as None.
-
-        Parameters
-        ----------
-        v
-            The optional override value supplied in config.
-
-        Returns
-        -------
-        Optional[str]
-            The trimmed override string, or None when empty/unset.
-
-        Raises
-        ------
-        TypeError
-            If the value is not a string or None.
-        """
-
-        if v is None:
-            return None
-
-        if not isinstance(v, str):
-            raise TypeError("as_framework_name must be a string or None")
-
-        v2 = v.strip()
-        return v2 if v2 else None
-
-    @model_validator(mode="after")
-    def _validate_grouping_role_policy(self) -> Self:
-        """Validate that if `as_grouping_role_policy` is 'whitelist', then
-        `as_grouping_roles_whitelist` is non-empty and does not include
-        FRAMEWORK/UNRESOLVED.
-
-        Returns
-        -------
-        Self
-            The validated CreateKGConfig object.
-
-        Raises
-        ------
-        ValueError
-            If `as_grouping_role_policy` is 'whitelist' but
-            `as_grouping_roles_whitelist` is empty or includes disallowed roles.
-        """
-
-        if self.as_grouping_role_policy == "whitelist":
-            if not self.as_grouping_roles_whitelist:
-                raise ValueError(
-                    "as_grouping_role_policy='whitelist' requires a non-empty "
-                    "as_grouping_roles_whitelist."
-                )
-
-            # These should never be treated as hierarchy groupings.
-            disallowed = {NodeRole.FRAMEWORK, NodeRole.UNRESOLVED}
-            overlap = disallowed & set(self.as_grouping_roles_whitelist)
-
-            if overlap:
-                raise ValueError(
-                    f"as_grouping_roles_whitelist cannot include FRAMEWORK/UNRESOLVED: {overlap}"
-                )
-
-        return self
-
-    @model_validator(mode="after")
-    def _validate_parenting_relevance(self) -> Self:
-        """Validate that as_aux_statement_parenting is compatible with guidance/descriptor
-        handling.
-
-        Returns
-        -------
-        Self
-            The validated CreateKGConfig object.
-
-        Raises
-        ------
-        ValueError
-            If as_aux_statement_parenting is 'under_expectation' but neither guidance
-            nor descriptor handling is set to export as SFI.
-        """
-
-        relevant_any = self.as_guidance_handling in {
-            "export_as_sfi_other",
-            "attach_to_expectation_metadata",
-        } or self.as_descriptor_handling in {
-            "export_as_sfi_other",
-            "attach_to_expectation_metadata",
-        }
-
-        if self.as_aux_statement_parenting == "under_expectation" and not relevant_any:
-            raise ValueError(
-                "as_aux_statement_parenting='under_expectation' requires exporting "
-                "or attaching guidance/descriptors to expectations (set as_guidance_handling "
-                "or as_descriptor_handling to 'export_as_sfi_other' or "
-                "'attach_to_expectation_metadata')."
-            )
-
-        # attach-to-expectation requires the export-time anchor discovery implemented
-        # by as_aux_statement_parenting="under_expectation". If we leave
-        # as_aux_statement_parenting="as_siblings", export_academic_standards will skip
-        # emitting aux nodes (to avoid SFIs) but will never attach them -> silent loss.
-        attach_any = (
-            self.as_guidance_handling == "attach_to_expectation_metadata"
-            or self.as_descriptor_handling == "attach_to_expectation_metadata"
-        )
-        if attach_any and self.as_aux_statement_parenting != "under_expectation":
-            raise ValueError(
-                "as_guidance_handling/as_descriptor_handling='attach_to_expectation_metadata' "
-                "requires as_aux_statement_parenting='under_expectation' so aux statements "
-                "can be anchored to the most recent expectation during export."
-            )
-
-        return self
-
-    @model_validator(mode="after")
-    def _validate_stable_bases(self) -> Self:
-        """Validate that as_case_uri_base is non-empty and stable.
-
-        Returns
-        -------
-        Self
-            The validated CreateKGConfig object.
-
-        Raises
-        ------
-        ValueError
-            If as_case_uri_base is empty.
-        """
-
-        if not self.as_case_uri_base:
-            raise ValueError("as_case_uri_base must be non-empty and stable.")
-
-        return self
-
-
-class RunConfig(BaseSchema):
-    """Pydantic model for run configuration."""
-
-    page_ir_extraction: ExtractionConfig = Field(
-        description="Configuration for page-level IR extraction from the source PDF."
-    )
-    page_ir_verification: VerificationConfig = Field(
-        description="Configuration for page-boundary verification between adjacent pages."
-    )
-    document_ir: StitchingConfig = Field(
-        description="Configuration for stitching verified page IRs into a single document IR."
-    )
-    canonical_ir: Optional[CreateCanonicalConfig] = Field(
-        default=None,
-        description="Configuration for canonical IR creation. If None, the canonical IR step is skipped.",
-    )
-    kgs: Optional[CreateKGConfig] = Field(
-        default=None,
-        description="Configuration for knowledge graph creation. If None, the KG step is skipped.",
-    )
-
-
 class RunCtx(BaseSchema):
     """Pydantic model for run metadata."""
 
@@ -1631,4 +3079,22 @@ class RunCtx(BaseSchema):
     )
     started_at: Optional[datetime] = Field(
         default=None, description="UTC timestamp when the run started."
+    )
+
+
+class RunConfig(BaseSchema):
+    """Pydantic model for run configuration."""
+
+    page_ir_extraction: ExtractionConfig = Field(
+        description="Configuration for page-level IR extraction from the source PDF."
+    )
+    page_ir_verification: VerificationConfig = Field(
+        description="Configuration for page-boundary verification between adjacent pages."
+    )
+    document_ir: StitchingConfig = Field(
+        description="Configuration for stitching verified page IRs into a single document IR."
+    )
+    kgs: Optional[CreateKGConfig] = Field(
+        default=None,
+        description="Configuration for knowledge graph creation. If None, the KG step is skipped.",
     )

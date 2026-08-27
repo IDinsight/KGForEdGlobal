@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://squidfunk.github.io/mkdocs-material/schema.json
-site_name: "Senegal Knowledge Graph"
-site_description: "Senegal Knowledge Graph Documentation"
+site_name: "Knowledge Graph for Education Global"
+site_description: "Documentation for the curriculum-document-to-knowledge-graph pipeline"
 site_url: https://idinsight.github.io/SenegalKG/
 repo_url: https://github.com/IDinsight/SenegalKG
 use_directory_urls: false
@@ -19,6 +19,21 @@ nav:
   - Home:
       - "": index.md
       - Architecture: architecture.md
+
+  - Pipeline:
+      - Overview: pipeline/index.md
+      - Page IR Extraction: pipeline/page-ir-extraction.md
+      - Page IR Verification: pipeline/page-ir-verification.md
+      - Document IR: pipeline/document-ir.md
+      - Academic Standards: pipeline/academic-standards.md
+      - Learning Components: pipeline/learning-components.md
+
+  - Guides:
+      - Add a new curriculum: guides/adding-a-curriculum.md
+      - Run, resume, and debug: guides/running-and-debugging.md
+
+  - Reference:
+      - Output artifacts and integration contract: reference/output-artifacts.md
 
   - Development:
       - development/index.md
@@ -79,7 +94,6 @@ markdown_extensions:
   - pymdownx.details
   - pymdownx.inlinehilite
   - pymdownx.snippets
-  - pymdownx.superfences
   - tables
   - pymdownx.arithmatex:
       generic: true

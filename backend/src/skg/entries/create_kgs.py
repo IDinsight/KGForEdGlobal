@@ -1,19 +1,9 @@
-"""This module contains the entry point for exporting Learning Commons knowledge graphs
-from a canonical IR JSON file. This is step 5.
-
-Step 5 does the following:
-
-1. Builds the knowledge graph export context.
-2. Exports academic standards to the knowledge graphs.
-3. Exports Learning Components KG and writes combined Standards + Learning Components
-    graph bundle.
-4. Optionally exports Learning Progressions KG and writes combined Standards +
-    Learning Components + Learning Progressions graph bundle.
-5. Builds reporting and validation artifacts, writes to disk, and logs console summary.
+"""This module contains the entry point for creating Learning Commons KGs from a
+stitched DocumentIR.
 
 Invoke from the backend directory via:
 
-python src/skg/entries/create_kgs.py ../examples/tanzania/config.json
+python src/skg/entries/create_kgs.py ../examples/ghana/config_math_curriculum.json
 """
 
 # Standard Library
@@ -38,27 +28,37 @@ if __name__ == "__main__":
         sys.path.append(str(PACKAGE_PATH))
 
 # Package Library
-from skg.canonical_ir.schemas import CanonicalIR
-from skg.kgs.export_academic_standards import load_or_export_academic_standards
-from skg.kgs.export_learning_components import load_or_export_learning_components
-from skg.kgs.export_learning_progressions import load_or_export_learning_progressions
-from skg.kgs.llm import KGUsageTracker
-from skg.kgs.reporting import (
-    build_entity_provenance_export,
-    build_policy_coverage_report,
-    log_console_summary,
-    validate_graph,
-    write_reports,
+from skg.kgs.lc_dedup import group_duplicate_skills
+from skg.kgs.lc_export import compile_as_lc_kg
+from skg.kgs.lc_finalization import (
+    build_lc_supports_edges,
+    mint_learning_components,
+    summarize_learning_components,
 )
+from skg.kgs.lc_generation import (
+    build_lc_generation_requests,
+    decompose_lc_source_sfis,
+)
+from skg.kgs.lc_selection import select_lc_source_sfis
+from skg.kgs.llm import KGUsageTracker
+from skg.kgs.sfi_dedup import merge_sfi_candidates
+from skg.kgs.sfi_export import compile_academic_standards_kg
+from skg.kgs.sfi_extraction import extract_sfi_candidates_from_windows
+from skg.kgs.sfi_extraction_windows import (
+    build_llm_extraction_windows,
+    plan_extraction_windows,
+)
+from skg.kgs.sfi_finalization import mint_final_sfi_ids
+from skg.kgs.sfi_registry import build_candidate_registry
+from skg.kgs.sfi_relationships import resolve_has_child_edges
 from skg.kgs.utils import (
     KGDirs,
-    build_kg_export_context,
-    cross_check_canonical_ir_run,
-    get_page_image_dims,
-    merge_graph_bundles,
+    build_run_manifest,
+    cross_check_stitching_run,
+    load_and_validate_inputs,
     persist_kg_run,
 )
-from skg.schemas import CreateKGConfig, RunConfig, RunCtx
+from skg.schemas import CreateKGConfig, RunConfig
 from skg.utils.general import open_json_type, write_to_json
 from skg.utils.pdf import compute_doc_key
 
@@ -66,168 +66,240 @@ from skg.utils.pdf import compute_doc_key
 cli = typer.Typer(no_args_is_help=True)
 
 
-def create_kgs(
+def build_kgs(
     *,
-    canonical_ir: CanonicalIR,
     config: CreateKGConfig,
+    document_ir_fp: Path,
+    expected_doc_key: str,
     kg_dirs: KGDirs,
-    provenance_context: dict | None = None,
     usage_tracker: KGUsageTracker,
-) -> None:
-    """Create Learning Commons knowledge graphs from a single CanonicalIR.
-
-    Each export phase checks whether its sentinel bundle file already exists on disk.
-    When `config.overwrite` is `False` and the sentinel exists, the prior export is
-    loaded from disk instead of being re-generated. This enables cheap incremental
-    re-runs: for example, re-running only Learning Progressions after tuning thresholds
-    while reusing the (expensive) Academic Standards and Learning Components exports.
+) -> Path:
+    """Build Academic Standards + Learning Components KG artifacts for a DocumentIR.
 
     The process is as follows:
 
-    1. Build the knowledge graph export context.
-    2. Export (or load) academic standards.
-    3. Export (or load) Learning Components KG and write combined Standards + Learning
-        Components graph bundle.
-    4. Optionally export (or load) Learning Progressions KG and write combined
-        Standards + Learning Components + Learning Progressions graph bundle.
-    5. Build reporting and validation artifacts, write to disk, and log console summary.
+    1. Load the stitched DocumentIR and validate it against the KG config parameters.
+    2. Build and persist `kg_run_manifest.json`.
+    3. Plan source DocumentIR units for Academic Standards (SFI) extraction windows.
+    4. Build LLM-ready extraction windows.
+    5. Extract source-grounded SFI candidates from extraction windows using an LLM.
+    6. Build and persist the global SFI candidate registry for merge review.
+    7. Merge duplicate SFI registry candidates into merge groups.
+    8. Mint deterministic final SFI records from merge groups.
+    9. Resolve source-grounded final hasChild edges.
+    10. Compile, validate, and write final Academic Standards KG export artifacts.
+    11. Gate LC generation on the Academic Standards bundle (validation +
+        unresolved items).
+    12. Select eligible LC-source SFIs (profile allowlist or leaf default).
+    13. Build deterministic LC generation requests (ancestor paths, framework
+        context).
+    14. Decompose LC-source SFIs into atomic skills using an LLM (sequential,
+        resumable).
+    15. Group exact + semantic duplicate skills (deterministic blocking, LLM
+        pair adjudication).
+    16. Mint LearningComponent nodes from canonical skill texts
+        (content-addressed, deterministic).
+    17. Emit one primary supports edge per (LearningComponent, claiming
+        SFI) pair (deterministic edge identities).
+    18. Validate run-level LC invariants and persist the phase summary and
+        LC entity provenance.
+    19. Merge the AS bundle and the LC layer into the single AS+LC KG
+        bundle, with flat node/relationship projections.
 
     Parameters
     ----------
-    canonical_ir
-        The CanonicalIR object loaded from the canonical IR JSON file.
     config
-        The knowledge graph run configuration.
+        KG creation configuration from the global runtime config.
+    document_ir_fp
+        Path to the stitched DocumentIR JSON.
+    expected_doc_key
+        Document key computed from the configured source PDF.
     kg_dirs
-        The knowledge graph run directories.
-    provenance_context
-        An optional dictionary containing provenance context information to be included
-        in the knowledge graphs.
+        Directories for storing KG run artifacts.
     usage_tracker
-        Tracker to accumulate token usage across all KG generation and validation calls.
+        Tracker to accumulate token usage in the KG pipeline.
 
-    Raises
-    ------
-    ValueError
-        If the CanonicalIR JSON is invalid or if any part of the knowledge graph export
-        process fails.
+    Returns
+    -------
+    Path
+        The path to the persisted `kg_run_manifest.json` artifact.
     """
 
     # 1.
-    kg_export_ctx = build_kg_export_context(canonical_ir=canonical_ir, config=config)
-
-    # 2.
-    academic_standards, as_reused = load_or_export_academic_standards(
-        canonical_ir_created_at=canonical_ir.created_at,
+    kg_run_inputs = load_and_validate_inputs(
         config=config,
-        ctx=kg_export_ctx,
-        decision_set_id=canonical_ir.decision_set_id,
+        document_ir_fp=document_ir_fp,
+        expected_doc_key=expected_doc_key,
         kg_dirs=kg_dirs,
-        provenance_context=provenance_context,
     )
 
+    # 2.
+    kg_run_manifest = build_run_manifest(kg_run_inputs)
+    kg_run_manifest_fp = kg_dirs.root / "kg_run_manifest.json"
+    write_to_json(fp=kg_run_manifest_fp, json_info=kg_run_manifest)
+
     # 3.
-    learning_components, lc_reused = load_or_export_learning_components(
-        academic_standards=academic_standards,
-        config=config,
-        ctx=kg_export_ctx,
-        kg_dirs=kg_dirs,
+    plan_items = plan_extraction_windows(
+        document_ir=kg_run_inputs.document_ir,
+        kg_config=kg_run_inputs.kg_config,
+        save_fp=kg_dirs.root / "sfi_extraction_window_plan.json",
+    )
+
+    # 4.
+    extraction_windows = build_llm_extraction_windows(
+        document_ir=kg_run_inputs.document_ir,
+        kg_config=kg_run_inputs.kg_config,
+        plan_items=plan_items,
+        save_fp=kg_dirs.root / "sfi_extraction_windows.jsonl",
+    )
+
+    # 5.
+    sfi_extraction_results = extract_sfi_candidates_from_windows(
+        extraction_windows=extraction_windows,
+        kg_config=kg_run_inputs.kg_config,
+        overwrite=config.overwrite,
+        save_fp=kg_dirs.root / "sfi_extraction_results.jsonl",
+        summary_fp=kg_dirs.root / "sfi_extraction_summary.json",
         usage_tracker=usage_tracker,
     )
 
-    # Sentinels needed for combined bundles.
-    as_sentinel = kg_dirs.academic_standards / "academic_standards_kg.json"
-    lc_sentinel = kg_dirs.learning_components / "learning_components_kg.json"
-    lp_sentinel = kg_dirs.learning_progressions / "learning_progressions_kg.json"
-
-    # Combined Academic Standards + Learning Components bundle.
-    combined_as_lc_fp = (
-        kg_dirs.combined / "academic_standards_plus_learning_components_kg.json"
+    # 6.
+    sfi_candidate_registry = build_candidate_registry(
+        extraction_windows=extraction_windows,
+        kg_config=kg_run_inputs.kg_config,
+        save_fp=kg_dirs.root / "sfi_candidate_registry.json",
+        sfi_extraction_results=sfi_extraction_results,
     )
 
-    if combined_as_lc_fp.exists() and as_reused and lc_reused:
-        logger.info(
-            "Combined Academic Standards and Learning Components bundle already exists "
-            "(both components reused)--skipping."
-        )
-    else:
-        as_bundle = open_json_type(as_sentinel)
-        lc_bundle = open_json_type(lc_sentinel)
-        combined_bundle = merge_graph_bundles(
-            bundles=[as_bundle, lc_bundle],
-            doc_key=kg_export_ctx.doc_key,
-            export_dialect=config.as_export_dialect,
-        )
-        write_to_json(fp=combined_as_lc_fp, json_info=combined_bundle)
-
-    # 4.
-    learning_progressions = None
-
-    if config.generate_learning_progressions is True:
-        learning_progressions, lp_reused = load_or_export_learning_progressions(
-            academic_standards=academic_standards,
-            config=config,
-            ctx=kg_export_ctx,
-            kg_dirs=kg_dirs,
-            usage_tracker=usage_tracker,
-        )
-
-        # Combined Academic Standards + Learning Components + Learning Progressions
-        # bundle.
-        combined_all_fp = (
-            kg_dirs.combined
-            / "academic_standards_plus_learning_components_plus_learning_progressions_kg.json"
-        )
-
-        if combined_all_fp.exists() and as_reused and lc_reused and lp_reused:
-            logger.info(
-                "Combined Academic Standards, Learning Components, and Learning Progressions "
-                "bundle already exists (all components reused)--skipping."
-            )
-        else:
-            as_bundle = open_json_type(as_sentinel)
-            lc_bundle = open_json_type(lc_sentinel)
-            lp_bundle = open_json_type(lp_sentinel)
-            combined_bundle = merge_graph_bundles(
-                bundles=[as_bundle, lc_bundle, lp_bundle],
-                doc_key=kg_export_ctx.doc_key,
-                export_dialect=config.as_export_dialect,
-            )
-            write_to_json(fp=combined_all_fp, json_info=combined_bundle)
-
-    # 5.
-    policy_report = build_policy_coverage_report(
-        academic_standards=academic_standards,
-        ctx=kg_export_ctx,
-        learning_components=learning_components,
-        learning_progressions=learning_progressions,
-    )
-    entity_provenance = build_entity_provenance_export(
-        academic_standards=academic_standards,
-        ctx=kg_export_ctx,
-        learning_components=learning_components,
-    )
-    validation_report = validate_graph(
-        academic_standards=academic_standards,
-        ctx=kg_export_ctx,
-        learning_components=learning_components,
-        learning_progressions=learning_progressions,
-    )
-    write_reports(
-        entity_provenance=entity_provenance,
+    # 7.
+    sfi_merge_report = merge_sfi_candidates(
+        kg_config=kg_run_inputs.kg_config,
         kg_dirs=kg_dirs,
-        policy_report=policy_report,
-        validation_report=validation_report,
-    )
-    log_console_summary(
-        policy_report=policy_report, validation_report=validation_report
+        overwrite=config.overwrite,
+        sfi_candidate_registry=sfi_candidate_registry,
+        usage_tracker=usage_tracker,
     )
 
-    if validation_report.has_errors():
-        raise ValueError(
-            f"Graph validation failed with {len(validation_report.errors())} error(s). "
-            f"See graph_validation_report.json for details."
-        )
+    # 8.
+    sfi_final_records = mint_final_sfi_ids(
+        document_ir=kg_run_inputs.document_ir,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+        sfi_candidate_registry=sfi_candidate_registry,
+        sfi_merge_report=sfi_merge_report,
+    )
+
+    # 9.
+    has_child_edges = resolve_has_child_edges(
+        document_ir=kg_run_inputs.document_ir,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+        overwrite=config.overwrite,
+        sfi_final_records=sfi_final_records,
+        usage_tracker=usage_tracker,
+    )
+
+    # 10.
+    final_bundle = compile_academic_standards_kg(
+        document_ir=kg_run_inputs.document_ir,
+        has_child_edges=has_child_edges,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+        overwrite=config.overwrite,
+    )
+
+    logger.success(
+        f"Final Academic Standards KG export count: "
+        f"frameworks={final_bundle.summary.framework_count}; "
+        f"items={final_bundle.summary.final_sfi_count}; "
+        f"hasChild_relationships={final_bundle.summary.has_child_relationship_count}"
+    )
+
+    # 11-12.
+    lc_eligible_sfis, lc_eligibility_report = select_lc_source_sfis(
+        academic_standards_bundle=final_bundle,
+        has_child_edges=has_child_edges,
+        kg_dirs=kg_dirs,
+        lc_config=kg_run_inputs.kg_config.learning_components,
+        sfi_final_records=sfi_final_records,
+    )
+
+    # 13.
+    lc_generation_requests = build_lc_generation_requests(
+        academic_standards_bundle=final_bundle,
+        has_child_edges=has_child_edges,
+        kg_dirs=kg_dirs,
+        lc_config=kg_run_inputs.kg_config.learning_components,
+        lc_eligible_sfis=lc_eligible_sfis,
+        sfi_final_records=sfi_final_records,
+    )
+
+    # 14.
+    lc_generation_responses = decompose_lc_source_sfis(
+        kg_dirs=kg_dirs,
+        lc_config=kg_run_inputs.kg_config.learning_components,
+        lc_generation_requests=lc_generation_requests,
+        overwrite=config.overwrite,
+        usage_tracker=usage_tracker,
+    )
+
+    # 15.
+    lc_dedup_groups = group_duplicate_skills(
+        kg_dirs=kg_dirs,
+        lc_config=kg_run_inputs.kg_config.learning_components,
+        lc_generation_requests=lc_generation_requests,
+        lc_generation_responses=lc_generation_responses,
+        overwrite=config.overwrite,
+        usage_tracker=usage_tracker,
+    )
+
+    # 16.
+    learning_components = mint_learning_components(
+        academic_standards_bundle=final_bundle,
+        document_ir=kg_run_inputs.document_ir,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+        lc_dedup_groups=lc_dedup_groups,
+        lc_eligible_sfis=lc_eligible_sfis,
+        lc_generation_requests=lc_generation_requests,
+        lc_generation_responses=lc_generation_responses,
+    )
+
+    # 17.
+    lc_supports_edges = build_lc_supports_edges(
+        document_ir=kg_run_inputs.document_ir,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+        lc_eligible_sfis=lc_eligible_sfis,
+        learning_components=learning_components,
+    )
+
+    # 18.
+    lc_generation_summary = summarize_learning_components(
+        academic_standards_bundle=final_bundle,
+        document_ir=kg_run_inputs.document_ir,
+        kg_dirs=kg_dirs,
+        lc_config=kg_run_inputs.kg_config.learning_components,
+        lc_dedup_groups=lc_dedup_groups,
+        lc_eligibility_report=lc_eligibility_report,
+        lc_eligible_sfis=lc_eligible_sfis,
+        lc_generation_requests=lc_generation_requests,
+        lc_generation_responses=lc_generation_responses,
+        learning_components=learning_components,
+        supports_edges=lc_supports_edges,
+    )
+
+    # 19.
+    compile_as_lc_kg(
+        academic_standards_bundle=final_bundle,
+        kg_dirs=kg_dirs,
+        lc_generation_summary=lc_generation_summary,
+        learning_components=learning_components,
+        overwrite=config.overwrite,
+        supports_edges=lc_supports_edges,
+    )
+
+    return kg_run_manifest_fp
 
 
 @cli.command()
@@ -237,106 +309,89 @@ def create(
         dir_okay=False,
         exists=True,
         file_okay=True,
-        help="The file path to the global config file for the pipeline.",
+        help="The file path to the global runtime config file for the pipeline.",
         readable=True,
         resolve_path=True,
     )
 ) -> None:
-    """Create LC KGs from the CanonicalIR JSON.
+    """Create the initial KG run artifacts from the global runtime config.
 
     The process is as follows:
 
-    1. Load config and validate extraction run existence.
-    2. Cross-check canonical IR run results.
-    3. Persist KG creation run metadata.
-    4. Create a usage tracker to accumulate token costs across all KG generation and
-        validation calls.
-    5. Create Learning Commons knowledge graphs.
+    1. Load the global run config and resolve KG, extraction, and stitching paths.
+    2. Cross-check stitching run results.
+    3. Persist KG run metadata.
+    4. Create a usage tracker to accumulate token costs for extracting SFIs.
+    5. Build the knowledge graphs.
 
     Parameters
     ----------
     config_fp
-        The file path to the global config file for the pipeline.
+        The file path to the global runtime config file for the pipeline.
 
     Raises
     ------
     Exception
-        If any part of the knowledge graph creation process fails.
+        If any error occurs during knowledge graph creation.
+    ValueError
+        If the runtime config does not contain a kgs section.
+    FileNotFoundError
+        If the required upstream extraction/stitching artifacts do not exist.
     """
 
     # 1.
     run_config = RunConfig.model_validate(open_json_type(config_fp))
     config = run_config.kgs
+
+    if config is None:
+        raise ValueError(
+            "RunConfig.kgs is required for KG creation, but the runtime config does "
+            "not contain a kgs section."
+        )
+
     extraction_config = run_config.page_ir_extraction
     computed_doc_key = compute_doc_key(n_hex=64, pdf_fp=extraction_config.pdf_fp)
-    extraction_run_results_dir = (
-        extraction_config.output_dir / computed_doc_key / "extraction"
-    )
-    canonical_ir_fp = (
-        extraction_config.output_dir
-        / computed_doc_key
-        / "canonical"
-        / "canonical_ir"
-        / "canonical_ir.json"
-    )
-    extraction_run_config = RunCtx.model_validate(
-        open_json_type(extraction_run_results_dir / "extraction_run.json")
-    )
-    expected_doc_key = extraction_run_config.extra["doc_key"]
 
     # 2.
-    canonical_ir = cross_check_canonical_ir_run(
-        canonical_ir_fp=canonical_ir_fp,
-        computed_doc_key=computed_doc_key,
-        expected_doc_key=expected_doc_key,
-        extraction_config=extraction_config,
-        kg_config=config,
+    document_ir_fp = cross_check_stitching_run(
+        computed_doc_key=computed_doc_key, extraction_config=extraction_config
     )
 
     # 3.
-    kg_results_dir = extraction_config.output_dir / expected_doc_key / "kgs"
+    kg_results_dir = extraction_config.output_dir / computed_doc_key / "kgs"
     kg_dirs, kg_run = persist_kg_run(config=config, output_dir=kg_results_dir)
 
     # 4.
     usage_tracker = KGUsageTracker()
 
     try:
-        # 5.
         logger.info(
-            f"Starting KG creation process using canonical IR JSON: {canonical_ir_fp}"
+            f"Starting KG creation using runtime config: {config_fp}; "
+            f"DocumentIR: {document_ir_fp}; "
+            f"KG config framework: {config.metadata.framework_title}"
         )
 
-        create_kgs(
-            canonical_ir=canonical_ir,
+        # 4.
+        kg_run_manifest_fp = build_kgs(
             config=config,
+            document_ir_fp=document_ir_fp,
+            expected_doc_key=computed_doc_key,
             kg_dirs=kg_dirs,
-            provenance_context={
-                "bbox": {
-                    "coord_space": "px",
-                    "format": "[x0, y0, x1, y1]",
-                    "note": (
-                        "BBox coords are absolute pixels in rendered page images. "
-                        "Use page_index+width_px/height_px for normalization when available."
-                    ),
-                    "origin": "top_left",
-                    "page_images": get_page_image_dims(extraction_run_results_dir),
-                    "render_dpi": extraction_config.dpi,
-                }
-            },
             usage_tracker=usage_tracker,
         )
         kg_run.extra["status"] = "success"
 
-        logger.success("KG creation completed successfully!")
+        logger.success(f"KG creation completed successfully: {kg_run_manifest_fp}")
     except Exception as e:  # pylint: disable=broad-except
         kg_run.extra["status"] = "error"
         kg_run.extra["error"] = {
             "message": str(e),
-            "traceback": traceback.format_exc(limit=30),
+            "traceback": traceback.format_exc(limit=20),
             "type": e.__class__.__name__,
         }
         raise
     finally:
+        kg_run.extra["usage"] = usage_tracker.to_dict()
         kg_run.completed_at = datetime.now(timezone.utc)
         write_to_json(fp=kg_dirs.root / "kg_run.json", json_info=kg_run)
 

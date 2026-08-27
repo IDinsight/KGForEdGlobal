@@ -28,7 +28,13 @@ from skg.schemas import BaseSchema
 # instead. NB: extended thinking is removed on opus-4-7+, so any new flagship model
 # MUST be added here, otherwise it falls back to extended thinking and is rejected.
 _ADAPTIVE_THINKING_MODEL_NAMES: frozenset[str] = frozenset(
-    {"claude-opus-4-6", "claude-opus-4-7", "claude-sonnet-4-6"}
+    {
+        "claude-opus-4-6",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-opus-5",
+        "claude-sonnet-4-6",
+    }
 )
 
 
@@ -130,6 +136,7 @@ def _anthropic_thinking_settings(config: ModelConfig) -> AnthropicModelSettings:
         return AnthropicModelSettings(
             anthropic_thinking={"type": "adaptive"},
             anthropic_effort=config.anthropic_effort,
+            max_tokens=config.max_output_tokens,
         )
 
     return AnthropicModelSettings(
@@ -137,6 +144,7 @@ def _anthropic_thinking_settings(config: ModelConfig) -> AnthropicModelSettings:
             "budget_tokens": config.anthropic_thinking_budget_tokens,
             "type": "enabled",
         },
+        max_tokens=config.max_output_tokens,
     )
 
 
@@ -161,11 +169,13 @@ def _openai_kgs_settings(
 
     if type_ == "learning_components":
         return OpenAIResponsesModelSettings(
+            max_tokens=config.max_output_tokens,
             openai_reasoning_effort=config.openai_reasoning_effort,
             openai_reasoning_summary="detailed",
         )
 
     return OpenAIResponsesModelSettings(
+        max_tokens=config.max_output_tokens,
         openai_reasoning_effort=config.openai_reasoning_effort,
         openai_reasoning_summary="detailed",
     )
@@ -192,10 +202,13 @@ def _openai_page_ir_extraction_settings(
 
     if type_ == "extraction":
         return OpenAIResponsesModelSettings(
-            temperature=config.openai_temperature, top_p=config.openai_top_p
+            max_tokens=config.max_output_tokens,
+            temperature=config.openai_temperature,
+            top_p=config.openai_top_p,
         )
 
     return OpenAIResponsesModelSettings(
+        max_tokens=config.max_output_tokens,
         openai_reasoning_effort=config.openai_reasoning_effort,
         openai_reasoning_summary="detailed",
     )
@@ -222,10 +235,13 @@ def _openai_page_ir_verification_settings(
 
     if type_ == "verification":
         return OpenAIResponsesModelSettings(
-            temperature=config.openai_temperature, top_p=config.openai_top_p
+            max_tokens=config.max_output_tokens,
+            temperature=config.openai_temperature,
+            top_p=config.openai_top_p,
         )
 
     return OpenAIResponsesModelSettings(
+        max_tokens=config.max_output_tokens,
         openai_reasoning_effort=config.openai_reasoning_effort,
         openai_reasoning_summary="detailed",
     )
@@ -254,6 +270,9 @@ class ModelConfig(BaseSchema):
     """
 
     model: str
+
+    # Shared settings.
+    max_output_tokens: int = 32768
 
     # Anthropic settings.
     anthropic_effort: Literal["low", "medium", "high"] = "high"
@@ -285,10 +304,21 @@ class ModelConfig(BaseSchema):
             If an invalid `type_` is provided.
         """
 
-        if type_ not in {"learning_components", "learning_progressions"}:
+        if type_ not in {
+            "learning_components",
+            "learning_progressions",
+            "sfi_dedup",
+            "sfi_has_child",
+            "sfi_extraction",
+        }:
             raise ValueError(
                 f"Invalid knowledge graph model type '{type_}'. "
-                f"Valid options are 'learning_components' or 'learning_progressions'."
+                f"Valid options are: "
+                f"'learning_components', "
+                f"'learning_progressions', "
+                f"`sfi_dedup`, "
+                f"`sfi_has_child`, "
+                f"or `sfi_extraction`."
             )
 
         factory = _KGS_SETTINGS_REGISTRY[self.provider]

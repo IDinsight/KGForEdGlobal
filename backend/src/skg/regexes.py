@@ -38,12 +38,6 @@ CAPTION_IDENTIFIER_RE = (
     rf")"
 )
 
-# Matches one or more consecutive dash-like characters. Includes the standard hyphen
-# (-), minus sign (−), en-dash (–), em-dash (—), and figure dash (‒). Usually used to
-# normalize messy typography (e.g., replacing weird unicode dashes with a standard
-# hyphen).
-DASH_RE = re.compile(r"[-‐‒–—−]+")
-
 # Matches a single numeric digit. NB: Because there is no re.ASCII flag, this will
 # catch standard 0-9 as well as Unicode digits from other scripts (like Arabic-Indic
 # numerals: ٠, ١, ٢).
@@ -54,13 +48,6 @@ DIGIT_RE = re.compile(r"\d")
 # checked before shorter ones ("Fig"), preventing partial matches.
 FIGURE_PREFIX_PATTERN = "|".join(
     re.escape(prefix) for prefix in sorted(CaptionFigurePrefixes, key=len, reverse=True)
-)
-
-# Matches Roman numerals from 1 to 15 (I through XV) as whole words (\b). Because of
-# re.IGNORECASE, it will catch "iv", "IV", "Iv", etc. Hardcoding these is a quick, safe
-# way to handle low numbers without a complex regex.
-ROMAN_RE = re.compile(
-    r"\b(XV|XIV|XIII|XII|XI|X|IX|VIII|VII|VI|V|IV|III|II|I)\b", re.IGNORECASE
 )
 
 # Dynamically builds an OR-separated string of escaped table prefixes (like "Table",

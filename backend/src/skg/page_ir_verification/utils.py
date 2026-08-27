@@ -559,13 +559,15 @@ def load_page_irs_from_verification(
             "All verified PageIRs are missing doc_key. "
             "Ensure extraction step populates PageIR.doc_key for every page."
         )
+
     if len(doc_keys) > 1 or len(pdf_names) > 1:
         raise ValueError(
-            "Inconsistent pdf_name or doc_key across pages:\n"
+            f"Inconsistent pdf_name or doc_key across pages:\n"
             f"{sorted(doc_keys)}\n{sorted(pdf_names)}"
         )
 
     only_doc_key = next(iter(doc_keys))
+
     if only_doc_key != doc_key:
         raise ValueError(f"Expected doc_key '{doc_key}', got '{only_doc_key}'")
 
@@ -577,7 +579,7 @@ def load_page_irs_from_verification(
 
     if len(coord_spaces) > 1 or len(dpis) > 1:
         raise ValueError(
-            "Inconsistent coordinate spaces or DPIs across pages:\n"
+            f"Inconsistent coordinate spaces or DPIs across pages:\n"
             f"{coord_spaces=}\n{dpis=}\n{widths=}\n{heights=}"
         )
 

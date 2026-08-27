@@ -215,6 +215,23 @@ def compare_directories(dir1_path: str | Path, dir2_path: str | Path) -> bool:
     return False
 
 
+def json_dumps(value: object) -> str:
+    """Serialize prompt JSON with stable formatting.
+
+    Parameters
+    ----------
+    value
+        JSON-serializable value.
+
+    Returns
+    -------
+    str
+        Pretty JSON string.
+    """
+
+    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+
+
 def make_dir(dir_: str | Path, mode: int = 0o777, verbose: bool = True) -> None:
     """Create a directory.
 
@@ -267,12 +284,16 @@ def open_json_type(filepath: str | Path) -> Any:
     assert Path.is_file(filepath)
     file_ext = filepath.suffix
     assert Valid.is_valid_json_file_ext(file_ext=file_ext)
+
     if file_ext == ".json":
         with filepath.open("r", encoding="utf-8") as f:
             dict_ = json.load(f)
+
         return dict_
+
     with filepath.open("r", encoding="utf-8") as f:
         json_list = list(f)
+
     return [json.loads(json_str) for json_str in json_list]
 
 
@@ -300,6 +321,7 @@ def recurse_replace(new_str: str, orig_str: str, x: Any) -> Any:
 
     if isinstance(x, str) and orig_str in x:
         return x.replace(orig_str, new_str)
+
     if isinstance(x, list):
         for i, item in enumerate(x):
             x[i] = recurse_replace(new_str, orig_str, x=item)
@@ -308,6 +330,7 @@ def recurse_replace(new_str: str, orig_str: str, x: Any) -> Any:
             k_ = recurse_replace(new_str, orig_str, x=k)
             x.pop(k)
             x[k_] = recurse_replace(new_str, orig_str, x=v)
+
     return x
 
 
@@ -335,6 +358,41 @@ def redact_tokens(record: dict[str, Any]) -> dict[str, Any]:
         )
 
     return record
+
+
+def strip_and_require_non_empty_str(v: str) -> str:
+    """Strip whitespace and require a non-empty string.
+
+    Parameters
+    ----------
+    v
+        The input string value to validate.
+
+    Returns
+    -------
+    str
+        The stripped non-empty string.
+
+    Raises
+    ------
+    TypeError
+        If the input is not a string.
+    ValueError
+        If the input value is None or empty after stripping.
+    """
+
+    if v is None:
+        raise ValueError("Required field cannot be None")
+
+    if not isinstance(v, str):
+        raise TypeError("Expected a string")
+
+    v_clean = v.strip()
+
+    if not v_clean:
+        raise ValueError("Required string field cannot be empty")
+
+    return v_clean
 
 
 def write_to_json(
@@ -386,6 +444,7 @@ def write_to_json(
             json.dump(json_info, f, indent=indent)
     elif suffix == ".jsonl":
         items = [json_info] if isinstance(json_info, (dict, BaseModel)) else json_info
+
         with fp.open("w", encoding=encoding) as f:
             for item in items:
                 # Use Pydantic's serializer for models.
