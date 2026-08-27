@@ -94,14 +94,15 @@ confidence and graph-integrity gates.
 
 ### Use independent semantic checking where the assertion risk is highest
 
-Several Academic Standards operations use a **producer/checker** pattern: one LLM
+Several higher-risk semantic operations use a **producer/checker** pattern: one LLM
 produces a structured semantic judgment and an independent checker validates or
 corrects it. This pattern is used for source-grounded SFI extraction, SFI duplicate
-resolution, and `hasChild` parent selection.
+resolution, `hasChild` parent selection, and Learning Component decomposition.
 
-Learning Component generation uses a different trust pattern: a bounded LLM generation
-or semantic-deduplication judgment is coupled with strict Python validation and retry
-logic rather than the same independent producer/checker flow.
+Learning Component semantic deduplication is intentionally different: deterministic
+blocking nominates bounded candidate pairs for one semantic judge, while Python owns
+request coverage, retries, conflict-aware clustering, deterministic canonicalization,
+and final graph reconciliation.
 
 ### Treat provenance and intermediate artifacts as first-class outputs
 
@@ -416,50 +417,114 @@ The LC flow is:
 
 ```mermaid
 flowchart TD
-    A[Validated Academic Standards KG] --> B[Select eligible SFI seeds]
-    B --> C[Build bounded generation requests]
-    C --> D[Generate atomic skills]
-    D --> E[Exact + optional semantic deduplication]
-    E --> F[Mint deterministic LearningComponents]
-    F --> G[Create deterministic supports edges]
-    G --> H[Validate and export combined AS + LC KG]
+    A[Validated Academic Standards KG] --> B[Gate + select eligible SFI seeds]
+    B --> C[Build hierarchy-aware generation requests]
+    C --> D[LC producer generates atomic skills]
+    D --> E[Independent LC validator accepts or corrects]
+    E --> F[Exact + optional semantic deduplication]
+    F --> G[Mint deterministic LearningComponents]
+    G --> H[Create deterministic supports edges]
+    H --> I[Validate LC reconciliation]
+    I --> J[Compile + validate combined AS + LC KG]
 ```
 
-### Eligibility and context
+### Eligibility and hierarchy context
 
-If `lc_source_statement_types` is configured, those source-facing statement types define
-LC-generation eligibility. Otherwise the default selection uses leaf SFIs whose
-normalized statement type is `Standard`.
+The LC phase first requires a passed, error-free Academic Standards validation report.
+Recorded AS finalization gaps can coexist with a valid bundle, so the default behavior
+is to continue over the resolved subgraph while excluding seeds whose ancestry crosses
+an unresolved root-fallback edge.
 
-Generation requests include the authoritative source SFI and resolved ancestor context.
-Sibling context can optionally be included for disambiguation, but prompts prohibit
-using siblings as the source of new skill content.
+If `lc_source_statement_types` is configured, those exact source-facing statement types
+define eligibility. Otherwise the deterministic fallback selects leaf SFIs whose
+normalized statement type is `Standard`. Every exclusion receives an explicit reason.
 
-### Atomic-skill generation
+Eligible seeds are batched by `lc_request_batch_size`. Each request contains the
+framework context and, per seed, the authoritative description, language, statement
+type, complete direct-parent UUID set, and ancestor graph. The hierarchy is explicitly
+multi-parent: all branches are walked to the framework root, and each ancestor preserves
+its own `parent_uuids` instead of being flattened into a single inferred path.
 
-A bounded LLM request decomposes an eligible SFI into one or more atomic skills. A
-standard that is already atomic can produce one skill. Structured Python validators
-enforce response integrity, configured skill-count or length limits, and retry behavior.
-Isolated decomposition failures are persisted and are governed by a configurable
-run-level failure-rate guard.
+Sibling context can optionally be included for disambiguation and overlap avoidance,
+but it cannot license new skill content. Statement codes are omitted from decomposition
+input. If a reviewed override admits a seed with unresolved ancestry, the request is
+marked `unresolved_ancestor_path` and the seed text becomes the sole authority for
+curriculum scope.
 
-### Deduplication and finalization
+### Atomic-skill producer/checker flow
 
-Generated skills are first grouped by exact normalized text. When semantic deduplication
-is enabled, deterministic blocking nominates plausible duplicate pairs for bounded LLM
-adjudication.
+The LC producer decomposes every requested SFI into one or more atomic teachable skills.
+An already atomic seed can correctly produce one skill. The generic policy prevents
+fragments, unstated prerequisites, activities/resources/assessment prompts, and
+combinatorial splitting. When a seed names several actions over several objects or
+cases, decomposition splits on one axis only rather than producing an N-by-M cross
+product.
 
-Deduplication scope is configurable so identical or similar language can remain separate
-when curriculum context requires it. Supported scopes include framework-wide,
-top-ancestor, direct-parent, or no cross-SFI merging.
+Python validates universal response integrity and any configured skill-count or
+skill-text bounds. A separate LC generation validator then receives the original request
+and the complete producer draft. It independently re-decomposes the seed and checks
+semantic granularity, wording fidelity, split axis, scope, sibling leakage, language,
+and runtime curriculum policy.
 
-Canonical skills are minted as content-addressed deterministic UUIDv5
-`LearningComponent` entities within their configured deduplication scope. Each
-Learning Component is linked to every claiming finalized SFI through deterministic
-`supports` relationships.
+A passing verdict accepts the producer draft. A failing verdict must return a complete
+corrected response, which Python validates again. The phase persists producer drafts,
+validator verdicts, and accepted/corrected final responses separately, allowing the
+semantic decision path to be audited and safely resumed.
 
-Run-level validation checks that the LC layer reconciles with its eligible seeds,
-Learning Components, claims, provenance, and relationship endpoints.
+Isolated request failures are recorded and processing continues. The run raises only
+when the fraction of affected eligible SFIs exceeds `lc_max_failure_rate`.
+
+### Deduplication and canonicalization
+
+Exact LC identity normalization is deliberately language-independent: lowercase,
+whitespace collapse, and trailing-period removal. Exact duplicates group within the
+configured scope even if semantic deduplication is disabled.
+
+When semantic deduplication is enabled, deterministic blocking nominates plausible text
+pairs using token overlap, containment, character trigrams, generated tags,
+corpus-frequency stopword suppression, and small shared-parent neighborhoods. An
+optional profile-defined language pack adds stopwords and affix folding for nomination
+only; these transformations never enter canonical LC identity.
+
+The supported scope modes are:
+
+- `framework`: one document-wide merge scope;
+- `top_ancestor`: the complete set of resolved root-level SFI ancestors;
+- `parent`: the complete set of direct parent UUIDs; and
+- `none`: one isolated scope per source SFI.
+
+Under `top_ancestor` or `parent`, empty or unresolved ancestry falls back to the seed
+UUID, preventing unreliable hierarchy from enabling a cross-seed merge. Multi-parent
+seeds key on the complete relevant set rather than allowing one branch to determine
+scope.
+
+Nominated pairs are adjudicated by one bounded semantic judge. SAME links are clustered
+deterministically, while explicit DISTINCT verdicts prevent transitive chaining from
+silently joining contradictory pairs. Dropped links are recorded as conflicts.
+Canonical normalized text is elected deterministically by claim count, then text length,
+then lexical order.
+
+### Finalization, `supports`, and validation
+
+Each canonical skill mints a content-addressed UUIDv5 `LearningComponent` using the
+document key, dedup scope, and canonical normalized text. The displayed description is
+a deterministic representative original surface form; identity remains tied to the
+canonical normalized content.
+
+Learning Components retain per-claim provenance and aggregate source/framework
+provenance. Claiming SFIs must agree on inherited attribution metadata. Each LC is then
+linked to every claiming SFI by one deterministic primary `supports` relationship. When
+one SFI contributed several merged wordings to an LC, `support_confidence` is the
+minimum of those claim confidences.
+
+Run-level LC validation checks deterministic identifiers, real relationship endpoints,
+unique LC/SFI support pairs, LC edge coverage, and exact eligible-SFI reconciliation:
+every eligible SFI must be claimed by an LC or formally recorded as failed, but never
+both or neither.
+
+The final merge validates the complete graph again for the Academic Standards gate,
+`supports` endpoints and counts, identifier collisions, LC provenance presence, and
+summary alignment.
 
 Representative outputs include:
 
@@ -468,6 +533,8 @@ kgs/
 ├── lc_eligible_sfis.json
 ├── lc_eligibility_report.json
 ├── lc_generation_requests.jsonl
+├── lc_generation_draft_responses.jsonl
+├── lc_generation_validation_verdicts.jsonl
 ├── lc_generation_responses.jsonl
 ├── lc_generation_failures.json
 ├── lc_dedup_candidate_pairs.jsonl

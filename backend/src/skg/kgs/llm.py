@@ -132,6 +132,7 @@ class KGUsageTracker:
         agent_buckets = {
             "lc_dedup": self.lc_dedup,
             "lc_generation": self.lc_generation,
+            "lc_generation_validation": self.lc_generation_validation,
             "sfi_dedup": self.sfi_dedup,
             "sfi_dedup_validation": self.sfi_dedup_validation,
             "sfi_extraction": self.sfi_extraction,

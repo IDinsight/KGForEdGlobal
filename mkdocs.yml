@@ -28,6 +28,9 @@ nav:
       - Academic Standards: pipeline/academic-standards.md
       - Learning Components: pipeline/learning-components.md
 
+  - Guides:
+      - Add a new curriculum: guides/adding-a-curriculum.md
+
   - Development:
       - development/index.md
       - Local setup: development/local-setup.md

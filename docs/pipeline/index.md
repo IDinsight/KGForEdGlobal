@@ -132,6 +132,8 @@ stage outputs beneath that document-specific directory:
     ├── as_kg_bundle.json
     ├── as_validation_report.json
     ├── ... Learning Component working artifacts ...
+    ├── lc_generation_draft_responses.jsonl
+    ├── lc_generation_validation_verdicts.jsonl
     ├── learning_components.jsonl
     ├── lc_supports_edges.json
     ├── lc_generation_summary.json
@@ -271,18 +273,49 @@ them back to the standards they support.
 
 The second half of `create_kgs.py`:
 
-1. selects eligible source SFIs;
-2. builds deterministic generation requests with resolved hierarchy context;
-3. decomposes source standards into atomic skills;
-4. groups exact and semantic duplicate skills;
-5. deterministically mints canonical `LearningComponent` nodes;
-6. creates `supports` relationships back to claiming SFIs;
-7. validates run-level LC invariants; and
-8. compiles the combined Academic Standards + Learning Components graph.
+1. gates LC construction on the validated Academic Standards bundle;
+2. deterministically selects eligible source SFIs;
+3. builds hierarchy-aware generation requests, including multi-parent ancestor context;
+4. produces atomic-skill decompositions and independently validates/corrects them;
+5. groups exact and optional semantic duplicate skills within a configured scope;
+6. deterministically mints canonical `LearningComponent` nodes;
+7. creates `supports` relationships back to every claiming SFI;
+8. validates LC coverage, identity, provenance, and relationship invariants; and
+9. compiles and validates the combined Academic Standards + Learning Components graph.
 
-The LC phase uses bounded LLM generation and semantic adjudication with strict Python
-validation/retry logic rather than the producer/checker pattern used for the higher-risk
-Academic Standards assertions.
+The Academic Standards graph is authoritative for seed text and hierarchy context. LC
+construction does not independently reinterpret the original PDF.
+
+LC decomposition uses an independent **producer/checker** LLM flow. The producer creates
+a complete decomposition, and a separate validator re-decomposes the seed from the
+bounded request and either accepts the draft or returns a complete corrected response.
+Python enforces request/SFI coverage, configured skill-count and text-length bounds,
+identifier determinism, and final reconciliation.
+
+The generic decomposition policy treats an already atomic standard as a valid one-skill
+case, requires skills to remain directly supported by the seed, and prevents
+combinatorial over-splitting: when a seed names several actions over several objects,
+the model splits on one axis rather than generating an action-by-object cross product.
+Sibling context can help avoid overlap but cannot license new skill content.
+
+Semantic LC deduplication uses a different trust pattern: deterministic blocking
+nominates candidate pairs and a bounded semantic judge adjudicates them with Python
+coverage/retry checks. Exact identity normalization remains language-independent;
+optional language packs affect candidate nomination only, not LC identity. Dedup scope
+can be framework-wide, based on the complete top-ancestor set, based on the complete
+direct-parent set, or isolated per source SFI. Unresolved hierarchy falls back to the
+seed UUID under scoped modes so it cannot enable a cross-seed merge.
+
+Canonical skills are minted as content-addressed deterministic UUIDv5
+`LearningComponent` entities. Claim-level provenance is retained, and one deterministic
+primary `supports` edge is emitted per LC/claiming-SFI pair. If one SFI contributes
+several merged wordings to the same LC, the edge uses the minimum contributing claim
+confidence.
+
+Run-level reconciliation requires every eligible SFI to be accounted for exactly as
+either claimed by at least one LC or recorded as a decomposition failure. The merged
+bundle is then validated again for endpoints, edge coverage, identifier collisions,
+provenance presence, and summary-count alignment.
 
 **Primary handoff:**
 
@@ -292,9 +325,12 @@ kgs/as_lc_nodes.jsonl
 kgs/as_lc_relationships.jsonl
 ```
 
-**Audit starting points:** `lc_eligibility_report.json`, `lc_generation_*`,
-`lc_dedup_*`, `learning_components.jsonl`, `lc_supports_edges.json`,
-`lc_entity_provenance.json`, and `lc_generation_summary.json`.
+**Audit starting points:** `lc_eligibility_report.json`,
+`lc_generation_requests.jsonl`, `lc_generation_draft_responses.jsonl`,
+`lc_generation_validation_verdicts.jsonl`, `lc_generation_responses.jsonl`,
+`lc_generation_failures.json`, `lc_dedup_*`, `learning_components.jsonl`,
+`lc_supports_edges.json`, `lc_entity_provenance.json`, and
+`lc_generation_summary.json`.
 
 ---
 
@@ -353,7 +389,8 @@ When debugging, start with the artifact closest to the stage where behavior dive
 | Were two standards merged incorrectly? | SFI merge report/groups/conflicts and dedup review artifacts |
 | Was a standard assigned the wrong parent? | `has_child_candidate_parent_sets.jsonl`, resolution artifacts, and `has_child_edges_final.json` |
 | Why was a standard excluded from LC generation? | `lc_eligibility_report.json` and `lc_eligible_sfis.json` |
-| Was a skill generated or deduplicated incorrectly? | LC generation requests/responses and LC dedup artifacts |
+| Was a skill generated incorrectly? | `lc_generation_requests.jsonl`, producer drafts, validator verdicts, final responses, and failures |
+| Were two skills merged or kept separate incorrectly? | `lc_dedup_candidate_pairs.jsonl`, `lc_dedup_verdicts.jsonl`, and `lc_dedup_groups.json` |
 | Does the final graph reconcile? | `as_validation_report.json`, `lc_generation_summary.json`, `as_kg_bundle.json`, and `as_lc_kg_bundle.json` |
 
 ---
