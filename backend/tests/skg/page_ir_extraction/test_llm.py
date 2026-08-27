@@ -13,17 +13,17 @@ import pytest
 from pydantic_ai import BinaryContent
 
 # Package Library
-from skg.model_registry import ModelConfig
-from skg.page_ir_extraction import llm as llm_module
-from skg.page_ir_extraction.llm import ExtractionUsageTracker
-from skg.page_ir_extraction.schemas import (
+from kgfeg.model_registry import ModelConfig
+from kgfeg.page_ir_extraction import llm as llm_module
+from kgfeg.page_ir_extraction.llm import ExtractionUsageTracker
+from kgfeg.page_ir_extraction.schemas import (
     Block,
     ExtractionValidationIssue,
     ExtractionValidationVerdict,
     PageIR,
     TextUnit,
 )
-from skg.utils.constants import BlockType, ItemBoundary
+from kgfeg.utils.constants import BlockType, ItemBoundary
 
 
 @pytest.fixture(scope="function")

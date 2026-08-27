@@ -7,7 +7,7 @@ from typing import Optional
 import pytest
 
 # Package Library
-from skg.page_ir_extraction.schemas import (
+from kgfeg.page_ir_extraction.schemas import (
     Block,
     FigureUnit,
     ListItem,
@@ -16,14 +16,14 @@ from skg.page_ir_extraction.schemas import (
     TableRow,
     TextUnit,
 )
-from skg.page_ir_extraction.validators import QualityError
-from skg.page_ir_verification.schemas import PageIRContinuityVerdict
-from skg.page_ir_verification.validators import (
+from kgfeg.page_ir_extraction.validators import QualityError
+from kgfeg.page_ir_verification.schemas import PageIRContinuityVerdict
+from kgfeg.page_ir_verification.validators import (
     validate_item_continuation_kind,
     validate_repeats_header_requires_table_item,
     validate_semantic_flow,
 )
-from skg.utils.constants import BlockType, ItemBoundary, PageContinuationKind
+from kgfeg.utils.constants import BlockType, ItemBoundary, PageContinuationKind
 
 _VALID_RATIONALE = "x" * 50
 

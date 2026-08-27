@@ -7,12 +7,12 @@ from typing import Optional
 import pytest
 
 # Package Library
-from skg.page_ir_verification.schemas import (
+from kgfeg.page_ir_verification.schemas import (
     ContinuityValidationIssue,
     ContinuityValidationVerdict,
     PageIRContinuityVerdict,
 )
-from skg.utils.constants import PageContinuationKind
+from kgfeg.utils.constants import PageContinuationKind
 
 _VALID_RATIONALE = "x" * 50  # Minimum-length rationale for all schemas.
 

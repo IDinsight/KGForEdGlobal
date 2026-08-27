@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 # Package Library
-from skg.page_ir_extraction.schemas import (
+from kgfeg.page_ir_extraction.schemas import (
     Block,
     ExtractionValidationIssue,
     ExtractionValidationVerdict,
@@ -22,7 +22,7 @@ from skg.page_ir_extraction.schemas import (
     TextUnit,
     validate_validation_verdict_state,
 )
-from skg.utils.constants import BlockType, FigureKind, ItemBoundary
+from kgfeg.utils.constants import BlockType, FigureKind, ItemBoundary
 from tests.constants import PARAM
 
 

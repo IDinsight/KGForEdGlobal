@@ -8,17 +8,18 @@ from typing import Any
 import pytest
 
 # Package Library
-from skg.document_ir import compute_page_break_links
-from skg.page_ir_extraction.schemas import (
+from kgfeg.document_ir import compute_page_break_links
+from kgfeg.page_ir_extraction.schemas import (
     Block,
     FigureUnit,
+    ListItem,
     PageIR,
     Table,
     TableCell,
     TableRow,
     TextUnit,
 )
-from skg.utils.constants import (
+from kgfeg.utils.constants import (
     BlockType,
     FigureKind,
     ItemBoundary,
@@ -129,7 +130,6 @@ def make_list_block(
     """Create a list block."""
 
     # Package Library
-    from skg.page_ir_extraction.schemas import ListItem
 
     return Block(
         bbox=bbox,

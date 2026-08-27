@@ -13,7 +13,7 @@ from typing import Any, Iterable, Optional
 import pytest
 
 # Package Library
-from skg.utils import logging_
+from kgfeg.utils import logging_
 from tests.constants import ASYNC, PARAM
 from tests.types_ import InstallLoguruMock
 

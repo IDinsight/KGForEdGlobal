@@ -13,12 +13,12 @@ import json
 import pytest
 
 # Package Library
-from skg.page_ir_extraction.prompts import (
+from kgfeg.page_ir_extraction.prompts import (
     extract_page_ir_from_pdf_page,
     validate_page_ir_extraction,
 )
-from skg.utils.constants import BlockType, FigureKind
-from skg.utils.general import PromptPair
+from kgfeg.utils.constants import BlockType, FigureKind
+from kgfeg.utils.general import PromptPair
 
 
 @pytest.fixture(scope="function")

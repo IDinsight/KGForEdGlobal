@@ -12,7 +12,7 @@ import pytest
 from PIL import Image
 
 # Package Library
-from skg.page_ir_extraction import utils
+from kgfeg.page_ir_extraction import utils
 from tests.constants import FIXTURES_DIR, PARAM
 from tests.types_ import InstallLoguruMock
 

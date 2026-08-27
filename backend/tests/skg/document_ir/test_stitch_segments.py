@@ -7,8 +7,8 @@ from typing import Any
 import pytest
 
 # Package Library
-from skg.document_ir.schemas import SectionHeadingRef, TableSegment
-from skg.document_ir.stitch_segments import (
+from kgfeg.document_ir.schemas import SectionHeadingRef, TableSegment
+from kgfeg.document_ir.stitch_segments import (
     _are_items_compatible_for_segment_stitching,
     _build_continuation_chain,
     _dfs,
@@ -31,7 +31,7 @@ from skg.document_ir.stitch_segments import (
     _validate_link_graph,
     build_stitched_segments,
 )
-from skg.page_ir_extraction.schemas import (
+from kgfeg.page_ir_extraction.schemas import (
     Block,
     ListItem,
     PageIR,
@@ -40,8 +40,8 @@ from skg.page_ir_extraction.schemas import (
     TableRow,
     TextUnit,
 )
-from skg.schemas import StitchingConfig
-from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
+from kgfeg.schemas import StitchingConfig
+from kgfeg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
 
 
 @pytest.fixture(name="doc_key")
@@ -1107,7 +1107,7 @@ class TestResolveHeaderRowCount:
         warnings: list[str] = []
 
         monkeypatch.setattr(
-            "skg.document_ir.stitch_segments._infer_header_row_count_from_rows",
+            "kgfeg.document_ir.stitch_segments._infer_header_row_count_from_rows",
             lambda *, max_header_rows, rows: (1, 0.90),
         )
 

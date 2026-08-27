@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 # Package Library
-from skg.page_ir_extraction.schemas import (
+from kgfeg.page_ir_extraction.schemas import (
     Block,
     PageIR,
     Table,
@@ -15,8 +15,8 @@ from skg.page_ir_extraction.schemas import (
     TableRow,
     TextUnit,
 )
-from skg.page_ir_verification import postprocess_page_irs
-from skg.utils.constants import BlockType, ItemBoundary
+from kgfeg.page_ir_verification import postprocess_page_irs
+from kgfeg.utils.constants import BlockType, ItemBoundary
 
 
 def cell(

@@ -4,7 +4,7 @@
 import pytest
 
 # Package Library
-from skg.page_ir_extraction.schemas import (
+from kgfeg.page_ir_extraction.schemas import (
     Block,
     PageIR,
     Table,
@@ -12,10 +12,10 @@ from skg.page_ir_extraction.schemas import (
     TableRow,
     TextUnit,
 )
-from skg.page_ir_verification import compile_continuity
-from skg.page_ir_verification.schemas import PageIRContinuityVerdict
-from skg.page_ir_verification.utils import EdgeVerdictRecord
-from skg.utils.constants import BlockType, ItemBoundary, PageContinuationKind
+from kgfeg.page_ir_verification import compile_continuity
+from kgfeg.page_ir_verification.schemas import PageIRContinuityVerdict
+from kgfeg.page_ir_verification.utils import EdgeVerdictRecord
+from kgfeg.utils.constants import BlockType, ItemBoundary, PageContinuationKind
 from tests.constants import PARAM
 
 

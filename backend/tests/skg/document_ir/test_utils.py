@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 # Package Library
-from skg.document_ir.utils import (
+from kgfeg.document_ir.utils import (
     ParsedCaptionCode,
     _normalize_caption_identifier,
     _strip_caption_trailing_separator,
@@ -20,8 +20,8 @@ from skg.document_ir.utils import (
     parse_caption_code,
     row_signature,
 )
-from skg.page_ir_extraction.schemas import Block, Table, TableCell, TableRow, TextUnit
-from skg.utils.constants import BlockType
+from kgfeg.page_ir_extraction.schemas import Block, Table, TableCell, TableRow, TextUnit
+from kgfeg.utils.constants import BlockType
 
 
 def make_block(

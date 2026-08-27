@@ -7,7 +7,7 @@ from typing import Union
 import pytest
 
 # Package Library
-from skg.page_ir_extraction.schemas import (
+from kgfeg.page_ir_extraction.schemas import (
     Block,
     FigureUnit,
     PageIR,
@@ -16,8 +16,8 @@ from skg.page_ir_extraction.schemas import (
     TableRow,
     TextUnit,
 )
-from skg.page_ir_verification import utils
-from skg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
+from kgfeg.page_ir_verification import utils
+from kgfeg.utils.constants import BlockType, ItemBoundary, PageBoundaryState
 
 
 def make_artifact_block(

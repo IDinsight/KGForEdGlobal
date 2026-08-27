@@ -11,7 +11,7 @@ aiofile==3.9.0 \
 aiofiles==25.1.0 \
     --hash=sha256:a8d728f0a29de45dc521f18f07297428d56992a742f0cd2701ba86e44d23d5b2 \
     --hash=sha256:abe311e527c862958650f9438e859c1fa7568a141b22abcd015e120e86a85695
-    # via skg (pyproject.toml)
+    # via kgfeg (pyproject.toml)
 aiohappyeyeballs==2.6.1 \
     --hash=sha256:c3f9d0113123803ccadfdf3f0faa505bc78e6a72d1cc4806cbd719826e943558 \
     --hash=sha256:f349ba8f4b75cb25c99c5c2d84e997e485204d2902a9597802b0371f09331fb8
@@ -141,7 +141,7 @@ aiohttp==3.13.2 \
 aiolimiter==1.2.1 \
     --hash=sha256:d3f249e9059a20badcb56b61601a83556133655c11d1eb3dd3e04ff069e5f3c7 \
     --hash=sha256:e02a37ea1a855d9e832252a105420ad4d15011505512a1a1d814647451b5cca9
-    # via skg (pyproject.toml)
+    # via kgfeg (pyproject.toml)
 aiosignal==1.4.0 \
     --hash=sha256:053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e \
     --hash=sha256:f47eecd9468083c2029cc99945502cb7708b082c232f9aca65da147157b251c7
@@ -438,7 +438,7 @@ cohere==5.20.7 \
 colored==2.3.1 \
     --hash=sha256:15d85396d6841f79534bf4668330b5e8686a5e58e730c84ada0e09d335b21fd1 \
     --hash=sha256:fe6e888e12dc16643daa0b108f785df6d0b48420084b5d0a567de27bb09a14d8
-    # via skg (pyproject.toml)
+    # via kgfeg (pyproject.toml)
 cryptography==46.0.3 \
     --hash=sha256:00a5e7e87938e5ff9ff5447ab086a5706a957137e6e433841e9d24f38a065217 \
     --hash=sha256:01ca9ff2885f3acc98c29f1860552e37f6d7c7d013d7334ff2a9de43a449315d \
@@ -809,7 +809,7 @@ greenlet==3.2.3 \
     --hash=sha256:ed6cfa9200484d234d8394c70f5492f144b20d4533f69262d530a1a082f6ee9a \
     --hash=sha256:efc6dc8a792243c31f2f5674b670b3a95d46fa1c6a912b8e310d6f542e7b0712 \
     --hash=sha256:f4bfbaa6096b1b7a200024784217defedf46a07c2eee1a498e94a1b5f8ec5728
-    # via skg (pyproject.toml)
+    # via kgfeg (pyproject.toml)
 griffelib==2.0.0 \
     --hash=sha256:01284878c966508b6d6f1dbff9b6fa607bc062d8261c5c7253cb285b06422a7f
     # via pydantic-ai-slim
@@ -1104,7 +1104,7 @@ keyring==25.7.0 \
 langcodes==3.5.1 \
     --hash=sha256:40bff315e01b01d11c2ae3928dd4f5cbd74dd38f9bd912c12b9a3606c143f731 \
     --hash=sha256:b6a9c25c603804e2d169165091d0cdb23934610524a21d226e4f463e8e958a72
-    # via skg (pyproject.toml)
+    # via kgfeg (pyproject.toml)
 logfire==4.25.0 \
     --hash=sha256:1865b832e08c58a3fb0d21b24460ee9c6cbeff12db6038c508fb966699ce81c2 \
     --hash=sha256:f9a6bf6d40fd3e2c2a86a364617246cadecbde620b4ecccb17c499140f1ebc13
@@ -1118,7 +1118,7 @@ logfire-api==4.25.0 \
 loguru==0.7.3 \
     --hash=sha256:19480589e77d47b8d85b2c827ad95d49bf31b0dcde16593892eb51dd18706eb6 \
     --hash=sha256:31a33c10c8e1e10422bfd431aeb5d351c7cf7fa671e3c4df004162264b28220c
-    # via skg (pyproject.toml)
+    # via kgfeg (pyproject.toml)
 markdown-it-py==4.0.0 \
     --hash=sha256:87327c59b172c5011896038353a81343b6754500a08cd7a4973bb48c6d578147 \
     --hash=sha256:cb0a2b4aa34f932c007117b194e945bd74e0ec24133ceb5bac59009cda1cb9f3
@@ -1466,12 +1466,12 @@ pillow==12.1.1 \
     --hash=sha256:fbfa2a7c10cc2623f412753cddf391c7f971c52ca40a3f65dc5039b2939e8563 \
     --hash=sha256:fc354a04072b765eccf2204f588a7a532c9511e8b9c7f900e1b64e3e33487090 \
     --hash=sha256:fc44ef1f3de4f45b50ccf9136999d71abb99dca7706bc75d222ed350b9fd2289
-    # via skg (pyproject.toml)
+    # via kgfeg (pyproject.toml)
 platformdirs==4.9.2 \
     --hash=sha256:9170634f126f8efdae22fb58ae8a0eaa86f38365bc57897a6c4f781d1f5875bd \
     --hash=sha256:9a33809944b9db043ad67ca0db94b14bf452cc6aeaac46a88ea55b26e2e9d291
     # via
-    #   skg (pyproject.toml)
+    #   kgfeg (pyproject.toml)
     #   fastmcp
 prompt-toolkit==3.0.52 \
     --hash=sha256:28cde192929c8e7321de85de1ddbe736f1375148b02f2e17edd840042b1be855 \
@@ -1638,7 +1638,7 @@ pyasn1-modules==0.4.2 \
 pycountry==26.2.16 \
     --hash=sha256:115c4baf7cceaa30f59a4694d79483c9167dbce7a9de4d3d571c5f3ea77c305a \
     --hash=sha256:5b6027d453fcd6060112b951dd010f01f168b51b4bf8a1f1fc8c95c8d94a0801
-    # via skg (pyproject.toml)
+    # via kgfeg (pyproject.toml)
 pycparser==2.23 \
     --hash=sha256:78816d4f24add8f10a06d6f05b4d424ad9e96cfebf68a4ddc99c65c0720d00c2 \
     --hash=sha256:e5c6e8d3fbad53479cab09ac03729e0a9faf2bee3db8208a550daf5af81a5934
@@ -1647,7 +1647,7 @@ pydantic==2.12.5 \
     --hash=sha256:4d351024c75c0f085a9febbb665ce8c0c6ec5d30e903bdb6394b7ede26aebb49 \
     --hash=sha256:e561593fccf61e8a20fc46dfc2dfe075b8be7d0188df33f221ad1f0139180f9d
     # via
-    #   skg (pyproject.toml)
+    #   kgfeg (pyproject.toml)
     #   ag-ui-protocol
     #   anthropic
     #   cohere
@@ -1667,7 +1667,7 @@ pydantic==2.12.5 \
 pydantic-ai==1.63.0 \
     --hash=sha256:269665fbc947d1d4238296a697c12a60d8b1b2c82536f2af4be801f73e165a92 \
     --hash=sha256:586f63f391aa24e8b06bd0aeafbb1058de1d4f3bfe34c5f13d4f29a2d870afa5
-    # via skg (pyproject.toml)
+    # via kgfeg (pyproject.toml)
 pydantic-ai-slim==1.63.0 \
     --hash=sha256:9377afecdfe4bc17f5c9ed72c758e460703ac5876931aa2f18ace8ac0e69312a \
     --hash=sha256:ed393b0f871b748171f65bec5191c3025b5abb8a4fc616afee17eb9dc2dfa15d
@@ -1811,7 +1811,7 @@ pydantic-settings==2.12.0 \
     --hash=sha256:005538ef951e3c2a68e1c08b292b5f2e71490def8589d4221b95dab00dafcfd0 \
     --hash=sha256:fddb9fd99a5b18da837b29710391e945b1e30c135477f484084ee513adb93809
     # via
-    #   skg (pyproject.toml)
+    #   kgfeg (pyproject.toml)
     #   mcp
 pygments==2.19.2 \
     --hash=sha256:636cb2477cec7f8952536970bc533bc43743542f70392ae026374600add5b887 \
@@ -1830,7 +1830,7 @@ pymupdf==1.26.7 \
     --hash=sha256:71add8bdc8eb1aaa207c69a13400693f06ad9b927bea976f5d5ab9df0bb489c3 \
     --hash=sha256:7c9645b6f5452629c747690190350213d3e5bbdb6b2eca227d82702b327f6eee \
     --hash=sha256:e419b609996434a14a80fa060adec72c434a1cca6a511ec54db9841bc5d51b3c
-    # via skg (pyproject.toml)
+    # via kgfeg (pyproject.toml)
 pyperclip==1.11.0 \
     --hash=sha256:244035963e4428530d9e3a6101a1ef97209c6825edab1567beac148ccc1db1b6 \
     --hash=sha256:299403e9ff44581cb9ba2ffeed69c7aa96a008622ad0c46cb575ca75b5b84273
@@ -1928,7 +1928,7 @@ pyyaml==6.0.3 \
     --hash=sha256:fa160448684b4e94d80416c0fa4aac48967a969efe22931448d853ada8baf926 \
     --hash=sha256:fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0
     # via
-    #   skg (pyproject.toml)
+    #   kgfeg (pyproject.toml)
     #   fastmcp
     #   huggingface-hub
     #   jsonschema-path
@@ -2254,7 +2254,7 @@ tenacity==9.1.2 \
 termcolor==3.2.0 \
     --hash=sha256:610e6456feec42c4bcd28934a8c87a06c3fa28b01561d46aa09a9881b8622c58 \
     --hash=sha256:a10343879eba4da819353c55cb8049b0933890c2ebf9ad5d3ecd2bb32ea96ea6
-    # via skg (pyproject.toml)
+    # via kgfeg (pyproject.toml)
 tiktoken==0.12.0 \
     --hash=sha256:01d99484dc93b129cd0964f9d34eee953f2737301f18b3c7257bf368d7615baa \
     --hash=sha256:04f0e6a985d95913cabc96a741c5ffec525a2c72e9df086ff17ebe35985c800e \
@@ -2341,7 +2341,7 @@ typer==0.20.0 \
     --hash=sha256:1aaf6494031793e4876fb0bacfa6a912b551cf43c1e63c800df8b1a866720c37 \
     --hash=sha256:5b463df6793ec1dca6213a3cf4c0f03bc6e322ac5e16e13ddd622a889489784a
     # via
-    #   skg (pyproject.toml)
+    #   kgfeg (pyproject.toml)
     #   huggingface-hub
 types-protobuf==6.32.1.20260221 \
     --hash=sha256:6d5fb060a616bfb076cbb61b4b3c3969f5fc8bec5810f9a2f7e648ee5cbcbf6e \

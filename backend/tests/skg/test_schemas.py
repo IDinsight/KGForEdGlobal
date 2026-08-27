@@ -6,7 +6,7 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 # Package Library
-from skg.schemas import BBox, _BCP47Str, _validate_bcp47, validate_bbox_order
+from kgfeg.schemas import BBox, _BCP47Str, _validate_bcp47, validate_bbox_order
 from tests.constants import PARAM
 
 

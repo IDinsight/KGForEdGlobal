@@ -17,7 +17,7 @@ RESET := $(shell tput sgr0)
 
 ########## GLOBALS ##########
 SHELL := /bin/bash
-PROJECT_NAME = SenegalKG
+PROJECT_NAME = KGForEdGlobal
 
 ########## HELPERS ##########
 VENV ?= .venv

@@ -6,11 +6,11 @@ import json
 from typing import Any
 
 # Package Library
-from skg.page_ir_verification.prompts import (
+from kgfeg.page_ir_verification.prompts import (
     validate_page_ir_continuity_verdict,
     verify_page_ir_pairs_from_extraction,
 )
-from skg.utils.constants import PageContinuationKind
+from kgfeg.utils.constants import PageContinuationKind
 
 _DEFAULT_THRESHOLDS: dict[str, float] = {
     "min_confidence_to_patch": 0.70,
