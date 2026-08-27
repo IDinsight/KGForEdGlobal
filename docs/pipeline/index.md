@@ -145,6 +145,10 @@ stage outputs beneath that document-specific directory:
 Intermediate files are intentional pipeline artifacts. They preserve evidence and
 working decisions needed for audit, debugging, review, and resumable processing.
 
+For downstream ingestion, wire-format differences, identifier semantics, and guidance
+on which files should become integration dependencies, see the
+[output artifacts and integration contract](../reference/output-artifacts.md).
+
 ---
 
 ## Stage 1: Page IR extraction

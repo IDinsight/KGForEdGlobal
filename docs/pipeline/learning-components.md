@@ -340,6 +340,10 @@ the final description alone.
 
 ---
 
+For downstream consumption and the distinction between bundle, Learning Commons
+wire, and flat-loader projections, see the
+[output artifacts and integration contract](../reference/output-artifacts.md).
+
 ## Stage boundary
 
 Learning Components construction is currently the final stage of the production

@@ -60,7 +60,9 @@ two main validated KG handoffs:
   graph with `hasChild` and `supports` relationships.
 
 See the [pipeline overview](docs/pipeline/index.md) for the full artifact map and stage
-contracts.
+contracts. Downstream consumers should also read the
+[output artifacts and integration contract](docs/reference/output-artifacts.md) before
+building against the exported JSON/JSONL shapes.
 
 ## Documentation
 
@@ -69,6 +71,7 @@ contracts.
 - [Pipeline overview](docs/pipeline/index.md)
 - [Add a new curriculum](docs/guides/adding-a-curriculum.md)
 - [Run, resume, and debug](docs/guides/running-and-debugging.md)
+- [Output artifacts and integration contract](docs/reference/output-artifacts.md)
 - [Local development setup](docs/development/local-setup.md)
 - [Contributing](docs/contributing.md)
 
