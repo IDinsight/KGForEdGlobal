@@ -11,6 +11,15 @@ the right granularity.
 Start with a representative subset of the document, inspect the intermediate artifacts,
 and only then run the full curriculum.
 
+!!! info "Roadmap: automated curriculum onboarding"
+    We are working on an automated process for adding and configuring new curricula.
+    This capability is on our roadmap, with timing **TBD**. Until it is available, this
+    guide describes the supported manual workflow.
+
+    If this automation would be useful to you, please
+    [open a new feature issue on GitHub](https://github.com/IDinsight/SenegalKG/issues/new)
+    so we can understand the demand and use cases.
+
 !!! tip "Start from the closest existing profile"
     The profiles under `examples/` are the best starting point. Choose the curriculum
     whose source structure is most similar to the new document, not necessarily the one

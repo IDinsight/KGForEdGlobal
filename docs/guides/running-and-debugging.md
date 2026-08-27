@@ -8,6 +8,16 @@ For stage internals and artifact contracts, use the
 [Pipeline Overview](../pipeline/index.md) and stage-specific pipeline pages. This guide
 focuses on **operational decisions**.
 
+!!! info "Roadmap: automated pipeline operations"
+    We are working on an automated process for running and resuming the pipeline and for
+    automatically diagnosing pipeline issues. This capability is on our roadmap, with
+    timing **TBD**. Until it is available, this guide describes the supported manual
+    operating and debugging workflow.
+
+    If this automation would be useful to you, please
+    [open a new feature issue on GitHub](https://github.com/IDinsight/SenegalKG/issues/new)
+    so we can understand the demand and use cases.
+
 ## The operating rule that prevents most mistakes
 
 When something looks wrong, find the **earliest persisted representation that is
