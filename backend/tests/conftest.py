@@ -33,7 +33,7 @@ if PACKAGE_PATH / "backend" / "tests" not in sys.path:
     sys.path.append(str(PACKAGE_PATH / "backend" / "tests"))
 
 # Package Library
-from skg.utils import logging_  # noqa: E402
+from kgfeg.utils import logging_  # noqa: E402
 from tests.constants import FIXTURES_DIR  # noqa: E402
 from tests.types_ import InstallLoguruMock, LogCall  # noqa: E402
 

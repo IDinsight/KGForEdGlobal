@@ -46,7 +46,7 @@ jobs:
 #      - name: Add CNAME
 #        run: |
 #          git switch gh-pages
-#          echo "docs.senegal-kg.com" >> CNAME
+#          echo "docs.kg-for-ed-global.com" >> CNAME
 #          git add CNAME
 #          git commit -m "Add CNAME"
 #          git push -f origin gh-pages

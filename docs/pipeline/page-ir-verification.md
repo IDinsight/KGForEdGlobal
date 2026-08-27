@@ -33,26 +33,26 @@ This stage does **not** re-extract page content or infer curriculum semantics.
 The verification command is implemented in:
 
 ```text
-backend/src/skg/entries/verify_page_ir_continuity.py
+backend/src/kgfeg/entries/verify_page_ir_continuity.py
 ```
 
 From the `backend/` directory, run:
 
 ```bash
-python src/skg/entries/verify_page_ir_continuity.py <config.json>
+python src/kgfeg/entries/verify_page_ir_continuity.py <config.json>
 ```
 
 The command reads the `page_ir_verification` section of the shared `RunConfig`.
 Important settings include:
 
-| Setting | Purpose |
-| --- | --- |
-| `start_page` / `end_page` | Optional 0-based page range |
-| `min_confidence_to_select_positive` | Minimum confidence for a positive verdict to be preferred during candidate selection |
-| `min_confidence_to_patch` | Minimum confidence required before a selected verdict can change PageIR metadata |
+| Setting                                  | Purpose                                                                                |
+|------------------------------------------|----------------------------------------------------------------------------------------|
+| `start_page` / `end_page`                | Optional 0-based page range                                                            |
+| `min_confidence_to_select_positive`      | Minimum confidence for a positive verdict to be preferred during candidate selection   |
+| `min_confidence_to_patch`                | Minimum confidence required before a selected verdict can change PageIR metadata       |
 | `min_confidence_to_stop_negative_search` | Confidence required to stop alternate-candidate search after a strong primary negative |
-| `next_page_crop_padding_px` | Extra visual context included below a selected next-page candidate |
-| `overwrite` | Whether to re-run page-pair verification instead of reusing existing pair reports |
+| `next_page_crop_padding_px`              | Extra visual context included below a selected next-page candidate                     |
+| `overwrite`                              | Whether to re-run page-pair verification instead of reusing existing pair reports      |
 
 By default, selection is more permissive than mutation. A candidate continuation can
 therefore be the best available explanation without automatically changing the PageIR.

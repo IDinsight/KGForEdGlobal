@@ -6,17 +6,17 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 # Package Library
-from skg.page_ir_verification.llm import (
+from kgfeg.page_ir_verification.llm import (
     VerificationUsageTracker,
     _run_validation_agent,
     verify_page_ir_pairs,
 )
-from skg.page_ir_verification.schemas import (
+from kgfeg.page_ir_verification.schemas import (
     ContinuityValidationIssue,
     ContinuityValidationVerdict,
     PageIRContinuityVerdict,
 )
-from skg.utils.constants import PageContinuationKind
+from kgfeg.utils.constants import PageContinuationKind
 
 _THRESHOLDS: dict[str, float] = {
     "min_confidence_to_patch": 0.70,
@@ -177,8 +177,8 @@ def make_mock_block_item() -> MagicMock:
 class TestRunValidationAgent:
     """Tests for `_run_validation_agent`."""
 
-    @patch("skg.page_ir_verification.llm.create_continuity_validation_agent")
-    @patch("skg.page_ir_verification.llm.validate_page_ir_continuity_verdict")
+    @patch("kgfeg.page_ir_verification.llm.create_continuity_validation_agent")
+    @patch("kgfeg.page_ir_verification.llm.validate_page_ir_continuity_verdict")
     def test_accumulates_validation_usage(
         self, mock_prompts: MagicMock, mock_create_agent: MagicMock
     ) -> None:
@@ -218,8 +218,8 @@ class TestRunValidationAgent:
 
         assert tracker.validation.runs >= 1
 
-    @patch("skg.page_ir_verification.llm.create_continuity_validation_agent")
-    @patch("skg.page_ir_verification.llm.validate_page_ir_continuity_verdict")
+    @patch("kgfeg.page_ir_verification.llm.create_continuity_validation_agent")
+    @patch("kgfeg.page_ir_verification.llm.validate_page_ir_continuity_verdict")
     def test_passes_verdict_json_to_prompt_builder(
         self, mock_prompts: MagicMock, mock_create_agent: MagicMock
     ) -> None:
@@ -263,8 +263,8 @@ class TestRunValidationAgent:
         call_kwargs = mock_prompts.call_args.kwargs
         assert call_kwargs["verdict_json"] == verdict.model_dump_json()
 
-    @patch("skg.page_ir_verification.llm.create_continuity_validation_agent")
-    @patch("skg.page_ir_verification.llm.validate_page_ir_continuity_verdict")
+    @patch("kgfeg.page_ir_verification.llm.create_continuity_validation_agent")
+    @patch("kgfeg.page_ir_verification.llm.validate_page_ir_continuity_verdict")
     def test_returns_validation_verdict_output(
         self, mock_prompts: MagicMock, mock_create_agent: MagicMock
     ) -> None:
@@ -305,8 +305,8 @@ class TestRunValidationAgent:
 
         assert result is expected_verdict
 
-    @patch("skg.page_ir_verification.llm.create_continuity_validation_agent")
-    @patch("skg.page_ir_verification.llm.validate_page_ir_continuity_verdict")
+    @patch("kgfeg.page_ir_verification.llm.create_continuity_validation_agent")
+    @patch("kgfeg.page_ir_verification.llm.validate_page_ir_continuity_verdict")
     def test_user_prompt_includes_both_images(
         self, mock_prompts: MagicMock, mock_create_agent: MagicMock
     ) -> None:
@@ -516,8 +516,8 @@ class TestVerifyPageIrPairs:
             usage_tracker=tracker or VerificationUsageTracker(),
         )
 
-    @patch("skg.page_ir_verification.llm._run_validation_agent")
-    @patch("skg.page_ir_verification.llm.create_continuity_verification_agent")
+    @patch("kgfeg.page_ir_verification.llm._run_validation_agent")
+    @patch("kgfeg.page_ir_verification.llm.create_continuity_verification_agent")
     def test_parses_table_item_when_kind_is_table(
         self,
         mock_create_verification: MagicMock,
@@ -577,8 +577,8 @@ class TestVerifyPageIrPairs:
         create_kwargs = mock_create_verification.call_args.kwargs
         assert create_kwargs["prev_item"].kind == "table"
 
-    @patch("skg.page_ir_verification.llm._run_validation_agent")
-    @patch("skg.page_ir_verification.llm.create_continuity_verification_agent")
+    @patch("kgfeg.page_ir_verification.llm._run_validation_agent")
+    @patch("kgfeg.page_ir_verification.llm.create_continuity_verification_agent")
     def test_reads_png_files_from_disk(
         self,
         mock_create_verification: MagicMock,
@@ -629,8 +629,8 @@ class TestVerifyPageIrPairs:
         assert call_kwargs["prev_png_bytes"] == b"PREV_CONTENT"
         assert call_kwargs["next_png_bytes"] == b"NEXT_CONTENT"
 
-    @patch("skg.page_ir_verification.llm._run_validation_agent")
-    @patch("skg.page_ir_verification.llm.create_continuity_verification_agent")
+    @patch("kgfeg.page_ir_verification.llm._run_validation_agent")
+    @patch("kgfeg.page_ir_verification.llm.create_continuity_verification_agent")
     def test_returns_corrected_verdict_when_validation_fails(
         self,
         mock_create_verification: MagicMock,
@@ -661,8 +661,8 @@ class TestVerifyPageIrPairs:
 
         assert result is corrected
 
-    @patch("skg.page_ir_verification.llm._run_validation_agent")
-    @patch("skg.page_ir_verification.llm.create_continuity_verification_agent")
+    @patch("kgfeg.page_ir_verification.llm._run_validation_agent")
+    @patch("kgfeg.page_ir_verification.llm.create_continuity_verification_agent")
     def test_returns_original_verdict_when_validation_passes(
         self,
         mock_create_verification: MagicMock,
@@ -693,8 +693,8 @@ class TestVerifyPageIrPairs:
 
         assert result is original
 
-    @patch("skg.page_ir_verification.llm._run_validation_agent")
-    @patch("skg.page_ir_verification.llm.create_continuity_verification_agent")
+    @patch("kgfeg.page_ir_verification.llm._run_validation_agent")
+    @patch("kgfeg.page_ir_verification.llm.create_continuity_verification_agent")
     def test_validation_agent_receives_verification_verdict(
         self,
         mock_create_verification: MagicMock,
@@ -725,8 +725,8 @@ class TestVerifyPageIrPairs:
         call_kwargs = mock_run_validation.call_args.kwargs
         assert call_kwargs["verdict"] is original
 
-    @patch("skg.page_ir_verification.llm._run_validation_agent")
-    @patch("skg.page_ir_verification.llm.create_continuity_verification_agent")
+    @patch("kgfeg.page_ir_verification.llm._run_validation_agent")
+    @patch("kgfeg.page_ir_verification.llm.create_continuity_verification_agent")
     def test_verification_usage_tracked(
         self,
         mock_create_verification: MagicMock,

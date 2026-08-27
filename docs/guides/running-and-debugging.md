@@ -15,7 +15,7 @@ focuses on **operational decisions**.
     operating and debugging workflow.
 
     If this automation would be useful to you, please
-    [open a new feature issue on GitHub](https://github.com/IDinsight/SenegalKG/issues/new)
+    [open a new feature issue on GitHub](https://github.com/IDinsight/KGForEdGlobal/issues/new)
     so we can understand the demand and use cases.
 
 ## The operating rule that prevents most mistakes
@@ -72,10 +72,10 @@ production run.
 Run all entry points from `backend/` with the same runtime config:
 
 ```bash
-python src/skg/entries/extract_page_ir.py <config.json>
-python src/skg/entries/verify_page_ir_continuity.py <config.json>
-python src/skg/entries/stitch_document_ir.py <config.json>
-python src/skg/entries/create_kgs.py <config.json>
+python src/kgfeg/entries/extract_page_ir.py <config.json>
+python src/kgfeg/entries/verify_page_ir_continuity.py <config.json>
+python src/kgfeg/entries/stitch_document_ir.py <config.json>
+python src/kgfeg/entries/create_kgs.py <config.json>
 ```
 
 The five conceptual pipeline stages are implemented through these four commands because

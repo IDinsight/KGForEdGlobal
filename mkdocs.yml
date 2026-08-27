@@ -1,8 +1,8 @@
 # yaml-language-server: $schema=https://squidfunk.github.io/mkdocs-material/schema.json
 site_name: "Knowledge Graph for Education Global"
 site_description: "Documentation for the curriculum-document-to-knowledge-graph pipeline"
-site_url: https://idinsight.github.io/SenegalKG/
-repo_url: https://github.com/IDinsight/SenegalKG
+site_url: https://idinsight.github.io/KGForEdGlobal/
+repo_url: https://github.com/IDinsight/KGForEdGlobal
 use_directory_urls: false
 copyright: "© 2026 IDinsight"
 extra:

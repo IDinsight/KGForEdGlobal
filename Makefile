@@ -16,7 +16,7 @@ BLUE := $(shell tput setaf 4)
 RESET := $(shell tput sgr0)
 
 ########## GLOBALS ##########
-PROJECT_NAME = SenegalKG
+PROJECT_NAME = KGForEdGlobal
 SHELL := /bin/bash
 
 ########## ENVIRONMENT VARIABLES FROM .env ##########

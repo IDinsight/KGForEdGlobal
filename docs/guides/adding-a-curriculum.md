@@ -17,7 +17,7 @@ and only then run the full curriculum.
     guide describes the supported manual workflow.
 
     If this automation would be useful to you, please
-    [open a new feature issue on GitHub](https://github.com/IDinsight/SenegalKG/issues/new)
+    [open a new feature issue on GitHub](https://github.com/IDinsight/KGForEdGlobal/issues/new)
     so we can understand the demand and use cases.
 
 !!! tip "Start from the closest existing profile"
@@ -391,10 +391,10 @@ the same thing in this curriculum.
 From the `backend` directory, run all four entry points against the calibration config:
 
 ```bash
-python src/skg/entries/extract_page_ir.py <config.json>
-python src/skg/entries/verify_page_ir_continuity.py <config.json>
-python src/skg/entries/stitch_document_ir.py <config.json>
-python src/skg/entries/create_kgs.py <config.json>
+python src/kgfeg/entries/extract_page_ir.py <config.json>
+python src/kgfeg/entries/verify_page_ir_continuity.py <config.json>
+python src/kgfeg/entries/stitch_document_ir.py <config.json>
+python src/kgfeg/entries/create_kgs.py <config.json>
 ```
 
 For an end-to-end calibration run, keep the selected verified page range contiguous and

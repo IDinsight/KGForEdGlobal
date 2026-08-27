@@ -9,7 +9,7 @@ import pymupdf
 import pytest
 
 # Package Library
-from skg.utils import pdf
+from kgfeg.utils import pdf
 from tests.constants import FIXTURES_DIR, PARAM
 
 

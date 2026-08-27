@@ -4,8 +4,8 @@
 import pytest
 
 # Package Library
-from skg.document_ir import normalize_page_items
-from skg.page_ir_extraction.schemas import (
+from kgfeg.document_ir import normalize_page_items
+from kgfeg.page_ir_extraction.schemas import (
     Block,
     FigureUnit,
     PageIR,
@@ -14,7 +14,7 @@ from skg.page_ir_extraction.schemas import (
     TableRow,
     TextUnit,
 )
-from skg.utils.constants import BlockType, FigureKind, ItemBoundary
+from kgfeg.utils.constants import BlockType, FigureKind, ItemBoundary
 
 BBoxType = tuple[float, float, float, float]
 ItemsType = list[tuple[int, Block | Table]]

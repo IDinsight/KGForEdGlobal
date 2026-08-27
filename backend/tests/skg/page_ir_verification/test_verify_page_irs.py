@@ -13,7 +13,7 @@ import pytest
 from PIL import Image
 
 # Package Library
-from skg.page_ir_extraction.schemas import (
+from kgfeg.page_ir_extraction.schemas import (
     Block,
     FigureUnit,
     PageIR,
@@ -22,8 +22,8 @@ from skg.page_ir_extraction.schemas import (
     TableRow,
     TextUnit,
 )
-from skg.page_ir_verification import verify_page_pairs
-from skg.utils.constants import BlockType, ItemBoundary
+from kgfeg.page_ir_verification import verify_page_pairs
+from kgfeg.utils.constants import BlockType, ItemBoundary
 from tests.constants import PARAM
 
 
@@ -635,8 +635,8 @@ class TestApplyVisibleCrop:
         assert result == [(0, item_inside), (2, item_inside)]
 
 
-@patch("skg.page_ir_verification.verify_page_pairs.is_probable_header_footer_noise")
-@patch("skg.page_ir_verification.verify_page_pairs.is_artifact")
+@patch("kgfeg.page_ir_verification.verify_page_pairs.is_probable_header_footer_noise")
+@patch("kgfeg.page_ir_verification.verify_page_pairs.is_artifact")
 class TestFilterCandidatePool:
     """Tests for the _filter_candidate_pool function, which filters out items based on
     artifact and noise heuristics. We want to ensure that it correctly filters items
@@ -749,7 +749,7 @@ class TestFilterCandidatePool:
 class TestGenerateCandidatePairs:
     """Tests for candidate-pair generation across a page boundary."""
 
-    @patch("skg.page_ir_verification.verify_page_pairs._ordered_next_candidates")
+    @patch("kgfeg.page_ir_verification.verify_page_pairs._ordered_next_candidates")
     def test_calls_ordered_next_candidates_once_for_primary_reporting_and_once_per_prev_anchor(
         self, mock_ordered_next_candidates: MagicMock
     ) -> None:
@@ -822,7 +822,7 @@ class TestGenerateCandidatePairs:
             ]
         )
 
-    @patch("skg.page_ir_verification.verify_page_pairs._ordered_next_candidates")
+    @patch("kgfeg.page_ir_verification.verify_page_pairs._ordered_next_candidates")
     def test_caps_crop_y_max_and_skips_duplicate_pairs(
         self, mock_ordered_next_candidates: MagicMock
     ) -> None:
@@ -870,7 +870,7 @@ class TestGenerateCandidatePairs:
             (7, 1, 150.0),
         ]
 
-    @patch("skg.page_ir_verification.verify_page_pairs._ordered_next_candidates")
+    @patch("kgfeg.page_ir_verification.verify_page_pairs._ordered_next_candidates")
     def test_stops_after_nine_candidate_pairs(
         self, mock_ordered_next_candidates: MagicMock
     ) -> None:
@@ -1151,7 +1151,7 @@ class TestOrderedNextCandidates:
         )
 
         with patch(
-            "skg.page_ir_verification.verify_page_pairs._pick_topmost"
+            "kgfeg.page_ir_verification.verify_page_pairs._pick_topmost"
         ) as mock_pick_topmost:
             mock_pick_topmost.return_value = (1, table_item)
             result = verify_page_pairs._ordered_next_candidates(
@@ -1205,8 +1205,8 @@ class TestOrderedNextCandidates:
         assert [index for index, _ in result] == [1, 0]
 
 
-@patch("skg.page_ir_verification.verify_page_pairs._is_viable_nonfigure_block_anchor")
-@patch("skg.page_ir_verification.verify_page_pairs._is_figure_block")
+@patch("kgfeg.page_ir_verification.verify_page_pairs._is_viable_nonfigure_block_anchor")
+@patch("kgfeg.page_ir_verification.verify_page_pairs._is_figure_block")
 class TestPickBottommost:
     """Test suite for the _pick_bottommost selection logic."""
 
@@ -1594,7 +1594,7 @@ def test__bottom_continuity_candidates_sorts_by_bottom_edge_before_primary_pick(
     middle_item = create_table(y0=200.0, y1=600.0)
 
     with patch(
-        "skg.page_ir_verification.verify_page_pairs._pick_bottommost"
+        "kgfeg.page_ir_verification.verify_page_pairs._pick_bottommost"
     ) as mock_pick_bottommost:
         mock_pick_bottommost.return_value = (1, highest_item)
         result = verify_page_pairs._bottom_continuity_candidates(
@@ -1690,18 +1690,20 @@ def test_builds_record_and_writes_report_from_selected_attempt() -> None:
 
     with (
         patch(
-            "skg.page_ir_verification.verify_page_pairs._bottom_continuity_candidates",
+            "kgfeg.page_ir_verification.verify_page_pairs._bottom_continuity_candidates",
             return_value=[(3, prev_item)],
         ) as mock_bottom_candidates,
         patch(
-            "skg.page_ir_verification.verify_page_pairs._execute_verification_attempts",
+            "kgfeg.page_ir_verification.verify_page_pairs._execute_verification_attempts",
             return_value=execute_result,
         ) as mock_execute_attempts,
         patch(
-            "skg.page_ir_verification.verify_page_pairs._generate_candidate_pairs",
+            "kgfeg.page_ir_verification.verify_page_pairs._generate_candidate_pairs",
             return_value=([MagicMock()], primary_indices),
         ) as mock_generate_pairs,
-        patch("skg.page_ir_verification.verify_page_pairs.write_to_json") as mock_write,
+        patch(
+            "kgfeg.page_ir_verification.verify_page_pairs.write_to_json"
+        ) as mock_write,
     ):
         record = verify_page_pairs.verify_single_page_pair(
             config=config,
@@ -2177,19 +2179,19 @@ def test_raises_runtime_error_when_all_attempts_fail() -> None:
 
     with (
         patch(
-            "skg.page_ir_verification.verify_page_pairs._ensure_pair_specific_crop",
+            "kgfeg.page_ir_verification.verify_page_pairs._ensure_pair_specific_crop",
             side_effect=[Path("/tmp/crops/a.png"), Path("/tmp/crops/b.png")],
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs._make_verification_excerpt",
+            "kgfeg.page_ir_verification.verify_page_pairs._make_verification_excerpt",
             return_value={"excerpt": True},
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs._strip_continuity_hints",
+            "kgfeg.page_ir_verification.verify_page_pairs._strip_continuity_hints",
             side_effect=lambda item_json: item_json,
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs.verify_page_ir_pairs",
+            "kgfeg.page_ir_verification.verify_page_pairs.verify_page_ir_pairs",
             side_effect=[ValueError("bad-a"), RuntimeError("bad-b")],
         ),
     ):
@@ -2271,19 +2273,19 @@ def test_records_errors_then_selects_the_later_successful_attempt() -> None:
 
     with (
         patch(
-            "skg.page_ir_verification.verify_page_pairs._ensure_pair_specific_crop",
+            "kgfeg.page_ir_verification.verify_page_pairs._ensure_pair_specific_crop",
             side_effect=[crop_fp_a, crop_fp_b],
         ) as mock_ensure_crop,
         patch(
-            "skg.page_ir_verification.verify_page_pairs._make_verification_excerpt",
+            "kgfeg.page_ir_verification.verify_page_pairs._make_verification_excerpt",
             return_value={"excerpt": True},
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs._strip_continuity_hints",
+            "kgfeg.page_ir_verification.verify_page_pairs._strip_continuity_hints",
             side_effect=lambda item_json: item_json,
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs.verify_page_ir_pairs",
+            "kgfeg.page_ir_verification.verify_page_pairs.verify_page_ir_pairs",
             side_effect=[RuntimeError("boom"), verdict],
         ) as mock_verify,
     ):
@@ -2433,15 +2435,17 @@ def test_returns_none_and_skips_downstream_work_when_either_page_has_no_items() 
 
     with (
         patch(
-            "skg.page_ir_verification.verify_page_pairs._bottom_continuity_candidates"
+            "kgfeg.page_ir_verification.verify_page_pairs._bottom_continuity_candidates"
         ) as mock_bottom_candidates,
         patch(
-            "skg.page_ir_verification.verify_page_pairs._execute_verification_attempts"
+            "kgfeg.page_ir_verification.verify_page_pairs._execute_verification_attempts"
         ) as mock_execute_attempts,
         patch(
-            "skg.page_ir_verification.verify_page_pairs._generate_candidate_pairs"
+            "kgfeg.page_ir_verification.verify_page_pairs._generate_candidate_pairs"
         ) as mock_generate_pairs,
-        patch("skg.page_ir_verification.verify_page_pairs.write_to_json") as mock_write,
+        patch(
+            "kgfeg.page_ir_verification.verify_page_pairs.write_to_json"
+        ) as mock_write,
     ):
         result = verify_page_pairs.verify_single_page_pair(
             config=config,
@@ -2494,10 +2498,10 @@ def test_reuses_cached_crop_for_same_next_index_and_same_rounded_crop_height(
 
     with (
         patch(
-            "skg.page_ir_verification.verify_page_pairs.Image.open", autospec=True
+            "kgfeg.page_ir_verification.verify_page_pairs.Image.open", autospec=True
         ) as mock_image_open,
         patch(
-            "skg.page_ir_verification.verify_page_pairs.make_dir", autospec=True
+            "kgfeg.page_ir_verification.verify_page_pairs.make_dir", autospec=True
         ) as mock_make_dir,
     ):
         second_crop_fp = verify_page_pairs._ensure_pair_specific_crop(
@@ -2552,19 +2556,19 @@ def test_stops_early_for_primary_primary_patchable_positive() -> None:
 
     with (
         patch(
-            "skg.page_ir_verification.verify_page_pairs._ensure_pair_specific_crop",
+            "kgfeg.page_ir_verification.verify_page_pairs._ensure_pair_specific_crop",
             return_value=Path("/tmp/crops/first.png"),
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs._make_verification_excerpt",
+            "kgfeg.page_ir_verification.verify_page_pairs._make_verification_excerpt",
             return_value={"excerpt": True},
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs._strip_continuity_hints",
+            "kgfeg.page_ir_verification.verify_page_pairs._strip_continuity_hints",
             side_effect=lambda item_json: item_json,
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs.verify_page_ir_pairs",
+            "kgfeg.page_ir_verification.verify_page_pairs.verify_page_ir_pairs",
             return_value=verdict,
         ) as mock_verify,
     ):
@@ -2637,19 +2641,19 @@ def test_stops_early_for_primary_primary_same_family_high_confidence_negative() 
 
     with (
         patch(
-            "skg.page_ir_verification.verify_page_pairs._ensure_pair_specific_crop",
+            "kgfeg.page_ir_verification.verify_page_pairs._ensure_pair_specific_crop",
             return_value=Path("/tmp/crops/negative.png"),
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs._make_verification_excerpt",
+            "kgfeg.page_ir_verification.verify_page_pairs._make_verification_excerpt",
             return_value={"excerpt": True},
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs._strip_continuity_hints",
+            "kgfeg.page_ir_verification.verify_page_pairs._strip_continuity_hints",
             side_effect=lambda item_json: item_json,
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs.verify_page_ir_pairs",
+            "kgfeg.page_ir_verification.verify_page_pairs.verify_page_ir_pairs",
             return_value=verdict,
         ) as mock_verify,
     ):
@@ -2793,23 +2797,23 @@ def test_uses_pair_priority_key_to_select_the_best_successful_attempt() -> None:
 
     with (
         patch(
-            "skg.page_ir_verification.verify_page_pairs._ensure_pair_specific_crop",
+            "kgfeg.page_ir_verification.verify_page_pairs._ensure_pair_specific_crop",
             side_effect=[Path("/tmp/crops/a.png"), Path("/tmp/crops/b.png")],
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs._make_verification_excerpt",
+            "kgfeg.page_ir_verification.verify_page_pairs._make_verification_excerpt",
             return_value={"excerpt": True},
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs._strip_continuity_hints",
+            "kgfeg.page_ir_verification.verify_page_pairs._strip_continuity_hints",
             side_effect=lambda item_json: item_json,
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs.verify_page_ir_pairs",
+            "kgfeg.page_ir_verification.verify_page_pairs.verify_page_ir_pairs",
             side_effect=[verdict_a, verdict_b],
         ),
         patch(
-            "skg.page_ir_verification.verify_page_pairs._pair_priority_key",
+            "kgfeg.page_ir_verification.verify_page_pairs._pair_priority_key",
             side_effect=priority_side_effect,
         ) as mock_priority,
     ):

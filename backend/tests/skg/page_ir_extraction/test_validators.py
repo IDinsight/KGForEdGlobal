@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 # Package Library
-from skg.page_ir_extraction.schemas import (
+from kgfeg.page_ir_extraction.schemas import (
     Block,
     FigureUnit,
     ListItem,
@@ -18,7 +18,7 @@ from skg.page_ir_extraction.schemas import (
     TableRow,
     TextUnit,
 )
-from skg.page_ir_extraction.validators import (
+from kgfeg.page_ir_extraction.validators import (
     PageIRExtractionQualityCtx,
     QualityError,
     _is_full_page_bbox,
@@ -45,7 +45,7 @@ from skg.page_ir_extraction.validators import (
     validate_placeholder_bboxes,
     validate_table_integrity,
 )
-from skg.utils.constants import (
+from kgfeg.utils.constants import (
     BlockType,
     FigureKind,
     ItemBoundary,

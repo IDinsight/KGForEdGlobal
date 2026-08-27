@@ -7,7 +7,7 @@ import re
 import pytest
 
 # Package Library
-from skg.regexes import (
+from kgfeg.regexes import (
     _CAPTION_NUMERIC_IDENTIFIER_RE,
     _CAPTION_ROMAN_NUMERAL_RE,
     ALPHA_RE,
@@ -19,7 +19,7 @@ from skg.regexes import (
     TOKEN_RE,
     WS_RE,
 )
-from skg.utils.constants import CaptionFigurePrefixes, CaptionTablePrefixes
+from kgfeg.utils.constants import CaptionFigurePrefixes, CaptionTablePrefixes
 from tests.constants import PARAM
 
 

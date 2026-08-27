@@ -73,7 +73,7 @@ single curriculum or country.
 !!! question "Have a use case or feature request?"
     If you are working with curriculum data in government, education, research, or the
     social sector, we'd like to hear about the workflows this system should support.
-    Raise an issue in the [project repository](https://github.com/IDinsight/SenegalKG) with
+    Raise an issue in the [project repository](https://github.com/IDinsight/KGForEdGlobal) with
     `[FEATURE REQUEST]` in the title.
 
 <img src="./images/idi_dark.png#only-light" alt="idi_org" width=200 style="margin-left:-25px" /><img src="./images/idi_light.png#only-dark" alt="idi_org" width=200 style="margin-left:-25px" /><br>

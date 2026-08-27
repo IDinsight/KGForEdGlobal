@@ -11,7 +11,7 @@ import enum
 import typing as t
 
 # Package Library
-from skg.utils import constants
+from kgfeg.utils import constants
 
 
 def _assert_str_enum_snapshot(

@@ -13,7 +13,7 @@ import pytest
 from pydantic import BaseModel
 
 # Package Library
-from skg.utils.general import (
+from kgfeg.utils.general import (
     compare_directories,
     make_dir,
     open_json_type,
