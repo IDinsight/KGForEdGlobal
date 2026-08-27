@@ -38,10 +38,10 @@ Follow the [local setup guide](docs/development/local-setup.md), create or adapt
 runtime config, and run the pipeline from `backend/`:
 
 ```bash
-python src/skg/entries/extract_page_ir.py <config.json>
-python src/skg/entries/verify_page_ir_continuity.py <config.json>
-python src/skg/entries/stitch_document_ir.py <config.json>
-python src/skg/entries/create_kgs.py <config.json>
+python src/kgfeg/entries/extract_page_ir.py <config.json>
+python src/kgfeg/entries/verify_page_ir_continuity.py <config.json>
+python src/kgfeg/entries/stitch_document_ir.py <config.json>
+python src/kgfeg/entries/create_kgs.py <config.json>
 ```
 
 Example curriculum profiles are available under [`examples/`](examples/). If you are
@@ -66,7 +66,7 @@ building against the exported JSON/JSONL shapes.
 
 ## Documentation
 
-- [Official documentation](https://idinsight.github.io/SenegalKG/)
+- [Official documentation](https://idinsight.github.io/KGForEdGlobal/)
 - [Architecture](docs/architecture.md)
 - [Pipeline overview](docs/pipeline/index.md)
 - [Add a new curriculum](docs/guides/adding-a-curriculum.md)
