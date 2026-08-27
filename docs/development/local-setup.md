@@ -16,7 +16,7 @@
 2. If you are using `zsh`, then add `eval "$(direnv hook zsh)"` to the end of your `~/.zshrc` file. If you are using `bash`, then add `eval "$(direnv hook bash)"` to the end of your `~/.bashrc` (or `~/.bash_profile`) file. Ensure you reload the file by running `source ~/.zshrc` or `source ~/.bashrc` (or `source ~/.bash_profile`).
 3. Install the latest version of [uv](https://docs.astral.sh/uv/) using: `curl -LsSf https://astral.sh/uv/install.sh | sh`
 4. Install [pre-commit](https://pre-commit.com/) globally using: `uv tool install pre-commit`
-5. Run `git clone git@github.com:IDinsight/SenegalKG.git` and cd into the root directory of the repo.
+5. Run `git clone git@github.com:IDinsight/KGForEdGlobal.git` and cd into the root directory of the repo.
 6. Run `pre-commit install` to set up the git hooks.
 7. In the root `.envrc` file, ensure `PROJECT_ENV` is set to `local`.
 8. Copy the **root** `.template.env` to `.env` and update the following environment variables in `.env`:
@@ -58,7 +58,7 @@ see the [Pipeline Overview](../pipeline/index.md).
 Render the configured PDF pages and extract one structured `PageIR` per page:
 
 ```bash
-python src/skg/entries/extract_page_ir.py <config.json>
+python src/kgfeg/entries/extract_page_ir.py <config.json>
 ```
 
 ### Step 2: Verify Page IR continuity
@@ -67,7 +67,7 @@ Evaluate plausible continuations across adjacent page boundaries and produce the
 verified PageIR set:
 
 ```bash
-python src/skg/entries/verify_page_ir_continuity.py <config.json>
+python src/kgfeg/entries/verify_page_ir_continuity.py <config.json>
 ```
 
 ### Step 3: Construct Document IR
@@ -76,7 +76,7 @@ Deterministically stitch the verified PageIRs into one provenance-preserving
 `DocumentIR`:
 
 ```bash
-python src/skg/entries/stitch_document_ir.py <config.json>
+python src/kgfeg/entries/stitch_document_ir.py <config.json>
 ```
 
 ### Step 4: Construct the knowledge graph
@@ -85,7 +85,7 @@ Build and validate the Academic Standards KG first, then construct Learning Comp
 from the validated Academic Standards layer:
 
 ```bash
-python src/skg/entries/create_kgs.py <config.json>
+python src/kgfeg/entries/create_kgs.py <config.json>
 ```
 
 `create_kgs.py` therefore implements the final **two conceptual stages** of the

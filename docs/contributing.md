@@ -4,5 +4,5 @@ Thank you for your interest in contributing to Knowledge Graph for Education Glo
 
 Everyone is welcome to contribute! :handshake_dark_skin_tone:
 
-Our [GitHub repository](https://github.com/IDinsight/SenegalKG) is the
+Our [GitHub repository](https://github.com/IDinsight/KGForEdGlobal) is the
 central place for all contributions, discussions, and issue tracking.

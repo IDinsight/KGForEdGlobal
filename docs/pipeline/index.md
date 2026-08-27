@@ -37,21 +37,21 @@ All four commands consume the same global runtime configuration file. Each comma
 the configuration namespace that belongs to its stage and cross-checks relevant
 upstream artifacts before continuing.
 
-| Conceptual stage | CLI entry point | Main implementation package | Primary handoff |
-| --- | --- | --- | --- |
-| 1. Page IR extraction | `backend/src/skg/entries/extract_page_ir.py` | `skg.page_ir_extraction` | `extraction/page_irs/*.json` |
-| 2. Page IR continuity verification | `backend/src/skg/entries/verify_page_ir_continuity.py` | `skg.page_ir_verification` | `verification/page_irs_verified/*.json` + pair reports |
-| 3. Document IR construction | `backend/src/skg/entries/stitch_document_ir.py` | `skg.document_ir` | `stitching/document_ir.json` |
-| 4. Academic Standards KG construction | `backend/src/skg/entries/create_kgs.py` | `skg.kgs.sfi_*` | `kgs/as_kg_bundle.json` |
-| 5. Learning Components construction | `backend/src/skg/entries/create_kgs.py` | `skg.kgs.lc_*` | `kgs/as_lc_kg_bundle.json` |
+| Conceptual stage                      | CLI entry point                                          | Main implementation package  | Primary handoff                                        |
+|---------------------------------------|----------------------------------------------------------|------------------------------|--------------------------------------------------------|
+| 1. Page IR extraction                 | `backend/src/kgfeg/entries/extract_page_ir.py`           | `kgfeg.page_ir_extraction`   | `extraction/page_irs/*.json`                           |
+| 2. Page IR continuity verification    | `backend/src/kgfeg/entries/verify_page_ir_continuity.py` | `kgfeg.page_ir_verification` | `verification/page_irs_verified/*.json` + pair reports |
+| 3. Document IR construction           | `backend/src/kgfeg/entries/stitch_document_ir.py`        | `kgfeg.document_ir`          | `stitching/document_ir.json`                           |
+| 4. Academic Standards KG construction | `backend/src/kgfeg/entries/create_kgs.py`                | `kgfeg.kgs.sfi_*`            | `kgs/as_kg_bundle.json`                                |
+| 5. Learning Components construction   | `backend/src/kgfeg/entries/create_kgs.py`                | `kgfeg.kgs.lc_*`             | `kgs/as_lc_kg_bundle.json`                             |
 
 From the `backend/` directory, a complete run follows this order:
 
 ```bash
-python src/skg/entries/extract_page_ir.py <config.json>
-python src/skg/entries/verify_page_ir_continuity.py <config.json>
-python src/skg/entries/stitch_document_ir.py <config.json>
-python src/skg/entries/create_kgs.py <config.json>
+python src/kgfeg/entries/extract_page_ir.py <config.json>
+python src/kgfeg/entries/verify_page_ir_continuity.py <config.json>
+python src/kgfeg/entries/stitch_document_ir.py <config.json>
+python src/kgfeg/entries/create_kgs.py <config.json>
 ```
 
 `create_kgs.py` owns both KG phases. It constructs and validates the Academic Standards
@@ -63,14 +63,14 @@ layer first, then uses that validated layer as the source for Learning Component
 
 Each stage expands context while constraining what the next stage is allowed to assume.
 
-| Handoff | What downstream code may rely on | What has **not** yet been asserted |
-| --- | --- | --- |
-| PDF → Page IR | Accepted page-local blocks, tables, figures, coordinates, visible codes, and boundary hints satisfy PageIR validation | Document-wide continuity or curriculum hierarchy |
-| Page IR → verified Page IR | Adjacent-page continuation evidence has been independently evaluated and confidence-gated patches have been applied | Document-level stitched segments or curriculum semantics |
-| Verified Page IR → DocumentIR | Cross-page chains have been stitched, provenance is retained, and normalized source items are consumed exactly once | Standards identities, hierarchy, or Learning Components |
-| DocumentIR → Academic Standards KG | Source-grounded semantic extraction can operate over a stitched, provenance-preserving document representation | Final standards identities or graph relationships |
-| Academic Standards KG → Learning Components | Standards identities, `hasChild` hierarchy, provenance, and AS validation have been resolved sufficiently for LC generation | Canonical atomic-skill identities |
-| AS + LC KG → downstream consumers | Final AS/LC nodes, `hasChild` and `supports` relationships, provenance, and validation artifacts are available | Progression relationships such as `buildsTowards` or `relatesTo` |
+| Handoff                                     | What downstream code may rely on                                                                                            | What has **not** yet been asserted                               |
+|---------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------|
+| PDF → Page IR                               | Accepted page-local blocks, tables, figures, coordinates, visible codes, and boundary hints satisfy PageIR validation       | Document-wide continuity or curriculum hierarchy                 |
+| Page IR → verified Page IR                  | Adjacent-page continuation evidence has been independently evaluated and confidence-gated patches have been applied         | Document-level stitched segments or curriculum semantics         |
+| Verified Page IR → DocumentIR               | Cross-page chains have been stitched, provenance is retained, and normalized source items are consumed exactly once         | Standards identities, hierarchy, or Learning Components          |
+| DocumentIR → Academic Standards KG          | Source-grounded semantic extraction can operate over a stitched, provenance-preserving document representation              | Final standards identities or graph relationships                |
+| Academic Standards KG → Learning Components | Standards identities, `hasChild` hierarchy, provenance, and AS validation have been resolved sufficiently for LC generation | Canonical atomic-skill identities                                |
+| AS + LC KG → downstream consumers           | Final AS/LC nodes, `hasChild` and `supports` relationships, provenance, and validation artifacts are available              | Progression relationships such as `buildsTowards` or `relatesTo` |
 
 The main semantic boundary is between **Document IR construction** and **Academic
 Standards construction**. `PageIR` and `DocumentIR` describe the source document;

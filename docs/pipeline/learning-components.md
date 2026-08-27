@@ -34,37 +34,37 @@ original PDF is not independently reinterpreted at this stage.
 Learning Components construction is the second phase of the shared KG command:
 
 ```text
-backend/src/skg/entries/create_kgs.py
+backend/src/kgfeg/entries/create_kgs.py
 ```
 
 From the `backend/` directory, run:
 
 ```bash
-python src/skg/entries/create_kgs.py <config.json>
+python src/kgfeg/entries/create_kgs.py <config.json>
 ```
 
 The command reads the `kgs.lc` section of the shared `RunConfig`.
 
 Important settings include:
 
-| Setting | Purpose |
-| --- | --- |
-| `generation_instructions` | Required curriculum-specific decomposition policy supplied to the LC producer and validator |
-| `lc_generation_validation_instructions` | Optional curriculum-specific audit policy for the independent LC generation validator |
-| `lc_source_statement_types` | Optional allowlist of source-facing SFI types eligible for LC generation |
-| `lc_include_sibling_context` | Include sibling SFIs as disambiguation/overlap-avoidance context only |
-| `lc_request_batch_size` | Number of eligible source SFIs included in each generation request; default `1` |
-| `lc_min_skill_text_length` | Optional minimum character length for one generated skill |
-| `lc_max_skill_text_length` | Optional maximum character length for one generated skill |
-| `lc_max_skills_per_sfi` | Optional hard ceiling on generated skills per source SFI |
-| `lc_max_failure_rate` | Maximum tolerated fraction of eligible source SFIs that fail decomposition |
-| `lc_semantic_dedup` | Enable or disable semantic duplicate adjudication; exact normalized duplicates are still grouped |
-| `lc_dedup_scope` | Bound where equivalent skills are allowed to merge |
-| `lc_dedup_batch_size` | Candidate pairs per semantic dedup adjudication request |
-| `lc_dedup_blocking` | Deterministic candidate-nomination thresholds for token, containment, trigram, tag, and neighborhood rules |
-| `lc_dedup_instructions` | Optional curriculum-specific semantic duplicate policy for the dedup judge |
-| `lc_dedup_language_pack` | Optional profile-defined stopwords and affix-folding rules used only for dedup candidate nomination |
-| `lc_manual_review_overrides` | Optional manual-review record; `allow_unresolved_ancestor_context` is the flag used by LC seed selection |
+| Setting                                 | Purpose                                                                                                    |
+|-----------------------------------------|------------------------------------------------------------------------------------------------------------|
+| `generation_instructions`               | Required curriculum-specific decomposition policy supplied to the LC producer and validator                |
+| `lc_generation_validation_instructions` | Optional curriculum-specific audit policy for the independent LC generation validator                      |
+| `lc_source_statement_types`             | Optional allowlist of source-facing SFI types eligible for LC generation                                   |
+| `lc_include_sibling_context`            | Include sibling SFIs as disambiguation/overlap-avoidance context only                                      |
+| `lc_request_batch_size`                 | Number of eligible source SFIs included in each generation request; default `1`                            |
+| `lc_min_skill_text_length`              | Optional minimum character length for one generated skill                                                  |
+| `lc_max_skill_text_length`              | Optional maximum character length for one generated skill                                                  |
+| `lc_max_skills_per_sfi`                 | Optional hard ceiling on generated skills per source SFI                                                   |
+| `lc_max_failure_rate`                   | Maximum tolerated fraction of eligible source SFIs that fail decomposition                                 |
+| `lc_semantic_dedup`                     | Enable or disable semantic duplicate adjudication; exact normalized duplicates are still grouped           |
+| `lc_dedup_scope`                        | Bound where equivalent skills are allowed to merge                                                         |
+| `lc_dedup_batch_size`                   | Candidate pairs per semantic dedup adjudication request                                                    |
+| `lc_dedup_blocking`                     | Deterministic candidate-nomination thresholds for token, containment, trigram, tag, and neighborhood rules |
+| `lc_dedup_instructions`                 | Optional curriculum-specific semantic duplicate policy for the dedup judge                                 |
+| `lc_dedup_language_pack`                | Optional profile-defined stopwords and affix-folding rules used only for dedup candidate nomination        |
+| `lc_manual_review_overrides`            | Optional manual-review record; `allow_unresolved_ancestor_context` is the flag used by LC seed selection   |
 
 `lc_manual_review_overrides` is persisted in the LC summary. The current selection logic
 uses `allow_unresolved_ancestor_context` to decide whether unresolved ancestor paths may

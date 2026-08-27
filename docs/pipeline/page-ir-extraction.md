@@ -34,27 +34,27 @@ Academic Standards or Learning Components.
 The extraction command is implemented in:
 
 ```text
-backend/src/skg/entries/extract_page_ir.py
+backend/src/kgfeg/entries/extract_page_ir.py
 ```
 
 From the `backend/` directory, run:
 
 ```bash
-python src/skg/entries/extract_page_ir.py <config.json>
+python src/kgfeg/entries/extract_page_ir.py <config.json>
 ```
 
 The command reads the `page_ir_extraction` section of the shared `RunConfig`.
 Important settings include:
 
-| Setting | Purpose |
-| --- | --- |
-| `pdf_fp` | Source curriculum PDF |
-| `output_dir` | Root directory for pipeline results |
-| `dpi` | Resolution used to render PDF pages to PNG |
-| `start_page` / `end_page` | Optional 0-based page range |
-| `languages` | Expected source-language context |
-| `use_extracted_hints` | Whether to provide usable PyMuPDF text/table hints to the extraction agent |
-| `overwrite` | Whether to regenerate existing PageIR JSON files |
+| Setting                   | Purpose                                                                    |
+|---------------------------|----------------------------------------------------------------------------|
+| `pdf_fp`                  | Source curriculum PDF                                                      |
+| `output_dir`              | Root directory for pipeline results                                        |
+| `dpi`                     | Resolution used to render PDF pages to PNG                                 |
+| `start_page` / `end_page` | Optional 0-based page range                                                |
+| `languages`               | Expected source-language context                                           |
+| `use_extracted_hints`     | Whether to provide usable PyMuPDF text/table hints to the extraction agent |
+| `overwrite`               | Whether to regenerate existing PageIR JSON files                           |
 
 ---
 

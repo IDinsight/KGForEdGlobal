@@ -31,11 +31,11 @@ flowchart TD
 
 | Stage                              | Main CLI entry point                                   | Primary input                                            | Primary output                         |
 |------------------------------------|--------------------------------------------------------|----------------------------------------------------------|----------------------------------------|
-| Page IR extraction                 | `backend/src/skg/entries/extract_page_ir.py`           | Curriculum PDF                                           | One `PageIR` JSON per page             |
-| Page IR continuity verification    | `backend/src/skg/entries/verify_page_ir_continuity.py` | Page images + extracted `PageIR`s                        | Verified `PageIR`s + boundary verdicts |
-| Document IR construction           | `backend/src/skg/entries/stitch_document_ir.py`        | Verified `PageIR`s + verification evidence               | `document_ir.json`                     |
-| Academic Standards KG construction | `backend/src/skg/entries/create_kgs.py`                | `DocumentIR` + `kgs.as` configuration                    | Academic Standards KG artifacts        |
-| Learning Components construction   | `backend/src/skg/entries/create_kgs.py`                | Validated Academic Standards KG + `kgs.lc` configuration | Combined AS + LC KG artifacts          |
+| Page IR extraction                 | `backend/src/kgfeg/entries/extract_page_ir.py`         | Curriculum PDF                                           | One `PageIR` JSON per page             |
+| Page IR continuity verification    | `backend/src/kgfeg/entries/verify_page_ir_continuity.py` | Page images + extracted `PageIR`s                        | Verified `PageIR`s + boundary verdicts |
+| Document IR construction           | `backend/src/kgfeg/entries/stitch_document_ir.py`        | Verified `PageIR`s + verification evidence               | `document_ir.json`                     |
+| Academic Standards KG construction | `backend/src/kgfeg/entries/create_kgs.py`                | `DocumentIR` + `kgs.as` configuration                    | Academic Standards KG artifacts        |
+| Learning Components construction   | `backend/src/kgfeg/entries/create_kgs.py`                | Validated Academic Standards KG + `kgs.lc` configuration | Combined AS + LC KG artifacts          |
 
 The first three stages reconstruct the source document with progressively broader
 context. The final two stages perform curriculum-semantic interpretation and knowledge

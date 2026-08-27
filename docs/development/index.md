@@ -4,7 +4,7 @@
     We strive to keep our documentation accurate and up to date. However, our development cycles move quickly, and occasionally the docs may fall slightly behind. If you run into any issues or something doesn’t work as expected, please don’t hesitate to [reach out](../contact_us.md) — we’re here to help!
 
 This section provides guidance on the different ways that you can develop and test
-within Senegal Knowledge Graph.
+within Knowledge Graph for Education Global.
 
 ## Local Environment
 
@@ -14,7 +14,7 @@ within Senegal Knowledge Graph.
 
     ---
 
-    Step-by-step instructions on how to set up Senegal Knowledge Graph to run in your local environment.
+    Step-by-step instructions on how to set up Knowledge Graph for Education Global to run in your local environment.
 
     [:octicons-arrow-right-24: More info](./local-setup.md)
 

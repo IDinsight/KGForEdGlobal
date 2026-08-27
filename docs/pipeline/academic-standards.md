@@ -31,28 +31,28 @@ progression relationships.
 Academic Standards construction is the first phase of the shared KG command:
 
 ```text
-backend/src/skg/entries/create_kgs.py
+backend/src/kgfeg/entries/create_kgs.py
 ```
 
 From the `backend/` directory, run:
 
 ```bash
-python src/skg/entries/create_kgs.py <config.json>
+python src/kgfeg/entries/create_kgs.py <config.json>
 ```
 
 The command reads the `kgs.as` section of the shared `RunConfig`.
 Important settings include:
 
-| Setting | Purpose |
-| --- | --- |
-| `statement_type_policy` | Allowed source-facing statement types and their normalized roles |
-| `code_patterns` / `code_parent_rules` | Source-code recognition and configured code-parent hints |
-| `identity_scope_statement_types` | Curriculum dimensions that participate in SFI identity |
-| `included_table_*` / `excluded_table_*` | Rules controlling which DocumentIR tables are eligible for extraction |
-| `max_rows_per_table_window` / `row_overlap` | Bounded table extraction-window size |
-| `sfi_dedup_*` | Curriculum-specific deduplication context and instructions |
-| `sfi_has_child_parent_policy` | Allowed direct parent types and required parent cardinality |
-| `grade_level_statement_types` / `grade_level_mapping` | Local grade extraction and Learning Commons grade mapping |
+| Setting                                               | Purpose                                                               |
+|-------------------------------------------------------|-----------------------------------------------------------------------|
+| `statement_type_policy`                               | Allowed source-facing statement types and their normalized roles      |
+| `code_patterns` / `code_parent_rules`                 | Source-code recognition and configured code-parent hints              |
+| `identity_scope_statement_types`                      | Curriculum dimensions that participate in SFI identity                |
+| `included_table_*` / `excluded_table_*`               | Rules controlling which DocumentIR tables are eligible for extraction |
+| `max_rows_per_table_window` / `row_overlap`           | Bounded table extraction-window size                                  |
+| `sfi_dedup_*`                                         | Curriculum-specific deduplication context and instructions            |
+| `sfi_has_child_parent_policy`                         | Allowed direct parent types and required parent cardinality           |
+| `grade_level_statement_types` / `grade_level_mapping` | Local grade extraction and Learning Commons grade mapping             |
 
 The configuration is curriculum-specific, but the construction workflow is shared
 across frameworks.

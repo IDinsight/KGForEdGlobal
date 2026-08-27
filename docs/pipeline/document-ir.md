@@ -34,28 +34,28 @@ Standards, curriculum hierarchy, Learning Components, or KG relationships.
 The stitching command is implemented in:
 
 ```text
-backend/src/skg/entries/stitch_document_ir.py
+backend/src/kgfeg/entries/stitch_document_ir.py
 ```
 
 From the `backend/` directory, run:
 
 ```bash
-python src/skg/entries/stitch_document_ir.py <config.json>
+python src/kgfeg/entries/stitch_document_ir.py <config.json>
 ```
 
 The command reads the `document_ir` section of the shared `RunConfig`. Important
 settings include:
 
-| Setting | Purpose |
-| --- | --- |
-| `keep_artifacts` | Whether headers, footers, page numbers, and similar artifacts remain in the stitched document |
-| `verification_auto_stitch_confidence` | Minimum verification confidence required to automatically use a verified continuation link |
-| `min_link_score` | Minimum score for deterministic fallback linking when applicable |
-| `repair_hyphenation` | Whether to repair text split by page-break hyphenation |
-| `sort_items_by_bbox` | Whether retained PageIR items are reordered by bounding-box position before stitching |
-| `table_filldown_enabled` | Whether visually merged grouping cells may be filled down in stitched table output |
-| `table_filldown_group_cols_max` | Maximum number of leading grouping columns eligible for fill-down |
-| `overwrite` | Whether to replace an existing `document_ir.json` |
+| Setting                               | Purpose                                                                                       |
+|---------------------------------------|-----------------------------------------------------------------------------------------------|
+| `keep_artifacts`                      | Whether headers, footers, page numbers, and similar artifacts remain in the stitched document |
+| `verification_auto_stitch_confidence` | Minimum verification confidence required to automatically use a verified continuation link    |
+| `min_link_score`                      | Minimum score for deterministic fallback linking when applicable                              |
+| `repair_hyphenation`                  | Whether to repair text split by page-break hyphenation                                        |
+| `sort_items_by_bbox`                  | Whether retained PageIR items are reordered by bounding-box position before stitching         |
+| `table_filldown_enabled`              | Whether visually merged grouping cells may be filled down in stitched table output            |
+| `table_filldown_group_cols_max`       | Maximum number of leading grouping columns eligible for fill-down                             |
+| `overwrite`                           | Whether to replace an existing `document_ir.json`                                             |
 
 ---
 
