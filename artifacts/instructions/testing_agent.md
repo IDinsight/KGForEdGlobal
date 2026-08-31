@@ -94,9 +94,9 @@ If two settled requirements appear contradictory or impossible to test truthfull
 
 ### DECIDE / explicitly open behavior
 
-Do not choose an unresolved option on the user's behalf.
+Do not choose an unresolved option on the user's behalf. Treat a decision as unresolved when an option was named but its required matrices, ordered values, thresholds, attribution values, reviewer authority, exception records, or other concrete payload is absent or still a placeholder.
 
-Do not write fixtures, expected outputs, snapshots, prompts, or tests that silently settle an open choice.
+Do not write fixtures, expected outputs, snapshots, prompts, or tests that silently settle an open or partially specified choice.
 
 No Step 1+ test implementation is valid while the brief remains a decision draft or a relevant `DECIDE` remains unresolved.
 
@@ -226,11 +226,12 @@ Test:
 - local developmental values are recognized/canonical;
 - duplicate or missing local-order entries fail;
 - invalid statement-type pair matrices fail;
+- the settled D10 exception representation rejects malformed selectors and missing review metadata at config load, while LP eligibility/runtime checks reject selectors absent from the current upstream bundle, fingerprint mismatches, and unauthorized evidence permissions;
 - contradictory relation/direction/unresolved/failure/override policies fail;
 - all six example configs validate; and
 - a config from one curriculum cannot silently reference another curriculum's values.
 
-Use direct Pydantic validation, not only CLI success.
+Use direct Pydantic validation for load-time rules and targeted LP eligibility/runtime tests for bundle-relative selector and fingerprint rules; do not rely only on CLI success.
 
 ### 7.2 Reduced six-curriculum fixtures
 
@@ -466,7 +467,7 @@ Recompute and reconcile:
 - accepted/no-relation/needs-review/failure counts;
 - final edge counts by type;
 - provenance coverage;
-- unresolved items;
+- unresolved items, while normal policy eligibility exclusions remain reconciled through `lp_eligibility_report.json` rather than being mislabeled as unresolved judgments;
 - validation errors/warnings; and
 - all standalone JSON/JSONL row counts.
 
@@ -491,7 +492,8 @@ Verify:
 - no duplicate IDs;
 - no collision across entity/relationship IDs;
 - projection rewrite from reused bundle where required; and
-- existing AS/AS+LC schemas/files remain unchanged.
+- existing AS/AS+LC schemas/files remain unchanged; and
+- the complete upstream AS+LC content and `entity_provenance` mapping are preserved before LP fields/provenance are added.
 
 ### 7.16 Orchestration and run status
 
@@ -532,21 +534,23 @@ A file-existence-only check must fail these tests.
 
 ### 7.18 Semantic evaluation
 
-The Step 24 harness must report the metrics selected in settled D12, including at minimum where applicable:
+The Step 24 harness must report and enforce the metrics selected in settled D12, including at minimum where applicable:
 
 - candidate recall before LLM adjudication;
-- edge precision;
+- accepted-edge precision;
 - relation-choice accuracy;
 - `buildsTowards` direction accuracy;
-- abstention/needs-review behavior;
-- unresolved-context handling; and
-- per-curriculum results.
+- abstention/`needs_review` behavior;
+- unresolved-context handling;
+- minimum reviewed sample support;
+- explicit denominators and per-curriculum/aggregate pass thresholds; and
+- the settled release treatment of ambiguous, unscorable, and `needs_review` cases.
 
-Gold labels must be reviewed independently of model output. Do not derive expected labels by copying the current pipeline's predictions.
+Gold labels must be reviewed independently of model output. Independently reviewed positive pairs used for candidate-recall measurement must not be selected only from `lp_candidate_pairs.jsonl`, and precision samples must not be cherry-picked from favorable published edges. Record the sampling stratum and inclusion method for every reviewed row.
 
-Represent ambiguous cases explicitly rather than forcing false certainty.
+Represent ambiguous cases explicitly rather than forcing false certainty. Aggregate success must not hide a curriculum that fails a settled per-curriculum gate.
 
-Record evaluator/version, fixture/gold-set version, policy/config fingerprint, model/run fingerprint, and excluded cases.
+Record evaluator/version, fixture/gold-set version, policy/config fingerprint, model/run fingerprint, sampling provenance, metric denominators, thresholds, and excluded cases.
 
 ### 7.19 Targeted six-curriculum matrix
 
@@ -579,7 +583,7 @@ For each run record:
 - artifact checksums; and
 - semantic evaluation result.
 
-Validate every final LP edge and count contract. Zero release-blocking failure behavior must follow settled D13.
+Validate every final LP edge and count contract. Zero release-blocking failure behavior must follow settled D13, and the exact D12 sampling/threshold/`needs_review` gate must pass without aggregate masking.
 
 Do not rerun unexpectedly expensive jobs silently.
 

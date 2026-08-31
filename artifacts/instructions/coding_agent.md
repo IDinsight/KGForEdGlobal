@@ -83,7 +83,7 @@ If you discover a serious contradiction, infeasibility, security/privacy issue, 
 
 Do not make a consequential decision on the user's behalf.
 
-If the current step depends on an unresolved `DECIDE`:
+If the current step depends on an unresolved or only partially resolved `DECIDE`—including a selected option whose required matrices, ordered values, thresholds, attribution fields, reviewer authority, or other payload is still missing or placeholder-filled:
 
 1. identify the exact `D#` and governing text;
 2. explain why the implementation depends on it;
@@ -114,7 +114,7 @@ Implement only the requested coding-owned step plus the minimum supporting chang
 
 Step 2 may begin only from the reviewer-approved Step 1 commit. Every later coding step requires the previous step's reviewer verdict and exact approved commit SHA.
 
-Before editing:
+Before editing in an implementation or remediation mode:
 
 - identify the exact review-base SHA;
 - verify it is reachable and is `HEAD` or an ancestor of the current state;
@@ -123,7 +123,9 @@ Before editing:
 - classify each brief change as clearly prospective or approval-invalidating; and
 - preserve all pre-existing user changes.
 
-If the prior approval, review base, ancestry, or repository state is missing or ambiguous, stop with `BLOCKED`.
+In pre-baseline Step 0 governance-edit mode, record the observed repository root, branch/detached state, current `HEAD` when one exists, `git status --short`, and pre-existing changes instead. Do not invent or imply reviewer approval.
+
+Outside that pre-baseline governance exception, if the prior approval, review base, ancestry, or repository state is missing or ambiguous, stop with `BLOCKED`.
 
 Current-step remediation keeps the same review base as the rejected candidate.
 
@@ -135,15 +137,19 @@ Before editing, produce a concise **Step Contract**. In governance-edit mode, us
 
 ### Mode and progression gate
 
-State whether this is initial implementation, current-step remediation, or cross-step remediation.
+State whether this is governance-edit mode, initial implementation, current-step remediation, or cross-step remediation.
 
-For an initial step, identify the previous reviewer-approved step and exact approved SHA that authorizes the work.
+For governance-edit mode, identify the exact user-requested decisions or instruction changes and confirm that no production/test implementation is authorized.
+
+For an initial implementation step, identify the previous reviewer-approved step and exact approved SHA that authorizes the work.
 
 For remediation, identify the originating testing/reviewer findings and preserve the chain's review-base SHA.
 
-### Review base
+### Review base or pre-baseline governance state
 
-State the exact review-base SHA, why it is correct, and whether it is `HEAD` or an ancestor. Account for all later material changes.
+For governance-edit mode before the Step 1 baseline exists, no reviewer-approved review base is required. Record the observed repository root, branch/detached state, current `HEAD` when one exists, `git status --short`, and pre-existing changes, and explicitly label this as pre-baseline governance state.
+
+For implementation/remediation modes, state the exact review-base SHA, why it is correct, and whether it is `HEAD` or an ancestor. Account for all later material changes.
 
 ### Target
 
@@ -429,7 +435,7 @@ At completion, account for every routed finding as:
 You may choose an implementation detail only when:
 
 - the brief explicitly delegates it to the current step;
-- it does not alter ontology semantics, candidate recall policy, relation choice, direction, cycle/transitivity behavior, attribution, release gates, public artifact schemas, or another settled contract; and
+- it does not alter ontology semantics, allowed candidate population/signal technology, relation choice, direction, cycle/transitivity behavior, attribution, release gates, public artifact schemas, or another settled contract; numerical nomination budgets/thresholds are permitted only when the approved brief explicitly delegates them to Steps 3 or 26 and they remain explicit, fingerprinted, and reviewable; and
 - it does not consume an open decision.
 
 For legitimate implementation details, prefer:
@@ -526,7 +532,7 @@ Stop the affected implementation and report the blocker when:
 
 - the brief remains a decision draft or a relevant `DECIDE` is unresolved;
 - the requested step is not coding-owned;
-- prior reviewer approval or the review-base SHA is missing or unverifiable;
+- outside pre-baseline governance-edit mode, prior reviewer approval or the review-base SHA is missing or unverifiable;
 - the current step would require behavior explicitly owned by a later step;
 - the brief contradicts itself in a way that changes implementation;
 - a Section 4 invariant appears impossible to satisfy;
@@ -549,7 +555,7 @@ A blocker report must state:
 
 ### If governance-edit mode completed
 
-Report the repository/Git state, exact governance files changed, the user decisions or requested instruction changes recorded, consistency updates made elsewhere in the brief/instructions, and validation performed. Do not provide a testing-agent implementation handoff and do not begin dependent code. Ask the user to review the updated governance files and explicitly approve the engineering brief for implementation.
+Report the repository/Git state, exact governance files changed, the user decisions or requested instruction changes recorded, every required concrete decision payload added, consistency updates made elsewhere in the brief/instructions, and validation performed. Confirm that no implementation-governing placeholder remains and that rejected alternatives were not recorded as selected options. Do not provide a testing-agent implementation handoff and do not begin dependent code. Ask the user to review the updated governance files and explicitly approve the engineering brief for implementation.
 
 ### If the coding scope completed without a user-input blocker
 

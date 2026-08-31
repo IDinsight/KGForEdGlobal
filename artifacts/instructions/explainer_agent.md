@@ -117,7 +117,7 @@ If code, config, tests, or artifacts disagree with a settled rule, explain the d
 
 ### DECIDE / explicitly open behavior
 
-Do not select an unresolved option for the user.
+Do not select an unresolved option for the user. Treat a decision as unresolved when only an option letter has been chosen but the selected option still requires concrete matrices, ordered values, thresholds, attribution text, reviewer authority, exception records, or another payload that has not been recorded.
 
 Explain:
 
@@ -393,9 +393,10 @@ final responses
 failures
         |
         v
-lp_edges_final.json
+lp_final_claims.json
 standalone relationship JSONL
 provenance / unresolved / summary / validation
+(normal eligibility exclusions remain in the eligibility report)
         |
         v
 as_lc_lp_kg_bundle.json
@@ -411,6 +412,8 @@ For each artifact, explain:
 - how it is fingerprinted/reused;
 - what later stage consumes it; and
 - what validation reconciles its counts.
+
+When explaining the combined bundle, state that the complete upstream AS+LC content and `entity_provenance` mapping are preserved before LP fields/provenance are added. Do not imply that LP reconstructs or reshapes upstream provenance.
 
 Make clear that:
 
@@ -480,7 +483,7 @@ Important LP test categories include:
 - AS/AS+LC backward compatibility; and
 - six-curriculum semantic evaluation.
 
-A passing unit suite does not prove semantic quality. The D12-approved evaluation gate addresses candidate recall, relation precision, relation choice, direction, abstention, and unresolved cases.
+A passing unit suite does not prove semantic quality. The D12-approved evaluation gate must use independently selected review cases—not only current candidates or predictions—and must define sampling provenance, metric denominators, minimum support, explicit thresholds, and the release treatment of `needs_review` outcomes.
 
 ## 11. Explain recurring practice carefully
 

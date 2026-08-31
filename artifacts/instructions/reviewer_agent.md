@@ -62,9 +62,9 @@ Do not approve an alternative design merely because it appears reasonable.
 
 Do not make an unresolved choice on the user's behalf.
 
-Do not approve code, tests, configs, or fixtures that silently consume an open decision.
+Do not approve code, tests, configs, or fixtures that silently consume an open or partially resolved decision. A selected option with missing matrices, ordered values, thresholds, attribution values, reviewer authority, exception records, or placeholder-filled policy is still unresolved.
 
-No implementation review for Step 1+ is valid while the brief remains a decision draft or an implementation-relevant `DECIDE` remains unresolved.
+No implementation review for Step 1+ is valid while the brief remains a decision draft, an implementation-relevant `DECIDE` remains unresolved, or a required concrete decision payload is absent.
 
 If the current scope cannot be judged truthfully because a decision is open, return `BLOCKED`.
 
@@ -364,7 +364,8 @@ Verify standalone LP and combined validators cover:
 - unresolved/failure consistency;
 - exact counts across artifacts and JSONL;
 - graph-wide identifier collision absence; and
-- combined node/relationship parity.
+- combined node/relationship parity; and
+- preservation of the complete upstream AS+LC content and `entity_provenance` mapping before additive LP fields/provenance.
 
 A report saying `passed=true` is not enough. Inspect the validator and independently recompute representative counts where practical.
 
@@ -405,17 +406,19 @@ Confirm no duplicate nodes/relationships, stable serialization, exact bundle par
 
 When the step involves D12 or full runs, inspect the evaluation oracle as critically as code.
 
-Verify the approved gate measures, as applicable:
+Verify the approved gate measures and enforces, as applicable:
 
 - candidate recall;
 - accepted-edge precision;
 - relation choice;
 - direction accuracy;
-- abstention/needs-review behavior;
-- unresolved-context handling; and
-- per-curriculum performance.
+- abstention/`needs_review` behavior;
+- unresolved-context handling;
+- minimum reviewed sample support;
+- explicit metric denominators and per-curriculum/aggregate thresholds; and
+- the settled release treatment of ambiguous, unscorable, and `needs_review` cases.
 
-Inspect labels/examples across all six curricula. Look for leakage from generated model outputs into the expected gold labels.
+Inspect labels/examples across all six curricula. Verify that candidate-recall positives were not selected only from the current candidate list and that precision samples were not cherry-picked from favorable published edges. Look for leakage from generated model outputs into expected labels and for aggregate metrics that hide a failing curriculum.
 
 Ensure the targeted matrix covers:
 

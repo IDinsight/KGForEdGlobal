@@ -88,13 +88,15 @@ Do not implement a later step early merely because it would make the current ste
 
 The current brief is a decision draft until every `DECIDE` item is resolved.
 
-No Step 1–29 implementation may begin until all of the following are true:
+No Step 1–29 build-order work may begin until all of the following are true:
 
-1. every Section 3 `DECIDE` item has an explicit user decision;
-2. the engineering brief has been updated so the chosen behavior is written as `SETTLED`;
-3. dependent invariants and build-order language have been updated consistently;
-4. no unresolved `DECIDE` marker remains for implementation behavior; and
-5. the user has explicitly approved the updated brief for implementation.
+1. every Section 3 `DECIDE` item has an explicit, complete user decision;
+2. every option-required matrix, ordered value, threshold, attribution value, reviewer authority, exception record, and other concrete policy payload is recorded—an option letter alone is insufficient where the decision text requires more;
+3. the engineering brief has been updated so the chosen behavior is written as `SETTLED`;
+4. dependent core-model, illustrative-config, invariant, build-order, and test language has been updated consistently;
+5. no implementation-governing placeholder such as `TBD`, `...`, or an angle-bracket value remains;
+6. no unresolved `DECIDE` marker remains for implementation behavior; and
+7. the user has explicitly approved the updated brief for implementation.
 
 When work encounters an unresolved `DECIDE`:
 
@@ -134,6 +136,8 @@ Step 29 is the terminal comprehensive reviewer gate.
 Coding or testing completion alone never authorizes the next numbered step.
 
 ### Baseline and review-base SHA
+
+Step 0 governance edits normally occur before this baseline exists and therefore do not require a prior reviewer-approved review-base SHA. The governance-edit agent must still report the observed repository root, branch/detached state, current `HEAD` when one exists, `git status --short`, and pre-existing user changes, and must not describe that observed state as reviewer-approved.
 
 Before Step 1 begins, the user must create a baseline commit containing the intended repository state, this root `AGENTS.md`, all role instructions, and the user-approved canonical engineering brief. Step 1 starts from that baseline as the current `HEAD`, with a materially clean working tree.
 
@@ -231,7 +235,7 @@ Use this precedence:
 The three markers are load-bearing:
 
 - **SETTLED** — implement and test the settled design. Do not reopen it merely because another design seems preferable.
-- **DECIDE** — a consequential choice remains open. Do not silently choose it. Update the brief first after the user decides, then obtain implementation approval.
+- **DECIDE** — a consequential choice remains open. Do not silently choose it. A letter does not settle a decision that also requires matrices, values, thresholds, attribution text, reviewer authority, or another concrete payload. Update the brief completely after the user decides, then obtain implementation approval.
 - **LIMIT** — a known weakness is accepted. Do not silently design around it or claim it has been solved.
 
 Treat every Section 4 invariant as mandatory. If an invariant appears contradictory or impossible to satisfy, stop the affected work and surface the conflict.

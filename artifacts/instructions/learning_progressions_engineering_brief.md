@@ -1,6 +1,6 @@
 # Engineering Brief: Learning Progressions KG Construction
 
-**Status:** Decision draft. No implementation should begin until every **DECIDE** item in Section 3 has an explicit answer, this file has been updated to record those answers as **SETTLED**, and the updated brief has received an implementation OK.
+**Status:** Decision draft. No implementation should begin until every **DECIDE** item in Section 3 has an explicit, complete answer—including every concrete matrix, ordered value, threshold, attribution value, and policy parameter the chosen option requires—this file has been updated to record those answers as **SETTLED**, and the updated brief has received an implementation OK.
 
 **Date:** 2026-08-31
 **Repository area:** `backend/src/kgfeg/`
@@ -169,7 +169,7 @@ lp_generation_draft_responses.jsonl
 lp_generation_validation_verdicts.jsonl
 lp_generation_responses.jsonl
 lp_generation_failures.json
-lp_edges_final.json
+lp_final_claims.json
 lp_relationships_builds_towards.jsonl
 lp_relationships_relates_to.jsonl
 lp_relationship_provenance.json
@@ -233,7 +233,7 @@ The implementation is complete when:
 5. the combined bundle's counts and projections reconcile exactly;
 6. repeat/resume behavior follows existing KG conventions;
 7. structural tests cover tree, DAG, unresolved hierarchy, scope-only grade, multiple Standard grains, sparse LC reuse, noisy LC reuse, and recurring-practice cases;
-8. semantic review meets the acceptance policy chosen in **DECIDE D12**.
+8. semantic review meets the independently sampled metrics, explicit thresholds, denominator rules, minimum-support rules, and `needs_review` release policy chosen in **DECIDE D12**.
 
 ## 1.8 Non-goals for this project
 
@@ -548,20 +548,20 @@ The request schema should support batching through a required positive `lp_reque
 
 The final field names should be finalized after Section 3 decisions, but the implementation needs these concepts:
 
-| Record                          | Purpose                                                                                                        |
-|---------------------------------|----------------------------------------------------------------------------------------------------------------|
-| `LPEligibleSFI`                 | Final SFI plus statement type, coordinate, hierarchy status, and eligibility reason                            |
-| `LPCandidatePair`               | Deterministic pair identity, allowed decisions/directions, nomination signals, and bounded evidence references |
-| `LPGenerationRequest`           | One or more exact candidate pairs plus SFI/LC/hierarchy context and config fingerprint                         |
-| `LPPairJudgment`                | One structured accepted, negative, or unresolved judgment for one pair                                         |
-| `LPGenerationResponse`          | Exact complete judgment set for one request                                                                    |
-| `LPGenerationValidationVerdict` | Checker pass/fail, issues, and optional corrected complete response                                            |
-| `LPGenerationFailure`           | Request/pair failures after retries                                                                            |
-| `LPFinalClaim`                  | Reconciled semantic claim before conversion to `Relationship`                                                  |
-| `LPGenerationSummary`           | Eligibility, candidate, decision, edge, failure, and distribution counts                                       |
-| `LPUnresolvedItems`             | `needs_review`, failed, and policy-excluded material                                                           |
-| `LPValidationReport`            | Standalone LP graph checks and fingerprints                                                                    |
-| `AcademicStandardsLCLPKGBundle` | Complete triplet graph and merged validation state                                                             |
+| Record                          | Purpose                                                                                                                      |
+|---------------------------------|------------------------------------------------------------------------------------------------------------------------------|
+| `LPEligibleSFI`                 | Final SFI plus statement type, coordinate, hierarchy status, and eligibility reason                                          |
+| `LPCandidatePair`               | Deterministic pair identity, allowed decisions/directions, nomination signals, and bounded evidence references               |
+| `LPGenerationRequest`           | One or more exact candidate pairs plus SFI/LC/hierarchy context and config fingerprint                                       |
+| `LPPairJudgment`                | One structured accepted, negative, or unresolved judgment for one pair                                                       |
+| `LPGenerationResponse`          | Exact complete judgment set for one request                                                                                  |
+| `LPGenerationValidationVerdict` | Checker pass/fail, issues, and optional corrected complete response                                                          |
+| `LPGenerationFailure`           | Request/pair failures after retries                                                                                          |
+| `LPFinalClaim`                  | Reconciled semantic claim before conversion to `Relationship`                                                                |
+| `LPGenerationSummary`           | Eligibility, candidate, decision, edge, failure, and distribution counts                                                     |
+| `LPUnresolvedItems`             | `needs_review` judgments and exhausted request/pair failures; normal eligibility exclusions remain in the eligibility report |
+| `LPValidationReport`            | Standalone LP graph checks and fingerprints                                                                                  |
+| `AcademicStandardsLCLPKGBundle` | Complete triplet graph and merged validation state                                                                           |
 
 ## 2.12 Proposed combined bundle
 
@@ -572,10 +572,7 @@ Conceptually:
 ```json
 {
   "entity_provenance": {
-    "framework": {},
-    "items": {},
-    "relationships_has_child": {},
-    "learning_components": {},
+    "...all existing AS+LC provenance entries...": {},
     "relationships_builds_towards": {},
     "relationships_relates_to": {}
   },
@@ -602,7 +599,9 @@ Conceptually:
 }
 ```
 
-A `no_relation` judgment is a normal adjudication outcome and is counted in the LP summary; it is not an unresolved item. `needs_review` and failed requests are unresolved.
+The placeholder entry above is explanatory, not a literal schema field. The compiler must copy the complete `as_lc_bundle.entity_provenance` mapping without deletion or reshaping, then add non-colliding LP relationship-provenance entries. It must likewise preserve the complete upstream framework, SFI, LC, `hasChild`, `supports`, summary, and unresolved content before adding LP fields.
+
+A `no_relation` judgment is a normal adjudication outcome and is counted in the LP summary; it is not an unresolved item. Normal policy-based eligibility exclusions are accounted for in `lp_eligibility_report.json`, not mislabeled as unresolved judgments. `needs_review` judgments and exhausted request/pair failures are unresolved and appear in `lp_unresolved_items.json`.
 
 ## 2.13 Illustrative `kgs.lp` shape
 
@@ -649,7 +648,8 @@ The following is illustrative only. Field names and nesting must be updated afte
     },
 
     "lp_request_batch_size": 1,
-    "lp_max_failure_rate": 0.0
+    "lp_max_failed_pair_rate": 0.0,
+    "lp_max_failed_pair_count": 0
   }
 }
 ```
@@ -692,9 +692,12 @@ A real choice with consequences. No affected code should be written until the ch
 
 1. update this file first;
 2. replace the relevant **DECIDE** text with **SETTLED**;
-3. record the chosen option and rationale in the decision table;
-4. obtain an implementation OK;
-5. only then write the affected code.
+3. record the chosen option, rationale, and every required concrete value in the decision table or an adjacent approved policy table;
+4. remove placeholders such as `TBD`, `...`, or angle-bracket values from implementation-governing fields;
+5. obtain an implementation OK;
+6. only then write the affected code.
+
+An option letter alone does **not** settle a decision when the selected option requires curriculum matrices, local orders, failure limits, attribution values, evaluation thresholds, reviewer authority, or another concrete payload. Such a decision remains **DECIDE** until the payload is recorded.
 
 ### **LIMIT**
 
@@ -702,22 +705,24 @@ A known weakness or scope boundary we are accepting. It must be documented where
 
 ## 3.2 Decision log
 
-| ID  | Decision                                                            | Recommended option                                                                               | Status     |
-|-----|---------------------------------------------------------------------|--------------------------------------------------------------------------------------------------|------------|
-| D1  | How LP progression grain and statement-type pairings are configured | B — relation-specific pair matrices                                                              | **DECIDE** |
-| D2  | How local developmental order is represented                        | A — one explicit primary ordered dimension for v1                                                | **DECIDE** |
-| D3  | Candidate nomination technology                                     | A — explainable deterministic multi-signal retrieval, no embeddings in v1                        | **DECIDE** |
-| D4  | Candidate-pair orientation and adjudication shape                   | A — one canonical pair, one unified relation/direction judgment                                  | **DECIDE** |
-| D5  | How conceptually symmetric `relatesTo` is serialized                | A — one canonical relationship per unordered pair                                                | **DECIDE** |
-| D6  | Whether one pair may publish both relation types                    | A — mutually exclusive; `buildsTowards` takes precedence                                         | **DECIDE** |
-| D7  | How recurring practice is mapped                                    | C — extension → `buildsTowards`; substantive recurrence → `relatesTo`; generic repetition → none | **DECIDE** |
-| D8  | `buildsTowards` cycle policy                                        | A — published graph must be acyclic                                                              | **DECIDE** |
-| D9  | Transitive edge policy                                              | A — publish only directly adjudicated edges; no automatic closure or reduction                   | **DECIDE** |
-| D10 | How unresolved AS ancestry affects LP                               | C — exclude by default, permit explicit reviewed exceptions                                      | **DECIDE** |
-| D11 | Attribution/ownership metadata for inferred LP edges                | B — dedicated LP relationship metadata                                                           | **DECIDE** |
-| D12 | Semantic evaluation before release                                  | B — small reviewed gold set for each curriculum                                                  | **DECIDE** |
-| D13 | Failed-request tolerance and release gate                           | B — configurable dual guard; zero failed pairs for the six release runs                          | **DECIDE** |
-| D14 | Manual semantic edge overrides in v1                                | A — no forced semantic edges in v1; only reviewed eligibility exceptions                         | **DECIDE** |
+| ID  | Decision                                                             | Recommended option                                                                                    | Status       |
+|-----|----------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------|--------------|
+| D1  | How LP progression grain and statement-type pairings are configured  | B — relation-specific pair matrices                                                                   | **DECIDE**   |
+| D2  | How local developmental order is represented                         | A — one explicit primary ordered dimension for v1                                                     | **DECIDE**   |
+| D3  | Candidate nomination technology                                      | A — explainable deterministic multi-signal retrieval, no embeddings in v1                             | **DECIDE**   |
+| D4  | Candidate-pair orientation and adjudication shape                    | A — one canonical pair, one unified relation/direction judgment                                       | **DECIDE**   |
+| D5  | How conceptually symmetric `relatesTo` is serialized                 | A — one canonical relationship per unordered pair                                                     | **DECIDE**   |
+| D6  | Whether one pair may publish both relation types                     | A — mutually exclusive; `buildsTowards` takes precedence                                              | **DECIDE**   |
+| D7  | How recurring practice is mapped                                     | C — extension → `buildsTowards`; substantive recurrence → `relatesTo`; generic repetition → none      | **DECIDE**   |
+| D8  | `buildsTowards` cycle policy                                         | A — published graph must be acyclic                                                                   | **DECIDE**   |
+| D9  | Transitive edge policy                                               | A — publish only directly adjudicated edges; no automatic closure or reduction                        | **DECIDE**   |
+| D10 | How unresolved AS ancestry affects LP                                | C1 — exclude by default; permit inline, reviewed UUID-keyed eligibility exceptions                    | **DECIDE**   |
+| D11 | Attribution/ownership metadata for inferred LP edges                 | B — dedicated LP relationship metadata                                                                | **DECIDE**   |
+| D12 | Semantic evaluation and release thresholds                           | B — independently assembled gold set per curriculum, with explicit thresholds and `needs_review` gate | **DECIDE**   |
+| D13 | Failed-request tolerance and release gate                            | B — configurable dual guard; zero failed pairs for the six release runs                               | **DECIDE**   |
+| D14 | Manual semantic edge overrides in v1                                 | A — no forced semantic edges in v1; only reviewed eligibility exceptions                              | **DECIDE**   |
+
+**Decision-completeness rule:** every row remains **DECIDE** until both the option and all option-required parameters are recorded. D1, D2, D11, D12, and D13 always require more than a letter; D10 also requires C1/C2 plus exception-state details when Option C is selected; D3 and D14 require additional concrete payloads when their non-default infrastructure/override options are selected. Alternatives explicitly labeled **Rejected alternative** below are retained for rationale only and are not selectable without first reopening the conflicting **SETTLED** rule.
 
 ---
 
@@ -847,6 +852,8 @@ A conservative first profile could begin with same-grain pairs, then deliberatel
 
 **LIMIT if Option B is chosen:** The configured matrix is a semantic recall boundary. Omitted grains and pair types will not be considered.
 
+**Required D1 payload:** selecting the schema shape does not approve the six curriculum policies. Step 0 must also record the initial participation policy for Madhi mathematics, Nigeria mathematics, Pratham science, Rwanda mathematics, Ghana mathematics, and Ghana English in the form required by the selected option: relation-specific pair matrices for Option B, an allowlist for Option A, or exclusions for Option C. Directional source/target orientation must be explicit where applicable, and every omitted type/pair must have an unambiguous inclusion/exclusion meaning.
+
 ---
 
 ## D2. Local developmental-order model
@@ -904,13 +911,9 @@ Generic code resolves the value from the SFI's canonical identity scope or the S
 - Makes direction, cycle, and candidate-gap validation much more complex.
 - No reviewed curriculum currently proves the need.
 
-### Option C — Infer order from Learning Commons `grade_level`, metadata text, or the LLM
+### Rejected alternative — Infer order from Learning Commons `grade_level`, metadata text, or the LLM
 
-**Pros**
-
-- Minimal config.
-
-**Cons**
+This is documented for contrast, but it is **not selectable** under the current brief. It conflicts with the **SETTLED** rule that reviewed local curriculum values are authoritative and with the invariant forbidding heuristic/lexical order inference. Selecting it would first require reopening those settled rules.
 
 - US grade mappings are not authoritative for international curricula.
 - Some local values intentionally map to nothing or several grades.
@@ -929,6 +932,8 @@ Relation-specific config can still decide:
 - what to do with standards missing the coordinate.
 
 **LIMIT if Option A is chosen:** Frameworks with genuine multi-axis progression will require a later schema extension rather than silent heuristic inference.
+
+**Required D2 payload:** selecting one-axis or multi-axis support does not by itself define the six profiles. Step 0 must record, for each curriculum, the canonical coordinate source, the exact ordered local values, missing/unknown-coordinate behavior, whether same-level `buildsTowards` is allowed, any maximum forward gap, and the permitted cross-level behavior for `relatesTo`. If Option B is selected, it must also define how coordinate tuples are compared, when a direction is admissible across mixed dimensions, and how incomparability is represented.
 
 ---
 
@@ -983,27 +988,19 @@ Each rule records why it nominated the pair. The union is deduplicated and bound
 - Similarity still does not prove progression direction.
 - The user-set requirement currently names one shared KG LLM, not an embedding stack.
 
-### Option C — Let an LLM nominate from large allowed cohorts
+### Rejected alternative — Let an LLM nominate from large allowed cohorts
 
-For example, show one source standard and all allowed standards in the next grade/domain, then ask for likely candidates.
+For example, show one source standard and all allowed standards in the next grade/domain, then ask for likely candidates. This is **not selectable** under the current brief because candidate generation is already **SETTLED** as deterministic, explainable, and bounded before any LLM call. Selecting this approach would first require reopening that architecture boundary.
 
-**Pros**
-
-- Strong semantic flexibility.
-- No separate embedding model.
-
-**Cons**
-
-- Cohorts can be too large.
-- Higher token cost and positional bias.
-- Harder to prove complete consumption and deterministic resume.
-- Candidate discovery becomes less auditable.
+Additional drawbacks are large cohorts, higher token cost, positional bias, weaker complete-consumption guarantees, and a less auditable candidate-discovery path.
 
 ### Recommendation
 
 Choose **Option A** for v1, while implementing candidate rules behind a small strategy interface so embeddings can be added later without changing final schemas.
 
 **LIMIT if Option A is chosen:** Candidate recall is expected to be the largest semantic weakness of v1. D12 must explicitly test candidate recall, not only edge precision.
+
+**Required D3 payload if Option B is chosen:** record the exact embedding model/provider and version, multilingual scope, dependency/runtime boundary, vector/cache persistence and invalidation rules, batching/cost controls, deterministic fingerprint inputs, and behavior when the embedding capability is unavailable. Selecting “embeddings” without these values leaves D3 unresolved.
 
 ---
 
@@ -1134,16 +1131,9 @@ B --relatesTo--> A
 - Requires perfect reciprocal consistency.
 - Provenance is duplicated.
 
-### Option C — Treat `relatesTo` as semantically directed
+### Rejected alternative — Treat `relatesTo` as semantically directed
 
-**Pros**
-
-- Fits a directed row without special handling.
-
-**Cons**
-
-- Contradicts the intended “no sequence or dependency” concept.
-- The direction would be arbitrary or prompt-dependent.
+This is **not selectable** under the current brief. The semantic relationship is already **SETTLED** as conceptually symmetric and non-directional; only its row-level serialization remains open. Treating it as semantically directed would first require reopening Section 2.2. Its stored direction would otherwise be arbitrary or prompt-dependent.
 
 ### Recommendation
 
@@ -1154,6 +1144,8 @@ Choose **Option A**.
 ---
 
 ## D6. Can one pair publish both `buildsTowards` and `relatesTo`?
+
+**DECIDE — May one logical SFI pair publish both relationship types?**
 
 ### Option A — Mutually exclusive, with `buildsTowards` precedence
 
@@ -1194,9 +1186,9 @@ A --relatesTo------> B
 - Makes counts and product behavior harder to explain.
 - Requires clearer query precedence.
 
-### Option C — Judge the two relationships independently in separate requests
+### Process note — Separate requests are not a D6 answer
 
-This is the most permissive form of Option B and has the conflict risks described in D4.
+Judging the two relationships in separate requests is an adjudication-shape choice governed by D4. It does not answer D6's publication-policy question: the final graph must still either prohibit or permit both relationship types for one logical pair. Therefore D6 has two selectable options: A or B.
 
 ### Recommendation
 
@@ -1351,6 +1343,8 @@ Choose **Option A**.
 
 ## D9. Transitive edge policy
 
+**DECIDE — Should finalization publish only directly adjudicated `buildsTowards` edges, add transitive closure, or reduce transitive edges?**
+
 Suppose the graph contains:
 
 ```text
@@ -1411,6 +1405,8 @@ Choose **Option A**.
 
 ## D10. Unresolved Academic Standards ancestry
 
+**DECIDE — May an SFI with unresolved self/ancestry participate in LP inference, and under what review policy?**
+
 Ghana math contains 13 unresolved root-fallback hierarchy edges; Ghana English contains 2. A passed AS validation report therefore does not mean that every SFI has trustworthy curricular placement.
 
 ### Option A — Exclude every SFI with unresolved self or ancestry
@@ -1437,9 +1433,16 @@ Ghana math contains 13 unresolved root-fallback hierarchy edges; Ghana English c
 - LLM may overtrust a misleading root placement.
 - Harder to explain why some uncertain standards received edges.
 
-### Option C — Exclude by default, permit explicit reviewed exceptions
+### Option C — Exclude by default, permit explicit reviewed eligibility exceptions
 
-A reviewed exception identifies the SFI, reviewer, time, notes, and which evidence may be used despite unresolved hierarchy.
+A reviewed exception identifies the SFI, reviewer, review time, rationale, and which evidence may be used despite unresolved hierarchy. The exception changes only LP eligibility/evidence use; it never forces a semantic edge.
+
+Because Step 2 must define a concrete schema, choosing Option C also requires choosing where reviewed exceptions live:
+
+| Sub-option | Representation                                                                                                    | ELI5                                                              | Advantages                                                                             | Costs                                                                                                                |
+|------------|-------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------|----------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------|
+| **C1**     | Inline `kgs.lp` list keyed by final SFI `case_identifier_uuid`, with reviewer/time/rationale/evidence permissions | Keep each signed exception card inside the curriculum's LP policy | Smallest v1 surface; one config fingerprint; straightforward deployment and validation | Mixes general policy with a small number of instance decisions; UUIDs must be revisited if upstream identity changes |
+| **C2**     | Separate reviewed sidecar referenced and fingerprinted by `kgs.lp`                                                | Keep exception cards in a separate audited binder                 | Cleaner policy/data separation; scales better if exceptions grow                       | Adds a file lifecycle, path/schema validation, deployment, and review surface                                        |
 
 **Pros**
 
@@ -1454,13 +1457,17 @@ A reviewed exception identifies the SFI, reviewer, time, notes, and which eviden
 
 ### Recommendation
 
-Choose **Option C**.
+Choose **Option C1** for v1 unless expected exception volume justifies a sidecar.
 
-The candidate artifact must always carry unresolved status, even for an approved exception.
+The eligibility and candidate artifacts must always retain unresolved status, even for an approved exception. The exception record must be part of every material config/policy fingerprint.
+
+**Required D10 payload if Option C is chosen:** choose C1 or C2 and record either an explicit initial value of “no exceptions” or the complete reviewed exception records, including stable selector, reviewer identity, review time, rationale, permitted evidence, and upstream/config fingerprint rules.
 
 ---
 
 ## D11. Attribution and ownership for inferred progression edges
+
+**DECIDE — Whose authorship, provider identity, license, and attribution statement should the inferred LP relationships carry?**
 
 Every `Relationship` requires `author`, `provider`, `license`, and `attribution_statement`. Current `hasChild` and `supports` edges inherit framework metadata. LP edges are different: they may be inferred by this pipeline rather than explicitly authored by the ministry or curriculum publisher.
 
@@ -1521,28 +1528,33 @@ For example, source authority as `author`, pipeline as `provider`, and inference
 
 Choose **Option B** and provide the exact values before coding the finalizer.
 
+**Required D11 payload:** record the exact `author`, `provider`, `license`, and attribution-statement template, identify who approved those values, and define which source-framework authorship/license fields are retained in internal provenance. Placeholders or “inherit later” language leave D11 unresolved.
+
 **LIMIT — This brief is not legal advice.** The relationship license and attribution wording require the project's legal/content-licensing owner to approve them.
 
 ---
 
 ## D12. Semantic evaluation and release gate
 
-**DECIDE — What reviewed evidence is required before accepting the generated graph?**
+**DECIDE — What independently reviewed evidence, metric thresholds, and unresolved-judgment policy are required before accepting the generated graph?**
 
-### Option A — Manual spot checks after implementation
+### Option A — Independently selected manual review protocol
+
+Reviewers inspect a documented set of independently selected expected-positive and expected-negative pairs, plus stratified samples of accepted, `no_relation`, and `needs_review` outputs, and issue an explicit pass/fail decision.
 
 **Pros**
 
 - Fastest start.
-- Low annotation effort.
+- Lower annotation and harness effort.
+- Can still expose obvious candidate-recall and edge-quality failures when pair selection is independent.
 
 **Cons**
 
-- No repeatable metric.
-- Easy to tune to memorable examples.
-- Cannot measure candidate recall.
+- No stable numeric regression metric.
+- Reviewer judgment and sample choice have more influence.
+- Harder to compare releases or detect gradual quality drift.
 
-### Option B — Small reviewed gold set for every curriculum
+### Option B — Small, independently assembled reviewed gold set for every curriculum
 
 A suggested starting set per curriculum is approximately 40–60 pairs, deliberately balanced across:
 
@@ -1556,26 +1568,50 @@ same-branch and cross-branch cases
 unresolved/audit-flag cases where applicable
 ```
 
+The evaluation universe must not be selected only from `lp_candidate_pairs.jsonl`, published edges, or current model outputs. Otherwise candidate recall and accepted-edge precision become circular. At minimum, combine:
+
+1. **independently nominated pairs** selected from the curriculum/AS+LC graph without consulting the current candidate list or model decision; and
+2. **stratified pipeline samples** from nominated candidates, accepted edges, `no_relation`, and `needs_review` outcomes.
+
+Each reviewed row records its sampling/inclusion method, reviewer, policy version, and whether the label is definitive, ambiguous, or excluded from a particular metric.
+
 Evaluate separately:
 
-- candidate recall: did deterministic retrieval surface the reviewed positive pair?
-- relation precision: are published edges correct?
+- candidate recall: did deterministic retrieval surface the independently reviewed positive pair?
+- accepted-edge precision: are sampled published edges correct?
 - relation choice: `buildsTowards` vs `relatesTo`;
-- direction accuracy;
-- abstention/needs-review quality;
-- rationale grounding.
+- `buildsTowards` direction accuracy;
+- abstention/`needs_review` quality;
+- unresolved-context handling;
+- rationale grounding, reported separately from edge correctness.
+
+Choosing Option B is incomplete unless Step 0 also records:
+
+| Gate input                  | Required decision                                                                               |
+|-----------------------------|-------------------------------------------------------------------------------------------------|
+| Candidate recall            | Minimum per-curriculum threshold and whether an aggregate threshold also applies                |
+| Accepted-edge precision     | Minimum per-curriculum threshold; aggregate success must not silently hide a failing curriculum |
+| Relation-choice accuracy    | Minimum threshold and exact denominator                                                         |
+| Direction accuracy          | Minimum threshold and denominator for reviewed `buildsTowards` positives                        |
+| `needs_review` at release   | Maximum count/rate, zero-tolerance rule, or explicit reviewed-waiver policy                     |
+| Ambiguous/unscorable labels | Exclude from denominators, adjudicate, or treat as release-blocking                             |
+| Minimum sample support      | Minimum reviewed examples required before each metric can pass                                  |
+
+**ELI5:** Do not grade the scout only on places the scout already chose to visit. Give it independently chosen destinations, define the passing score before seeing the results, and decide how many “I am not sure” answers a release may contain.
 
 **Pros**
 
 - Repeatable tuning and regression protection.
 - Captures curriculum-specific semantics.
-- Exposes candidate-retrieval failures separately from LLM failures.
+- Separates candidate-retrieval failures from LLM/finalization failures.
+- Produces an actual release gate instead of a dashboard without pass/fail rules.
 
 **Cons**
 
 - Highest review effort.
 - Gold labels can themselves be debatable.
-- Needs versioning when policy changes.
+- Small samples have uncertainty and require versioning when policy changes.
+- Threshold revisions after a pilot require a brief update and reapproval rather than silent tuning.
 
 ### Option C — Gold sets for representative curricula only
 
@@ -1588,6 +1624,8 @@ Rwanda        -> noisy LC reuse
 Ghana English -> recurrence
 ```
 
+The same independent-sampling and explicit-threshold requirements apply to the selected curricula.
+
 **Pros**
 
 - Lower annotation effort than Option B.
@@ -1596,17 +1634,21 @@ Ghana English -> recurrence
 **Cons**
 
 - May miss Madhi/Nigeria-specific semantics.
-- No per-curriculum release confidence.
+- Provides no per-curriculum release confidence for omitted profiles.
 
 ### Recommendation
 
-Choose **Option B**.
+Choose **Option B**, record the complete threshold/denominator/`needs_review` policy during Step 0, and prioritize accepted-edge precision over global recall for the first release. A false progression edge is more damaging than an omitted edge, but candidate recall must still be measured on independently selected positive pairs so omission remains visible rather than silently accepted.
 
-For the first release, prioritize precision over global recall. A false progression edge is more damaging than an omitted edge. Candidate recall should still be measured on the reviewed positive set so omission is visible rather than silently accepted.
+**Required D12 payload:** record the review/approval authority, minimum sample size and required case balance, sampling method, treatment of ambiguous/disputed cases, exact metrics and denominators, per-curriculum and aggregate numeric thresholds, `needs_review` release policy, and versioning/reapproval rule after semantic-policy changes. Option A instead requires a complete independent-selection/manual-review protocol and named pass/fail authority.
+
+**LIMIT if Option B or C is chosen:** A small reviewed set estimates semantic quality; it does not prove correctness for every possible pair. Report sample sizes and uncertainty plainly, and do not treat a threshold pass as empirical prerequisite truth.
 
 ---
 
 ## D13. Failed-request tolerance and release policy
+
+**DECIDE — What failed-pair count/rate may an exploratory run tolerate, and what stricter condition is required for release?**
 
 A valid `no_relation` or `needs_review` response is not a request failure. Failures are timeouts, malformed outputs, exhausted retries, missing pair coverage, or integrity violations.
 
@@ -1661,9 +1703,13 @@ Choose **Option B**.
 
 Confidence should be stored for audit, but a numeric confidence threshold must not bypass the checker. Acceptance is based on a valid final judgment and policy, not confidence alone.
 
+**Required D13 payload:** if Option B is selected, Step 0 must record the schema defaults or required per-profile values for maximum failed-pair rate and maximum failed-pair count, plus the release-time limits. The recommendation's intended release limit is zero failed pairs for each of the six example curriculum runs, but that value is not settled until recorded.
+
 ---
 
 ## D14. Manual semantic edge overrides
+
+**DECIDE — May v1 force reviewed semantic include/exclude decisions, and if so where are they stored?**
 
 This decision is separate from D10's reviewed eligibility exception.
 
@@ -1715,15 +1761,17 @@ Choose **Option A** for v1. Implement D10's narrow unresolved-eligibility except
 
 **LIMIT if Option A is chosen:** Known semantic false negatives require policy/prompt changes and reruns rather than a release-side patch.
 
+**Required D14 payload if Option B or C is chosen:** record the allowed override actions, stable pair/SFI selectors, reviewer identity and evidence fields, precedence relative to producer/checker output, stale-upstream-fingerprint behavior, conflict handling, and provenance/export treatment. Selecting an override location without these semantics leaves D14 unresolved.
+
 ---
 
 ## 3.3 Decision response template
 
-A concise response can use this form:
+A concise response can use this form, but the attached payloads are part of the decision—not optional follow-up:
 
 ```text
-D1: B
-D2: A
+D1: B — attach the approved buildsTowards/relatesTo statement-type pair matrix for all six curricula
+D2: A — attach each curriculum's coordinate source, ordered values, missing-value policy, same-level rule, and level-gap rules
 D3: A
 D4: A
 D5: A
@@ -1731,14 +1779,14 @@ D6: A
 D7: C
 D8: A
 D9: A
-D10: C
-D11: B — author=..., provider=..., license=..., attribution=...
-D12: B
-D13: B
+D10: C1 — initial reviewed exceptions: none | attach exception records
+D11: B — author=<exact>; provider=<exact>; license=<exact>; attribution=<exact approved template>
+D12: B — gold approver=<exact>; sampling=<exact>; minimum set=<exact>; thresholds/denominators=<exact>; needs_review policy=<exact>; ambiguity/reapproval policy=<exact>
+D13: B — exploratory max rate=<exact>; exploratory max count=<exact>; release max rate/count=<exact>
 D14: A
 ```
 
-Any modifications or hybrid choices should be written next to the relevant ID. This file must then be revised before implementation begins.
+D2, D3, and D5 intentionally have only A/B selectable under the current **SETTLED** rules; the recorded rejected alternatives are not valid responses. D6 also has only A/B because separate requests are governed by D4 rather than being a publication-policy answer. Any hybrid choice must be written in full. This file must then be revised so the decision log, detailed decision section, invariants, illustrative config, and build-order/test language all agree before implementation begins.
 
 ---
 
@@ -1814,10 +1862,11 @@ The invariants below are the code-level contracts. Items dependent on unresolved
 49. **SETTLED — Count reconciliation:** summary counts equal actual list and JSONL counts for eligible SFIs, candidates, judgments, failures, final relationships, nodes, and all four relationship types.
 50. **SETTLED — Identifier collision absence:** framework, SFI, LC, `hasChild`, `supports`, `buildsTowards`, and `relatesTo` identifiers are unique in the combined graph.
 51. **SETTLED — Existing artifacts are not mutated:** standalone AS and AS+LC bundle/projection schemas remain unchanged.
-52. **SETTLED — Combined node parity:** `as_lc_lp_nodes.jsonl` contains exactly the framework, SFI, and LC nodes in the combined bundle.
-53. **SETTLED — Combined relationship completeness:** `as_lc_lp_relationships.jsonl` contains exactly all `hasChild`, `supports`, `buildsTowards`, and `relatesTo` relationships in the combined bundle.
-54. **SETTLED — Ordering is serialization detail:** deterministic ordering is used for stable files, but downstream semantics rely on IDs, endpoint keys, and relationship types rather than line order.
-55. **D12-dependent invariant:** the six-curriculum release is not accepted until the approved semantic evaluation gate passes.
+52. **SETTLED — Upstream combined content is preserved:** the AS+LC framework, SFIs, LCs, `hasChild`, `supports`, summaries, unresolved data, and complete `entity_provenance` mapping are copied without deletion or reshaping before additive LP fields/provenance are introduced.
+53. **SETTLED — Combined node parity:** `as_lc_lp_nodes.jsonl` contains exactly the framework, SFI, and LC nodes in the combined bundle.
+54. **SETTLED — Combined relationship completeness:** `as_lc_lp_relationships.jsonl` contains exactly all `hasChild`, `supports`, `buildsTowards`, and `relatesTo` relationships in the combined bundle.
+55. **SETTLED — Ordering is serialization detail:** deterministic ordering is used for stable files, but downstream semantics rely on IDs, endpoint keys, and relationship types rather than line order.
+56. **D12-dependent invariant:** the six-curriculum release is not accepted until the approved independent-sampling method, semantic metrics, explicit thresholds/denominators, minimum-support rules, and `needs_review` policy all pass.
 
 ---
 
@@ -1825,38 +1874,38 @@ The invariants below are the code-level contracts. Items dependent on unresolved
 
 No implementation starts at Step 1 until Step 0 is complete.
 
-| Step | One reviewable implementation aspect                                                        | Primary files/outputs                                                                                                                          | Review and test boundary                                                                                                                                                                      |
-|------|---------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| 0    | Resolve every **DECIDE** item and update this brief                                         | This Markdown file                                                                                                                             | All D1–D14 rows become **SETTLED** with chosen option and rationale; implementation OK recorded                                                                                               |
-| 1    | Establish six-curriculum LP regression fixtures                                             | New reduced fixtures under the repository's test area                                                                                          | Fixture loader verifies current AS+LC bundle shapes, counts, DAG parents, unresolved flags, and LC alignments without changing production code                                                |
-| 2    | Define the required `kgs.lp` runtime-config schema                                          | `backend/src/kgfeg/schemas.py`                                                                                                                 | Pydantic tests cover missing `lp`, extra fields, unknown statement types, bad local order, duplicate values, invalid pair matrices, and contradictory relation policy                         |
-| 3    | Update all six example runtime configs with approved LP policy                              | `examples/**/config*.json`                                                                                                                     | Every config validates; a profile-summary test snapshots participating types, local order, and relation policies                                                                              |
-| 4    | Replace dormant LP response schemas with the approved pair/evidence/judgment schemas        | `backend/src/kgfeg/kgs/schemas.py`                                                                                                             | Unit tests cover valid accepted/negative/review judgments and reject endpoint leakage, self-pairs, malformed direction, incomplete coverage, and invalid confidence/rationale fields          |
-| 5    | Add LP usage buckets and model-agent plumbing using `LLM_KG_MODEL`                          | `kgs/llm.py`, `kgs/agents.py`, existing model registry calls                                                                                   | Usage serialization includes producer/checker buckets; no new environment model setting is introduced                                                                                         |
-| 6    | Build an AS+LC graph index that is safe for trees and DAGs                                  | New `kgs/lp_index.py` or equivalent                                                                                                            | Tests verify Pratham multi-parent ancestry, framework-root handling, LC-by-SFI indexes, and deterministic traversal order                                                                     |
-| 7    | Implement local developmental-coordinate resolution                                         | New LP index/selection utility                                                                                                                 | Tests cover Madhi scope-only Class, explicit Grade/Class nodes, missing values, aliases/canonical values, and approved D2 behavior                                                            |
-| 8    | Implement LP SFI eligibility and unresolved-policy reporting                                | New `kgs/lp_selection.py`; `lp_eligible_sfis.json`; `lp_eligibility_report.json`                                                               | Tests cover D1 pair participation, D10 unresolved handling, independent LC eligibility, multiple Standard grains, and exact exclusion counts                                                  |
-| 9    | Implement hard candidate filters and deterministic pair IDs                                 | New `kgs/lp_candidates.py`                                                                                                                     | Tests prove no self-pairs, no disallowed type pairs/directions, no duplicate logical pairs, and stable IDs under input reordering                                                             |
-| 10   | Implement named candidate evidence features                                                 | `lp_candidates.py` or `lp_evidence.py`                                                                                                         | Each signal is unit-tested independently: hierarchy/DAG context, local rank, LC overlap, text similarity, code/audit handling, and curriculum-specific hooks                                  |
-| 11   | Implement candidate union, ranking, and budgets                                             | `lp_candidates.py`; `lp_candidate_pairs.jsonl`; `lp_candidate_summary.json`                                                                    | Deterministic snapshot tests verify per-rule nomination, top-k behavior, tie-breaking, pair-scale bounds, and D3 technology policy                                                            |
-| 12   | Implement bounded LP request construction                                                   | New `kgs/lp_generation.py`; `lp_generation_requests.jsonl`                                                                                     | Tests verify exact candidate coverage, bounded context, all parent paths, LC evidence limits, config/input fingerprints, and stable request IDs                                               |
-| 13   | Implement the LP producer prompt and agent                                                  | `kgs/prompts.py`, `kgs/agents.py`, `kgs/llm.py`                                                                                                | Prompt fixtures demonstrate Learning Commons semantics, curriculum-specific instructions, explicit negative/review outputs, and no out-of-request endpoints                                   |
-| 14   | Implement the independent LP checker and deterministic integrity validators                 | `kgs/prompts.py`, `kgs/agents.py`, `kgs/validators.py`, `kgs/llm.py`                                                                           | Tests cover accept, complete correction, missing pair, extra pair, illegal direction, unsupported rationale, and producer/checker evidence parity                                             |
-| 15   | Implement resumable generation orchestration and failure accounting                         | `kgs/lp_generation.py`; draft/verdict/final/failure artifacts                                                                                  | Interrupted-prefix tests verify safe resume, retry scope, exact file alignment, D13 guards, and that `no_relation` is not a failure                                                           |
-| 16   | Reconcile final pair decisions under D4–D9                                                  | New `kgs/lp_finalization.py`                                                                                                                   | Tests cover relation precedence/exclusivity, recurring-practice mapping, canonical `relatesTo`, cycle policy, transitive policy, duplicate/conflict handling, and `needs_review` routing      |
-| 17   | Mint deterministic `Relationship` records and correct generic descriptions                  | `kgs/lp_finalization.py`, `kgs/schemas.py`                                                                                                     | UUID snapshot tests cover both types; endpoint shape and metadata tests verify Learning Commons-compatible semantics and D11 attribution                                                      |
-| 18   | Implement standalone LP graph validation                                                    | New LP validator or `kgs/validators.py`                                                                                                        | Tests cover endpoint existence, self-loops, duplicates, direction/rank policy, cycle/transitivity policy, provenance coverage, counts, collisions, unresolved consistency, and failure limits |
-| 19   | Write standalone LP provenance, summary, unresolved, and validation artifacts               | `lp_relationship_provenance.json`, `lp_generation_summary.json`, `lp_unresolved_items.json`, `lp_validation_report.json`, relation files       | Round-trip Pydantic validation and count reconciliation tests cover every artifact                                                                                                            |
-| 20   | Add the AS+LC+LP bundle schema and compiler                                                 | New `kgs/lp_export.py`, `kgs/schemas.py`                                                                                                       | Bundle tests verify upstream content is preserved verbatim, LP fields are additive, fingerprints are complete, and invalid LP blocks successful compilation                                   |
-| 21   | Write `as_lc_lp_nodes.jsonl` and `as_lc_lp_relationships.jsonl`                             | `kgs/lp_export.py`                                                                                                                             | Projection tests prove node parity with AS+LC and exact relationship union/order across all four types                                                                                        |
-| 22   | Integrate LP into `create_kgs.build_kgs()` after `compile_as_lc_kg()`                       | `entries/create_kgs.py`                                                                                                                        | Orchestration test verifies phase order, returned bundle use, failure propagation, usage accounting, and `kg_run.json` success/error state                                                    |
-| 23   | Implement final-bundle reuse and stale-fingerprint detection                                | `lp_export.py`, LP utilities                                                                                                                   | Tests cover `overwrite=false` reuse, changed config/candidate/response/upstream fingerprints, projection rewrite from reused bundle, and invalid existing bundle recovery                     |
-| 24   | Add the semantic evaluation harness approved in D12                                         | Test/evaluation fixtures and report script                                                                                                     | Separately reports candidate recall, relation precision, relation choice, direction accuracy, abstention, and unresolved cases by curriculum                                                  |
-| 25   | Run a targeted curriculum matrix before all six full reruns                                 | Generated test outputs only                                                                                                                    | Madhi: scope-only level; Nigeria: simple tree; Pratham: DAG/multi-grain; Ghana math: unresolved; Rwanda: noisy LC evidence; Ghana English: recurrence                                         |
-| 26   | Tune only curriculum config/instructions and generic thresholds justified by the evaluation | Six configs and, only when universally valid, generic code                                                                                     | Every change is traced to a failed fixture/evaluation case; no curriculum name appears in Python                                                                                              |
-| 27   | Run all six complete pipelines from source PDFs                                             | Six complete result directories                                                                                                                | All three bundles validate; zero release-blocking failures; outputs and counts reconcile; semantic gate passes                                                                                |
-| 28   | Update user-facing pipeline and artifact documentation                                      | New `docs/pipeline/learning-progressions.md`; update architecture, pipeline index, output artifacts, adding-curriculum, running/debugging docs | Documentation examples match real generated artifacts and explicitly record every **LIMIT**                                                                                                   |
-| 29   | Final release review                                                                        | Brief, configs, code, docs, six outputs                                                                                                        | Confirm all **SETTLED** decisions are implemented, every accepted **LIMIT** is visible, and no unresolved **DECIDE** marker remains                                                           |
+| Step | One reviewable implementation aspect                                                             | Primary files/outputs                                                                                                                           | Review and test boundary                                                                                                                                                                                                                                                                           |
+|------|--------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 0    | Resolve every **DECIDE** item and update this brief                                              | This Markdown file                                                                                                                              | All D1–D14 rows become **SETTLED** with chosen option, rationale, and every required concrete payload; no implementation-governing placeholder remains; implementation OK recorded                                                                                                                 |
+| 1    | Establish six-curriculum LP regression fixtures                                                  | New reduced fixtures under the repository's test area                                                                                           | Fixture loader verifies current AS+LC bundle shapes, counts, DAG parents, unresolved flags, and LC alignments without changing production code                                                                                                                                                     |
+| 2    | Define the intrinsic `kgs.lp` Pydantic models and standalone field validators                    | `backend/src/kgfeg/schemas.py`                                                                                                                  | Tests cover field types, aliases, forbidden extras, local model invariants, and representative valid/invalid LP policy objects; `CreateKGConfig` and checked-in configs remain valid until Step 3                                                                                                  |
+| 3    | Wire `kgs.lp` as required, add AS-policy cross-validation, and update all six configs atomically | `backend/src/kgfeg/schemas.py`; `examples/**/config*.json`                                                                                      | Tests cover missing `lp`, unknown statement types/local values, bad or incomplete local order, invalid pair matrices, contradictory policies, cross-curriculum copy/paste errors, and successful validation/snapshots of all six explicit profiles                                                 |
+| 4    | Replace dormant LP schemas with the approved intrinsic pair/evidence/judgment record schemas     | `backend/src/kgfeg/kgs/schemas.py`                                                                                                              | Schema tests cover valid accepted/negative/review records and reject intrinsic defects such as malformed UUIDs, self-pairs, illegal enum combinations, and invalid confidence/rationale fields; request-relative endpoint/coverage checks remain owned by Steps 12 and 14                          |
+| 5    | Add LP usage buckets and model-settings plumbing using `LLM_KG_MODEL`                            | `kgs/llm.py`, existing model registry calls                                                                                                     | Usage serialization includes producer/checker buckets and `kgs_settings("learning_progressions")` is exercised; no prompt or agent factory is implemented before Steps 13–14, and no new model environment setting is introduced                                                                   |
+| 6    | Build an AS+LC graph index that is safe for trees and DAGs                                       | New `kgs/lp_index.py` or equivalent                                                                                                             | Tests verify Pratham multi-parent ancestry, framework-root handling, LC-by-SFI indexes, and deterministic traversal order                                                                                                                                                                          |
+| 7    | Implement local developmental-coordinate resolution                                              | New LP index/selection utility                                                                                                                  | Tests cover Madhi scope-only Class, explicit Grade/Class nodes, missing values, aliases/canonical values, and approved D2 behavior                                                                                                                                                                 |
+| 8    | Implement LP SFI eligibility and unresolved-policy reporting                                     | New `kgs/lp_selection.py`; `lp_eligible_sfis.json`; `lp_eligibility_report.json`                                                                | Tests cover D1 pair participation, D10 unresolved handling, independent LC eligibility, multiple Standard grains, and exact exclusion counts                                                                                                                                                       |
+| 9    | Implement hard candidate filters and deterministic pair IDs                                      | New `kgs/lp_candidates.py`                                                                                                                      | Tests prove no self-pairs, no disallowed type pairs/directions, no duplicate logical pairs, and stable IDs under input reordering                                                                                                                                                                  |
+| 10   | Implement named candidate evidence features                                                      | `lp_candidates.py` or `lp_evidence.py`                                                                                                          | Each signal is unit-tested independently: hierarchy/DAG context, local rank, LC overlap, text similarity, code/audit handling, and curriculum-specific hooks                                                                                                                                       |
+| 11   | Implement candidate union, ranking, and budgets                                                  | `lp_candidates.py`; `lp_candidate_pairs.jsonl`; `lp_candidate_summary.json`                                                                     | Deterministic snapshot tests verify per-rule nomination, top-k behavior, tie-breaking, pair-scale bounds, and D3 technology policy                                                                                                                                                                 |
+| 12   | Implement bounded LP request construction                                                        | New `kgs/lp_generation.py`; `lp_generation_requests.jsonl`                                                                                      | Tests verify exact candidate coverage, bounded context, all parent paths, LC evidence limits, config/input fingerprints, and stable request IDs                                                                                                                                                    |
+| 13   | Implement the LP producer prompt and agent                                                       | `kgs/prompts.py`, `kgs/agents.py`, `kgs/llm.py`                                                                                                 | Prompt fixtures demonstrate Learning Commons semantics, curriculum-specific instructions, explicit negative/review outputs, and no out-of-request endpoints                                                                                                                                        |
+| 14   | Implement the independent LP checker and deterministic integrity validators                      | `kgs/prompts.py`, `kgs/agents.py`, `kgs/validators.py`, `kgs/llm.py`                                                                            | Tests cover accept, complete correction, missing pair, extra pair, illegal direction, unsupported rationale, and producer/checker evidence parity                                                                                                                                                  |
+| 15   | Implement resumable generation orchestration and failure accounting                              | `kgs/lp_generation.py`; draft/verdict/final/failure artifacts                                                                                   | Interrupted-prefix tests verify safe resume, retry scope, exact file alignment, D13 guards, and that `no_relation` is not a failure                                                                                                                                                                |
+| 16   | Reconcile final pair decisions under D4–D9                                                       | New `kgs/lp_finalization.py`; `lp_final_claims.json`                                                                                            | Tests cover relation precedence/exclusivity, recurring-practice mapping, canonical `relatesTo`, cycle policy, transitive policy, duplicate/conflict handling, and `needs_review` routing                                                                                                           |
+| 17   | Mint deterministic `Relationship` records and correct generic descriptions                       | `kgs/lp_finalization.py`, `kgs/schemas.py`                                                                                                      | UUID snapshot tests cover both types; endpoint shape and metadata tests verify Learning Commons-compatible semantics and D11 attribution                                                                                                                                                           |
+| 18   | Implement standalone LP graph validation                                                         | New LP validator or `kgs/validators.py`                                                                                                         | Tests cover endpoint existence, self-loops, duplicates, direction/rank policy, cycle/transitivity policy, provenance coverage, counts, collisions, unresolved consistency, and failure limits                                                                                                      |
+| 19   | Write standalone LP provenance, summary, unresolved, and validation artifacts                    | `lp_relationship_provenance.json`, `lp_generation_summary.json`, `lp_unresolved_items.json`, `lp_validation_report.json`, relation files        | Round-trip Pydantic validation and count reconciliation tests cover every artifact                                                                                                                                                                                                                 |
+| 20   | Add the AS+LC+LP bundle schema and compiler                                                      | New `kgs/lp_export.py`, `kgs/schemas.py`                                                                                                        | Bundle tests verify all upstream nodes, relationships, summaries, unresolved data, and the complete AS+LC `entity_provenance` mapping are preserved verbatim; LP fields/provenance are additive; fingerprints are complete; invalid LP blocks successful compilation                               |
+| 21   | Write `as_lc_lp_nodes.jsonl` and `as_lc_lp_relationships.jsonl`                                  | `kgs/lp_export.py`                                                                                                                              | Projection tests prove node parity with AS+LC and exact relationship union/order across all four types                                                                                                                                                                                             |
+| 22   | Integrate LP into `create_kgs.build_kgs()` after `compile_as_lc_kg()`                            | `entries/create_kgs.py`                                                                                                                         | Orchestration test verifies phase order, returned bundle use, failure propagation, usage accounting, and `kg_run.json` success/error state                                                                                                                                                         |
+| 23   | Implement final-bundle reuse and stale-fingerprint detection                                     | `lp_export.py`, LP utilities                                                                                                                    | Tests cover `overwrite=false` reuse, changed config/candidate/response/upstream fingerprints, projection rewrite from reused bundle, and invalid existing bundle recovery                                                                                                                          |
+| 24   | Add the semantic evaluation harness and reviewed-gold-set support approved in D12                | Test/evaluation fixtures and report script                                                                                                      | Records independent-versus-pipeline sampling provenance and metric denominators; reports candidate recall, accepted-edge precision, relation choice, direction, abstention/`needs_review`, unresolved handling, minimum support, and pass/fail against settled per-curriculum/aggregate thresholds |
+| 25   | Run a targeted curriculum matrix before all six full reruns                                      | Generated test outputs only                                                                                                                     | Madhi: scope-only level; Nigeria: simple tree; Pratham: DAG/multi-grain; Ghana math: unresolved; Rwanda: noisy LC evidence; Ghana English: recurrence                                                                                                                                              |
+| 26   | Tune only curriculum config/instructions and generic thresholds justified by the evaluation      | Six configs and, only when universally valid, generic code                                                                                      | Every change is traced to a failed fixture/evaluation case; no curriculum name appears in Python                                                                                                                                                                                                   |
+| 27   | Run all six complete pipelines from source PDFs                                                  | Six complete result directories                                                                                                                 | All three bundles validate; zero release-blocking failures; outputs and counts reconcile; semantic gate passes                                                                                                                                                                                     |
+| 28   | Update user-facing pipeline and artifact documentation                                           | New `docs/pipeline/learning-progressions.md`; update architecture, pipeline index, output artifacts, adding-curriculum, running/debugging docs  | Documentation examples match real generated artifacts and explicitly record every **LIMIT**                                                                                                                                                                                                        |
+| 29   | Final release review                                                                             | Brief, configs, code, docs, six outputs                                                                                                         | Confirm all **SETTLED** decisions are implemented, every accepted **LIMIT** is visible, and no unresolved **DECIDE** marker remains                                                                                                                                                                |
 
 ## 5.1 Suggested module boundary
 
@@ -1926,4 +1975,4 @@ Every final LP relationship must:
 - pass the approved cycle, symmetry, exclusivity, transitivity, unresolved, and attribution policies;
 - appear exactly once in the relevant standalone relationship file, combined bundle, and combined relationship JSONL.
 
-The release review must also inspect the semantic evaluation report; graph validity alone is not release approval.
+The release review must also verify D12 sampling provenance, metric denominators, minimum support, per-curriculum/aggregate thresholds, and the `needs_review` release policy; graph validity alone is not release approval.
