@@ -214,12 +214,12 @@ Explain which phase owns which interpretation. Do not attribute AS extraction be
 
 ### 5.2 The four relationship types answer different questions
 
-| Relationship | Plain-language question |
-|---|---|
-| `hasChild` | Where does this item sit in the curriculum's declared organization/decomposition? |
-| `supports` | Which granular Learning Component helps a learner achieve this standard? |
-| `buildsTowards` | Does proficiency in the source standard make success in the target more likely? |
-| `relatesTo` | Are these standards instructionally/conceptually connected without asserting developmental direction? |
+| Relationship    | Plain-language question                                                                               |
+|-----------------|-------------------------------------------------------------------------------------------------------|
+| `hasChild`      | Where does this item sit in the curriculum's declared organization/decomposition?                     |
+| `supports`      | Which granular Learning Component helps a learner achieve this standard?                              |
+| `buildsTowards` | Does proficiency in the source standard make success in the target more likely?                       |
+| `relatesTo`     | Are these standards instructionally/conceptually connected without asserting developmental direction? |
 
 Do not collapse `hasChild` into progression merely because both endpoints may be normalized Standards.
 

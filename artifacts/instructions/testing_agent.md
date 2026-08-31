@@ -236,14 +236,14 @@ Use direct Pydantic validation, not only CLI success.
 
 Step 1 fixtures must preserve the smallest data needed to prove the important variation:
 
-| Curriculum | Required fixture property |
-|---|---|
-| Madhi math | local Class coordinate exists in scope without final Class nodes |
-| Nigeria math | simple explicit Grade tree and granular Performance Objectives |
-| Pratham science | multi-parent DAG and multiple normalized-Standard grains |
-| Rwanda math | multiple Standard grains and noisy reused Attitudes/Values LCs |
-| Ghana math | unresolved-root fallback ancestry and code anomalies |
-| Ghana English | cross-grade recurrence versus developmental extension |
+| Curriculum      | Required fixture property                                        |
+|-----------------|------------------------------------------------------------------|
+| Madhi math      | local Class coordinate exists in scope without final Class nodes |
+| Nigeria math    | simple explicit Grade tree and granular Performance Objectives   |
+| Pratham science | multi-parent DAG and multiple normalized-Standard grains         |
+| Rwanda math     | multiple Standard grains and noisy reused Attitudes/Values LCs   |
+| Ghana math      | unresolved-root fallback ancestry and code anomalies             |
+| Ghana English   | cross-grade recurrence versus developmental extension            |
 
 Fixture validation must prove the fixture still represents the source artifact property. Do not create labels by copying expected future LP predictions.
 
