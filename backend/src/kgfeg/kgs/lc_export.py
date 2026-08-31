@@ -1,8 +1,8 @@
 """This module contains the AS+LC KG bundle merge for KG creation.
 
 Composes the final Academic Standards bundle, verbatim, with the LC layer
-into one self-contained `AcademicStandardsLCKGBundle` plus flat
-node/relationship projections for bulk graph loaders. The Academic
+into one self-contained `AcademicStandardsLCKGBundle`, then writes the
+Learning Commons-shaped delivery pair carrying both layers. The Academic
 Standards bundle file is left untouched.
 
 Sibling LC modules mirror the sfi_* layout: lc_selection.py (LC-source
@@ -15,6 +15,7 @@ validate/summarize).
 import json
 
 from collections import Counter
+from pathlib import Path
 from typing import Any, Sequence
 
 # Third Party Library
@@ -33,14 +34,17 @@ from kgfeg.kgs.schemas import (
     LCGenerationFailure,
     LCGenerationSummary,
     LCUnresolvedItems,
+    LearningCommonsLearningComponentProperties,
+    LearningCommonsNode,
     LearningComponent,
     Relationship,
 )
 from kgfeg.kgs.sfi_export import (
+    _build_learning_commons_relationships,
     _fingerprint_jsonable,
     _get_learning_commons_export_schema_version,
 )
-from kgfeg.kgs.utils import KGDirs, make_dir
+from kgfeg.kgs.utils import KGDirs, append_jsonl_model, make_dir
 from kgfeg.utils.general import write_to_json
 
 _MERGED_VALIDATION_CHECKS = [
@@ -197,55 +201,135 @@ def _validate_merged_graph(
     return errors
 
 
-def _write_flat_projections(
-    *, bundle: AcademicStandardsLCKGBundle, kg_dirs: KGDirs
-) -> None:
-    """Write flat node/relationship projections of the merged bundle.
+def _build_learning_component_nodes(
+    *, learning_components: Sequence[LearningComponent]
+) -> list[LearningCommonsNode]:
+    """Build slim Learning Commons-shaped node records for the LC layer.
 
-    Every node and every relationship of the bundle, one JSON record per
-    line: node lines carry an injected `entity_type` discriminator
-    (StandardsFramework, StandardsFrameworkItem, LearningComponent);
-    relationship lines are the Relationship records verbatim.
+    A LearningComponent has no CASE identity by design, so no CASE properties are
+    emitted and `supports` edges key this endpoint on `identifier` instead. `tags` is
+    omitted rather than emitted empty, keeping absent and empty distinguishable.
+
+    Parameters
+    ----------
+    learning_components
+        Minted LearningComponent entities in deterministic export order.
+
+    Returns
+    -------
+    list[LearningCommonsNode]
+        Learning Commons node records for every component.
+    """
+
+    nodes: list[LearningCommonsNode] = []
+    for component in learning_components:
+        identifier = str(component.identifier)
+        tags = component.metadata.get("tags")
+        nodes.append(
+            LearningCommonsNode(
+                identifier=identifier,
+                labels=["LearningComponent"],
+                properties=LearningCommonsLearningComponentProperties(
+                    academic_subject=component.academic_subject,
+                    attribution_statement=component.attribution_statement,
+                    author=component.author,
+                    description=component.description,
+                    identifier=identifier,
+                    identity_key=component.metadata["identity"]["identity_key"],
+                    in_language=component.in_language,
+                    license=component.license,
+                    provider=component.provider,
+                    tags=(
+                        json.dumps(tags, ensure_ascii=False, separators=(",", ":"))
+                        if tags
+                        else None
+                    ),
+                ),
+            )
+        )
+    return nodes
+
+
+def _write_delivery_projection(
+    *, bundle: AcademicStandardsLCKGBundle, kg_dirs: KGDirs
+) -> tuple[Path, Path]:
+    """Write the combined Learning Commons-shaped JSONL artifacts.
+
+    Academic Standards lines are copied verbatim from the Academic Standards artifacts
+    rather than rebuilt, so those records cannot drift and the LC layer is provably
+    additive. The Academic Standards artifacts themselves are left untouched.
 
     Parameters
     ----------
     bundle
         The compiled merged bundle.
     kg_dirs
-        KG artifact directories; projections are written under
+        KG artifact directories; artifacts are read from and written under
         ``kg_dirs.root``.
+
+    Returns
+    -------
+    tuple[Path, Path]
+        Paths of the written node and relationship delivery files.
+
+    Raises
+    ------
+    ValueError
+        If an Academic Standards wire artifact is missing.
     """
 
-    node_lines = [
-        {
-            "entity_type": "StandardsFramework",
-            **bundle.framework.model_dump(mode="json"),
-        },
-        *(
-            {"entity_type": "StandardsFrameworkItem", **item.model_dump(mode="json")}
-            for item in bundle.items
-        ),
-        *(
-            {"entity_type": "LearningComponent", **component.model_dump(mode="json")}
-            for component in bundle.learning_components
-        ),
-    ]
-    relationship_lines = [
-        relationship.model_dump(mode="json")
-        for relationship in (
-            *bundle.relationships_has_child,
-            *bundle.relationships_supports,
-        )
-    ]
+    as_nodes_fp = kg_dirs.root / "as_nodes.jsonl"
+    as_relationships_fp = kg_dirs.root / "as_relationships.jsonl"
 
-    with (kg_dirs.root / "as_lc_nodes.jsonl").open("w", encoding="utf-8") as f:
-        for node_line in node_lines:
-            f.write(json.dumps(node_line, ensure_ascii=False, sort_keys=True) + "\n")
-    with (kg_dirs.root / "as_lc_relationships.jsonl").open("w", encoding="utf-8") as f:
-        for relationship_line in relationship_lines:
-            f.write(
-                json.dumps(relationship_line, ensure_ascii=False, sort_keys=True) + "\n"
+    for fp in (as_nodes_fp, as_relationships_fp):
+        if not fp.exists():
+            raise ValueError(
+                f"Delivery projection: {fp.name} is absent; the Academic Standards "
+                f"export must run before the merged delivery pair can be written."
             )
+
+    as_node_lines = as_nodes_fp.read_text(encoding="utf-8").splitlines()
+    as_relationship_lines = as_relationships_fp.read_text(encoding="utf-8").splitlines()
+
+    as_nodes = [LearningCommonsNode.model_validate_json(line) for line in as_node_lines]
+    component_nodes = _build_learning_component_nodes(
+        learning_components=bundle.learning_components
+    )
+    supports_records = _build_learning_commons_relationships(
+        nodes=[*as_nodes, *component_nodes],
+        relationships=bundle.relationships_supports,
+    )
+
+    nodes_fp = kg_dirs.root / "as_lc_nodes.jsonl"
+    relationships_fp = kg_dirs.root / "as_lc_relationships.jsonl"
+
+    nodes_fp.write_text(
+        "".join(f"{line}\n" for line in as_node_lines), encoding="utf-8"
+    )
+    for node in component_nodes:
+        append_jsonl_model(
+            by_alias=True, compact=True, exclude_none=True, fp=nodes_fp, model=node
+        )
+
+    relationships_fp.write_text(
+        "".join(f"{line}\n" for line in as_relationship_lines), encoding="utf-8"
+    )
+    for record in supports_records:
+        append_jsonl_model(
+            by_alias=True,
+            compact=True,
+            exclude_none=True,
+            fp=relationships_fp,
+            model=record,
+        )
+
+    logger.success(
+        f"Wrote delivery projection: {nodes_fp.name} "
+        f"({len(as_node_lines)} AS + {len(component_nodes)} LC nodes); "
+        f"{relationships_fp.name} "
+        f"({len(as_relationship_lines)} hasChild + {len(supports_records)} supports)"
+    )
+    return nodes_fp, relationships_fp
 
 
 def compile_as_lc_kg(
@@ -262,10 +346,10 @@ def compile_as_lc_kg(
     Requires a passed, error-free AS bundle validation report. Reads the
     LC generation failures and LC entity-provenance artifacts from
     ``kg_dirs.root``, composes the merged `AcademicStandardsLCKGBundle`,
-    validates the merged graph, and writes the bundle plus flat
-    node/relationship projections. With ``overwrite=False`` an existing
+    validates the merged graph, and writes the bundle plus the Learning
+    Commons-shaped delivery pair. With ``overwrite=False`` an existing
     bundle whose input fingerprints match the freshly computed ones is
-    returned as-is (projections are rewritten from it).
+    returned as-is (the delivery pair is rewritten from it).
 
     Parameters
     ----------
@@ -346,7 +430,7 @@ def compile_as_lc_kg(
             if existing.validation_report.input_fingerprints == input_fingerprints:
                 logger.info("Reusing existing AS+LC bundle: input fingerprints match.")
                 make_dir(kg_dirs.root)
-                _write_flat_projections(bundle=existing, kg_dirs=kg_dirs)
+                _write_delivery_projection(bundle=existing, kg_dirs=kg_dirs)
                 return existing
             logger.info(
                 "Existing AS+LC bundle is stale (input fingerprints differ); "
@@ -414,7 +498,6 @@ def compile_as_lc_kg(
 
     make_dir(kg_dirs.root)
     write_to_json(fp=bundle_fp, json_info=bundle.model_dump(mode="json"))
-    _write_flat_projections(bundle=bundle, kg_dirs=kg_dirs)
 
     if errors:
         raise ValueError(
@@ -422,6 +505,8 @@ def compile_as_lc_kg(
             f"{len(errors)} errors (artifacts written for inspection); "
             f"first: {errors[0]}"
         )
+
+    _write_delivery_projection(bundle=bundle, kg_dirs=kg_dirs)
 
     logger.success(
         f"Compiled AS+LC KG bundle: nodes={bundle.summary.total_node_count}; "
