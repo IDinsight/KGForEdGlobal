@@ -274,7 +274,14 @@ def _build_learning_commons_relationships(
     """
 
     nodes_by_case_identifier_uuid = {
-        node.properties.case_identifier_uuid: node for node in nodes
+        case_identifier_uuid: node
+        for node in nodes
+        if (
+            case_identifier_uuid := getattr(
+                node.properties, "case_identifier_uuid", None
+            )
+        )
+        is not None
     }
     nodes_by_identifier = {node.properties.identifier: node for node in nodes}
     output: list[LearningCommonsRelationship] = []
@@ -312,6 +319,7 @@ def _build_learning_commons_relationships(
             if relationship.metadata.get("unresolved_root_fallback") is True
             else None
         )
+        support_confidence = relationship.metadata.get("support_confidence")
         relationship_identifier = str(relationship.identifier)
         output.append(
             LearningCommonsRelationship(
@@ -333,6 +341,9 @@ def _build_learning_commons_relationships(
                         relationship.source_entity_key
                     ),
                     source_entity_value=relationship.source_entity_value,
+                    support_confidence=(
+                        None if support_confidence is None else str(support_confidence)
+                    ),
                     target_entity=relationship.target_entity,
                     target_entity_key=_to_learning_commons_entity_key(
                         relationship.target_entity_key
