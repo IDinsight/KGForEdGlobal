@@ -262,8 +262,16 @@ normalized skill text, confidence, ancestor UUIDs, statement type, and tags. LC 
 also aggregates source/framework provenance and fingerprints the Academic Standards
 bundle from which the LC layer was derived.
 
-Attribution fields inherited from claiming SFIs must agree. A mismatch is treated as an
-input inconsistency and fails rather than selecting one attribution arbitrarily.
+The node-level `tags` set unions the tags of the claims whose text was elected canonical,
+not those of every claim, so the node is never described by tags belonging to wording it
+does not carry. The set is sorted for byte stability and omitted entirely when empty.
+
+Attribution fields shared by the claiming SFIs must agree; a mismatch fails rather than
+selecting one arbitrarily. An LC inherits `academicSubject`, `inLanguage`, `license` and
+`attributionStatement` from that record, since those describe the source content. Two
+are not inherited, because they describe who made the component: `author` is
+`Settings.LC_AUTHOR` and `provider` is `Settings.LC_PROVIDER`. The same applies to
+`supports` edges.
 
 A semantically shared skill can therefore become one Learning Component with several
 source claims. Python emits one deterministic primary `supports` relationship for every
@@ -340,8 +348,8 @@ the final description alone.
 
 ---
 
-For downstream consumption and the distinction between bundle, Learning Commons
-wire, and flat-loader projections, see the
+For downstream consumption and the distinction between the bundle and the two Learning
+Commons wire pairs, see the
 [output artifacts and integration contract](../reference/output-artifacts.md).
 
 ## Stage boundary
