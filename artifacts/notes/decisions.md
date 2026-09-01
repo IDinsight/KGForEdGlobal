@@ -201,6 +201,26 @@ The configured matrices are semantic recall boundaries. Omitted grains and type 
 
 A future curriculum with genuine multi-axis progression will require a schema extension rather than heuristic tuple inference.
 
+## D3 — Candidate nomination technology
+
+**Resolved option:** Option A — explainable deterministic multi-signal retrieval without embeddings in v1.
+
+### Approved interpretation
+
+1. Candidate nomination is the deterministic, bounded union of nominations from named, explainable signal strategies.
+2. Each nominated pair records the signal or signals that nominated it and the concrete values that triggered each nomination.
+3. D1 statement-type pair policy and D2 developmental-order policy remain hard admissibility boundaries. Candidate signals cannot bypass them.
+4. Hierarchy context, local-rank proximity, Learning Component overlap, text similarity, code proximity, source order, or any other individual signal may nominate a pair but cannot publish a relationship.
+5. Generic Python owns deterministic signal execution, union, deduplication, stable ranking and tie-breaking, budget enforcement, identities, and fingerprints. Curriculum-specific signal selection and policy remain runtime configuration concerns.
+6. No embedding model, provider, vector index, cache, dependency, cost boundary, or fallback behavior is approved for v1.
+7. The v1 implementation must provide a small named-signal strategy boundary, or an equivalently clear extension point, so a future approved embedding model can be added as another nomination signal without redesigning candidate-pair records, producer/checker judgment records, or final relationship schemas.
+8. A future embedding add-on remains a separate governed change. It must supply the model/provider/version, multilingual scope, dependency/runtime boundary, vector/cache persistence and invalidation rules, batching/cost controls, fingerprint inputs, and unavailable-capability behavior before it may be implemented.
+9. Candidate algorithm/version, enabled signals, signal-policy configuration, budgets, and other material retrieval inputs must be fingerprinted. Any future embedding signal would add its own material fingerprint inputs.
+
+### D3 accepted limitation
+
+Deterministic non-embedding retrieval creates a candidate-recall ceiling and may miss semantically related standards with weak lexical, hierarchy, code, or Learning Component overlap. D12 must measure candidate recall using independently selected positive pairs rather than evaluating only pairs already nominated by the pipeline.
+
 ## Next unresolved decision
 
-D3 — Candidate nomination technology.
+D4 — Candidate-pair orientation and adjudication shape.
