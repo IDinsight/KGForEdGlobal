@@ -474,6 +474,46 @@ Every published LP relationship retains:
 
 The engineering brief and this decision are not legal advice. IDinsight remains responsible for confirming that copying each source-framework license to inferred LP relationship records is legally and organizationally appropriate.
 
+## D12 — Semantic evaluation and release gate
+
+### Status
+
+**Resolved — Option D, non-blocking post-release human audit.**
+
+### Selected direction
+
+The user withdrew the prior Option A direction and selected **Option D — non-blocking post-release human audit** for v1.
+
+“Human audit” means review and recommended remediation. It does not permit hand-editing generated LP graphs. Any correction follows the existing earliest-stage repair-and-rerun rule.
+
+### V1 release policy
+
+1. Independent human semantic review is not required before acceptance or release.
+2. Release depends on deterministic structural validation, successful producer/checker reconciliation, and the settled D13 failed-request policy.
+3. `needs_review` judgments remain visible in audit and summary artifacts, do not themselves block release, and never become published relationships.
+4. No independently reviewed gold set, minimum human-review sample, review cadence, semantic metric, or numeric semantic threshold is required for v1 release.
+5. Structural correctness, producer/checker agreement, and release under D13 must not be described as proof of pedagogical correctness.
+
+### Post-release human audit
+
+1. Human semantic review may occur after acceptance or release.
+2. Any audit that is performed records its reviewed population or sampling method, reviewer identity, review time, findings, rationale, affected relationship/candidate IDs, and the exact released artifact and policy fingerprints.
+3. Findings inform remediation or a subsequent release. They do not retroactively make human review a prerequisite for the original release.
+4. Confirmed defects are corrected at the earliest incorrect configuration, candidate, prompt, judgment, finalization, or validation stage and the pipeline is rerun. Generated final graph files are never hand-edited.
+5. `IDinsight` is the organizational authority for post-release audit findings and remediation/re-release decisions.
+
+### Governance and build-order consequences
+
+1. D12 is no longer a pre-release semantic evaluation gate.
+2. Existing Step 24–26 gold-set, threshold-enforcement, targeted semantic-evaluation, and evidence-gated tuning requirements must be revised or explicitly deferred as non-blocking future/post-release work.
+3. Step 27 must not require a D12 semantic threshold or human-review pass, while retaining all structural, provenance, count, collision, D13 failure, and six-curriculum validation requirements.
+4. Step 29 verifies that the absence of a pre-release independent semantic gate is accurately disclosed and does not claim semantic correctness from structural validation or producer/checker agreement.
+5. Repository-level and role-specific instructions that currently make D12 evaluation a pre-release gate must be synchronized before the engineering brief can truthfully mark D12 settled.
+
+### D12 accepted limitation
+
+**LIMIT — V1 may release semantically incorrect or incomplete progression relationships because no independent human or gold-set semantic evaluation is required before release.** Producer/checker separation and deterministic validation reduce structural and process risk but do not establish pedagogical correctness. This limitation must be visible in release documentation and final review.
+
 ## Next unresolved decision
 
-D12 — Semantic evaluation and release thresholds.
+D12 governance synchronization — update the engineering brief and every conflicting repository/role instruction consistently before proceeding to D13.
