@@ -155,7 +155,7 @@ If the review base is missing, ambiguous, unreachable, not an ancestor of the ca
 
 ### Candidate review commit
 
-After coding and testing are complete and a meaningful review is possible, the user—not an agent—creates a candidate review commit containing the exact in-scope production, config, documentation, test, fixture, manifest/lockfile, and tracked generated changes. The testing agent may help generate a git commit **message** for the user.
+After coding and testing are complete and a meaningful review is possible, the user—not an agent—creates a candidate review commit containing the exact in-scope production, config, documentation, test, fixture, manifest/lockfile, and tracked generated changes. The testing agent may help generate a git commit **message** for the user following the conventional commit style.
 
 The candidate must be a descendant of the review-base SHA.
 
