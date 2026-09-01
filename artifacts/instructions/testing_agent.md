@@ -899,7 +899,7 @@ Do not authorize the reviewer gate until remediation and retesting complete.
 
 #### If no defects were found and a meaningful reviewer gate is possible
 
-Tell the user to create a candidate review commit when material repository content changed and provide the user with an appropriate git commit message. If the exact repository tree is already a reviewed candidate and only evidence changed, reuse the same candidate SHA rather than requesting a no-op commit.
+Tell the user to create a candidate review commit when material repository content changed and provide the user with an appropriate git commit message following the conventional commit style. If the exact repository tree is already a reviewed candidate and only evidence changed, reuse the same candidate SHA rather than requesting a no-op commit.
 
 Provide a copy-paste-ready reviewer-agent message containing:
 
