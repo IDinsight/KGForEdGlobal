@@ -27,6 +27,18 @@ class BackendSettings(BaseSettings):
     # Learning Commons
     LEARNING_COMMONS_EXPORT_SCHEMA_VERSION: str = ""
 
+    # Learning Components
+    # Provenance of the generated LC layer. Uniform across curricula by design: an LLM
+    # wrote every component and IDinsight supplies every one, so these are pipeline
+    # facts rather than per-curriculum metadata. LCs inherit academicSubject,
+    # inLanguage, license and attributionStatement from their claiming SFIs; only these
+    # two are ours. Review state belongs in the consuming package manifest, never here:
+    # the snapshot ID digests artifact checksums, so changing a node property to record
+    # a review would re-mint it to say nothing changed. If human editing of component
+    # text ever lands, authorship becomes per-component and moves out of settings.
+    LC_AUTHOR: str = "LLM generated"
+    LC_PROVIDER: str = "IDinsight"
+
     # LLM
     LLM_ANTHROPIC_EFFORT: str = "high"
     LLM_ANTHROPIC_THINKING_BUDGET_TOKENS: int = 16384

@@ -21,22 +21,24 @@ For operational recovery and artifact-first debugging, see
 | Complete validated Academic Standards graph, including provenance and unresolved state | `kgs/as_kg_bundle.json`                                   | One structured JSON bundle using the pipeline's internal export models                                              |
 | Academic Standards in the Learning Commons-shaped JSONL delivery format                | `kgs/as_nodes.jsonl` + `kgs/as_relationships.jsonl`       | Compact aliased JSONL records for `StandardsFramework`, `StandardsFrameworkItem`, and `hasChild`                    |
 | Complete validated Academic Standards + Learning Components graph                      | `kgs/as_lc_kg_bundle.json`                                | One structured JSON bundle containing AS, LCs, `hasChild`, `supports`, provenance, unresolved state, and validation |
-| Combined graph as flat records for a bulk graph loader                                 | `kgs/as_lc_nodes.jsonl` + `kgs/as_lc_relationships.jsonl` | Internal-schema JSONL projection with an `entity_type` discriminator on nodes                                       |
+| Academic Standards **and** Learning Components in the Learning Commons-shaped JSONL delivery format | `kgs/as_lc_nodes.jsonl` + `kgs/as_lc_relationships.jsonl` | The same wire records as the pair above, with `LearningComponent` nodes and `supports` edges appended               |
 
 For most programmatic integrations, start with a bundle. Bundles are self-contained,
 carry validation and unresolved-state information with the graph, and avoid requiring a
 consumer to join several working artifacts correctly.
 
-If a downstream system specifically expects the current Learning Commons-shaped
-Academic Standards wire format, use `as_nodes.jsonl` and `as_relationships.jsonl`
-instead.
+If a downstream system specifically expects the Learning Commons-shaped wire format,
+use the JSONL pairs. Both pairs use the **same** wire models, so a consumer of one can
+read the other without changes.
 
-!!! warning "The two JSONL projections are different contracts"
-    `as_nodes.jsonl` / `as_relationships.jsonl` are the **Academic Standards
-    Learning Commons-shaped wire projection**. `as_lc_nodes.jsonl` /
-    `as_lc_relationships.jsonl` are a **combined flat internal-schema projection** for
-    bulk loading. Do not parse the combined files with the AS Learning Commons JSONL
-    schema, and do not assume their field naming or nesting is interchangeable.
+!!! note "Which JSONL pair to take"
+    `as_nodes.jsonl` / `as_relationships.jsonl` carry the **Academic Standards layer
+    only** — framework, items, and `hasChild`. `as_lc_nodes.jsonl` /
+    `as_lc_relationships.jsonl` carry **the same records byte for byte**, with
+    the Learning Components layer appended: `LearningComponent` nodes and `supports`
+    edges. The subject-suffixed pair is the delivery artifact; take it whenever the run
+    produced Learning Components. The Academic Standards lines are identical in both, so
+    the LC layer is provably additive.
 
 ---
 
@@ -253,6 +255,79 @@ This projection intentionally omits the richer pipeline-internal metadata presen
 
 ---
 
+## `as_lc_nodes.jsonl` and `as_lc_relationships.jsonl`
+
+These carry the **Academic Standards layer and the Learning Components layer together**,
+using the *same* Learning Commons wire models as `as_nodes.jsonl` /
+`as_relationships.jsonl`. A consumer of one pair reads the other without changes.
+
+The Academic Standards lines are copied **byte for byte** from the AS pair rather than
+rebuilt, so the LC layer is provably additive: framework and item records cannot drift
+between the two files. Everything above about wire-format behavior — alias naming,
+omitted nulls, JSON-array strings, `identifier` agreement — applies unchanged.
+
+### `LearningComponent` node record
+
+```json
+{
+  "identifier": "015e3603-8dc3-59b6-9871-0330745f02dd",
+  "labels": ["LearningComponent"],
+  "properties": {
+    "academicSubject": "Mathematics",
+    "attributionStatement": "Source curriculum published by ...",
+    "author": "LLM generated",
+    "description": "Create a problem for a given equation",
+    "identifier": "015e3603-8dc3-59b6-9871-0330745f02dd",
+    "identityKey": "lc:curriculum:<doc_key>:framework:<text-hash>",
+    "inLanguage": "en",
+    "license": "Unknown",
+    "provider": "IDinsight",
+    "tags": "[\"equations\",\"problem-posing\"]"
+  },
+  "type": "node"
+}
+```
+
+The first eight properties are required by the published `LearningComponent`
+specification; `identityKey` and `tags` are additive extensions, `tags` being a
+JSON-array **string** like `gradeLevel`. A `LearningComponent` carries no
+`caseIdentifierUUID`/`caseIdentifierURI` — its identity is build-relative, not
+source-relative — and no standards-specific properties. `tags` is omitted rather than
+emitted empty.
+
+### `supports` relationship record
+
+```json
+{
+  "identifier": "...",
+  "label": "supports",
+  "properties": {
+    "relationshipType": "supports",
+    "sourceEntity": "LearningComponent",
+    "sourceEntityKey": "identifier",
+    "sourceEntityValue": "015e3603-...",
+    "supportConfidence": "0.97",
+    "targetEntity": "StandardsFrameworkItem",
+    "targetEntityKey": "caseIdentifierUUID",
+    "targetEntityValue": "..."
+  },
+  "source_identifier": "015e3603-...",
+  "source_labels": ["LearningComponent"],
+  "target_identifier": "...",
+  "target_labels": ["StandardsFrameworkItem"],
+  "type": "relationship"
+}
+```
+
+Endpoint keying is **asymmetric** — `identifier` on the source, `caseIdentifierUUID` on
+the target — because a `LearningComponent` has no CASE identity. Resolve each endpoint by
+its declared `sourceEntityKey`/`targetEntityKey` rather than assuming
+`caseIdentifierUUID` everywhere. `supportConfidence` is string-encoded and appears only
+on `supports`. See [Graph semantics](#graph-semantics) for edge cardinality and
+confidence rules.
+
+---
+
 ## `as_lc_kg_bundle.json`
 
 The combined bundle is the complete validated output of Stage 5. It composes the
@@ -286,48 +361,6 @@ preserved when the LC layer is added. The bundle then adds:
 
 For a consumer that needs both standards and skills, this is normally the safest single
 artifact to ingest.
-
----
-
-## `as_lc_nodes.jsonl` and `as_lc_relationships.jsonl`
-
-These files flatten the combined bundle for graph loaders. They do **not** use the
-Learning Commons wire models used by `as_nodes.jsonl` and `as_relationships.jsonl`.
-
-### Combined node records
-
-Each line contains one internal node record plus an injected discriminator:
-
-```json
-{
-  "entity_type": "LearningComponent",
-  "identifier": "...",
-  "description": "...",
-  "metadata": {}
-}
-```
-
-`entity_type` is one of:
-
-```text
-StandardsFramework
-StandardsFrameworkItem
-LearningComponent
-```
-
-The remainder of each object uses the corresponding pipeline model's normal JSON field
-names, including snake_case names such as `academic_subject`, `case_identifier_uuid`,
-and `in_language`.
-
-### Combined relationship records
-
-Each line is an internal `Relationship` record. Both `hasChild` and `supports` are
-present in the same file, and pipeline metadata is retained.
-
-A loader should dispatch relationships using `relationship_type` and should resolve
-endpoints using `source_entity_key` / `source_entity_value` and
-`target_entity_key` / `target_entity_value`. Do not assume all node types share one
-identifier field convention.
 
 ---
 
@@ -561,8 +594,9 @@ Before loading a release into another system, check at least:
 6. the consumer understands multi-parent `hasChild` topology;
 7. the consumer preserves `LearningComponent -> supports -> StandardsFrameworkItem`
    direction; and
-8. if provenance matters, the full bundle is retained even if a flat projection is
-   loaded into the serving graph.
+8. if provenance matters, the full bundle is retained even when only the wire pair is
+   loaded into the serving graph — `metadata` (per-claim tags, source pages, dedup
+   identity) is deliberately absent from the wire records.
 
 For diagnosing a failed check, use the
 [operator/debugging guide](../guides/running-and-debugging.md) to trace the earliest
