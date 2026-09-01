@@ -221,6 +221,27 @@ A future curriculum with genuine multi-axis progression will require a schema ex
 
 Deterministic non-embedding retrieval creates a candidate-recall ceiling and may miss semantically related standards with weak lexical, hierarchy, code, or Learning Component overlap. D12 must measure candidate recall using independently selected positive pairs rather than evaluating only pairs already nominated by the pipeline.
 
+## D4 — Candidate-pair orientation and adjudication shape
+
+**Resolved option:** Option A — one canonical unordered logical pair with one unified relation/direction judgment.
+
+### Approved interpretation
+
+1. Each logical pair of distinct eligible SFI endpoints is represented once for candidate identity, request coverage, adjudication, failure accounting, and pair-level provenance.
+2. Pair identity is invariant to the order in which the two endpoints were encountered. Any deterministic canonical endpoint ordering used in the candidate record is technical and does not assert semantic direction.
+3. Before prompting, deterministic Python derives the pair's admissible judgments from D1 statement-type matrices, D2 developmental-order policy, and all other settled structural rules. Disallowed relationship types and `buildsTowards` directions are not accepted.
+4. The unified judgment considers every admissible interpretation together: either permitted `buildsTowards` direction, `relatesTo`, `no_relation`, or `needs_review`. The final same-pair relationship cardinality remains governed by D6 and is not settled by D4.
+5. A pair appears exactly once in the deterministic request set. The producer returns one complete pair-level judgment, and the checker receives the same bounded evidence plus the producer draft and either accepts it or returns one complete corrected judgment.
+6. Producer/checker verification does not make an outcome authoritative by itself. Python still verifies exact pair identity and coverage, endpoint containment, allowed relation/direction, schema integrity, and request/response identity before finalization.
+7. The LLM cannot introduce a different endpoint or create an additional unrequested pair.
+8. D5 will separately determine how an accepted conceptually symmetric `relatesTo` judgment is serialized. Canonical candidate-pair ordering must not be mistaken for a semantic `relatesTo` direction.
+9. D6 will separately determine whether the unified pair judgment may publish both relationship types. D7-D9 will separately govern recurring-practice mapping, cycles, and transitive edges.
+10. The unified pair design is the stable pair/judgment contract for all D3 nomination strategies, including the extension point reserved for a separately approved future embedding signal.
+
+### Rationale
+
+One pair-level judgment lets the producer and checker compare directional progression, non-directional conceptual coherence, a confident negative, and genuine ambiguity from the same evidence. It avoids duplicate directional adjudication, duplicate evaluation of symmetric `relatesTo`, and late reconciliation of independently produced contradictory judgments.
+
 ## Next unresolved decision
 
-D4 — Candidate-pair orientation and adjudication shape.
+D5 — `relatesTo` serialization.
