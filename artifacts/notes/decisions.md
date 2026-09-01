@@ -286,6 +286,28 @@ Raw relationship consumers that query only outgoing or only incoming edges will 
 
 `buildsTowards` is the more specific assertion when directional developmental support is justified. Publishing an additional `relatesTo` row would usually repeat the broader fact that the pair is meaningfully connected, increase graph density and provenance counts, and weaken relation-choice evaluation without adding a distinct instructional claim.
 
+## D7 — Recurring-practice and repeated-skill mapping
+
+**Resolved option:** Option C — classify recurrence by substantive change.
+
+### Approved interpretation
+
+1. A recurring or repeated capability does not receive one universal relationship solely because it appears more than once or at a later local rank.
+2. When the later standard substantively deepens, extends, combines, broadens, or increases the complexity of the earlier capability, publish the permitted earlier-to-later `buildsTowards` relationship.
+3. When the pair represents meaningful recurrence or reinforcement without a clearly justified developmental dependency, publish one canonical D5 `relatesTo` relationship.
+4. When the apparent recurrence is only generic wording, broad reusable Learning Component overlap, or another non-pair-specific similarity without useful instructional coherence, return `no_relation` and publish no edge.
+5. When the bounded evidence is materially ambiguous or contradictory and does not support a confident classification, return `needs_review` and publish no edge.
+6. Text equality or similarity, shared Learning Components, later rank, source order, code proximity, or hierarchy proximity may nominate and contextualize a pair but cannot determine its recurrence category or publish an edge automatically.
+7. The D4 producer classifies the pair from bounded evidence, and the checker independently verifies both the recurrence interpretation and the resulting mutually exclusive D6 relationship outcome before Python accepts it.
+8. Generic Python enforces schema integrity, D1 type-pair permission, D2 direction/rank policy, D5 serialization, D6 exclusivity, endpoint containment, and exact request coverage. It does not hard-code curriculum-specific examples of substantive change.
+9. Curriculum-specific producer/checker instructions must supply reviewed examples and counterexamples for developmental extension, meaningful recurrence, generic repetition, and ambiguity where those distinctions are material.
+10. `recurring_practice` may be retained as an internal evidence or rationale category, but it does not become a third published relationship type.
+11. `no_relation` is a normal adjudication outcome counted in the LP summary. `needs_review` is unresolved and is routed to LP unresolved artifacts.
+
+### Rationale
+
+The three-way policy preserves the distinct meanings of `buildsTowards` and `relatesTo` while preventing generic repetition from becoming graph density. It supports genuine developmental extension in spiral curricula, meaningful reinforcement without overstated dependency, and explicit rejection of noisy recurring language or Learning Component reuse.
+
 ## Next unresolved decision
 
-D7 — Recurring-practice and repeated-skill mapping.
+D8 — `buildsTowards` cycle policy.
