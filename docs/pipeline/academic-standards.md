@@ -203,7 +203,7 @@ phase of KG creation.
 ---
 
 For downstream consumption and the distinction between bundle, Learning Commons
-wire, and flat-loader projections, see the
+wire, and combined AS+LC wire projections, see the
 [output artifacts and integration contract](../reference/output-artifacts.md).
 
 ## Stage boundary

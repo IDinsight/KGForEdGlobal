@@ -6845,10 +6845,13 @@ class LearningCommonsNode(_LearningCommonsWireModel):
     """One Learning Commons graph-node JSONL record."""
 
     identifier: str
-    labels: list[Literal["StandardsFramework", "StandardsFrameworkItem"]]
+    labels: list[
+        Literal["StandardsFramework", "StandardsFrameworkItem", "LearningComponent"]
+    ]
     properties: (
         LearningCommonsStandardsFrameworkProperties
         | LearningCommonsStandardsFrameworkItemProperties
+        | LearningCommonsLearningComponentProperties
     )
     type: Literal["node"] = "node"
 
@@ -6887,6 +6890,13 @@ class LearningCommonsNode(_LearningCommonsWireModel):
         ):
             raise ValueError(
                 "StandardsFrameworkItem nodes require item property records."
+            )
+
+        if label == "LearningComponent" and not isinstance(
+            self.properties, LearningCommonsLearningComponentProperties
+        ):
+            raise ValueError(
+                "LearningComponent nodes require learning-component property records."
             )
 
         if self.identifier != self.properties.identifier:
@@ -6959,6 +6969,7 @@ class LearningCommonsRelationshipProperties(_LearningCommonsWireModel):
     source_entity: str = Field(alias="sourceEntity")
     source_entity_key: str = Field(alias="sourceEntityKey")
     source_entity_value: str = Field(alias="sourceEntityValue")
+    support_confidence: str | None = Field(default=None, alias="supportConfidence")
     target_entity: str = Field(alias="targetEntity")
     target_entity_key: str = Field(alias="targetEntityKey")
     target_entity_value: str = Field(alias="targetEntityValue")
@@ -7014,6 +7025,21 @@ class LearningCommonsStandardsFrameworkProperties(_LearningCommonsWireModel):
     name: str
     notes: str | None = None
     provider: str
+
+
+class LearningCommonsLearningComponentProperties(_LearningCommonsWireModel):
+    """String-valued properties for one Learning Commons learning-component node."""
+
+    academic_subject: str = Field(alias="academicSubject")
+    attribution_statement: str = Field(alias="attributionStatement")
+    author: str
+    description: str
+    identifier: str
+    identity_key: str = Field(alias="identityKey")
+    in_language: str = Field(alias="inLanguage")
+    license: str
+    provider: str
+    tags: str | None = None
 
 
 # CURRENTLY UNUSED #

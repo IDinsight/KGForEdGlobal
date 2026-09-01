@@ -292,7 +292,7 @@ def _collect_lc_claims(
                 )
                 if normalized == canonical:
                     accumulator.surface_forms.append(skill.description.strip())
-                accumulator.tags.update(tag.lower().strip() for tag in skill.tags)
+                    accumulator.tags.update(tag.lower().strip() for tag in skill.tags)
     return accumulators
 
 
@@ -559,7 +559,7 @@ def build_lc_supports_edges(
                 )
             edges[identifier] = Relationship(
                 attribution_statement=metadata.attribution_statement,
-                author=metadata.author,
+                author=Settings.LC_AUTHOR,
                 description="",
                 identifier=identifier,
                 license=metadata.license,
@@ -578,7 +578,7 @@ def build_lc_supports_edges(
                     "support_role": "primary",
                     "target_sfi_statement_type": record.statement_type,
                 },
-                provider=metadata.provider,
+                provider=Settings.LC_PROVIDER,
                 relationship_type="supports",
                 source_entity="LearningComponent",
                 source_entity_key="identifier",
@@ -700,7 +700,7 @@ def mint_learning_components(
         learning_components[identifier] = LearningComponent(
             academic_subject=attribution.academic_subject,
             attribution_statement=attribution.attribution_statement,
-            author=attribution.author,
+            author=Settings.LC_AUTHOR,
             description=_representative_description(
                 canonical_text=canonical_text,
                 surface_forms=accumulator.surface_forms,
@@ -718,7 +718,7 @@ def mint_learning_components(
                 records=records,
                 scope_key=scope_key,
             ),
-            provider=attribution.provider,
+            provider=Settings.LC_PROVIDER,
         )
 
     minted = [
