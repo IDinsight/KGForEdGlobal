@@ -354,6 +354,57 @@ Learning Commons documentation presents individual `buildsTowards` rows and demo
 
 The published DAG may contain both a direct edge and an alternate multi-hop path between the same endpoints. Consumers seeking a minimal path structure or complete upstream/downstream reachability must compute that view without changing the released evidence-level relationships.
 
+## D10 — Unresolved Academic Standards ancestry policy
+
+**Resolved option:** Hybrid of Options A and B — each `kgs.lp` profile must explicitly select either exclusion of all unresolved SFIs or inclusion of all otherwise-eligible unresolved SFIs with warnings. All six initial profiles select inclusion with warnings.
+
+### Required runtime-policy semantics
+
+1. `kgs.lp` contains one required, profile-level, two-state unresolved-participation policy. The final field name and literal representation will be set during the Step 0 governance edit and schema design; no illustrative field name is authoritative.
+2. The two permitted semantic states are:
+   - exclude every SFI with unresolved self or ancestry; or
+   - include every otherwise-eligible SFI with unresolved self or ancestry while propagating explicit warnings.
+3. The policy has no silent default. Missing or unknown values are configuration errors.
+4. The policy is all-or-nothing within one curriculum run. D10 does not support per-SFI reviewed exceptions or a sidecar exception mechanism.
+
+### Exclusion-state behavior
+
+1. Every SFI with unresolved self or ancestry is excluded from both `buildsTowards` and `relatesTo`.
+2. D10 exclusion takes precedence over D2 missing-coordinate behavior, including D2's ordinary allowance for an otherwise-eligible coordinate-missing SFI to participate in `relatesTo`.
+3. Excluded SFIs produce no candidate pairs or LLM requests.
+4. The eligibility report records the exclusion reason and exact counts. This is a normal policy exclusion, not `no_relation`, `needs_review`, or processing failure.
+
+### Inclusion-with-warning behavior
+
+1. Every unresolved SFI may continue only when it is otherwise eligible under D1, D2, and all other settled policies.
+2. Inclusion never nominates a pair, approves a relationship, or bypasses producer/checker adjudication and deterministic validation.
+3. Framework-root fallback is never positive hierarchy, topology, domain, or curricular-placement evidence.
+4. Permitted evidence may include the SFI's own text, valid canonical scope and coordinate, source code and audit flags, supporting Learning Components, bounded source-document evidence, and trustworthy non-fallback hierarchy paths.
+5. An unrecognized, ambiguous, or conflicting developmental coordinate remains a D2 hard validation error and cannot publish an LP relationship.
+6. The producer and checker receive the same explicit unresolved warning and the same bounded evidence. Neither may reinterpret fallback-root attachment as genuine curriculum structure.
+7. Unresolved status remains visible in eligibility, candidates, requests, producer/checker judgments, final claims, relationship provenance, summaries, and validation.
+
+### Initial six-curriculum profile matrix
+
+| Curriculum          | Initial unresolved-participation state                       |
+|---------------------|--------------------------------------------------------------|
+| Madhi mathematics   | Include all otherwise-eligible unresolved SFIs with warnings |
+| Nigeria mathematics | Include all otherwise-eligible unresolved SFIs with warnings |
+| Pratham science     | Include all otherwise-eligible unresolved SFIs with warnings |
+| Rwanda mathematics  | Include all otherwise-eligible unresolved SFIs with warnings |
+| Ghana mathematics   | Include all otherwise-eligible unresolved SFIs with warnings |
+| Ghana English       | Include all otherwise-eligible unresolved SFIs with warnings |
+
+### Fingerprint, reuse, and validation policy
+
+1. The selected unresolved-participation state is a material LP configuration input and participates in every relevant policy/config fingerprint.
+2. Changing the state invalidates stale eligibility, candidate, request, response, final-claim, relationship, and combined-bundle reuse and requires the affected stages to rerun.
+3. Validation reconciles unresolved eligible/excluded counts, confirms warning and provenance propagation for every included unresolved SFI and edge, and rejects any use of fallback-root placement as positive evidence.
+
+### D10 accepted limitation
+
+The profile-level policy cannot distinguish a strong individual unresolved case from a weak one. Inclusion may admit unresolved SFIs whose non-fallback evidence is insufficient, while exclusion may omit usable SFIs. Producer/checker adjudication and semantic evaluation mitigate but do not remove this all-or-nothing policy limitation.
+
 ## Next unresolved decision
 
-D10 — Unresolved Academic Standards ancestry policy.
+D11 — Attribution and ownership metadata for inferred LP relationships.
