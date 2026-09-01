@@ -155,7 +155,7 @@ If the review base is missing, ambiguous, unreachable, not an ancestor of the ca
 
 ### Candidate review commit
 
-After coding and testing are complete and a meaningful review is possible, the user—not an agent—creates a candidate review commit containing the exact in-scope production, config, documentation, test, fixture, manifest/lockfile, and tracked generated changes.
+After coding and testing are complete and a meaningful review is possible, the user—not an agent—creates a candidate review commit containing the exact in-scope production, config, documentation, test, fixture, manifest/lockfile, and tracked generated changes. The testing agent may help generate a git commit **message** for the user.
 
 The candidate must be a descendant of the review-base SHA.
 
@@ -165,7 +165,7 @@ If a reviewer rerun changes only evidence, execution results, ownership classifi
 
 ### Generated pipeline artifacts
 
-Full curriculum result directories do not have to be committed unless the repository policy or current step explicitly requires it. When generated outputs are review evidence rather than tracked source, the handoff must record:
+Full curriculum result directories are not committed. When generated outputs are review evidence rather than tracked source, the handoff must record:
 
 - exact candidate code SHA;
 - exact runtime config path and hash;
@@ -307,6 +307,10 @@ Unless the user explicitly authorizes the specific operation, do not:
 Never discard user work merely to obtain a clean diff or make validation pass.
 
 Leave task changes reviewable in the working tree.
+
+Do not read, search, inspect, modify, or use anything under the `data/` or `graveyard/` directories unless the user explicitly asks you to do so. Those are user-personal files and have no effect or bearing on the VCN codebase or specification.
+
+If you modified, changed, updated, added, or deleted anything in the `results` directory, then you must explicitly inform the user of the exact changes.
 
 ## 12. External effects, LLM calls, and cost control
 

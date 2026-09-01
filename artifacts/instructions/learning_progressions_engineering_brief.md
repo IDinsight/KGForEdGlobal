@@ -2,8 +2,8 @@
 
 **Status:** Decision draft. No implementation should begin until every **DECIDE** item in Section 3 has an explicit, complete answer—including every concrete matrix, ordered value, threshold, attribution value, and policy parameter the chosen option requires—this file has been updated to record those answers as **SETTLED**, and the updated brief has received an implementation OK.
 
-**Date:** 2026-08-31
 **Repository area:** `backend/src/kgfeg/`
+
 **Primary entry point:** `backend/src/kgfeg/entries/create_kgs.py`
 
 This brief is based on a review of:
