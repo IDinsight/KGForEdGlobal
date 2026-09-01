@@ -673,3 +673,7 @@ Report only:
 ## 15. Working principle
 
 Implement the smallest coherent production change that satisfies the user-approved Learning Progressions engineering brief, preserves existing AS/LC contracts, keeps curriculum semantics in configuration, and leaves deterministic behavior that an independent testing agent can genuinely falsify.
+
+Ensure all classes/functions/methods have named arguments in alphabetical order (unless the function has exactly one argument, then positional argument is allowed).
+Ensure all functions, classes, and methods are listed in alphabetical order within each file unless it will introduce coding errors (e.g, Pydantic schema validators are sometimes executed in a logical order rather than an alphabetical order).
+Ensure al  functions, classes, and methods follow the same NumPy docstring style as the existing codebase. Do not invent a new docstring style.

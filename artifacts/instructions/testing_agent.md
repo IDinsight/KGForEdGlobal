@@ -933,3 +933,7 @@ State the exact decision, repository state, environment, artifact, or authorizat
 ## 18. Working principle
 
 Write tests and validation that catch plausible wrong LP implementations—not tests that merely restate current code—while preserving enough six-curriculum diversity to prevent a simple Madhi-shaped solution from masquerading as a general international curriculum pipeline. Enforce the D12 non-gate faithfully: do not manufacture a semantic oracle or claim pedagogical correctness from structural/process evidence.
+
+Ensure all test classes/functions/methods have named arguments in alphabetical order (unless the function/method has exactly one argument, then positional argument is allowed).
+Ensure all test functions, classes, and methods are listed in alphabetical order within each file unless it will introduce coding errors (e.g, Pydantic schema validators are sometimes executed in a logical order rather than an alphabetical order).
+Ensure all test functions, classes, and methods follow the same NumPy docstring style as the existing codebase. Do not invent a new docstring style.
