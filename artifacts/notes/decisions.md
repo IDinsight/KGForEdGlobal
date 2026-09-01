@@ -242,6 +242,30 @@ Deterministic non-embedding retrieval creates a candidate-recall ceiling and may
 
 One pair-level judgment lets the producer and checker compare directional progression, non-directional conceptual coherence, a confident negative, and genuine ambiguity from the same evidence. It avoids duplicate directional adjudication, duplicate evaluation of symmetric `relatesTo`, and late reconciliation of independently produced contradictory judgments.
 
+## D5 — `relatesTo` serialization
+
+**Resolved option:** Option A — store one canonical `relatesTo` relationship per unordered pair.
+
+### Approved interpretation
+
+1. `relatesTo` remains conceptually symmetric and non-directional: it connects two SFIs through substantive conceptual or skill coherence without asserting sequence or dependency.
+2. One accepted `relatesTo` judgment for an unordered D4 pair produces exactly one final relationship row, not reciprocal rows.
+3. Python canonicalizes the final endpoints by their `case_identifier_uuid` values: the lower canonical UUID is stored as source and the higher canonical UUID as target.
+4. The stored source/target ordering is a technical identity and serialization convention only. It does not express developmental order, hierarchy order, source-document order, or semantic direction.
+5. The deterministic relationship UUID uses the document key, `relatesTo` relationship type, and canonicalized endpoints. The LLM does not choose endpoint ordering or relationship identity.
+6. The relationship appears exactly once in the standalone `relatesTo` relationship artifact, combined bundle, combined relationship JSONL, summary counts, and relationship provenance.
+7. Consumers must treat `relatesTo` as an undirected-neighbor relation: lookup for one SFI checks both endpoint positions and returns the opposite endpoint, or uses an API/graph abstraction that provides equivalent symmetric traversal.
+8. Validation rejects non-canonical endpoint ordering, reverse duplicates, multiple identifiers for the same unordered pair, missing provenance, and count disagreement.
+9. D5 does not alter D1 pair eligibility, D2 rank policy, D3 nomination, or D4 one-pair adjudication.
+
+### Learning Commons alignment note
+
+Learning Commons documentation describes `relatesTo` as non-sequential and depicts it with a bidirectional semantic arrow, while its schema example uses one ordinary source/target relationship row. The documentation does not prescribe reciprocal physical rows or min/max UUID canonicalization. This decision is therefore compatible with the documented ontology, but the canonical endpoint rule is a project-specific deterministic convention rather than a claimed Learning Commons mandate.
+
+### D5 accepted limitation
+
+Raw relationship consumers that query only outgoing or only incoming edges will miss some `relatesTo` neighbors. Combined-graph documentation, ingestion checks, and examples must explicitly require symmetric lookup across both endpoint positions.
+
 ## Next unresolved decision
 
-D5 — `relatesTo` serialization.
+D6 — Same-pair relationship-type publication policy.
