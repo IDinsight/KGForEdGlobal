@@ -565,6 +565,26 @@ The same zero-tolerance failure policy and prefix-safe resume contract apply to 
 
 Option A gives every successful run complete producer/checker coverage while local deterministic checkpoints prevent one late transient failure from forcing already validated LLM work to be purchased and executed again.
 
-## Next unresolved decision
+## D14 — Manual semantic edge overrides
 
-D14 — Manual semantic edge overrides. The future Step 0 coding-agent session must also complete the deferred D12 governance synchronization and D11 template normalization in the engineering brief before Step 0 closes.
+### Status
+
+**Resolved — Option A, no forced semantic edges in v1.**
+
+### Selected policy
+
+1. V1 supports no forced semantic include, exclude, relation-type, or direction overrides.
+2. A human review or post-release D12 audit finding may lead to changes in curriculum configuration, candidate policy, producer/checker instructions, prompts, or universally valid generic code, followed by a complete affected pipeline rerun.
+3. After remediation, the producer and checker decide the pair again under the updated, fingerprinted inputs. A human finding does not directly manufacture or delete a published edge.
+4. Generated final graph artifacts are never hand-edited.
+5. D10 unresolved-participation policy remains separate and cannot be used to force a semantic relationship.
+6. A manual finding cannot conceal or replace a D13 producer/checker processing failure.
+7. Every rerun and resulting release follows all settled pair, direction, recurrence, exclusivity, cycle, transitivity, attribution, provenance, structural-validation, checkpoint, and stale-reuse policies.
+
+### D14 accepted limitation
+
+**LIMIT — Known semantic false positives or false negatives cannot be patched directly in v1.** They require correction at the earliest incorrect policy, configuration, candidate, prompt, producer/checker, finalization, or validation stage and a new run. This may require additional LLM execution and may still require further iteration.
+
+## Decision-process status
+
+All D1–D14 user decisions now have recorded discussion payloads in this ledger. Step 0 is not closed: the future governance-edit coding-agent session must synchronize the engineering brief and every affected repository/role instruction, remove implementation-governing placeholders and stale `DECIDE` markers, and obtain explicit user approval of the resulting canonical brief before any Step 1–29 implementation begins.
