@@ -1,0 +1,2787 @@
+<!DOCTYPE html><html lang="en" class="no-js"><head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Documentation for the curriculum-document-to-knowledge-graph pipeline">
+      
+      
+      
+        <link rel="canonical" href="https://idinsight.github.io/KGForEdGlobal/reference/output-artifacts.html">
+      
+      
+        <link rel="prev" href="../guides/running-and-debugging.html">
+      
+      
+        <link rel="next" href="../development/index.html">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Output artifacts and integration contract - Knowledge Graph for Education Global</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+  
+  
+    
+      
+      
+    
+  
+  
+  <style>:root{--md-admonition-icon--note:url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20d%3D%22M13%2013h-2V7h2m0%2010h-2v-2h2M12%202A10%2010%200%200%200%202%2012a10%2010%200%200%200%2010%2010%2010%2010%200%200%200%2010-10A10%2010%200%200%200%2012%202%22/%3E%3C/svg%3E');}</style>
+
+
+  
+  
+  
+  
+  <style>:root{--md-annotation-icon:url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20d%3D%22m15.07%2011.25-.9.92C13.45%2012.89%2013%2013.5%2013%2015h-2v-.5c0-1.11.45-2.11%201.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41a2%202%200%200%200-2-2%202%202%200%200%200-2%202H8a4%204%200%200%201%204-4%204%204%200%200%201%204%204%203.2%203.2%200%200%201-.93%202.25M13%2019h-2v-2h2M12%202A10%2010%200%200%200%202%2012a10%2010%200%200%200%2010%2010%2010%2010%200%200%200%2010-10c0-5.53-4.5-10-10-10%22/%3E%3C/svg%3E');}</style>
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+  
+
+
+  
+  
+
+<script id="__analytics">function __md_analytics(){function e(){dataLayer.push(arguments)}window.dataLayer=window.dataLayer||[],e("js",new Date),e("config","G-K07FFTMFTN"),document.addEventListener("DOMContentLoaded",(function(){document.forms.search&&document.forms.search.query.addEventListener("blur",(function(){this.value&&e("event","search",{search_term:this.value})}));document$.subscribe((function(){var t=document.forms.feedback;if(void 0!==t)for(var a of t.querySelectorAll("[type=submit]"))a.addEventListener("click",(function(a){a.preventDefault();var n=document.location.pathname,d=this.getAttribute("data-md-value");e("event","feedback",{page:n,data:d}),t.firstElementChild.disabled=!0;var r=t.querySelector(".md-feedback__note [data-md-value='"+d+"']");r&&(r.hidden=!1)})),t.hidden=!1})),location$.subscribe((function(t){e("config","G-K07FFTMFTN",{page_path:t.pathname})}))}));var t=document.createElement("script");t.async=!0,t.src="https://www.googletagmanager.com/gtag/js?id=G-K07FFTMFTN",document.getElementById("__analytics").insertAdjacentElement("afterEnd",t)}</script>
+  
+    <script>"undefined"!=typeof __md_analytics&&__md_analytics()</script>
+  
+
+    
+    
+  <link href="../assets/stylesheets/glightbox.min.css" rel="stylesheet"><script src="../assets/javascripts/glightbox.min.js"></script><style id="glightbox-style">
+            html.glightbox-open { overflow: initial; height: 100%; }
+            .gslide-title { margin-top: 0px; user-select: text; }
+            .gslide-desc { color: #666; user-select: text; }
+            .gslide-image img { background: white; }
+            .gscrollbar-fixer { padding-right: 15px; }
+            .gdesc-inner { font-size: 0.75rem; }
+            body[data-md-color-scheme="slate"] .gdesc-inner { background: var(--md-default-bg-color); }
+            body[data-md-color-scheme="slate"] .gslide-title { color: var(--md-default-fg-color); }
+            body[data-md-color-scheme="slate"] .gslide-desc { color: var(--md-default-fg-color); }
+        </style></head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#output-artifacts-and-integration-contract" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Knowledge Graph for Education Global" class="md-header__button md-logo" aria-label="Knowledge Graph for Education Global" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"></path></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"></path></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Knowledge Graph for Education Global
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Output artifacts and integration contract
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="indigo" aria-label="Switch to light mode" type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden="">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"></path></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="indigo" aria-label="Switch to dark mode" type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden="">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"></path></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"></path></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required="">
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"></path></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"></path></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"></path></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix="">
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/IDinsight/KGForEdGlobal" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"></path></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../index.html" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Home
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../pipeline/index.html" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Pipeline
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../guides/adding-a-curriculum.html" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Guides
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="output-artifacts.html" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../development/index.html" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Development
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../contributing.html" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Contribute
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../contact_us.html" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Contact us
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation">
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Knowledge Graph for Education Global" class="md-nav__button md-logo" aria-label="Knowledge Graph for Education Global" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"></path></svg>
+
+    </a>
+    Knowledge Graph for Education Global
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/IDinsight/KGForEdGlobal" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"></path></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix="">
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1">
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../index.html" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_1" id="__nav_1_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Home
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2">
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../pipeline/index.html" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pipeline
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Pipeline
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pipeline/page-ir-extraction.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Page IR Extraction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pipeline/page-ir-verification.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Page IR Verification
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pipeline/document-ir.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Document IR
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pipeline/academic-standards.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Academic Standards
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pipeline/learning-components.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Learning Components
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3">
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/adding-a-curriculum.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Add a new curriculum
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/running-and-debugging.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run, resume, and debug
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked="">
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Output artifacts and integration contract
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="output-artifacts.html" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Output artifacts and integration contract
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+  
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix="">
+      
+        <li class="md-nav__item">
+  <a href="#choose-the-output-that-matches-your-consumer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choose the output that matches your consumer
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validate-before-publishing-or-ingesting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validate before publishing or ingesting
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Validate before publishing or ingesting">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#academic-standards" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Academic Standards
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#academic-standards-learning-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Academic Standards + Learning Components
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-passed-graph-can-still-contain-unresolved-or-excluded-material" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A passed graph can still contain unresolved or excluded material
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#artifact-tiers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Artifact tiers
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Artifact tiers">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-consumer-facing-graph-outputs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Consumer-facing graph outputs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-release-provenance-and-unresolved-state-artifacts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Release, provenance, and unresolved-state artifacts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-working-and-audit-artifacts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Working and audit artifacts
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#as_kg_bundlejson" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        as_kg_bundle.json
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#as_nodesjsonl-and-as_relationshipsjsonl" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        as_nodes.jsonl and as_relationships.jsonl
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="as_nodes.jsonl and as_relationships.jsonl">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#node-record" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Node record
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#relationship-record" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relationship record
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#as_lc_nodesjsonl-and-as_lc_relationshipsjsonl" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        as_lc_nodes.jsonl and as_lc_relationships.jsonl
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="as_lc_nodes.jsonl and as_lc_relationships.jsonl">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#learningcomponent-node-record" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LearningComponent node record
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#supports-relationship-record" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        supports relationship record
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#as_lc_kg_bundlejson" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        as_lc_kg_bundle.json
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#graph-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Graph semantics
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Graph semantics">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#node-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Node types
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#haschild" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        hasChild
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#supports" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        supports
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#identifier-stability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Identifier stability
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Identifier stability">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#document-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Document key
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#framework" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Framework
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#standards-framework-items" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Standards Framework Items
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#learning-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Learning Components
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#relationships" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relationships
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#changes-that-can-intentionally-change-ids" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Changes that can intentionally change IDs
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provenance-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provenance contract
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Provenance contract">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#academic-standards-provenance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Academic Standards provenance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#learning-components-provenance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Learning Components provenance
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#schema-versioning-and-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Schema versioning and compatibility
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ordering-and-serialization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ordering and serialization
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recommended-ingestion-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recommended ingestion checks
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5">
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../development/index.html" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Development
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/local-setup.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6">
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contribute
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contribute
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contributing.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing to Knowledge Graph for Education Global
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7">
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contact us
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contact us
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contact_us.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Team
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc">
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+  
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix="">
+      
+        <li class="md-nav__item">
+  <a href="#choose-the-output-that-matches-your-consumer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choose the output that matches your consumer
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validate-before-publishing-or-ingesting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validate before publishing or ingesting
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Validate before publishing or ingesting">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#academic-standards" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Academic Standards
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#academic-standards-learning-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Academic Standards + Learning Components
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-passed-graph-can-still-contain-unresolved-or-excluded-material" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A passed graph can still contain unresolved or excluded material
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#artifact-tiers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Artifact tiers
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Artifact tiers">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-consumer-facing-graph-outputs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Consumer-facing graph outputs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-release-provenance-and-unresolved-state-artifacts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Release, provenance, and unresolved-state artifacts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-working-and-audit-artifacts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Working and audit artifacts
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#as_kg_bundlejson" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        as_kg_bundle.json
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#as_nodesjsonl-and-as_relationshipsjsonl" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        as_nodes.jsonl and as_relationships.jsonl
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="as_nodes.jsonl and as_relationships.jsonl">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#node-record" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Node record
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#relationship-record" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relationship record
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#as_lc_nodesjsonl-and-as_lc_relationshipsjsonl" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        as_lc_nodes.jsonl and as_lc_relationships.jsonl
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="as_lc_nodes.jsonl and as_lc_relationships.jsonl">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#learningcomponent-node-record" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LearningComponent node record
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#supports-relationship-record" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        supports relationship record
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#as_lc_kg_bundlejson" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        as_lc_kg_bundle.json
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#graph-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Graph semantics
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Graph semantics">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#node-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Node types
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#haschild" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        hasChild
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#supports" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        supports
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#identifier-stability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Identifier stability
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Identifier stability">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#document-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Document key
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#framework" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Framework
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#standards-framework-items" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Standards Framework Items
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#learning-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Learning Components
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#relationships" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relationships
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#changes-that-can-intentionally-change-ids" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Changes that can intentionally change IDs
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provenance-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provenance contract
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Provenance contract">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#academic-standards-provenance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Academic Standards provenance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#learning-components-provenance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Learning Components provenance
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#schema-versioning-and-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Schema versioning and compatibility
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ordering-and-serialization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ordering and serialization
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recommended-ingestion-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recommended ingestion checks
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="output-artifacts-and-integration-contract">Output artifacts and integration contract</h1>
+<p>The pipeline persists many files because its intermediate decisions are intended to be
+inspectable and resumable. Downstream applications usually need only a small subset of
+those artifacts.</p>
+<p>This page explains which outputs to consume, the graph and identifier semantics those
+outputs preserve, and which implementation details should not become accidental
+integration dependencies.</p>
+<p>For how the artifacts are produced, see the <a href="../pipeline/index.html">pipeline overview</a>.
+For operational recovery and artifact-first debugging, see
+<a href="../guides/running-and-debugging.html">Run, resume, and debug</a>.</p>
+<hr>
+<h2 id="choose-the-output-that-matches-your-consumer">Choose the output that matches your consumer</h2>
+<table>
+<thead>
+<tr>
+<th>Need</th>
+<th>Recommended artifact</th>
+<th>Shape</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Complete validated Academic Standards graph, including provenance and unresolved state</td>
+<td><code>kgs/as_kg_bundle.json</code></td>
+<td>One structured JSON bundle using the pipeline's internal export models</td>
+</tr>
+<tr>
+<td>Academic Standards in the Learning Commons-shaped JSONL delivery format</td>
+<td><code>kgs/as_nodes.jsonl</code> + <code>kgs/as_relationships.jsonl</code></td>
+<td>Compact aliased JSONL records for <code>StandardsFramework</code>, <code>StandardsFrameworkItem</code>, and <code>hasChild</code></td>
+</tr>
+<tr>
+<td>Complete validated Academic Standards + Learning Components graph</td>
+<td><code>kgs/as_lc_kg_bundle.json</code></td>
+<td>One structured JSON bundle containing AS, LCs, <code>hasChild</code>, <code>supports</code>, provenance, unresolved state, and validation</td>
+</tr>
+<tr>
+<td>Academic Standards <strong>and</strong> Learning Components in the Learning Commons-shaped JSONL delivery format</td>
+<td><code>kgs/as_lc_nodes.jsonl</code> + <code>kgs/as_lc_relationships.jsonl</code></td>
+<td>The same wire records as the pair above, with <code>LearningComponent</code> nodes and <code>supports</code> edges appended</td>
+</tr>
+</tbody>
+</table>
+<p>For most programmatic integrations, start with a bundle. Bundles are self-contained,
+carry validation and unresolved-state information with the graph, and avoid requiring a
+consumer to join several working artifacts correctly.</p>
+<p>If a downstream system specifically expects the Learning Commons-shaped wire format,
+use the JSONL pairs. Both pairs use the <strong>same</strong> wire models, so a consumer of one can
+read the other without changes.</p>
+<div class="admonition note">
+<p class="admonition-title">Which JSONL pair to take</p>
+<p><code>as_nodes.jsonl</code> / <code>as_relationships.jsonl</code> carry the <strong>Academic Standards layer
+only</strong> — framework, items, and <code>hasChild</code>. <code>as_lc_nodes.jsonl</code> /
+<code>as_lc_relationships.jsonl</code> carry <strong>the same records byte for byte</strong>, with
+the Learning Components layer appended: <code>LearningComponent</code> nodes and <code>supports</code>
+edges. The subject-suffixed pair is the delivery artifact; take it whenever the run
+produced Learning Components. The Academic Standards lines are identical in both, so
+the LC layer is provably additive.</p>
+</div>
+<hr>
+<h2 id="validate-before-publishing-or-ingesting">Validate before publishing or ingesting</h2>
+<p>A final artifact existing on disk does not by itself mean the run is suitable for
+release. Final compilation writes validation information so failures remain inspectable.</p>
+<h3 id="academic-standards">Academic Standards</h3>
+<p>Before consuming the standalone AS graph, require:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>as_kg_bundle.json -&gt; validation_report.passed == true
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>as_kg_bundle.json -&gt; validation_report.errors == []
+</span></code></pre></div>
+<p>The same report is also written separately as:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>as_validation_report.json
+</span></code></pre></div>
+<h3 id="academic-standards-learning-components">Academic Standards + Learning Components</h3>
+<p>Before consuming the combined graph, require:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>as_lc_kg_bundle.json -&gt; validation_report.passed == true
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>as_lc_kg_bundle.json -&gt; validation_report.errors == []
+</span></code></pre></div>
+<p>The combined compiler first requires a passed, error-free Academic Standards bundle,
+then validates the merged graph again. Its validation report checks the combined LC
+endpoints, LC edge coverage, identifier collisions, provenance presence, and summary
+alignment.</p>
+<h3 id="a-passed-graph-can-still-contain-unresolved-or-excluded-material">A passed graph can still contain unresolved or excluded material</h3>
+<p><code>passed == true</code> means the exported graph satisfies the pipeline's deterministic graph
+and reconciliation contracts. It does <strong>not</strong> mean that every source-visible curriculum
+item was automatically resolved.</p>
+<p>Inspect:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>bundle.unresolved_items
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>bundle.summary
+</span></code></pre></div>
+<p>before defining your own publication policy. For example, the AS graph can preserve an
+explicit unresolved root-fallback relationship, and the combined bundle can report LC
+source exclusions or LC generation failures while still reconciling the final graph
+correctly.</p>
+<hr>
+<h2 id="artifact-tiers">Artifact tiers</h2>
+<p>A useful integration boundary is to treat the KG directory as three classes of output.</p>
+<h3 id="1-consumer-facing-graph-outputs">1. Consumer-facing graph outputs</h3>
+<p>These are the normal integration surfaces:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>as_kg_bundle.json
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>as_nodes.jsonl
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>as_relationships.jsonl
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>as_lc_kg_bundle.json
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>as_lc_nodes.jsonl
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>as_lc_relationships.jsonl
+</span></code></pre></div>
+<p>Choose one representation for a given consumer rather than joining equivalent
+representations together.</p>
+<h3 id="2-release-provenance-and-unresolved-state-artifacts">2. Release, provenance, and unresolved-state artifacts</h3>
+<p>These help a release process decide whether and why the graph is acceptable:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>as_validation_report.json
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>as_unresolved_items.json
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>as_entity_provenance.json
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>lc_entity_provenance.json
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>lc_generation_summary.json
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>lc_generation_failures.json
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>kg_run.json
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>kg_run_manifest.json
+</span></code></pre></div>
+<p>Most of this information is also embedded or summarized in the final bundles, but the
+standalone files are convenient for review and operations.</p>
+<h3 id="3-working-and-audit-artifacts">3. Working and audit artifacts</h3>
+<p>Files such as extraction windows, producer/checker responses, candidate registries,
+dedup review sets, merge groups, parent-candidate sets, and LC dedup verdicts exist to
+make the pipeline auditable and resumable.</p>
+<p>Examples include:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>sfi_extraction_*
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>sfi_candidate_registry.json
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>sfi_dedup_*
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>sfi_merge_*
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>has_child_*
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>lc_eligibility_report.json
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>lc_generation_*.jsonl
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>lc_dedup_*
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>learning_components.jsonl
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>lc_supports_edges.json
+</span></code></pre></div>
+<p>These are valuable diagnostic contracts <em>inside a pinned pipeline version</em>, but a
+downstream application should not depend on them merely because they are available.
+Their schemas can evolve as the implementation gains new evidence, validation, or
+resume behavior.</p>
+<p>If a consumer intentionally integrates with a working artifact, pin the repository
+revision and add a fixture/schema test for that dependency.</p>
+<hr>
+<h2 id="as_kg_bundlejson"><code>as_kg_bundle.json</code></h2>
+<p>The Academic Standards bundle is the complete validated output of Stage 4. Its top-level
+shape is:</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="p">{</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">"entity_provenance"</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="nt">"framework"</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="nt">"items"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span><span class="nt">"relationships_has_child"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">  </span><span class="nt">"summary"</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">  </span><span class="nt">"unresolved_items"</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">  </span><span class="nt">"validation_report"</span><span class="p">:</span><span class="w"> </span><span class="p">{}</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>It contains:</p>
+<ul>
+<li>exactly one <code>StandardsFramework</code> for the source document;</li>
+<li>finalized <code>StandardsFrameworkItem</code> nodes, including both curriculum groupings and
+  normative learning statements;</li>
+<li>resolved <code>hasChild</code> relationships;</li>
+<li>entity-level provenance;</li>
+<li>unresolved/finalization reporting;</li>
+<li>aggregate counts; and</li>
+<li>final validation state and input fingerprints.</li>
+</ul>
+<p>This bundle is also the authoritative input to Learning Components construction. The LC
+stage does not rebuild Academic Standards from a separate representation.</p>
+<hr>
+<h2 id="as_nodesjsonl-and-as_relationshipsjsonl"><code>as_nodes.jsonl</code> and <code>as_relationships.jsonl</code></h2>
+<p>These are compact, Learning Commons-shaped delivery records for the <strong>Academic
+Standards layer only</strong>.</p>
+<h3 id="node-record">Node record</h3>
+<p>Each line has the outer shape:</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="p">{</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="nt">"identifier"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span><span class="nt">"labels"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"StandardsFrameworkItem"</span><span class="p">],</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">  </span><span class="nt">"properties"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">    </span><span class="nt">"caseIdentifierUUID"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">    </span><span class="nt">"description"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">  </span><span class="p">},</span>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="w">  </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"node"</span>
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>Important wire-format behavior:</p>
+<ul>
+<li>property aliases use the Learning Commons-style names such as
+  <code>caseIdentifierUUID</code>, <code>academicSubject</code>, and <code>statementType</code>;</li>
+<li><code>null</code> properties are omitted;</li>
+<li><code>isCurrent</code> is serialized as the string <code>"true"</code> or <code>"false"</code>;</li>
+<li>mapped <code>gradeLevel</code>, when present, is serialized as a JSON-array <strong>string</strong> such as
+  <code>"[\"2\"]"</code>, not as a nested JSON array; and</li>
+<li>the outer <code>identifier</code> must equal <code>properties.identifier</code>.</li>
+</ul>
+<h3 id="relationship-record">Relationship record</h3>
+<p>Each line has the outer shape:</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="p">{</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="nt">"identifier"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">  </span><span class="nt">"label"</span><span class="p">:</span><span class="w"> </span><span class="s2">"hasChild"</span><span class="p">,</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span><span class="nt">"properties"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">    </span><span class="nt">"relationshipType"</span><span class="p">:</span><span class="w"> </span><span class="s2">"hasChild"</span><span class="p">,</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">    </span><span class="nt">"sourceEntityValue"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">    </span><span class="nt">"targetEntityValue"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">  </span><span class="p">},</span>
+</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="w">  </span><span class="nt">"source_identifier"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span>
+</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="w">  </span><span class="nt">"source_labels"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"StandardsFrameworkItem"</span><span class="p">],</span>
+</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="w">  </span><span class="nt">"target_identifier"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span>
+</span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="w">  </span><span class="nt">"target_labels"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"StandardsFrameworkItem"</span><span class="p">],</span>
+</span><span id="__span-9-13"><a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="w">  </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"relationship"</span>
+</span><span id="__span-9-14"><a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>This projection intentionally omits the richer pipeline-internal metadata present in
+<code>as_kg_bundle.json</code>.</p>
+<hr>
+<h2 id="as_lc_nodesjsonl-and-as_lc_relationshipsjsonl"><code>as_lc_nodes.jsonl</code> and <code>as_lc_relationships.jsonl</code></h2>
+<p>These carry the <strong>Academic Standards layer and the Learning Components layer together</strong>,
+using the <em>same</em> Learning Commons wire models as <code>as_nodes.jsonl</code> /
+<code>as_relationships.jsonl</code>. A consumer of one pair reads the other without changes.</p>
+<p>The Academic Standards lines are copied <strong>byte for byte</strong> from the AS pair rather than
+rebuilt, so the LC layer is provably additive: framework and item records cannot drift
+between the two files. Everything above about wire-format behavior — alias naming,
+omitted nulls, JSON-array strings, <code>identifier</code> agreement — applies unchanged.</p>
+<h3 id="learningcomponent-node-record"><code>LearningComponent</code> node record</h3>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="p">{</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="nt">"identifier"</span><span class="p">:</span><span class="w"> </span><span class="s2">"015e3603-8dc3-59b6-9871-0330745f02dd"</span><span class="p">,</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span><span class="nt">"labels"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"LearningComponent"</span><span class="p">],</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">  </span><span class="nt">"properties"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">    </span><span class="nt">"academicSubject"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Mathematics"</span><span class="p">,</span>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">    </span><span class="nt">"attributionStatement"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Source curriculum published by ..."</span><span class="p">,</span>
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">    </span><span class="nt">"author"</span><span class="p">:</span><span class="w"> </span><span class="s2">"LLM generated"</span><span class="p">,</span>
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="w">    </span><span class="nt">"description"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Create a problem for a given equation"</span><span class="p">,</span>
+</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="w">    </span><span class="nt">"identifier"</span><span class="p">:</span><span class="w"> </span><span class="s2">"015e3603-8dc3-59b6-9871-0330745f02dd"</span><span class="p">,</span>
+</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="w">    </span><span class="nt">"identityKey"</span><span class="p">:</span><span class="w"> </span><span class="s2">"lc:curriculum:&lt;doc_key&gt;:framework:&lt;text-hash&gt;"</span><span class="p">,</span>
+</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="w">    </span><span class="nt">"inLanguage"</span><span class="p">:</span><span class="w"> </span><span class="s2">"en"</span><span class="p">,</span>
+</span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="w">    </span><span class="nt">"license"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Unknown"</span><span class="p">,</span>
+</span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="w">    </span><span class="nt">"provider"</span><span class="p">:</span><span class="w"> </span><span class="s2">"IDinsight"</span><span class="p">,</span>
+</span><span id="__span-10-14"><a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a><span class="w">    </span><span class="nt">"tags"</span><span class="p">:</span><span class="w"> </span><span class="s2">"[\"equations\",\"problem-posing\"]"</span>
+</span><span id="__span-10-15"><a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a><span class="w">  </span><span class="p">},</span>
+</span><span id="__span-10-16"><a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a><span class="w">  </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"node"</span>
+</span><span id="__span-10-17"><a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>The first eight properties are required by the published <code>LearningComponent</code>
+specification; <code>identityKey</code> and <code>tags</code> are additive extensions, <code>tags</code> being a
+JSON-array <strong>string</strong> like <code>gradeLevel</code>. A <code>LearningComponent</code> carries no
+<code>caseIdentifierUUID</code>/<code>caseIdentifierURI</code> — its identity is build-relative, not
+source-relative — and no standards-specific properties. <code>tags</code> is omitted rather than
+emitted empty.</p>
+<h3 id="supports-relationship-record"><code>supports</code> relationship record</h3>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="p">{</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span><span class="nt">"identifier"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">  </span><span class="nt">"label"</span><span class="p">:</span><span class="w"> </span><span class="s2">"supports"</span><span class="p">,</span>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">  </span><span class="nt">"properties"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="w">    </span><span class="nt">"relationshipType"</span><span class="p">:</span><span class="w"> </span><span class="s2">"supports"</span><span class="p">,</span>
+</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="w">    </span><span class="nt">"sourceEntity"</span><span class="p">:</span><span class="w"> </span><span class="s2">"LearningComponent"</span><span class="p">,</span>
+</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="w">    </span><span class="nt">"sourceEntityKey"</span><span class="p">:</span><span class="w"> </span><span class="s2">"identifier"</span><span class="p">,</span>
+</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="w">    </span><span class="nt">"sourceEntityValue"</span><span class="p">:</span><span class="w"> </span><span class="s2">"015e3603-..."</span><span class="p">,</span>
+</span><span id="__span-11-9"><a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="w">    </span><span class="nt">"supportConfidence"</span><span class="p">:</span><span class="w"> </span><span class="s2">"0.97"</span><span class="p">,</span>
+</span><span id="__span-11-10"><a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a><span class="w">    </span><span class="nt">"targetEntity"</span><span class="p">:</span><span class="w"> </span><span class="s2">"StandardsFrameworkItem"</span><span class="p">,</span>
+</span><span id="__span-11-11"><a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a><span class="w">    </span><span class="nt">"targetEntityKey"</span><span class="p">:</span><span class="w"> </span><span class="s2">"caseIdentifierUUID"</span><span class="p">,</span>
+</span><span id="__span-11-12"><a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a><span class="w">    </span><span class="nt">"targetEntityValue"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span>
+</span><span id="__span-11-13"><a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a><span class="w">  </span><span class="p">},</span>
+</span><span id="__span-11-14"><a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a><span class="w">  </span><span class="nt">"source_identifier"</span><span class="p">:</span><span class="w"> </span><span class="s2">"015e3603-..."</span><span class="p">,</span>
+</span><span id="__span-11-15"><a id="__codelineno-11-15" name="__codelineno-11-15" href="#__codelineno-11-15"></a><span class="w">  </span><span class="nt">"source_labels"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"LearningComponent"</span><span class="p">],</span>
+</span><span id="__span-11-16"><a id="__codelineno-11-16" name="__codelineno-11-16" href="#__codelineno-11-16"></a><span class="w">  </span><span class="nt">"target_identifier"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span>
+</span><span id="__span-11-17"><a id="__codelineno-11-17" name="__codelineno-11-17" href="#__codelineno-11-17"></a><span class="w">  </span><span class="nt">"target_labels"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"StandardsFrameworkItem"</span><span class="p">],</span>
+</span><span id="__span-11-18"><a id="__codelineno-11-18" name="__codelineno-11-18" href="#__codelineno-11-18"></a><span class="w">  </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"relationship"</span>
+</span><span id="__span-11-19"><a id="__codelineno-11-19" name="__codelineno-11-19" href="#__codelineno-11-19"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>Endpoint keying is <strong>asymmetric</strong> — <code>identifier</code> on the source, <code>caseIdentifierUUID</code> on
+the target — because a <code>LearningComponent</code> has no CASE identity. Resolve each endpoint by
+its declared <code>sourceEntityKey</code>/<code>targetEntityKey</code> rather than assuming
+<code>caseIdentifierUUID</code> everywhere. <code>supportConfidence</code> is string-encoded and appears only
+on <code>supports</code>. See <a href="#graph-semantics">Graph semantics</a> for edge cardinality and
+confidence rules.</p>
+<hr>
+<h2 id="as_lc_kg_bundlejson"><code>as_lc_kg_bundle.json</code></h2>
+<p>The combined bundle is the complete validated output of Stage 5. It composes the
+validated Academic Standards content with the Learning Components layer.</p>
+<p>Its top-level shape is:</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="p">{</span>
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">  </span><span class="nt">"entity_provenance"</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span><span class="nt">"framework"</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="w">  </span><span class="nt">"items"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="w">  </span><span class="nt">"learning_components"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+</span><span id="__span-12-6"><a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="w">  </span><span class="nt">"relationships_has_child"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+</span><span id="__span-12-7"><a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="w">  </span><span class="nt">"relationships_supports"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+</span><span id="__span-12-8"><a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a><span class="w">  </span><span class="nt">"summary"</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
+</span><span id="__span-12-9"><a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="w">  </span><span class="nt">"unresolved_items"</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
+</span><span id="__span-12-10"><a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a><span class="w">  </span><span class="nt">"validation_report"</span><span class="p">:</span><span class="w"> </span><span class="p">{}</span>
+</span><span id="__span-12-11"><a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>The existing Academic Standards framework, items, and <code>hasChild</code> relationships are
+preserved when the LC layer is added. The bundle then adds:</p>
+<ul>
+<li>canonical <code>LearningComponent</code> nodes;</li>
+<li>primary <code>supports</code> relationships;</li>
+<li>LC provenance under <code>entity_provenance.learning_components</code>;</li>
+<li>the LC generation summary;</li>
+<li>LC failure/exclusion reporting under <code>unresolved_items.learning_components</code>; and</li>
+<li>a new merged-graph validation report.</li>
+</ul>
+<p>For a consumer that needs both standards and skills, this is normally the safest single
+artifact to ingest.</p>
+<hr>
+<h2 id="graph-semantics">Graph semantics</h2>
+<h3 id="node-types">Node types</h3>
+<table>
+<thead>
+<tr>
+<th>Entity</th>
+<th>Meaning</th>
+<th>Primary graph identifier used by current relationships</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>StandardsFramework</code></td>
+<td>Root container for one source framework</td>
+<td><code>case_identifier_uuid</code></td>
+</tr>
+<tr>
+<td><code>StandardsFrameworkItem</code></td>
+<td>Source-facing grouping or standards item</td>
+<td><code>case_identifier_uuid</code></td>
+</tr>
+<tr>
+<td><code>LearningComponent</code></td>
+<td>Canonical atomic skill derived from one or more eligible SFIs</td>
+<td><code>identifier</code></td>
+</tr>
+</tbody>
+</table>
+<p>For the current Academic Standards export, <code>identifier</code> and <code>case_identifier_uuid</code> are
+minted to the same UUID for the framework and SFIs. Consumers should still follow each
+relationship's explicit endpoint key rather than depending on that equality.</p>
+<h3 id="haschild"><code>hasChild</code></h3>
+<p>Direction is always:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>parent --hasChild--&gt; child
+</span></code></pre></div>
+<p>The parent can be either the <code>StandardsFramework</code> root or another
+<code>StandardsFrameworkItem</code>. The child is always a <code>StandardsFrameworkItem</code>.</p>
+<p>Current internal endpoint keys are:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>source_entity_key = case_identifier_uuid
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>target_entity_key = case_identifier_uuid
+</span></code></pre></div>
+<p>The hierarchy can be a DAG rather than a strict single-parent tree when the source
+supports multiple direct memberships.</p>
+<p>An unresolved root-fallback relationship is still a real <code>hasChild</code> edge. In the
+Learning Commons-shaped relationship projection it receives
+<code>resolutionStatus = "unresolvedRootFallback"</code>; the internal bundle also retains the
+richer unresolved metadata/reporting.</p>
+<h3 id="supports"><code>supports</code></h3>
+<p>Direction is always:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>LearningComponent --supports--&gt; StandardsFrameworkItem
+</span></code></pre></div>
+<p>Current internal endpoint keys are:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>source_entity_key = identifier
+</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>target_entity_key = case_identifier_uuid
+</span></code></pre></div>
+<p>There is one primary <code>supports</code> edge per unique <code>(LearningComponent, claiming SFI)</code>
+pair. A single LC can therefore support several standards after deduplication.</p>
+<p>The relationship metadata contains the generation request IDs and a
+<code>support_confidence</code>. When several generated claims from the same SFI collapse into the
+same LC, that edge uses the minimum contributing confidence.</p>
+<hr>
+<h2 id="identifier-stability">Identifier stability</h2>
+<p>Identifiers are deterministic, but deterministic does not mean immutable under every
+source or policy change.</p>
+<h3 id="document-key">Document key</h3>
+<p><code>doc_key</code> is the SHA-256 digest of the source PDF bytes. A byte-identical source PDF
+produces the same document key. Changing the PDF bytes changes the document namespace
+used throughout the run.</p>
+<h3 id="framework">Framework</h3>
+<p>The framework UUID is UUIDv5-minted from the canonical namespace and the document key.</p>
+<h3 id="standards-framework-items">Standards Framework Items</h3>
+<p>Final SFI UUIDs are UUIDv5-minted from a resolved SFI identity key. That identity is
+document-scoped and can depend on curriculum policy such as code handling, identity
+scope, and duplicate reconciliation.</p>
+<p>Do <strong>not</strong> use <code>statement_code</code>, <code>description</code>, source row number, or list ordinal as a
+substitute primary key. They may be absent, repeated, corrected, or non-unique in the
+source.</p>
+<h3 id="learning-components">Learning Components</h3>
+<p>LC UUIDs are UUIDv5-minted from:</p>
+<ul>
+<li>the source document key;</li>
+<li>the configured LC dedup scope key; and</li>
+<li>a hash of the canonical normalized skill text.</li>
+</ul>
+<p>The displayed <code>description</code> is a deterministic representative surface form and is not
+itself the complete identity contract. Several source claims can resolve to one LC.</p>
+<h3 id="relationships">Relationships</h3>
+<p><code>hasChild</code> and <code>supports</code> relationship IDs are also deterministic UUIDv5 values derived
+from the document key and their resolved endpoints.</p>
+<h3 id="changes-that-can-intentionally-change-ids">Changes that can intentionally change IDs</h3>
+<p>Expect identifiers to change when identity-driving inputs change, including:</p>
+<ul>
+<li>source PDF bytes;</li>
+<li><code>LC_CANONICAL_NAMESPACE_UUID</code>;</li>
+<li>SFI identity/code-scope policy or dedup outcomes;</li>
+<li>hierarchy endpoint resolution for relationship IDs;</li>
+<li>LC dedup scope or canonical skill identity; or</li>
+<li>implementation changes that intentionally revise the identity-key contract.</li>
+</ul>
+<p>For reproducible downstream datasets, keep the source PDF, relevant configuration, and
+canonical namespace under version control or otherwise record them with the release.</p>
+<hr>
+<h2 id="provenance-contract">Provenance contract</h2>
+<p>The final bundles preserve provenance separately from the slim delivery projection.</p>
+<h3 id="academic-standards-provenance">Academic Standards provenance</h3>
+<p><code>as_kg_bundle.json -&gt; entity_provenance</code> contains entries for:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>framework
+</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>items
+</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>kg_run_manifest
+</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>relationships_has_child
+</span></code></pre></div>
+<p>SFI provenance connects finalized nodes to merge groups, registry candidates, source
+windows, DocumentIR segments, page indexes, source references, and audit information.</p>
+<h3 id="learning-components-provenance">Learning Components provenance</h3>
+<p>The combined bundle adds:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>entity_provenance.learning_components
+</span></code></pre></div>
+<p>keyed by LC identifier. LC metadata and provenance retain the claiming SFI UUIDs,
+source segments/pages/windows, generation request IDs, claim confidence, skill text,
+ancestor context, tags, and the originating Academic Standards bundle fingerprint.</p>
+<p>A downstream trace can therefore proceed roughly as:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>LearningComponent
+</span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>    -&gt; supports edge
+</span><span id="__span-19-3"><a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a>    -&gt; StandardsFrameworkItem
+</span><span id="__span-19-4"><a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a>    -&gt; SFI provenance
+</span><span id="__span-19-5"><a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a>    -&gt; DocumentIR segment / source window
+</span><span id="__span-19-6"><a id="__codelineno-19-6" name="__codelineno-19-6" href="#__codelineno-19-6"></a>    -&gt; page provenance
+</span></code></pre></div>
+<p>For audit-sensitive applications, preserve the bundle rather than ingesting only the
+slim JSONL projection.</p>
+<hr>
+<h2 id="schema-versioning-and-compatibility">Schema versioning and compatibility</h2>
+<p>The environment must provide a non-empty:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>LEARNING_COMMONS_EXPORT_SCHEMA_VERSION
+</span></code></pre></div>
+<p>before the Learning Commons export is compiled. The configured value is recorded at:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>bundle.validation_report.learning_commons_export_schema_version
+</span></code></pre></div>
+<p>It is also part of the final AS export fingerprints.</p>
+<p>Use this value when deciding whether a consumer supports the Learning Commons-shaped AS
+export contract. It does <strong>not</strong> version every pipeline-internal working artifact or
+replace pinning the repository revision when a consumer depends on internal bundle or
+combined-projection fields.</p>
+<p>For a production integration, a useful release record is therefore:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>source PDF digest / doc_key
+</span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a>repository revision
+</span><span id="__span-22-3"><a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a>runtime config revision
+</span><span id="__span-22-4"><a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a>LC_CANONICAL_NAMESPACE_UUID
+</span><span id="__span-22-5"><a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a>LEARNING_COMMONS_EXPORT_SCHEMA_VERSION
+</span><span id="__span-22-6"><a id="__codelineno-22-6" name="__codelineno-22-6" href="#__codelineno-22-6"></a>final bundle validation report
+</span></code></pre></div>
+<hr>
+<h2 id="ordering-and-serialization">Ordering and serialization</h2>
+<p>Writers use deterministic ordering where the pipeline relies on stable output, but
+consumers should treat identifiers and explicit graph fields as semantic and list/file
+order as serialization detail unless an artifact documents otherwise.</p>
+<p>In particular:</p>
+<ul>
+<li>do not infer hierarchy from node order;</li>
+<li>do not infer relationship direction from source order in the PDF;</li>
+<li>do not infer LC identity from the first claim or first surface form; and</li>
+<li>do not infer SFI identity from statement codes alone.</li>
+</ul>
+<p>Use <code>hasChild</code>, <code>supports</code>, endpoint keys, identifiers, and provenance explicitly.</p>
+<hr>
+<h2 id="recommended-ingestion-checks">Recommended ingestion checks</h2>
+<p>Before loading a release into another system, check at least:</p>
+<ol>
+<li>the intended bundle's <code>validation_report.passed</code> is <code>true</code> and <code>errors</code> is empty;</li>
+<li>the <code>learning_commons_export_schema_version</code> is supported by the consumer;</li>
+<li><code>doc_key</code> and the source/config release are the expected ones;</li>
+<li>unresolved items satisfy your publication policy;</li>
+<li>every relationship endpoint resolves using its declared entity key/value;</li>
+<li>the consumer understands multi-parent <code>hasChild</code> topology;</li>
+<li>the consumer preserves <code>LearningComponent -&gt; supports -&gt; StandardsFrameworkItem</code>
+   direction; and</li>
+<li>if provenance matters, the full bundle is retained even when only the wire pair is
+   loaded into the serving graph — <code>metadata</code> (per-claim tags, source pages, dedup
+   identity) is deliberately absent from the wire records.</li>
+</ol>
+<p>For diagnosing a failed check, use the
+<a href="../guides/running-and-debugging.html">operator/debugging guide</a> to trace the earliest
+incorrect artifact rather than repairing the final export by hand.</p>
+
+
+
+
+
+
+
+
+
+  
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden="">
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"></path></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © 2026 IDinsight
+    </div>
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+    <a href="https://www.idinsight.org/about/privacy-policy/" target="_blank" rel="noopener" title="Privacy Policy" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5zm0 6c1.4 0 2.8 1.1 2.8 2.5V11c.6 0 1.2.6 1.2 1.3v3.5c0 .6-.6 1.2-1.3 1.2H9.2c-.6 0-1.2-.6-1.2-1.3v-3.5c0-.6.6-1.2 1.2-1.2V9.5C9.2 8.1 10.6 7 12 7m0 1.2c-.8 0-1.5.5-1.5 1.3V11h3V9.5c0-.8-.7-1.3-1.5-1.3"></path></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.tabs.sticky", "content.code.annotate", "content.code.copy", "navigation.sections", "navigation.indexes", "navigation.instant", "navigation.top"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+        <script src="../js/open_in_new_tab.js"></script>
+      
+    
+  
+<script id="init-glightbox">const lightbox = GLightbox({"touchNavigation": true, "loop": false, "zoomable": true, "draggable": true, "openEffect": "zoom", "closeEffect": "zoom", "slideEffect": "slide"});
+document$.subscribe(()=>{ lightbox.reload(); });
+</script></body></html>

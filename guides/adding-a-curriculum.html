@@ -1,0 +1,2732 @@
+<!DOCTYPE html><html lang="en" class="no-js"><head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Documentation for the curriculum-document-to-knowledge-graph pipeline">
+      
+      
+      
+        <link rel="canonical" href="https://idinsight.github.io/KGForEdGlobal/guides/adding-a-curriculum.html">
+      
+      
+        <link rel="prev" href="../pipeline/learning-components.html">
+      
+      
+        <link rel="next" href="running-and-debugging.html">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Add a new curriculum - Knowledge Graph for Education Global</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+  
+  
+    
+      
+      
+    
+  
+  
+  <style>:root{--md-admonition-icon--note:url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20d%3D%22M13%2013h-2V7h2m0%2010h-2v-2h2M12%202A10%2010%200%200%200%202%2012a10%2010%200%200%200%2010%2010%2010%2010%200%200%200%2010-10A10%2010%200%200%200%2012%202%22/%3E%3C/svg%3E');}</style>
+
+
+  
+  
+  
+  
+  <style>:root{--md-annotation-icon:url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20d%3D%22m15.07%2011.25-.9.92C13.45%2012.89%2013%2013.5%2013%2015h-2v-.5c0-1.11.45-2.11%201.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41a2%202%200%200%200-2-2%202%202%200%200%200-2%202H8a4%204%200%200%201%204-4%204%204%200%200%201%204%204%203.2%203.2%200%200%201-.93%202.25M13%2019h-2v-2h2M12%202A10%2010%200%200%200%202%2012a10%2010%200%200%200%2010%2010%2010%2010%200%200%200%2010-10c0-5.53-4.5-10-10-10%22/%3E%3C/svg%3E');}</style>
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+  
+
+
+  
+  
+
+<script id="__analytics">function __md_analytics(){function e(){dataLayer.push(arguments)}window.dataLayer=window.dataLayer||[],e("js",new Date),e("config","G-K07FFTMFTN"),document.addEventListener("DOMContentLoaded",(function(){document.forms.search&&document.forms.search.query.addEventListener("blur",(function(){this.value&&e("event","search",{search_term:this.value})}));document$.subscribe((function(){var t=document.forms.feedback;if(void 0!==t)for(var a of t.querySelectorAll("[type=submit]"))a.addEventListener("click",(function(a){a.preventDefault();var n=document.location.pathname,d=this.getAttribute("data-md-value");e("event","feedback",{page:n,data:d}),t.firstElementChild.disabled=!0;var r=t.querySelector(".md-feedback__note [data-md-value='"+d+"']");r&&(r.hidden=!1)})),t.hidden=!1})),location$.subscribe((function(t){e("config","G-K07FFTMFTN",{page_path:t.pathname})}))}));var t=document.createElement("script");t.async=!0,t.src="https://www.googletagmanager.com/gtag/js?id=G-K07FFTMFTN",document.getElementById("__analytics").insertAdjacentElement("afterEnd",t)}</script>
+  
+    <script>"undefined"!=typeof __md_analytics&&__md_analytics()</script>
+  
+
+    
+    
+  <link href="../assets/stylesheets/glightbox.min.css" rel="stylesheet"><script src="../assets/javascripts/glightbox.min.js"></script><style id="glightbox-style">
+            html.glightbox-open { overflow: initial; height: 100%; }
+            .gslide-title { margin-top: 0px; user-select: text; }
+            .gslide-desc { color: #666; user-select: text; }
+            .gslide-image img { background: white; }
+            .gscrollbar-fixer { padding-right: 15px; }
+            .gdesc-inner { font-size: 0.75rem; }
+            body[data-md-color-scheme="slate"] .gdesc-inner { background: var(--md-default-bg-color); }
+            body[data-md-color-scheme="slate"] .gslide-title { color: var(--md-default-fg-color); }
+            body[data-md-color-scheme="slate"] .gslide-desc { color: var(--md-default-fg-color); }
+        </style></head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#add-a-new-curriculum" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Knowledge Graph for Education Global" class="md-header__button md-logo" aria-label="Knowledge Graph for Education Global" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"></path></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"></path></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Knowledge Graph for Education Global
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Add a new curriculum
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="indigo" aria-label="Switch to light mode" type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden="">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"></path></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="indigo" aria-label="Switch to dark mode" type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden="">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"></path></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"></path></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required="">
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"></path></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"></path></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"></path></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix="">
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/IDinsight/KGForEdGlobal" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"></path></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../index.html" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Home
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../pipeline/index.html" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Pipeline
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="adding-a-curriculum.html" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Guides
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../reference/output-artifacts.html" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../development/index.html" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Development
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../contributing.html" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Contribute
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../contact_us.html" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Contact us
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation">
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Knowledge Graph for Education Global" class="md-nav__button md-logo" aria-label="Knowledge Graph for Education Global" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"></path></svg>
+
+    </a>
+    Knowledge Graph for Education Global
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/IDinsight/KGForEdGlobal" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"></path></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix="">
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1">
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../index.html" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_1" id="__nav_1_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Home
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2">
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../pipeline/index.html" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pipeline
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Pipeline
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pipeline/page-ir-extraction.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Page IR Extraction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pipeline/page-ir-verification.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Page IR Verification
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pipeline/document-ir.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Document IR
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pipeline/academic-standards.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Academic Standards
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pipeline/learning-components.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Learning Components
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked="">
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Add a new curriculum
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="adding-a-curriculum.html" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Add a new curriculum
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+  
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix="">
+      
+        <li class="md-nav__item">
+  <a href="#what-belongs-in-the-curriculum-profile" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What belongs in the curriculum profile?
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#before-editing-the-config-inspect-the-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Before editing the config: inspect the source
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-copy-a-nearby-example-and-set-the-run-basics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Copy a nearby example and set the run basics
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Copy a nearby example and set the run basics">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#use-an-isolated-calibration-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Use an isolated calibration output
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-define-the-academic-standards-vocabulary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Define the Academic Standards vocabulary
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Define the Academic Standards vocabulary">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#prefer-source-facing-names" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prefer source-facing names
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#use-aliases-as-recognition-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Use aliases as recognition evidence
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#keep-descriptions-operational" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Keep descriptions operational
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-decide-which-document-structures-can-produce-standards" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Decide which document structures can produce standards
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-configure-codes-only-when-the-source-has-real-item-codes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Configure codes only when the source has real item codes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-define-deterministic-identity-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Define deterministic identity scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-map-the-source-hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Map the source hierarchy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-configure-grade-or-stage-mapping-deliberately" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Configure grade or stage mapping deliberately
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-add-curriculum-specific-academic-standards-instructions-last" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Add curriculum-specific Academic Standards instructions last
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-configure-learning-components-from-the-validated-as-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Configure Learning Components from the validated AS model
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="9. Configure Learning Components from the validated AS model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#choose-lc-source-statement-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choose LC source statement types
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#write-generation-policy-around-the-sources-decomposition-conventions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write generation policy around the source's decomposition conventions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pick-the-narrowest-defensible-dedup-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pick the narrowest defensible dedup scope
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tune-semantic-blocking-only-with-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tune semantic blocking only with evidence
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-run-a-calibration-slice-end-to-end" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Run a calibration slice end to end
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-expand-coverage-before-the-full-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Expand coverage before the full run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#12-run-the-full-document-with-a-clean-output-root" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12. Run the full document with a clean output root
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#framework-metadata-checklist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Framework metadata checklist
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#common-profile-design-mistakes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common profile-design mistakes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Common profile-design mistakes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#tuning-prompts-before-defining-the-source-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tuning prompts before defining the source model
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#treating-every-heading-as-a-standard-grouping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Treating every heading as a Standard Grouping
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#using-table-rules-to-repair-extraction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Using table rules to repair extraction
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#making-codes-globally-unique-when-they-are-not" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Making codes globally unique when they are not
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#over-scoping-identity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Over-scoping identity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#generating-lcs-from-grouping-nodes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Generating LCs from grouping nodes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#overfitting-semantic-dedup-thresholds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overfitting semantic dedup thresholds
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-to-go-next" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where to go next
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="running-and-debugging.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run, resume, and debug
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4">
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/output-artifacts.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Output artifacts and integration contract
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5">
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../development/index.html" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Development
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/local-setup.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6">
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contribute
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contribute
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contributing.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing to Knowledge Graph for Education Global
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7">
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contact us
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contact us
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contact_us.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Team
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc">
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+  
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix="">
+      
+        <li class="md-nav__item">
+  <a href="#what-belongs-in-the-curriculum-profile" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What belongs in the curriculum profile?
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#before-editing-the-config-inspect-the-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Before editing the config: inspect the source
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-copy-a-nearby-example-and-set-the-run-basics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Copy a nearby example and set the run basics
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Copy a nearby example and set the run basics">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#use-an-isolated-calibration-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Use an isolated calibration output
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-define-the-academic-standards-vocabulary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Define the Academic Standards vocabulary
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Define the Academic Standards vocabulary">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#prefer-source-facing-names" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prefer source-facing names
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#use-aliases-as-recognition-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Use aliases as recognition evidence
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#keep-descriptions-operational" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Keep descriptions operational
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-decide-which-document-structures-can-produce-standards" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Decide which document structures can produce standards
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-configure-codes-only-when-the-source-has-real-item-codes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Configure codes only when the source has real item codes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-define-deterministic-identity-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Define deterministic identity scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-map-the-source-hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Map the source hierarchy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-configure-grade-or-stage-mapping-deliberately" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Configure grade or stage mapping deliberately
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-add-curriculum-specific-academic-standards-instructions-last" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Add curriculum-specific Academic Standards instructions last
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-configure-learning-components-from-the-validated-as-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Configure Learning Components from the validated AS model
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="9. Configure Learning Components from the validated AS model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#choose-lc-source-statement-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choose LC source statement types
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#write-generation-policy-around-the-sources-decomposition-conventions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write generation policy around the source's decomposition conventions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pick-the-narrowest-defensible-dedup-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pick the narrowest defensible dedup scope
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tune-semantic-blocking-only-with-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tune semantic blocking only with evidence
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-run-a-calibration-slice-end-to-end" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Run a calibration slice end to end
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-expand-coverage-before-the-full-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Expand coverage before the full run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#12-run-the-full-document-with-a-clean-output-root" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12. Run the full document with a clean output root
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#framework-metadata-checklist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Framework metadata checklist
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#common-profile-design-mistakes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common profile-design mistakes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Common profile-design mistakes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#tuning-prompts-before-defining-the-source-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tuning prompts before defining the source model
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#treating-every-heading-as-a-standard-grouping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Treating every heading as a Standard Grouping
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#using-table-rules-to-repair-extraction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Using table rules to repair extraction
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#making-codes-globally-unique-when-they-are-not" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Making codes globally unique when they are not
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#over-scoping-identity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Over-scoping identity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#generating-lcs-from-grouping-nodes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Generating LCs from grouping nodes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#overfitting-semantic-dedup-thresholds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overfitting semantic dedup thresholds
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-to-go-next" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where to go next
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="add-a-new-curriculum">Add a New Curriculum</h1>
+<p>This guide describes how to adapt the pipeline to a new curriculum document without
+adding curriculum-specific logic to the backend.</p>
+<p>The goal is not to tune every available setting. The goal is to encode the smallest
+reviewed <strong>document profile</strong> that lets the generic pipeline reconstruct the source,
+extract the intended Academic Standards hierarchy, and derive Learning Components at
+the right granularity.</p>
+<p>Start with a representative subset of the document, inspect the intermediate artifacts,
+and only then run the full curriculum.</p>
+<div class="admonition info">
+<p class="admonition-title">Roadmap: automated curriculum onboarding</p>
+<p>We are working on an automated process for adding and configuring new curricula.
+This capability is on our roadmap, with timing <strong>TBD</strong>. Until it is available, this
+guide describes the supported manual workflow.</p>
+<p>If this automation would be useful to you, please
+<a href="https://github.com/IDinsight/KGForEdGlobal/issues/new">open a new feature issue on GitHub</a>
+so we can understand the demand and use cases.</p>
+</div>
+<div class="admonition tip">
+<p class="admonition-title">Start from the closest existing profile</p>
+<p>The profiles under <code>examples/</code> are the best starting point. Choose the curriculum
+whose source structure is most similar to the new document, not necessarily the one
+from the same country or subject.</p>
+<p>Current examples include Ghana, Nigeria, Rwanda, and India profiles.</p>
+</div>
+<h2 id="what-belongs-in-the-curriculum-profile">What belongs in the curriculum profile?</h2>
+<p>A curriculum profile should describe <strong>source-specific evidence and policy</strong>. The
+backend should continue to own <strong>general invariants that must hold for every
+curriculum</strong>.</p>
+<table>
+<thead>
+<tr>
+<th>Put this in configuration</th>
+<th>Put this in Python</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Local statement types such as <code>Strand</code>, <code>Sub-Strand</code>, <code>Indicator</code>, or <code>Unit</code></td>
+<td>Schema validation and identifier integrity</td>
+</tr>
+<tr>
+<td>Aliases and controlled values visible in a particular source</td>
+<td>Universal provenance requirements</td>
+</tr>
+<tr>
+<td>Which tables contain standards</td>
+<td>Exactly-once DocumentIR consumption</td>
+</tr>
+<tr>
+<td>Curriculum-specific code formats and code scope</td>
+<td>Graph endpoint, cardinality, and cycle checks</td>
+</tr>
+<tr>
+<td>Expected source hierarchy and allowed direct-parent types</td>
+<td>Deterministic UUID construction</td>
+</tr>
+<tr>
+<td>Grade/stage mappings</td>
+<td>Generic PageIR and DocumentIR transformations</td>
+</tr>
+<tr>
+<td>Source-specific extraction or validation instructions</td>
+<td>Generic producer/checker orchestration</td>
+</tr>
+<tr>
+<td>LC seed types, decomposition guidance, and dedup policy</td>
+<td>Generic LC reconciliation and export rules</td>
+</tr>
+<tr>
+<td>Known document conventions or reviewed anomalies</td>
+<td>Logic that should apply identically to every curriculum</td>
+</tr>
+</tbody>
+</table>
+<p>A useful test is: <strong>would the rule still be correct for a structurally different
+curriculum?</strong> If not, prefer configuration.</p>
+<h2 id="before-editing-the-config-inspect-the-source">Before editing the config: inspect the source</h2>
+<p>Do a short source review before defining statement types or writing prompt instructions.
+For a large PDF, inspect representative pages rather than reading every page first.</p>
+<p>Try to find examples of:</p>
+<ul>
+<li>the highest-level curriculum organizers;</li>
+<li>the lowest-level statements that should become standards;</li>
+<li>repeated hierarchy levels such as grade, strand, topic, sub-topic, unit, or competency;</li>
+<li>official item codes and whether they repeat in different scopes;</li>
+<li>tables that contain standards and tables that are administrative or explanatory;</li>
+<li>merged cells or rowspans that may need DocumentIR fill-down;</li>
+<li>statements that cross page boundaries;</li>
+<li>multilingual or bilingual layouts;</li>
+<li>the grade/stage vocabulary used by the source; and</li>
+<li>representative standards that should produce one LC versus several LCs.</li>
+</ul>
+<p>Write down the intended hierarchy before configuring it. For example:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Grade
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>└── Strand
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    └── Sub-Strand
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>        └── Content Standard
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>            └── Indicator
+</span></code></pre></div>
+<p>or:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>Grade
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>└── Topic Area
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    └── Sub-Topic Area
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>        └── Unit
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>            └── Key Unit Competence
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>                ├── Knowledge Objective
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>                ├── Skills Objective
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>                └── Attitudes and Values Objective
+</span></code></pre></div>
+<p>The source does not need to be a strict tree: the KG layer supports multiple valid
+parents where the configured parent policy allows them. The sketch is still useful for
+identifying the source-facing roles that the profile needs to represent.</p>
+<h2 id="1-copy-a-nearby-example-and-set-the-run-basics">1. Copy a nearby example and set the run basics</h2>
+<p>Create a new config beside the existing examples, for example:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>examples/&lt;country-or-provider&gt;/config_&lt;subject&gt;.json
+</span></code></pre></div>
+<p>The runtime config has four top-level sections:</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">"page_ir_extraction"</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span><span class="nt">"page_ir_verification"</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span><span class="nt">"document_ir"</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span><span class="nt">"kgs"</span><span class="p">:</span><span class="w"> </span><span class="p">{}</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>Set the document-specific extraction values first:</p>
+<ul>
+<li><code>pdf_fp</code> — path to the source PDF;</li>
+<li><code>output_dir</code> — root directory for this curriculum's run artifacts;</li>
+<li><code>country</code> and <code>year</code>;</li>
+<li><code>languages</code> — BCP-47 language codes such as <code>en</code>, <code>fr</code>, or <code>rw</code>;</li>
+<li><code>start_page</code> / <code>end_page</code> — use a representative slice while calibrating; and</li>
+<li><code>use_extracted_hints</code> — useful when the PDF has a reliable text layer or when
+  extraction benefits from text/table hints.</li>
+</ul>
+<p>The verification and DocumentIR defaults are generally a better starting point than
+curriculum-specific tuning. Change them only in response to an observed reconstruction
+problem.</p>
+<h3 id="use-an-isolated-calibration-output">Use an isolated calibration output</h3>
+<p>During profile development, use a separate <code>output_dir</code> for calibration runs. This
+prevents a partial-page experiment from being mixed with the artifacts from a later
+full-document run.</p>
+<p>A good calibration slice contains at least:</p>
+<ul>
+<li>one normal standards page;</li>
+<li>one page boundary where content continues;</li>
+<li>one representative standards table, if the curriculum is table-heavy; and</li>
+<li>one structurally unusual page that the final run must handle correctly.</li>
+</ul>
+<p>For curricula with materially different sections or grade layouts, use several small
+slices rather than assuming one section represents the entire document.</p>
+<h2 id="2-define-the-academic-standards-vocabulary">2. Define the Academic Standards vocabulary</h2>
+<p>The <code>kgs.as.statement_type_policy</code> is the semantic backbone of the profile. Define this
+before tuning extraction instructions.</p>
+<p>Each policy item names a <strong>source-facing statement type</strong> and maps it to either a
+Learning Commons <code>Standard Grouping</code> or <code>Standard</code>.</p>
+<p>Conceptually:</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">"statement_type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Sub-Strand"</span><span class="p">,</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span><span class="nt">"normalized_statement_type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Standard Grouping"</span><span class="p">,</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span><span class="nt">"description"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Visible sub-strand organizer under the active Grade and Strand."</span><span class="p">,</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span><span class="nt">"aliases"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"Sub-strand"</span><span class="p">,</span><span class="w"> </span><span class="s2">"Substrand"</span><span class="p">],</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span><span class="nt">"controlled_values"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">    </span><span class="p">{</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">      </span><span class="nt">"canonical_value"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Fractions"</span><span class="p">,</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">      </span><span class="nt">"aliases"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"Number: Fractions"</span><span class="p">]</span>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">  </span><span class="p">]</span>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>The example above is illustrative; use source-visible labels and values from the new
+curriculum.</p>
+<h3 id="prefer-source-facing-names">Prefer source-facing names</h3>
+<p>Use the source's real conceptual roles rather than forcing every curriculum into a
+generic taxonomy. <code>Indicator</code>, <code>Competency</code>, <code>Learning Outcome</code>, and <code>Knowledge
+Objective</code> can all be valid source-facing statement types when that is how the document
+is organized.</p>
+<h3 id="use-aliases-as-recognition-evidence">Use aliases as recognition evidence</h3>
+<p>Aliases are useful for capitalization, punctuation, abbreviations, and source-visible
+variants. They should not create new semantic categories.</p>
+<p>For grouping types with a bounded known vocabulary, use <code>controlled_values</code> to define a
+canonical value and its source variants. Do not enumerate free-form standards as
+controlled values.</p>
+<h3 id="keep-descriptions-operational">Keep descriptions operational</h3>
+<p>A statement-type description should help distinguish the role from nearby content. For
+example, specify whether a label applies only inside a unit table, whether it represents
+an official coded standard, or whether similarly named front-matter text should be
+excluded.</p>
+<h2 id="3-decide-which-document-structures-can-produce-standards">3. Decide which document structures can produce standards</h2>
+<p>Academic Standards extraction is windowed over DocumentIR. Table selection should be
+explicit when a curriculum contains many non-standards tables.</p>
+<p>Useful settings include:</p>
+<ul>
+<li><code>included_table_columns_signatures</code>;</li>
+<li><code>included_table_section_patterns</code>;</li>
+<li><code>excluded_table_columns_signatures</code>; and</li>
+<li><code>excluded_table_section_patterns</code>.</li>
+</ul>
+<p>Use these to express source structure, not to compensate for a bad PageIR extraction.
+If the table itself is reconstructed incorrectly, fix or tune the earlier stage first.</p>
+<p>When section context is the reliable signal, prefer a bounded section-pattern rule. When
+a stable columns signature uniquely identifies standards tables, prefer the signature.
+Use explicit exclusions for recurring administrative tables that otherwise look
+eligible.</p>
+<h2 id="4-configure-codes-only-when-the-source-has-real-item-codes">4. Configure codes only when the source has real item codes</h2>
+<p>If the document assigns official codes to standards, define them under
+<code>kgs.as.code_patterns</code> and connect the relevant statement types through their
+<code>code_type</code>.</p>
+<p>Before adding a code pattern, answer two questions:</p>
+<ol>
+<li><strong>What does the code identify?</strong> A standard, an organizer, a table, or merely a
+   printed section label?</li>
+<li><strong>Where is the code unique?</strong> Across the document, or only within a grade, strand,
+   unit, or other semantic scope?</li>
+</ol>
+<p>If a code is only unique within a reviewed scope, configure
+<code>code_scope_statement_types</code>. Do not make the regex itself encode hierarchy that is
+better represented as semantic scope.</p>
+<p>Avoid treating nearby organizer codes or table identifiers as standard codes simply
+because they match a convenient pattern.</p>
+<h2 id="5-define-deterministic-identity-scope">5. Define deterministic identity scope</h2>
+<p>Two standards can have identical wording without being the same curricular item. The
+profile must state which grouping dimensions are part of identity when wording or codes
+alone are insufficient.</p>
+<p>Use <code>identity_scope_statement_types</code> to define the ordered source-facing grouping types
+required for each statement type.</p>
+<p>For example, a unit label such as <code>Unit 1</code> may repeat in every grade. Its identity may
+therefore require <code>Grade</code>, while a lower-level objective may require both <code>Grade</code> and
+<code>Unit</code>.</p>
+<p>Good identity scope should answer:</p>
+<blockquote>
+<p>If this exact text appeared elsewhere in the document, what visible source context
+would prove that it is a different curricular item?</p>
+</blockquote>
+<p>Do not add dimensions merely because they are available. Excessive scope prevents true
+duplicates from reconciling.</p>
+<h2 id="6-map-the-source-hierarchy">6. Map the source hierarchy</h2>
+<p>After the statement vocabulary is stable, configure the expected Academic Standards
+hierarchy.</p>
+<p>Two settings are especially important:</p>
+<ul>
+<li><code>sfi_has_child_statement_type_hierarchy</code> — preferred hierarchy order used during
+  parent retrieval/ranking; and</li>
+<li><code>sfi_has_child_parent_policy</code> — allowed direct-parent types and their cardinality for
+  <strong>every</strong> configured statement type.</li>
+</ul>
+<p>A root statement type has an empty parent-policy list. A normal one-parent level might
+look conceptually like:</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="p">{</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">"Sub-Strand"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="p">{</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">      </span><span class="nt">"parent_statement_type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Strand"</span><span class="p">,</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">      </span><span class="nt">"min_count"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">      </span><span class="nt">"max_count"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">  </span><span class="p">]</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>Use the parent policy to describe the curriculum's real topology. Do not configure a
+single parent simply because most examples happen to have one if the source genuinely
+allows multiple direct parents.</p>
+<p>The config schema cross-validates these settings against <code>statement_type_policy</code>, so it
+is usually easier to finalize the vocabulary first and hierarchy second.</p>
+<h2 id="7-configure-grade-or-stage-mapping-deliberately">7. Configure grade or stage mapping deliberately</h2>
+<p>If the source contains a grade-like dimension, configure:</p>
+<ul>
+<li><code>grade_level_statement_types</code> — the source-facing grouping types that carry grade or
+  stage context; and</li>
+<li><code>grade_level_mapping</code> — mapping from canonical source values to Learning Commons grade
+  values.</li>
+</ul>
+<p>Mapping keys should use the canonical values from the profile rather than aliases.</p>
+<p>If a reviewed source value intentionally has no Learning Commons equivalent, an empty
+mapping target is meaningful. If the framework has no applicable grade/stage dimension,
+use an explicit empty <code>grade_level_statement_types</code> list rather than inventing one.</p>
+<h2 id="8-add-curriculum-specific-academic-standards-instructions-last">8. Add curriculum-specific Academic Standards instructions last</h2>
+<p>Only after the deterministic policy is defined should you add or refine:</p>
+<ul>
+<li><code>sfi_extraction_instructions</code>;</li>
+<li><code>sfi_extraction_validation_instructions</code>;</li>
+<li><code>sfi_dedup_instructions</code>;</li>
+<li><code>sfi_has_child_instructions</code>; and</li>
+<li><code>sfi_has_child_validation_instructions</code>.</li>
+</ul>
+<p>These instructions are appropriate for source conventions that cannot be expressed
+cleanly as deterministic configuration, such as distinguishing visually similar columns
+or explaining a curriculum-specific relationship convention.</p>
+<p>Avoid encoding things in prose that Python can validate directly. The producer and
+checker should interpret the source; they should not be responsible for enforcing a
+rule that can be made deterministic.</p>
+<h2 id="9-configure-learning-components-from-the-validated-as-model">9. Configure Learning Components from the validated AS model</h2>
+<p>Learning Components are downstream of the validated Academic Standards graph. Configure
+them only after the intended SFI types and <code>hasChild</code> structure are working.</p>
+<h3 id="choose-lc-source-statement-types">Choose LC source statement types</h3>
+<p>Set <code>kgs.lc.lc_source_statement_types</code> to the source-facing SFI types that represent
+teachable standards suitable for atomic decomposition.</p>
+<p>Examples might include:</p>
+<ul>
+<li><code>Indicator</code>;</li>
+<li><code>Learning Outcome</code>;</li>
+<li><code>Knowledge Objective</code>;</li>
+<li><code>Skills Objective</code>; or</li>
+<li>another curriculum-specific leaf/standard role.</li>
+</ul>
+<p>When the field is omitted, selection falls back to leaf SFIs whose normalized type is
+<code>Standard</code>. An explicit allowlist is preferable when the curriculum contains several
+kinds of Standards but only some should generate LCs.</p>
+<h3 id="write-generation-policy-around-the-sources-decomposition-conventions">Write generation policy around the source's decomposition conventions</h3>
+<p>Use <code>generation_instructions</code> for curriculum-specific guidance. Focus on rules such as:</p>
+<ul>
+<li>when coordinated actions are separable;</li>
+<li>when a phrase names one indivisible concept;</li>
+<li>which qualifiers must stay attached to an action;</li>
+<li>which source structures are context only; and</li>
+<li>what must never be inferred beyond the seed standard.</li>
+</ul>
+<p>Use <code>lc_generation_validation_instructions</code> when the independent checker needs the same
+curriculum-specific distinctions to audit producer decompositions.</p>
+<p>Do not restate the generic LC contract unless the source genuinely requires a special
+interpretation. See <a href="../pipeline/learning-components.html">Learning Components</a> for the
+built-in decomposition and validation behavior.</p>
+<h3 id="pick-the-narrowest-defensible-dedup-scope">Pick the narrowest defensible dedup scope</h3>
+<p><code>lc_dedup_scope</code> controls where semantically equivalent LC texts may merge:</p>
+<table>
+<thead>
+<tr>
+<th>Scope</th>
+<th>Use when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>framework</code></td>
+<td>The same atomic skill should have one identity anywhere in the curriculum</td>
+</tr>
+<tr>
+<td><code>top_ancestor</code></td>
+<td>Equivalent wording should merge only within the same root-level curricular context</td>
+</tr>
+<tr>
+<td><code>parent</code></td>
+<td>Equivalent wording should merge only among standards with the same direct parent set</td>
+</tr>
+<tr>
+<td><code>none</code></td>
+<td>LC identity must remain seed-specific except for exact duplicates within that seed scope</td>
+</tr>
+</tbody>
+</table>
+<p>Do not choose <code>framework</code> only because it creates a smaller graph. Choose it only when a
+skill's identity is truly independent of curricular location.</p>
+<h3 id="tune-semantic-blocking-only-with-evidence">Tune semantic blocking only with evidence</h3>
+<p>The default LC blocking thresholds are intended to be useful across curricula. Override
+<code>lc_dedup_blocking</code> only after inspecting missed or noisy candidate pairs.</p>
+<p>For languages or morphology where the language-independent rules are insufficient,
+configure <code>lc_dedup_language_pack</code> in the profile. This is deliberately data-driven so a
+new language does not require a backend code change.</p>
+<p>Use <code>lc_dedup_instructions</code> for semantic conventions that affect whether two skills mean
+the same thing in this curriculum.</p>
+<h2 id="10-run-a-calibration-slice-end-to-end">10. Run a calibration slice end to end</h2>
+<p>From the <code>backend</code> directory, run all four entry points against the calibration config:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>python<span class="w"> </span>src/kgfeg/entries/extract_page_ir.py<span class="w"> </span>&lt;config.json&gt;
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>python<span class="w"> </span>src/kgfeg/entries/verify_page_ir_continuity.py<span class="w"> </span>&lt;config.json&gt;
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>python<span class="w"> </span>src/kgfeg/entries/stitch_document_ir.py<span class="w"> </span>&lt;config.json&gt;
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>python<span class="w"> </span>src/kgfeg/entries/create_kgs.py<span class="w"> </span>&lt;config.json&gt;
+</span></code></pre></div>
+<p>For an end-to-end calibration run, keep the selected verified page range contiguous and
+starting at page index <code>0</code>. A non-zero slice is still useful for PageIR
+extraction/verification inspection, but the current DocumentIR loader cannot stitch
+that slice by itself. To test a middle section end to end, use a separate cropped test
+PDF whose first page is index <code>0</code>. See
+<a href="running-and-debugging.html#page-ranges-and-calibration-runs">Run, Resume, and Debug</a>.</p>
+<p>Do not tune the final graph first. Find the <strong>earliest stage where the representation
+becomes wrong</strong> and fix the profile or source interpretation there.</p>
+<p>A useful review order is:</p>
+<table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Start with</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Does each page reflect what is visibly present?</td>
+<td><code>extraction/page_irs/*.json</code></td>
+</tr>
+<tr>
+<td>Are cross-page continuations correct?</td>
+<td>verification pair reports and verified PageIRs</td>
+</tr>
+<tr>
+<td>Is the document reconstructed correctly?</td>
+<td><code>stitching/document_ir.json</code> and <code>stitch_report.json</code></td>
+</tr>
+<tr>
+<td>Are the right standards extracted with the right types/scopes?</td>
+<td>SFI extraction results and <code>sfi_candidate_registry.json</code></td>
+</tr>
+<tr>
+<td>Are true duplicates reconciled conservatively?</td>
+<td>SFI merge report/groups/conflicts</td>
+</tr>
+<tr>
+<td>Is the AS hierarchy correct?</td>
+<td><code>has_child_edges_final.json</code> and parent-resolution artifacts</td>
+</tr>
+<tr>
+<td>Did the AS graph validate?</td>
+<td><code>as_validation_report.json</code></td>
+</tr>
+<tr>
+<td>Are the intended standards eligible for LCs?</td>
+<td><code>lc_eligibility_report.json</code></td>
+</tr>
+<tr>
+<td>Is decomposition at the right granularity?</td>
+<td>LC requests, producer drafts, validator verdicts, and final responses</td>
+</tr>
+<tr>
+<td>Are LC duplicates nominated and adjudicated correctly?</td>
+<td><code>lc_dedup_candidate_pairs.jsonl</code>, verdicts, and groups</td>
+</tr>
+<tr>
+<td>Does the final combined graph reconcile?</td>
+<td><code>lc_generation_summary.json</code> and <code>as_lc_kg_bundle.json</code></td>
+</tr>
+</tbody>
+</table>
+<p>For the complete artifact map and trust boundaries, see the
+<a href="../pipeline/index.html">Pipeline Overview</a>.</p>
+<h2 id="11-expand-coverage-before-the-full-run">11. Expand coverage before the full run</h2>
+<p>A successful five-page slice proves only that those five pages work. Before launching the
+entire PDF, test each materially different source layout.</p>
+<p>At minimum, sample:</p>
+<ul>
+<li>every major table schema;</li>
+<li>each grade/stage section if formatting changes;</li>
+<li>front matter versus standards-bearing sections;</li>
+<li>coded and uncoded standards, when both exist;</li>
+<li>multilingual layouts, when present; and</li>
+<li>several LC decomposition patterns.</li>
+</ul>
+<p>Use failures to refine the smallest relevant piece of configuration. Avoid adding a
+broad instruction because one unusual page failed if a bounded table/section rule can
+represent the source more precisely.</p>
+<h2 id="12-run-the-full-document-with-a-clean-output-root">12. Run the full document with a clean output root</h2>
+<p>Once calibration is stable:</p>
+<ol>
+<li>copy the calibrated profile to its final config if you used a temporary one;</li>
+<li>restore <code>start_page</code> / <code>end_page</code> to the intended full-document range;</li>
+<li>point <code>output_dir</code> to the final run location rather than the calibration output;</li>
+<li>verify the framework metadata under <code>kgs.metadata</code>; and</li>
+<li>run the four pipeline entry points in order.</li>
+</ol>
+<p>Treat the full run as another review step rather than assuming calibration guarantees
+success. Corpus-wide deduplication, repeated codes, long-range hierarchy patterns, and
+rare source layouts can surface issues that do not appear in a small slice.</p>
+<h2 id="framework-metadata-checklist">Framework metadata checklist</h2>
+<p>Before publishing or handing off a final graph, verify that <code>kgs.metadata</code> accurately
+describes the represented framework:</p>
+<ul>
+<li><code>framework_title</code>;</li>
+<li><code>author</code> and <code>provider</code>;</li>
+<li><code>country</code> and <code>jurisdiction</code>;</li>
+<li><code>subject</code>;</li>
+<li><code>grades_or_stages</code>;</li>
+<li><code>languages</code> and <code>primary_language</code>;</li>
+<li><code>license</code> and <code>attribution_statement</code>;</li>
+<li><code>adoption_status</code>, when known; and</li>
+<li><code>is_current</code>.</li>
+</ul>
+<p>These are framework-level assertions. Do not infer legal/licensing or adoption status
+from the pipeline output.</p>
+<h2 id="common-profile-design-mistakes">Common profile-design mistakes</h2>
+<h3 id="tuning-prompts-before-defining-the-source-model">Tuning prompts before defining the source model</h3>
+<p>If the statement taxonomy, identity scope, or parent policy is wrong, increasingly
+specific prompt instructions usually make the profile more brittle rather than fixing
+the underlying model.</p>
+<h3 id="treating-every-heading-as-a-standard-grouping">Treating every heading as a Standard Grouping</h3>
+<p>Only model headings that participate in the curriculum's standards identity or
+hierarchy. Administrative section titles and explanatory headings can remain DocumentIR
+context.</p>
+<h3 id="using-table-rules-to-repair-extraction">Using table rules to repair extraction</h3>
+<p>KG table inclusion/exclusion decides <strong>which reconstructed tables are semantically
+eligible</strong>. It should not compensate for incorrect PageIR geometry or broken DocumentIR
+stitching.</p>
+<h3 id="making-codes-globally-unique-when-they-are-not">Making codes globally unique when they are not</h3>
+<p>If a code repeats by grade, strand, or unit, represent that with code scope instead of
+silently merging distinct standards.</p>
+<h3 id="over-scoping-identity">Over-scoping identity</h3>
+<p>Adding every ancestor to identity prevents legitimate reconciliation. Include only the
+source dimensions required to distinguish curricular items.</p>
+<h3 id="generating-lcs-from-grouping-nodes">Generating LCs from grouping nodes</h3>
+<p>Choose source types that express teachable standards. Grade, strand, unit, and similar
+organizers usually provide context rather than LC seeds.</p>
+<h3 id="overfitting-semantic-dedup-thresholds">Overfitting semantic dedup thresholds</h3>
+<p>Tune blocking thresholds against observed candidate-pair behavior across several parts
+of the curriculum. One surprising pair is not enough evidence for a corpus-wide change.</p>
+<h2 id="where-to-go-next">Where to go next</h2>
+<ul>
+<li><a href="../development/local-setup.html">Local Setup</a> — install and run the project locally.</li>
+<li><a href="../architecture.html">Architecture</a> — understand stage boundaries, provenance, and
+  deterministic invariants.</li>
+<li><a href="../pipeline/index.html">Pipeline Overview</a> — inspect every stage and its artifacts.</li>
+<li><a href="running-and-debugging.html">Run, Resume, and Debug</a> — recover interrupted runs,
+  choose overwrite behavior, and trace failures to the earliest wrong artifact.</li>
+<li><a href="../pipeline/academic-standards.html">Academic Standards</a> — detailed AS construction
+  behavior.</li>
+<li><a href="../pipeline/learning-components.html">Learning Components</a> — detailed LC generation,
+  validation, deduplication, and export behavior.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+  
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden="">
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"></path></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © 2026 IDinsight
+    </div>
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+    <a href="https://www.idinsight.org/about/privacy-policy/" target="_blank" rel="noopener" title="Privacy Policy" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5zm0 6c1.4 0 2.8 1.1 2.8 2.5V11c.6 0 1.2.6 1.2 1.3v3.5c0 .6-.6 1.2-1.3 1.2H9.2c-.6 0-1.2-.6-1.2-1.3v-3.5c0-.6.6-1.2 1.2-1.2V9.5C9.2 8.1 10.6 7 12 7m0 1.2c-.8 0-1.5.5-1.5 1.3V11h3V9.5c0-.8-.7-1.3-1.5-1.3"></path></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.tabs.sticky", "content.code.annotate", "content.code.copy", "navigation.sections", "navigation.indexes", "navigation.instant", "navigation.top"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+        <script src="../js/open_in_new_tab.js"></script>
+      
+    
+  
+<script id="init-glightbox">const lightbox = GLightbox({"touchNavigation": true, "loop": false, "zoomable": true, "draggable": true, "openEffect": "zoom", "closeEffect": "zoom", "slideEffect": "slide"});
+document$.subscribe(()=>{ lightbox.reload(); });
+</script></body></html>
