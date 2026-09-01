@@ -516,6 +516,55 @@ The user withdrew the prior Option A direction and selected **Option D — non-b
 
 **LIMIT — V1 may release semantically incorrect or incomplete progression relationships because no independent human or gold-set semantic evaluation is required before release.** Producer/checker separation and deterministic validation reduce structural and process risk but do not establish pedagogical correctness. This limitation must be visible in release documentation and final review.
 
+## D13 — Failed-request tolerance and release policy
+
+### Status
+
+**Resolved — Option A, any failed pair halts the LP run, with prefix-safe local checkpointing and resume.**
+
+### Failure and halt policy
+
+1. A valid `buildsTowards`, `relatesTo`, `no_relation`, or `needs_review` judgment is not a processing failure.
+2. A failure is a timeout, malformed response, exhausted retry policy, missing or extra pair coverage, endpoint leakage, illegal relation/direction, or another producer/checker integrity violation that cannot be resolved by the permitted deterministic validation/retry path.
+3. After any candidate pair becomes failed, the LP phase halts. There is no tolerated failed-pair count or rate for exploratory or release runs.
+4. The failure and all completed checkpoints remain inspectable, but the interrupted run cannot produce a successful LP or combined release status.
+5. D12's non-blocking `needs_review` policy does not weaken D13: `needs_review` is a valid abstention, whereas a malformed, missing, or otherwise invalid judgment is a failure.
+
+### Pre-LLM materialization
+
+Before the first external LP LLM call:
+
+1. the complete deterministic candidate set is validated and written to `lp_candidate_pairs.jsonl` with its summary and material fingerprints;
+2. the complete deterministic bounded request sequence is validated and written to `lp_generation_requests.jsonl`; and
+3. candidate/request counts, IDs, order, coverage, and fingerprints reconcile exactly.
+
+No LLM execution begins from an in-memory-only or partially materialized candidate/request population.
+
+### Incremental successful-response checkpoints
+
+1. Successful producer drafts are appended to `lp_generation_draft_responses.jsonl` only after schema, request-ID, pair-coverage, endpoint-containment, and fingerprint validation.
+2. Successful checker verdicts are appended to `lp_generation_validation_verdicts.jsonl` only after the corresponding producer draft and the complete checker response validate.
+3. Successful reconciled final judgments are appended to `lp_generation_responses.jsonl` only after the complete request has one valid final judgment per pair.
+4. Failure details are written to `lp_generation_failures.json`; failed or partial responses are never appended as successful checkpoints.
+5. JSONL writes follow deterministic request order and represent valid contiguous prefixes. Concurrent or out-of-order completion must be buffered or otherwise handled without creating a reusable prefix gap.
+
+### `overwrite=false` resume behavior
+
+1. On restart with `overwrite = false`, the pipeline reloads and validates the saved candidate set, request sequence, successful draft/verdict/final JSONL prefixes, failure record, and every material upstream, policy, prompt, model-settings, and input fingerprint.
+2. Fully validated successful prefixes are reused without repeating their completed external LLM calls.
+3. Resume begins at the earliest unfinished producer/checker stage for the first incomplete request. For example, a valid saved producer draft may be reused when the checker failed, so the checker stage—not the producer call—is retried.
+4. Gaps, duplicates, out-of-order records, truncated/invalid JSONL, request misalignment, or stale fingerprints are rejected rather than silently reused.
+5. A changed candidate population, request sequence, relevant configuration/policy, prompt, model settings, or upstream AS+LC fingerprint invalidates affected progress and requires the appropriate deterministic stage to be regenerated before calls resume.
+6. The previous failure record remains audit evidence; the resumed run records whether and how the failed stage later succeeded.
+
+### Consequences for all six curricula
+
+The same zero-tolerance failure policy and prefix-safe resume contract apply to Madhi mathematics, Nigeria mathematics, Pratham science, Rwanda mathematics, Ghana mathematics, and Ghana English. No curriculum-specific count/rate thresholds are required in `kgs.lp`.
+
+### D13 rationale
+
+Option A gives every successful run complete producer/checker coverage while local deterministic checkpoints prevent one late transient failure from forcing already validated LLM work to be purchased and executed again.
+
 ## Next unresolved decision
 
-D13 — Failed-request tolerance and release policy. The future Step 0 coding-agent session must also complete the deferred D12 governance synchronization before Step 0 closes.
+D14 — Manual semantic edge overrides. The future Step 0 coding-agent session must also complete the deferred D12 governance synchronization and D11 template normalization in the engineering brief before Step 0 closes.
