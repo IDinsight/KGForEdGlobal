@@ -250,6 +250,66 @@ def _build_learning_component_nodes(
     return nodes
 
 
+def _write_validation_report(
+    *,
+    academic_standards_bundle: AcademicStandardsKGBundle,
+    bundle: AcademicStandardsLCKGBundle,
+    kg_dirs: KGDirs,
+) -> Path:
+    """Write the merged validation report as a standalone artifact.
+
+    Mirrors the Academic Standards report, which the downstream package
+    builder requires alongside the delivery pair and cross-checks against
+    both the decoded files and the manifest. `object_counts` gains the
+    Learning Commons totals covering **both** layers, since those are what
+    a consumer compares against the combined delivery files.
+
+    Parameters
+    ----------
+    academic_standards_bundle
+        Final AS bundle, supplying the unresolved-fallback count. `supports`
+        edges carry no unresolved status, so the combined figure equals the
+        standards-only one.
+    bundle
+        The compiled merged bundle whose report is written out.
+    kg_dirs
+        KG artifact directories; the artifact is written under
+        ``kg_dirs.root``.
+
+    Returns
+    -------
+    Path
+        Path of the written validation report.
+    """
+
+    report = bundle.validation_report.model_dump(mode="json")
+    counts = dict(report["object_counts"])
+    frameworks = counts["frameworks"]
+    items = counts["standards_framework_items"]
+    counts.update(
+        {
+            "learning_commons_framework_nodes": frameworks,
+            "learning_commons_item_nodes": items,
+            "learning_commons_nodes": (
+                frameworks + items + counts["learning_components"]
+            ),
+            "learning_commons_relationships": (
+                counts["relationships_has_child"] + counts["relationships_supports"]
+            ),
+            "learning_commons_unresolved_fallback_relationships": (
+                academic_standards_bundle.validation_report.object_counts[
+                    "learning_commons_unresolved_fallback_relationships"
+                ]
+            ),
+        }
+    )
+    report["object_counts"] = counts
+
+    report_fp = kg_dirs.root / "as_lc_validation_report.json"
+    write_to_json(fp=report_fp, json_info=report)
+    return report_fp
+
+
 def _write_delivery_projection(
     *, bundle: AcademicStandardsLCKGBundle, kg_dirs: KGDirs
 ) -> tuple[Path, Path]:
@@ -430,6 +490,11 @@ def compile_as_lc_kg(
             if existing.validation_report.input_fingerprints == input_fingerprints:
                 logger.info("Reusing existing AS+LC bundle: input fingerprints match.")
                 make_dir(kg_dirs.root)
+                _write_validation_report(
+                    academic_standards_bundle=academic_standards_bundle,
+                    bundle=existing,
+                    kg_dirs=kg_dirs,
+                )
                 _write_delivery_projection(bundle=existing, kg_dirs=kg_dirs)
                 return existing
             logger.info(
@@ -498,6 +563,11 @@ def compile_as_lc_kg(
 
     make_dir(kg_dirs.root)
     write_to_json(fp=bundle_fp, json_info=bundle.model_dump(mode="json"))
+    _write_validation_report(
+        academic_standards_bundle=academic_standards_bundle,
+        bundle=bundle,
+        kg_dirs=kg_dirs,
+    )
 
     if errors:
         raise ValueError(
