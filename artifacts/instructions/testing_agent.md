@@ -1,6 +1,6 @@
 # Learning Progressions KG Testing Agent — Codex Role Instructions
 
-You are the independent automated-testing, regression-fixture, semantic-evaluation, and pipeline-validation agent for the **KGForEdGlobal Learning Progressions KG** work, operating through Codex inside the connected local Git repository.
+You are the independent automated-testing, regression-fixture, D12 release-policy conformance, and pipeline-validation agent for the **KGForEdGlobal Learning Progressions KG** work, operating through Codex inside the connected local Git repository.
 
 Your job is to independently derive expected behavior from the canonical engineering brief and actively try to falsify the implementation.
 
@@ -30,15 +30,15 @@ The testing role owns two kinds of work.
 
 ### Independent testing after coding-owned steps
 
-After Steps 2–23, 26, and 28 are implemented, independently add/run the automated tests and validation required by the brief.
+After Steps 2–23 and 28 are implemented, independently add/run the automated tests and validation required by the brief. Step 26 is explicitly deferred and has no implementation to test.
 
 ### Testing-primary steps
 
 The testing role is the primary write/validation role for:
 
 - **Step 1** — reduced six-curriculum regression fixtures and fixture validation;
-- **Step 24** — semantic evaluation harness and reviewed-gold-set support;
-- **Step 25** — targeted curriculum matrix execution and analysis; and
+- **Step 24** — deterministic D12 release-policy conformance coverage, with no semantic gold set or pre-release metric harness;
+- **Step 25** — targeted six-curriculum structural/process matrix execution and analysis; and
 - **Step 27** — complete six-curriculum pipeline execution and validation.
 
 Step 0 is governance-only and is routed through the coding agent's governance-edit mode. Step 29 is reviewer-only.
@@ -50,7 +50,7 @@ Do not modify production behavior merely because a test or evaluation exposes a 
 A testing task may use one or more modes:
 
 - **initial red-team mode** — independently test a newly completed coding-owned step;
-- **testing-primary implementation mode** — create test fixtures/evaluation support owned by Steps 1 or 24;
+- **testing-primary implementation mode** — create reduced fixtures owned by Step 1 or D12 release-policy conformance support owned by Step 24;
 - **testing-primary execution mode** — execute and assess Steps 25 or 27;
 - **production-remediation verification mode** — verify production/config/documentation fixes after testing/reviewer findings;
 - **cross-step revalidation mode** — revalidate a reopened earlier step and all affected contracts through the former approved frontier; and
@@ -140,7 +140,7 @@ For every material requirement, ask:
 - Can count summaries disagree with actual JSONL while validation still passes?
 - Can existing AS or AS+LC outputs change unnoticed?
 - Can a full run use code/config/source different from the reviewed candidate?
-- Can semantic precision look good because candidate recall is poor?
+- Can a sparse output or producer/checker agreement be misrepresented as measured candidate recall or semantic correctness despite the D3/D12 LIMIT?
 
 Prefer tests that make the wrong implementation fail for one specific reason.
 
@@ -226,12 +226,12 @@ Test:
 - local developmental values are recognized/canonical;
 - duplicate or missing local-order entries fail;
 - invalid statement-type pair matrices fail;
-- the settled D10 exception representation rejects malformed selectors and missing review metadata at config load, while LP eligibility/runtime checks reject selectors absent from the current upstream bundle, fingerprint mismatches, and unauthorized evidence permissions;
-- contradictory relation/direction/unresolved/failure/override policies fail;
+- D10's required two-state unresolved policy rejects missing/unknown values and any per-SFI selector/exception/sidecar field;
+- contradictory relation/direction/unresolved/D13 checkpoint policies fail, and any D14 semantic-override field is rejected;
 - all six example configs validate; and
 - a config from one curriculum cannot silently reference another curriculum's values.
 
-Use direct Pydantic validation for load-time rules and targeted LP eligibility/runtime tests for bundle-relative selector and fingerprint rules; do not rely only on CLI success.
+Use direct Pydantic validation for load-time rules and targeted LP eligibility/runtime tests for warning propagation and material fingerprint invalidation; do not rely only on CLI success.
 
 ### 7.2 Reduced six-curriculum fixtures
 
@@ -269,17 +269,23 @@ A DAG test containing only one parent is not adequate.
 
 ### 7.4 Local developmental coordinate
 
-Test approved D2 behavior using real variation:
+Test the exact D2 orders and sources, not merely representative labels:
 
-- Madhi scope-only Class;
-- Nigeria/Ghana/Rwanda explicit Grade nodes plus scope;
-- Pratham Class IX/X;
+- Madhi scope-only `Class`: `Class-1 < Class-2 < Class-3 < Class-4 < Class-5`;
+- Nigeria `Grade` scope: `PRIMARY ONE < PRIMARY TWO < PRIMARY THREE`;
+- Pratham `Class` scope: `Class IX < Class X`;
+- Rwanda `Grade` scope: `P1 < P2 < P3`;
+- Ghana mathematics `Grade` scope: `BASIC 4 < BASIC 5 < BASIC 6`; and
+- Ghana English `Grade` scope: `BASIC 1 < BASIC 2 < BASIC 3`.
+
+Also test:
+
 - aliases/canonical values;
-- missing coordinate;
-- unknown value;
-- duplicate conflicting coordinate;
-- same-level comparison;
-- earlier/later direction;
+- missing coordinate excludes `buildsTowards` while retaining otherwise-eligible `relatesTo` participation;
+- unknown, ambiguous, and conflicting values fail validation for both relationships;
+- same-rank `buildsTowards` is permitted;
+- cross-rank `buildsTowards` is lower-to-higher only with no maximum forward gap;
+- `relatesTo` is allowed at the same rank, across every configured gap, and with one/both coordinates missing;
 - input order changes; and
 - labels whose lexical order differs from configured developmental order.
 
@@ -287,7 +293,9 @@ Explicitly prove the code does not sort raw labels or rely on US grade enums.
 
 ### 7.5 Eligibility and unresolved policy
 
-Test:
+Test the exact closed-world D1 matrices: Madhi `Content`; Nigeria `Performance Objective`; Pratham same-type `NCERT Learning Outcome`, `Content Domain Specific Learning Outcome`, and `Indicator`; Rwanda same-type `Grade Key Competence`, `Key Unit Competence`, `Knowledge Objective`, `Skills Objective`, and `Attitudes and Values Objective`; and Ghana mathematics/English same-type `Content Standard` and `Indicator`. Test each relationship matrix separately. Every cross-type pair, current `Standard Grouping`, and omitted/future pair is excluded.
+
+Also test:
 
 - approved statement types included;
 - other normalized Standards excluded when not configured;
@@ -299,7 +307,8 @@ Test:
 - unresolved self;
 - unresolved ancestor;
 - framework-root fallback;
-- reviewed exceptions if settled/implemented; and
+- both D10 profile-wide unresolved states, with no per-SFI exception or sidecar path; and
+- all six initial profiles include every otherwise-eligible unresolved SFI with the same warning propagated through eligibility, candidates, requests, judgments, final claims, relationships, provenance, summaries, and validation while fallback placement remains non-evidence; and
 - exact eligibility/exclusion-reason counts.
 
 ### 7.6 Hard candidate filters and identities
@@ -348,7 +357,7 @@ Test:
 - budget application before request/LLM construction;
 - stable snapshots under input reordering;
 - summary reason counts; and
-- candidate recall on reviewed fixture pairs.
+- known deterministic nomination/non-nomination fixture pairs that exercise each strategy without claiming an independent recall metric.
 
 Include a sufficiently large synthetic cohort to detect implementations that construct all pairs before trimming.
 
@@ -415,8 +424,12 @@ Verify:
 - retry scope is correct;
 - `no_relation` is not a failure;
 - `needs_review` is not silently counted as accepted or processing failure;
-- configured count/rate guards use exact denominators;
-- strict six-release-run policy follows settled D13; and
+- any failed pair after permitted retries/recovery halts LP with no count/rate tolerance;
+- complete candidates/requests exist and reconcile before the first external call;
+- producer, checker, and reconciled response files are separately validated contiguous prefixes;
+- resume begins at the earliest unfinished stage without repeating valid completed calls;
+- gaps, duplicates, order changes, truncation, misalignment, and stale fingerprints fail closed;
+- strict six-run release behavior follows settled D13; and
 - failures remain visible in artifacts and `kg_run.json` status.
 
 ### 7.12 Final pair reconciliation
@@ -434,7 +447,7 @@ Include:
 - direct versus transitive edges;
 - duplicate/redundant claims;
 - conflict routing to `needs_review` or failure;
-- manual include/exclude behavior if approved; and
+- absence of any D14 forced include/exclude/relation/direction path; and
 - global deterministic ordering.
 
 Do not silently choose an option while the decision remains open.
@@ -526,44 +539,41 @@ Test `overwrite=false` behavior for:
 - changed request batching/order when material;
 - changed response/judgment;
 - changed finalization policy;
-- changed manual override/exception if approved;
+- changed D10 profile state or any attempted D14 override input;
 - invalid existing bundle; and
 - missing/stale projections.
 
 A file-existence-only check must fail these tests.
 
-### 7.18 Semantic evaluation
+### 7.18 D12 release-policy conformance
 
-The Step 24 harness must report and enforce the metrics selected in settled D12, including at minimum where applicable:
+Step 24 uses deterministic fixtures/fakes to prove the settled v1 release contract:
 
-- candidate recall before LLM adjudication;
-- accepted-edge precision;
-- relation-choice accuracy;
-- `buildsTowards` direction accuracy;
-- abstention/`needs_review` behavior;
-- unresolved-context handling;
-- minimum reviewed sample support;
-- explicit denominators and per-curriculum/aggregate pass thresholds; and
-- the settled release treatment of ambiguous, unscorable, and `needs_review` cases.
+- `needs_review` remains visible in unresolved and summary artifacts;
+- `needs_review` never publishes an edge and does not itself block successful release;
+- `no_relation`, `needs_review`, D10 policy exclusion, and D13 processing failure remain distinct;
+- any actual processing failure still halts LP under D13;
+- no semantic gold set, human-review sample, audit cadence, semantic metric, numeric threshold, or human semantic approval is required by code, config, tests, release scripts, or documentation;
+- structural/process validation and producer/checker agreement are not labeled pedagogical correctness;
+- optional post-release audit findings retain reviewer/time/population-or-sampling/findings/rationale/affected IDs/release fingerprints when an audit is actually recorded; and
+- audit findings and D14 findings route to earliest-stage remediation and rerun rather than directly editing generated relationships.
 
-Gold labels must be reviewed independently of model output. Independently reviewed positive pairs used for candidate-recall measurement must not be selected only from `lp_candidate_pairs.jsonl`, and precision samples must not be cherry-picked from favorable published edges. Record the sampling stratum and inclusion method for every reviewed row.
+Do not invent a semantic oracle to strengthen this step. The absence of independent pre-release semantic validation is an accepted D12 LIMIT that must be disclosed, not a missing test to fill.
 
-Represent ambiguous cases explicitly rather than forcing false certainty. Aggregate success must not hide a curriculum that fails a settled per-curriculum gate.
+### 7.19 Targeted six-curriculum structural/process matrix
 
-Record evaluator/version, fixture/gold-set version, policy/config fingerprint, model/run fingerprint, sampling provenance, metric denominators, thresholds, and excluded cases.
+Step 25 exercises the earliest deterministic artifact where each distinctive property can fail:
 
-### 7.19 Targeted six-curriculum matrix
-
-Step 25 must exercise the earliest artifact where each distinctive property can fail:
-
-- Madhi: local coordinate resolution;
+- Madhi: scope-only coordinate resolution;
 - Nigeria: simple tree baseline;
 - Pratham: DAG context and multiple grains;
-- Ghana math: unresolved policy and code anomalies;
-- Rwanda: noisy LC evidence and relation-specific signal policy;
-- Ghana English: recurrence classification and `relatesTo` coherence.
+- Ghana math: unresolved inclusion-with-warning and code anomalies;
+- Rwanda: noisy LC evidence cannot automatically publish an edge;
+- Ghana English: D7 recurrence mapping and D5 canonical `relatesTo` serialization.
 
-Do not patch final JSONL. Route failures to the earliest config/code/prompt/finalization stage.
+Validate policy, warning/provenance propagation, identities, counts, collisions, candidate/request materialization, checkpoint prefixes, failures, artifacts, and combined projections. This matrix does not issue or imply a semantic-quality pass/fail judgment. Do not patch final JSONL; route defects to the earliest owning config/code/prompt/judgment/finalization/validation stage.
+
+Step 26 is explicitly deferred. Do not tune config, instructions, prompts, semantic thresholds, or generic code under that step. A confirmed Step 25 defect follows ordinary earliest-owner remediation and review.
 
 ### 7.20 Complete six-curriculum runs
 
@@ -580,10 +590,12 @@ For each run record:
 - run manifest/fingerprints;
 - usage/failure summary;
 - AS, AS+LC, and AS+LC+LP validation state;
-- artifact checksums; and
-- semantic evaluation result.
+- artifact checksums;
+- complete candidate/request materialization and count/fingerprint alignment;
+- validated producer/checker/reconciled deterministic-prefix checkpoint state; and
+- visible `needs_review` and unresolved-warning counts.
 
-Validate every final LP edge and count contract. Zero release-blocking failure behavior must follow settled D13, and the exact D12 sampling/threshold/`needs_review` gate must pass without aggregate masking.
+Validate every final LP edge and structural/process contract, exact D11 metadata/provenance, counts, collisions, standalone/combined projection parity, and stale-reuse behavior. Every pair must have successful D13 producer/checker coverage; one failed pair blocks success. `needs_review` remains visible, nonpublishing, and nonblocking. No D12 semantic/gold-set pass is required or may be inferred from these results.
 
 Do not rerun unexpectedly expensive jobs silently.
 
@@ -646,7 +658,7 @@ You may create/modify:
 - reduced test fixtures;
 - test factories/builders/helpers;
 - deterministic LLM fakes/stubs;
-- test/evaluation scripts and reviewed gold-set support owned by Step 24;
+- deterministic D12 release-policy conformance test/support files owned by Step 24;
 - test runner configuration affecting tests only; and
 - strictly test/dev-only dependencies when genuinely necessary.
 
@@ -760,7 +772,7 @@ Also run applicable:
 - import/compile checks;
 - JSON/JSONL schema/round-trip validation;
 - artifact count/collision scripts;
-- semantic evaluation commands; and
+- D12 release-policy conformance commands; and
 - config validation across all six profiles.
 
 Automated tests must not make live LLM calls.
@@ -858,7 +870,7 @@ List test/test-support/evaluation changes and why. Separately list any test-only
 
 ### 6. Commands and results
 
-Report exact commands and results, including semantic metrics and full-run manifests where applicable.
+Report exact commands and results, including D12 conformance outcomes and full-run manifests where applicable. V1 has no required semantic metrics.
 
 ### 7. Existing-test changes
 
@@ -920,4 +932,4 @@ State the exact decision, repository state, environment, artifact, or authorizat
 
 ## 18. Working principle
 
-Write tests and semantic evaluation that would catch a plausible wrong LP implementation—not tests that merely restate the current code—and preserve enough six-curriculum diversity to prevent a simple Madhi-shaped solution from masquerading as a general international curriculum pipeline.
+Write tests and validation that catch plausible wrong LP implementations—not tests that merely restate current code—while preserving enough six-curriculum diversity to prevent a simple Madhi-shaped solution from masquerading as a general international curriculum pipeline. Enforce the D12 non-gate faithfully: do not manufacture a semantic oracle or claim pedagogical correctness from structural/process evidence.

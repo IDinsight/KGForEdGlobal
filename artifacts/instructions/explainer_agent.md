@@ -10,7 +10,7 @@ Your job is to help the user understand:
 - runtime configuration and Pydantic schemas;
 - graph entities and relationship semantics;
 - candidate generation, LLM adjudication, deterministic finalization, validation, resume, and export;
-- automated tests and semantic evaluation;
+- automated tests, D12 release-policy conformance, and structural/process validation;
 - generated artifacts from the six curricula; and
 - discrepancies among specification, implementation, tests, configs, and outputs.
 
@@ -144,7 +144,7 @@ State:
 - where the limitation should be visible; and
 - what separate future capability would be needed to remove it, only when supported by the brief.
 
-Do not imply that the system secretly solves cross-framework progression, empirical prerequisite truth, LC-to-LC progression, perfect candidate recall, or pedagogical correctness when those remain LIMITs.
+Do not imply that the system secretly solves cross-framework progression, empirical prerequisite truth, LC-to-LC progression, the unmeasured D3/D12 candidate-recall ceiling, or pedagogical correctness when those remain LIMITs.
 
 ## 4. Begin by identifying the explanation scope
 
@@ -227,6 +227,16 @@ Do not describe `buildsTowards` as a strict prerequisite unless a source-specifi
 
 Do not reduce `relatesTo` to shared words, same subject, same grade, or same parent. It requires substantive conceptual or skill coherence without dependency.
 
+Explain the settled pair/finalization contract together when relevant:
+
+- D4 represents one unordered logical pair once and obtains one unified judgment;
+- D5 stores one accepted `relatesTo` row with lower canonical endpoint UUID as source and higher as target, while consumers traverse both positions;
+- D6 permits at most one published LP relationship per pair, with semantically supported `buildsTowards` taking precedence;
+- D8 requires the complete `buildsTowards` graph to be acyclic and reports deterministic cyclic-component/node/edge/provenance diagnostics rather than silently dropping edges; and
+- D9 publishes only directly adjudicated edges, performs neither transitive closure nor reduction, and leaves reachability to consumers.
+
+For D11 metadata, use the exact values: `author = "LLM generated"`, `provider = "IDinsight"`, the validated source-framework license copied verbatim, and the exact inference-disclosing attribution template from the brief with only the source attribution statement substituted. IDinsight is the organizational approver, and the complete source-framework, endpoint, adjudication, evidence, and fingerprint provenance remains attached.
+
 ### 5.3 Candidate is not edge
 
 Use this distinction whenever explaining the LP algorithm:
@@ -280,11 +290,16 @@ Use concrete curriculum examples when useful:
 Madhi:    Class-1 < Class-2 < Class-3 < Class-4 < Class-5
 Nigeria:  PRIMARY ONE < PRIMARY TWO < PRIMARY THREE
 Rwanda:   P1 < P2 < P3
-Ghana:    BASIC 1/4 ... BASIC 3/6
+Ghana math:     BASIC 4 < BASIC 5 < BASIC 6
+Ghana English:  BASIC 1 < BASIC 2 < BASIC 3
 Pratham:  Class IX < Class X
 ```
 
 Explain that some curricula encode level in scope metadata, some as hierarchy nodes, and some in both. Generic code follows the configured canonical local coordinate and never lexical-sorts labels.
+
+Explain the uniform D2 behavior: a missing coordinate excludes `buildsTowards` but retains otherwise-eligible `relatesTo`; an unknown, ambiguous, or conflicting coordinate fails validation; same-rank `buildsTowards` is allowed; different-rank direction is lower-to-higher with no maximum forward gap; and `relatesTo` may span any configured gap or missing coordinates.
+
+When D1 matters, name the closed-world same-type grains rather than saying “all Standards”: Madhi `Content`; Nigeria `Performance Objective`; Pratham `NCERT Learning Outcome`, `Content Domain Specific Learning Outcome`, and `Indicator`; Rwanda its five settled competence/objective types; and Ghana mathematics/English `Content Standard` and `Indicator`. Every cross-type, grouping, omitted, and future unconfigured pair is excluded.
 
 ### 5.6 Tree versus DAG
 
@@ -314,7 +329,7 @@ Explain that a fallback edge can keep the AS graph structurally reachable withou
 Framework --hasChild--> unresolved SFI
 ```
 
-The fallback is an audit condition, not positive topical evidence. LP eligibility/use follows the approved unresolved-policy decision.
+The fallback is an audit condition, not positive topical evidence. D10 requires one profile-wide state: exclude all affected SFIs or include every otherwise-eligible one with warnings. All six initial profiles use inclusion with warnings. There are no per-SFI UUID exceptions or exception sidecars.
 
 ### 5.8 Learning Components are evidence, not endpoints
 
@@ -334,9 +349,9 @@ When explaining `kgs.lp`, distinguish:
 - cross-field validation against `kgs.as` controlled values/types;
 - curriculum-specific policies;
 - generic defaults that are actually approved; and
-- unresolved decisions that prevent a final schema description.
+- concrete schema fields/literals legitimately deferred to Steps 2–3.
 
-Do not invent final field names from the illustrative config in Section 2.13 while D1–D14 remain unresolved. State that the illustration is non-authoritative until the brief is updated.
+Do not invent final field names from Section 2.13's settled semantic contract. D1–D14 are settled, but Step 3 still owns the concrete `kgs.lp` field names and literal representation.
 
 When the final schema exists, inspect the actual Pydantic models and validators before explaining accepted values, defaults, aliases, or error behavior.
 
@@ -349,7 +364,7 @@ Start with the authority boundary:
 ```text
 LLM proposes structured judgments.
 Python decides whether they are structurally admissible.
-The release gate decides whether the graph is acceptable.
+Deterministic structural/process and D13 gates decide whether the graph is releasable.
 ```
 
 When relevant, explain:
@@ -437,17 +452,17 @@ Potentially material inputs include:
 - prompt/model settings;
 - request ordering/batching;
 - producer/checker responses;
-- reviewed overrides if the settled design permits them; and
+- D10 profile-wide unresolved-participation state, with no per-SFI exceptions or D14 overrides; and
 - finalization policy.
 
 Explain prefix-safe resume as:
 
 ```text
 existing progress is reusable only when it is the exact valid beginning
-of the deterministic request sequence for the current fingerprints
+of the deterministic stage-specific sequence for the current fingerprints
 ```
 
-Do not describe “file exists” as sufficient for reuse.
+Also explain the settled D13 sequence: the complete candidate and request populations are validated/materialized before external calls; producer drafts, checker verdicts, and reconciled responses are separate validated contiguous prefixes; failures are separate; any failed pair after permitted retries/recovery halts LP; and `overwrite=false` resumes at the earliest unfinished stage without repeating valid completed calls. Gaps, duplicates, out-of-order/truncated rows, misalignment, and stale fingerprints fail closed. Do not describe “file exists” as sufficient for reuse.
 
 Explain that stable serialization order aids reproducibility, but line order is not graph semantics.
 
@@ -473,17 +488,17 @@ Important LP test categories include:
 - LP eligibility independent of leaf/normalized/LC selection;
 - deterministic pair IDs and stable ordering;
 - bounded candidate budgets and named evidence;
-- candidate recall fixtures;
+- deterministic nomination/non-nomination fixtures that exercise D3 strategies without claiming a recall metric;
 - exact request/response coverage and endpoint containment;
 - producer/checker evidence parity;
-- relation/direction/cycle/transitivity behavior after decisions are settled;
+- settled relation/direction/cycle/transitivity behavior;
 - deterministic edge IDs and metadata;
 - provenance/count/collision reconciliation;
 - stale resume/fingerprint rejection;
 - AS/AS+LC backward compatibility; and
-- six-curriculum semantic evaluation.
+- D12 release-policy conformance and the six-curriculum structural/process matrix.
 
-A passing unit suite does not prove semantic quality. The D12-approved evaluation gate must use independently selected review cases—not only current candidates or predictions—and must define sampling provenance, metric denominators, minimum support, explicit thresholds, and the release treatment of `needs_review` outcomes.
+A passing unit suite, structural matrix, or six-pipeline validation does not prove semantic quality. Settled D12 deliberately has no independent pre-release gold-set/human semantic gate, sample, cadence, metric, or numeric threshold. Explain that `needs_review` is visible/nonpublishing/nonblocking, D13 failures remain release-blocking, and the absence of pre-release semantic validation is an accepted LIMIT.
 
 ## 11. Explain recurring practice carefully
 
@@ -502,9 +517,7 @@ Use three separate patterns:
    broad reusable language with little specific progression content
 ```
 
-Do not map these patterns to final relationships until D7 is settled in the approved brief.
-
-If the code has implemented a settled mapping, inspect it and explain that actual mapping rather than relying on the original decision draft.
+Settled D7 maps substantive extension to permitted `buildsTowards`, meaningful recurrence without justified dependency to canonical `relatesTo`, generic repetition to `no_relation`, and material ambiguity to `needs_review`. When describing current behavior, inspect whether code/config/prompts actually implement that mapping.
 
 ## 12. Explain build-order state honestly
 

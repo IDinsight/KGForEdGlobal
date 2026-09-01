@@ -20,19 +20,18 @@ Before substantive work, read all three and complete the dependency-closed gover
 
 Work directly in the connected repository.
 
-Your ordinary write domain is **production/support code, runtime configuration, and project documentation owned by the current build step**. In governance-edit mode, the write domain is limited to the explicitly requested engineering brief and instruction files. A separate testing agent owns automated tests, reduced test fixtures, test helpers, and semantic evaluation assertions.
+Your ordinary write domain is **production/support code, runtime configuration, and project documentation owned by the current build step**. In governance-edit mode, the write domain is limited to the explicitly requested engineering brief and instruction files. A separate testing agent owns automated tests, reduced test fixtures, test helpers, and D12 release-policy conformance assertions.
 
 ## 1. Coding-owned build-order scope
 
 The coding role ordinarily owns:
 
 - Steps 2–23;
-- Step 26; and
 - Step 28.
 
 The coding role also performs **Step 0 governance-edit mode** only when the user explicitly asks it to record decisions or update governance files. In that mode, edit only the requested brief/instruction files; do not modify production code, runtime configs, tests, fixtures, or generated pipeline outputs.
 
-Steps 1, 24, 25, and 27 are testing-primary. Step 29 is reviewer-only.
+Steps 1, 24, 25, and 27 are testing-primary. Step 26 is explicitly deferred from v1 and owns no implementation or tuning work. Step 29 is reviewer-only.
 
 Do not implement a testing-primary or reviewer-only step under this role. When a coding-owned step completes, hand it to the testing role; do not authorize progression yourself.
 
@@ -276,7 +275,7 @@ It may use bounded existing provenance/source snippets, but it must not:
 - mutate upstream nodes or `hasChild`/`supports` relationships; or
 - publish when the upstream validation gate fails.
 
-Preserve the returned `AcademicStandardsLCKGBundle` from `compile_as_lc_kg(...)` and pass it explicitly to the LP phase.
+Preserve the returned `AcademicStandardsLCKGBundle` from `compile_as_lc_kg()` and pass it explicitly to the LP phase.
 
 ### 6.4 Hierarchy and unresolved context
 
@@ -293,6 +292,8 @@ Never assume:
 Preserve all direct parents and relevant ancestor paths in deterministic order.
 
 Propagate unresolved-root, code-anomaly, merge, and other AS audit signals into LP evidence/provenance as required. Do not turn an unresolved fallback into positive hierarchy evidence.
+
+Implement D10 as the required profile-wide two-state policy only. Do not add per-SFI UUID exceptions or exception sidecars. All six initial profiles select inclusion of every otherwise-eligible unresolved SFI with warnings.
 
 ### 6.5 Eligibility and local order
 
@@ -322,7 +323,7 @@ Candidate generation must be:
 
 Evidence such as hierarchy context, local rank, LC overlap, LC semantic relation, text similarity, code/source order, or audit flags may nominate a pair. No evidence feature may directly publish an edge.
 
-Do not silently introduce embeddings, ANN infrastructure, or LLM nomination unless the settled D3 decision authorizes it.
+Do not introduce embeddings, ANN infrastructure, or LLM nomination in v1. Settled D3 authorizes deterministic named non-embedding strategies and a future extension boundary only.
 
 ### 6.7 LLM producer/checker boundary
 
@@ -338,7 +339,7 @@ Deterministic code must enforce:
 - explicit `no_relation` versus `needs_review` versus processing failure;
 - complete checker correction rather than patch application;
 - producer/checker evidence parity;
-- configured failure thresholds; and
+- D13 zero-tolerance failure halting plus validated stage-prefix checkpoint/resume behavior; and
 - deterministic final IDs independent of LLM wording.
 
 Confidence and rationale are audit data. They must not bypass checker or structural validation.
@@ -351,7 +352,7 @@ Determinism is a product contract, not merely a testing convenience.
 
 Use explicit stable sorting and deterministic UUIDv5 identities where the brief requires them.
 
-Every resumable stage must reject stale or misaligned progress. Existing JSONL may be reused only when it forms the valid deterministic prefix for the current request sequence and fingerprints.
+Before any external LP LLM call, the complete candidate and request populations must be validated, materialized, and reconciled. Every resumable producer/checker/reconciliation stage must reject stale or misaligned progress. Existing JSONL may be reused only when it forms the valid deterministic stage-specific prefix for the current request sequence and fingerprints; failures remain separate, and resume starts at the earliest unfinished stage without repeating valid completed calls.
 
 `overwrite=false` may reuse a final AS+LC+LP bundle only when all material upstream, config, candidate, request, response, prompt/model, and policy fingerprints required by the settled brief match.
 
@@ -398,6 +399,8 @@ Do not collapse:
 
 Each state must remain visible and count-reconciled.
 
+Under D12, `needs_review` never publishes and does not block release. V1 has no independent pre-release semantic/gold-set gate, and implementation or documentation must not represent structural/process validity or producer/checker agreement as pedagogical correctness. Under D13, any actual failed pair after permitted retries/recovery halts LP with no rate/count tolerance.
+
 ## 7. Remediation modes
 
 For every routed finding:
@@ -435,7 +438,7 @@ At completion, account for every routed finding as:
 You may choose an implementation detail only when:
 
 - the brief explicitly delegates it to the current step;
-- it does not alter ontology semantics, allowed candidate population/signal technology, relation choice, direction, cycle/transitivity behavior, attribution, release gates, public artifact schemas, or another settled contract; numerical nomination budgets/thresholds are permitted only when the approved brief explicitly delegates them to Steps 3 or 26 and they remain explicit, fingerprinted, and reviewable; and
+- it does not alter ontology semantics, allowed candidate population/signal technology, relation choice, direction, cycle/transitivity behavior, attribution, release gates, public artifact schemas, or another settled contract; numerical nomination budgets are permitted only when the approved brief explicitly delegates them to the current step and they remain explicit, fingerprinted, and reviewable; Step 26 authorizes no tuning; and
 - it does not consume an open decision.
 
 For legitimate implementation details, prefer:
@@ -454,9 +457,9 @@ Record consequential build-time choices in the completion report.
 
 ## 9. Test ownership
 
-Do not create, edit, weaken, delete, skip, or expand automated test files, test fixtures, test helpers, or semantic gold-set assertions.
+Do not create, edit, weaken, delete, skip, or expand automated test files, test fixtures, test helpers, or D12 release-policy conformance assertions.
 
-The testing role owns them, including testing-primary Steps 1, 24, 25, and 27.
+The testing role owns them, including testing-primary Steps 1, 24, 25, and 27. Step 24 does not own a semantic gold set or pre-release semantic metric harness under settled D12.
 
 You may run existing tests as regression evidence. Do not modify them merely to make implementation pass.
 

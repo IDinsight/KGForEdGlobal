@@ -42,7 +42,7 @@ Use this precedence:
 
 The implementation is not correct merely because code and tests agree. Both can encode the same wrong assumption.
 
-The semantic evaluation is not correct merely because its metrics are green. Its gold set, candidate coverage, labels, and thresholds may be wrong or incomplete.
+Under settled D12, v1 has no independent pre-release semantic/gold-set gate. A candidate is not semantically correct merely because structural/process checks pass or producer/checker agree; review must enforce that limitation and reject invented semantic metrics as well as unsupported pedagogical claims.
 
 Do not replace the brief with Learning Commons defaults, general educational theory, personal design preference, one curriculum's structure, or what seems elegant.
 
@@ -107,7 +107,7 @@ For each load-bearing rule, ask:
 - Can invalid config or an alternate path bypass it?
 - Do tests exercise the real boundary or mock it away?
 - Could code and tests share the same wrong interpretation?
-- Is candidate recall being ignored while edge precision looks strong?
+- Is sparse output or producer/checker agreement being misrepresented as measured candidate recall or semantic correctness despite the D3/D12 LIMIT?
 - Is a curriculum-specific assumption hidden in generic Python?
 - Is one parent/path assumed in a DAG-capable graph?
 - Is local order inferred from labels or US grades?
@@ -250,7 +250,7 @@ Verify:
 
 ### 5.5 Upstream boundary and backward compatibility
 
-Verify the LP phase consumes a validated `AcademicStandardsLCKGBundle` returned from `compile_as_lc_kg(...)`.
+Verify the LP phase consumes a validated `AcademicStandardsLCKGBundle` returned from `compile_as_lc_kg()`.
 
 It must not rebuild AS/LC, reinterpret the PDF, mutate upstream nodes/edges, or publish from a failed upstream validation report.
 
@@ -277,7 +277,7 @@ Reject lexical sorting, hard-coded grade parsing, or dependence on Learning Comm
 
 Verify LP eligibility is not implicitly defined by leafness, normalized type, LC eligibility, or exact LC reuse.
 
-Verify relation-specific statement-type pair policy and unresolved eligibility exactly match the settled D1/D2/D10 choices.
+Verify all six configs exactly reproduce the D1 closed-world matrices and D2 coordinate sources/orders/missing/same-rank/gap rules. Verify D10 is the required profile-wide two-state policy with no per-SFI exception/sidecar path and that all six initial profiles include every otherwise-eligible unresolved SFI with warnings while never treating fallback-root placement as evidence.
 
 ### 5.8 Candidate generation
 
@@ -299,7 +299,7 @@ Inspect:
 
 No feature may directly publish an edge.
 
-Review candidate recall, not only final precision. A sparse graph can look precise because plausible pairs were never nominated.
+Review that candidate blocking is bounded, deterministic, and disclosed as an unmeasured recall ceiling. D12 does not authorize a pre-release recall metric, so reject both hidden omission claims and an invented semantic gate.
 
 ### 5.9 Request, producer, checker, and orchestration integrity
 
@@ -315,7 +315,7 @@ Verify:
 - `no_relation`, `needs_review`, and failure remain distinct;
 - confidence cannot bypass the checker;
 - resume files align exactly by deterministic prefix/fingerprint; and
-- failure thresholds/release policy match the settled D13 choice.
+- D13's no-tolerance halt, complete pre-call candidate/request materialization, separate deterministic draft/verdict/final prefixes, and earliest-unfinished-stage resume are enforced.
 
 Do not treat structured model output as trusted merely because Pydantic parsed it.
 
@@ -329,7 +329,7 @@ Verify the settled D4–D9 and D14 choices exactly:
 - recurrence mapping;
 - `buildsTowards` cycle policy;
 - transitive policy; and
-- manual override behavior.
+- absence of any D14 forced include/exclude/relation/direction behavior.
 
 Inspect conflict and duplicate reconciliation. Ensure deterministic code, not the LLM, mints relationship IDs.
 
@@ -382,7 +382,7 @@ Test/review changes to:
 - request batching/order;
 - response files;
 - finalization policy; and
-- approved overrides.
+- D10 unresolved-participation state or any attempted D14 override input.
 
 Ensure a stale bundle cannot be reported as current merely because the output file exists.
 
@@ -402,25 +402,19 @@ as_lc_lp_relationships.jsonl
 
 Confirm no duplicate nodes/relationships, stable serialization, exact bundle parity, and no accidental switch to the slim AS-only Learning Commons wire format.
 
-### 5.15 Semantic evaluation and six-curriculum evidence
+### 5.15 D12 release policy and six-curriculum evidence
 
-When the step involves D12 or full runs, inspect the evaluation oracle as critically as code.
+For Step 24, Step 25, Step 27, and Step 29, verify:
 
-Verify the approved gate measures and enforces, as applicable:
+- no code, config, test, script, documentation, or release checklist requires a semantic gold set, sample, audit cadence, metric, numeric threshold, or human semantic approval;
+- `needs_review` is visible and count-reconciled, never publishes, and does not itself block release;
+- D13 processing failures remain distinct and any failed pair blocks success;
+- structural/process validation and producer/checker agreement are never presented as pedagogical correctness;
+- the absence of independent pre-release semantic validation is disclosed as the accepted D12 LIMIT;
+- optional post-release audits, when present, record their actual reviewed population/sampling, reviewer/time, findings/rationale, affected IDs, and release/policy fingerprints; and
+- findings follow D12/D14 earliest-stage remediation and rerun rather than hand-edited graphs.
 
-- candidate recall;
-- accepted-edge precision;
-- relation choice;
-- direction accuracy;
-- abstention/`needs_review` behavior;
-- unresolved-context handling;
-- minimum reviewed sample support;
-- explicit metric denominators and per-curriculum/aggregate thresholds; and
-- the settled release treatment of ambiguous, unscorable, and `needs_review` cases.
-
-Inspect labels/examples across all six curricula. Verify that candidate-recall positives were not selected only from the current candidate list and that precision samples were not cherry-picked from favorable published edges. Look for leakage from generated model outputs into expected labels and for aggregate metrics that hide a failing curriculum.
-
-Ensure the targeted matrix covers:
+Step 24 must test that release-policy contract with deterministic fixtures/fakes rather than inventing a semantic oracle. Step 25 must exercise, without a semantic pass/fail claim:
 
 - Madhi scope-only local level;
 - Nigeria simple grade tree;
@@ -429,7 +423,7 @@ Ensure the targeted matrix covers:
 - Rwanda noisy generic LC reuse; and
 - Ghana English recurrence versus developmental extension.
 
-Full-run validation must use exact candidate code/config/source fingerprints and the approved `LLM_KG_MODEL` setup.
+Step 26 is explicitly deferred and creates no implementation, candidate, or reviewer gate; confirmed Step 25 defects return to the earliest owner. Full-run validation must use exact candidate code/config/source fingerprints and the approved `LLM_KG_MODEL` setup while retaining every structural, provenance, count, collision, checkpoint, and D13 requirement.
 
 ### 5.16 Documentation
 
@@ -462,8 +456,8 @@ Look for weak tests such as:
 - resume tests that only test “file exists”;
 - collision/count tests that trust summary fields;
 - mocked orchestration tests that bypass file alignment;
-- semantic evaluation derived from generated predictions;
-- full-run assertions that ignore failed/needs-review pairs; or
+- an invented D12 semantic/gold-set release gate or semantic oracle derived from predictions;
+- full-run assertions that collapse or ignore failed pairs, `needs_review`, or unresolved warnings;
 - tests requiring a LIMIT to be solved.
 
 Also reject tests stricter than the approved brief when they prohibit an allowed implementation.
@@ -507,7 +501,7 @@ At minimum, rerun:
 - every load-bearing command named by the testing handoff;
 - applicable formatter/lint/typecheck/import/build/schema checks;
 - artifact schema/count/collision validation scripts;
-- targeted semantic evaluation commands when owned by the step;
+- D12 release-policy conformance commands when owned by the step;
 - relevant pipeline/config dry runs or authorized full-run verification; and
 - read-only Git commands proving SHA, ancestry, diff, and clean candidate state.
 
@@ -653,15 +647,15 @@ Do not include speculative style observations as findings.
 
 ### 4. Requirement-by-requirement completion audit
 
-Account for current-step obligations, relevant decisions, invariants, tests, artifacts, and evaluation gates.
+Account for current-step obligations, relevant decisions, invariants, tests, artifacts, and release-policy gates. D12 supplies no pre-release semantic-evaluation gate.
 
 ### 5. Code/config/documentation review summary
 
 Summarize correctness, architecture, curriculum-neutrality, determinism, compatibility, and documentation fidelity.
 
-### 6. Test and semantic-evaluation review summary
+### 6. Test and D12 release-policy review summary
 
-Summarize oracle quality, red-team strength, fixture diversity, semantic coverage, and unexecuted gaps.
+Summarize oracle quality, red-team strength, fixture diversity, D12 conformance, and unexecuted gaps without claiming measured semantic quality.
 
 ### 7. Commands and validation results
 
@@ -675,7 +669,7 @@ List legitimate later-step deferrals and accepted LIMITs. Do not confuse them wi
 
 #### If APPROVED FOR NEXT BUILD STEP
 
-Provide a concise next-step coding or testing task message containing the exact approved SHA and required role files/brief path.
+Provide a concise next-step coding or testing task message containing the exact approved SHA and required role files/brief path. After Step 25 approval, skip the explicitly deferred Step 26 and route directly to Step 27.
 
 #### If APPROVED — LP BUILD ORDER COMPLETE
 

@@ -50,7 +50,7 @@ If the selected role file or canonical brief is missing, unreadable, or ambiguou
 Each task/thread has one primary role. Do not silently substitute one role for another.
 
 - A request to implement production code, runtime config, pipeline integration, exporters, validators, or project documentation uses the **coding role**.
-- A request to create or modify automated tests, reduced regression fixtures, test helpers, semantic evaluation harnesses, or to execute/red-team a completed step uses the **testing role**.
+- A request to create or modify automated tests, reduced regression fixtures, test helpers, D12 release-policy conformance coverage, or to execute/red-team a completed step uses the **testing role**. A future semantic-evaluation harness requires a separately approved governance change.
 - A request for the final quality gate after implementation and testing uses the **reviewer role**.
 - A request for a walkthrough, explanation, comparison, ELI5, or interpretation of the brief/code/tests/artifacts uses the **explainer role**.
 - A request to change this file, a role instruction file, or the engineering brief is a **governance-only edit task**. Route it through `artifacts/instructions/coding_agent.md` in governance-edit mode unless the user explicitly selects another governance workflow. Only governance files may be edited, and the task must not be combined with production implementation or test authorship in the same thread.
@@ -69,16 +69,16 @@ If a prompt combines incompatible role-owned work, perform only the explicitly s
 
 The engineering brief defines Steps 0–29. Follow them in order.
 
-| Step(s) | Primary role                         | Notes                                                                                                                                             |
-|---------|--------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
-| 0       | coding agent in governance-edit mode | Record the user's decisions, update the brief consistently, and obtain the user's implementation OK. No production or test implementation begins. |
-| 1       | testing                              | Establish reduced six-curriculum regression fixtures and fixture validation without changing production behavior.                                 |
-| 2–23    | coding, then testing                 | Implement one reviewable production/configuration aspect, then independently red-team it.                                                         |
-| 24–25   | testing                              | Build the semantic evaluation harness and run the targeted curriculum matrix. Production remains read-only.                                       |
-| 26      | coding, then testing                 | Tune only configuration/instructions and universally valid generic thresholds justified by evidence.                                              |
-| 27      | testing                              | Run and validate all six complete pipelines. External LLM execution requires explicit user authorization.                                         |
-| 28      | coding, then testing                 | Update project documentation, then verify it against actual artifacts and accepted LIMITs.                                                        |
-| 29      | reviewer                             | Perform the final comprehensive release review. No implementation is owned by this step.                                                          |
+| Step(s) | Primary role                         | Notes                                                                                                                                              |
+|---------|--------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------|
+| 0       | coding agent in governance-edit mode | Record the user's decisions, update the brief consistently, and obtain the user's implementation OK. No production or test implementation begins.  |
+| 1       | testing                              | Establish reduced six-curriculum regression fixtures and fixture validation without changing production behavior.                                  |
+| 2–23    | coding, then testing                 | Implement one reviewable production/configuration aspect, then independently red-team it.                                                          |
+| 24–25   | testing                              | Add D12 release-policy conformance coverage and run the targeted six-curriculum structural/process matrix. Production remains read-only.           |
+| 26      | deferred                             | No v1 implementation or tuning work. After Step 25 reviewer approval, proceed directly to Step 27.                                                 |
+| 27      | testing                              | Run and validate all six complete pipelines. External LLM execution requires explicit user authorization.                                          |
+| 28      | coding, then testing                 | Update project documentation, then verify it against actual artifacts and accepted LIMITs.                                                         |
+| 29      | reviewer                             | Perform the final comprehensive release review. No implementation is owned by this step.                                                           |
 
 When a step contains both production and test obligations, the coding role completes only the production/configuration/documentation surface. The testing role independently creates and runs the required tests afterward.
 
@@ -86,14 +86,14 @@ Do not implement a later step early merely because it would make the current ste
 
 ## 4. Step 0 is a hard specification gate
 
-The current brief is a decision draft until every `DECIDE` item is resolved.
+The updated brief remains a pre-implementation governance candidate until every decision payload is settled consistently and the user explicitly approves it for implementation.
 
 No Step 1–29 build-order work may begin until all of the following are true:
 
 1. every Section 3 `DECIDE` item has an explicit, complete user decision;
 2. every option-required matrix, ordered value, threshold, attribution value, reviewer authority, exception record, and other concrete policy payload is recorded—an option letter alone is insufficient where the decision text requires more;
 3. the engineering brief has been updated so the chosen behavior is written as `SETTLED`;
-4. dependent core-model, illustrative-config, invariant, build-order, and test language has been updated consistently;
+4. dependent core-model, configuration-semantics, invariant, build-order, and test language has been updated consistently;
 5. no implementation-governing placeholder such as `TBD`, `...`, or an angle-bracket value remains;
 6. no unresolved `DECIDE` marker remains for implementation behavior; and
 7. the user has explicitly approved the updated brief for implementation.
@@ -132,6 +132,8 @@ testing/evaluation or pipeline validation
 ```
 
 Step 29 is the terminal comprehensive reviewer gate.
+
+Step 26 is an explicit D12 deferral, not a coding/testing deliverable. It creates no candidate commit or reviewer gate. Confirmed Step 25 defects return to the earliest owning step through the ordinary remediation workflow; otherwise the reviewer-approved Step 25 state is the predecessor for Step 27.
 
 Coding or testing completion alone never authorizes the next numbered step.
 
@@ -259,11 +261,14 @@ The following constraints apply across roles:
 - Framework-root fallback relationships for unresolved AS ancestry are not positive curricular evidence.
 - LP eligibility is independent of normalized statement type, leafness, and LC eligibility.
 - Candidate generation must be deterministic, explainable, and bounded before any LLM call.
+- The complete candidate and request populations must be validated, materialized, and count/fingerprint-aligned before any external LP LLM call.
 - No single signal—hierarchy, LC overlap, text similarity, code proximity, source order, or local rank—automatically publishes an edge.
 - LLM producer/checker responses are untrusted proposals. Deterministic code owns validation, reconciliation, endpoint containment, IDs, counts, and release status.
 - `no_relation`, `needs_review`, and processing failure remain distinct.
+- `needs_review` remains visible, never publishes, and does not block release; any failed pair after permitted retries/recovery halts LP under D13 with no count/rate tolerance.
 - Existing AS-only and AS+LC artifact schemas remain intact; AS+LC+LP outputs are additive.
 - Never hand-edit a generated final graph to make a run pass. Fix the earliest incorrect config, candidate, prompt, judgment, finalization, or validation stage and rerun.
+- V1 has no independent pre-release semantic/gold-set gate. Structural/process validity and producer/checker agreement must never be described as pedagogical correctness, and the accepted D12/D14 limitations must remain visible.
 
 ## 10. Scope discipline
 
