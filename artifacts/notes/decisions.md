@@ -266,6 +266,26 @@ Learning Commons documentation describes `relatesTo` as non-sequential and depic
 
 Raw relationship consumers that query only outgoing or only incoming edges will miss some `relatesTo` neighbors. Combined-graph documentation, ingestion checks, and examples must explicitly require symmetric lookup across both endpoint positions.
 
+## D6 — Same-pair relationship-type publication policy
+
+**Resolved option:** Option A — relationship types are mutually exclusive for one logical pair, with `buildsTowards` precedence.
+
+### Approved interpretation
+
+1. One D4 logical pair may publish at most one final LP relationship: one permitted `buildsTowards` direction, one canonical D5 `relatesTo`, or no relationship.
+2. When the reviewed pair evidence supports a permitted directional developmental relationship, the judgment publishes `buildsTowards` and does not also publish `relatesTo` for that unordered pair.
+3. `relatesTo` is the published alternative when the evidence supports substantive conceptual or skill coherence but does not justify a permitted developmental direction.
+4. `buildsTowards` precedence is a reconciliation rule between semantically supported relationship interpretations. It does not allow local rank, hierarchy, Learning Component overlap, text similarity, code proximity, source order, or any other nomination signal to create an edge automatically.
+5. `no_relation` remains the confident negative outcome, and `needs_review` remains the materially ambiguous or contradictory outcome. Neither publishes an edge.
+6. The D4 producer returns one complete single-valued pair judgment, and the checker evaluates the competing permitted interpretations together before accepting it or returning one complete corrected judgment.
+7. Python enforces relation exclusivity, D1 type-pair permission, D2 direction/rank permission, D5 canonical `relatesTo` serialization, endpoint containment, and exact pair/request identity.
+8. Consumers seeking a broad conceptual neighborhood must query the union of `buildsTowards` and `relatesTo` when they want progression pairs included; the graph does not redundantly add `relatesTo` to every progression pair.
+9. D7 will determine how developmental extension, meaningful recurrence, and generic repetition map into the mutually exclusive relationship outcomes.
+
+### Rationale
+
+`buildsTowards` is the more specific assertion when directional developmental support is justified. Publishing an additional `relatesTo` row would usually repeat the broader fact that the pair is meaningfully connected, increase graph density and provenance counts, and weaken relation-choice evaluation without adding a distinct instructional claim.
+
 ## Next unresolved decision
 
-D6 — Same-pair relationship-type publication policy.
+D7 — Recurring-practice and repeated-skill mapping.
