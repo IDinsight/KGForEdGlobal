@@ -329,6 +329,31 @@ The three-way policy preserves the distinct meanings of `buildsTowards` and `rel
 
 An acyclic graph provides the clearest developmental traversal contract and prevents circular progression explanations. The D5/D7 `relatesTo` path already represents substantive mutual or recurring coherence without forcing it into a directed loop. Component-, edge-, and provenance-level reporting makes any violation directly auditable while avoiding unbounded enumeration of redundant cycle paths.
 
+## D9 — Transitive edge policy
+
+**Resolved option:** Option A — publish only directly adjudicated `buildsTowards` edges, with no automatic transitive closure or reduction.
+
+### Approved interpretation
+
+1. A `buildsTowards` relationship is eligible for publication only when its exact endpoint pair was deterministically nominated, assigned to one D4 request, directly adjudicated by the producer/checker path, and accepted under D1-D8.
+2. If `A -> B` and `B -> C` are published but the A/C pair was not independently accepted, Python does not create `A -> C` from reachability.
+3. If `A -> C` was independently nominated and accepted, Python retains that direct relationship even when an alternate accepted path such as `A -> B -> C` already connects the endpoints.
+4. Finalization performs neither transitive closure nor transitive reduction. Graph reachability is a consumer or graph-utility computation, not a relationship-publication rule.
+5. Every published edge retains its own candidate ID, request ID, producer/checker outcome, evidence summary, config/input fingerprints, deterministic relationship identity, and source-framework provenance.
+6. Multi-hop reachability does not count as a separate accepted judgment, published edge, or candidate-recall success. Candidate recall remains measured against the exact independently reviewed pair.
+7. D8 acyclicity remains mandatory for the complete directly adjudicated graph. The presence of an alternate path neither excuses a cycle nor authorizes silent deletion of an edge.
+8. `relatesTo` is unaffected and receives neither transitive closure nor transitive reduction.
+9. Validation must reject any published `buildsTowards` edge without its own accepted pair-level provenance, any silently omitted accepted edge, and any count mismatch among accepted final claims, standalone relationships, combined bundle relationships, and projections.
+10. Consumer documentation must distinguish a direct published assertion from multi-hop reachability and show how to compute upstream or downstream paths when needed.
+
+### Learning Commons alignment note
+
+Learning Commons documentation presents individual `buildsTowards` rows and demonstrates one-hop prerequisite/successor lookup while describing longer learning pathways as traversal. It does not prescribe transitive closure or reduction. This decision follows that direct-assertion model without claiming that Learning Commons formally mandates D9 Option A.
+
+### D9 accepted limitation
+
+The published DAG may contain both a direct edge and an alternate multi-hop path between the same endpoints. Consumers seeking a minimal path structure or complete upstream/downstream reachability must compute that view without changing the released evidence-level relationships.
+
 ## Next unresolved decision
 
-D9 — Transitive edge policy.
+D10 — Unresolved Academic Standards ancestry policy.
