@@ -308,6 +308,27 @@ Raw relationship consumers that query only outgoing or only incoming edges will 
 
 The three-way policy preserves the distinct meanings of `buildsTowards` and `relatesTo` while preventing generic repetition from becoming graph density. It supports genuine developmental extension in spiral curricula, meaningful reinforcement without overstated dependency, and explicit rejection of noisy recurring language or Learning Component reuse.
 
+## D8 — `buildsTowards` cycle policy
+
+**Resolved option:** Option A — the published `buildsTowards` graph must be acyclic.
+
+### Approved interpretation
+
+1. Every finalized `buildsTowards` relationship participates in one directed graph, and that complete graph must be a DAG before LP or combined validation can pass.
+2. Any directed cycle is a release-blocking validation failure. Diagnostic artifacts may remain inspectable, but `kg_run.json` and the combined validation state cannot report success.
+3. D2 rank and direction rules remain independently mandatory. Cross-rank backward edges fail D2 even before cycle policy is considered; under the approved one-axis profiles, any otherwise admissible cycle would therefore be composed of same-rank edges.
+4. D4 and D6 permit only one relationship direction for one unordered pair, so a reciprocal two-node `buildsTowards` cycle cannot be published. Cycle detection must still handle cycles of three or more SFIs and any future graph shape consistent with the approved pair contract.
+5. `relatesTo` relationships are conceptually symmetric and are excluded from directed `buildsTowards` cycle validation. Meaningful mutual or recurring coherence should follow D7 and use `relatesTo` when developmental direction is not justified.
+6. Producer/checker pair verification does not prove global acyclicity. Deterministic Python owns whole-graph cycle detection after final pair reconciliation.
+7. Cycle diagnostics must identify every cyclic strongly connected component and every final SFI and `buildsTowards` relationship participating in those components, with stable identifiers and links to pair/request/producer/checker provenance.
+8. For easy auditability, the validation report must include deterministic representative cycle paths for each cyclic component and reconcile their counts with the reported component, node, and relationship sets. It is not required to enumerate every possible simple cycle when their number is combinatorial.
+9. The pipeline must not silently delete an arbitrary edge, convert it to `relatesTo`, or hand-edit a final artifact to break a cycle. The earliest incorrect policy, prompt, judgment, finalization behavior, or approved semantic input must be corrected and the affected stages rerun.
+10. Any future manual semantic decision remains subject to this cycle validator and cannot waive acyclicity without reopening D8.
+
+### Rationale
+
+An acyclic graph provides the clearest developmental traversal contract and prevents circular progression explanations. The D5/D7 `relatesTo` path already represents substantive mutual or recurring coherence without forcing it into a directed loop. Component-, edge-, and provenance-level reporting makes any violation directly auditable while avoiding unbounded enumeration of redundant cycle paths.
+
 ## Next unresolved decision
 
-D8 — `buildsTowards` cycle policy.
+D9 — Transitive edge policy.
