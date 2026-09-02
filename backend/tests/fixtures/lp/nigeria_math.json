@@ -1,0 +1,50 @@
+{
+  "curriculum": "nigeria_math",
+  "distinctive_property": "explicit_grade_tree",
+  "expectations": {
+    "counts": {"items": 5, "learning_components": 1, "relationships_has_child": 5, "relationships_supports": 1},
+    "cross_grade_item_sets": [],
+    "direct_parent_sets": {
+      "dabaa607-6b47-5121-9b31-a742bb67c031": ["ea1bf379-42ef-5eb6-bbaa-e2eb65f50092"],
+      "97950040-531d-5afb-bb4c-ef1afc55cec8": ["dabaa607-6b47-5121-9b31-a742bb67c031"],
+      "5ed23f14-1ada-5165-9b43-65edcd838e1b": ["97950040-531d-5afb-bb4c-ef1afc55cec8"],
+      "1521c7be-6c15-598d-bf54-94fa9f26ed41": ["5ed23f14-1ada-5165-9b43-65edcd838e1b"],
+      "17c0e114-242d-5c77-9062-4ff8a85a4c7b": ["1521c7be-6c15-598d-bf54-94fa9f26ed41"]
+    },
+    "lc_alignments": {"2764c8b3-2e40-541b-99cc-41e840d8d133": ["17c0e114-242d-5c77-9062-4ff8a85a4c7b"]},
+    "required_identity_scope_values": {"Grade": ["PRIMARY ONE"]},
+    "required_statement_types": ["Grade", "Theme", "Sub-Theme", "Topic", "Performance Objective"],
+    "unresolved_item_ids": []
+  },
+  "framework": {"academic_subject": "Mathematics", "case_identifier_uuid": "ea1bf379-42ef-5eb6-bbaa-e2eb65f50092", "metadata": {"doc_key": "09d6b52b54b2f6b00d5279a58650d0ef10ab5a6a5d3da02d10b24c42edb1058a"}, "name": "9-Year Basic Education Mathematics Curriculum for Primary 1-3"},
+  "items": [
+    {"case_identifier_uuid": "dabaa607-6b47-5121-9b31-a742bb67c031", "description": "PRIMARY ONE", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {}, "source_page_indexes": [0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11]}, "normalized_statement_type": "Standard Grouping", "statement_code": null, "statement_type": "Grade"},
+    {"case_identifier_uuid": "97950040-531d-5afb-bb4c-ef1afc55cec8", "description": "THEME: MENSURATION AND GEOMETRY", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "PRIMARY ONE"}, "source_page_indexes": [7, 8, 9, 10]}, "normalized_statement_type": "Standard Grouping", "statement_code": null, "statement_type": "Theme"},
+    {"case_identifier_uuid": "5ed23f14-1ada-5165-9b43-65edcd838e1b", "description": "SUB-THEME: Primary Measures", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "PRIMARY ONE", "Theme": "MENSURATION AND GEOMETRY"}, "source_page_indexes": [7, 8, 9]}, "normalized_statement_type": "Standard Grouping", "statement_code": null, "statement_type": "Sub-Theme"},
+    {"case_identifier_uuid": "1521c7be-6c15-598d-bf54-94fa9f26ed41", "description": "2.  Length", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "PRIMARY ONE", "Theme": "MENSURATION AND GEOMETRY", "Sub-Theme": "Primary Measures"}, "source_page_indexes": [8]}, "normalized_statement_type": "Standard Grouping", "statement_code": null, "statement_type": "Topic"},
+    {"case_identifier_uuid": "17c0e114-242d-5c77-9062-4ff8a85a4c7b", "description": "Pupil should be able to: 4. measure length and distance in their natural units;", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "PRIMARY ONE", "Theme": "MENSURATION AND GEOMETRY", "Sub-Theme": "Primary Measures", "Topic": "2. Length"}, "source_page_indexes": [8]}, "normalized_statement_type": "Standard", "statement_code": null, "statement_type": "Performance Objective"}
+  ],
+  "learning_components": [
+    {"description": "Measure length in natural units", "identifier": "2764c8b3-2e40-541b-99cc-41e840d8d133", "metadata": {"source_page_indexes": [8], "source_sfi_uuids": ["17c0e114-242d-5c77-9062-4ff8a85a4c7b"]}}
+  ],
+  "relationships_has_child": [
+    {"identifier": "5b4835e5-0ab7-50a6-819c-c6e6810ea2de", "metadata": {"unresolved_root_fallback": false}, "relationship_type": "hasChild", "source_entity": "StandardsFramework", "source_entity_key": "case_identifier_uuid", "source_entity_value": "ea1bf379-42ef-5eb6-bbaa-e2eb65f50092", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "dabaa607-6b47-5121-9b31-a742bb67c031"},
+    {"identifier": "77eb6d3f-2e26-50cc-8bb5-46350d6c78e7", "metadata": {"unresolved_root_fallback": false}, "relationship_type": "hasChild", "source_entity": "StandardsFrameworkItem", "source_entity_key": "case_identifier_uuid", "source_entity_value": "dabaa607-6b47-5121-9b31-a742bb67c031", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "97950040-531d-5afb-bb4c-ef1afc55cec8"},
+    {"identifier": "3742e5e7-788d-5d8c-ba19-3955aadf3e28", "metadata": {"unresolved_root_fallback": false}, "relationship_type": "hasChild", "source_entity": "StandardsFrameworkItem", "source_entity_key": "case_identifier_uuid", "source_entity_value": "97950040-531d-5afb-bb4c-ef1afc55cec8", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "5ed23f14-1ada-5165-9b43-65edcd838e1b"},
+    {"identifier": "de561f04-7b5b-50a9-9522-f06d99a56d5f", "metadata": {"unresolved_root_fallback": false}, "relationship_type": "hasChild", "source_entity": "StandardsFrameworkItem", "source_entity_key": "case_identifier_uuid", "source_entity_value": "5ed23f14-1ada-5165-9b43-65edcd838e1b", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "1521c7be-6c15-598d-bf54-94fa9f26ed41"},
+    {"identifier": "f21466c8-fdc4-561a-ae68-975f80fef4b2", "metadata": {"unresolved_root_fallback": false}, "relationship_type": "hasChild", "source_entity": "StandardsFrameworkItem", "source_entity_key": "case_identifier_uuid", "source_entity_value": "1521c7be-6c15-598d-bf54-94fa9f26ed41", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "17c0e114-242d-5c77-9062-4ff8a85a4c7b"}
+  ],
+  "relationships_supports": [
+    {"identifier": "69e97a5b-2cf6-58a0-98bd-821be23aadfa", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "2764c8b3-2e40-541b-99cc-41e840d8d133", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "17c0e114-242d-5c77-9062-4ff8a85a4c7b"}
+  ],
+  "source_bundle": {
+    "bundle_sha256": "a468903e1cb118bb08cb5d6f9586e281b25efce147edf1eff0b66bb7486ce9e7",
+    "doc_key": "09d6b52b54b2f6b00d5279a58650d0ef10ab5a6a5d3da02d10b24c42edb1058a",
+    "entity_provenance_sections": ["framework", "items", "kg_run_manifest", "learning_components", "relationships_has_child"],
+    "framework_case_identifier_uuid": "ea1bf379-42ef-5eb6-bbaa-e2eb65f50092",
+    "object_counts": {"frameworks": 1, "learning_components": 186, "relationships_has_child": 242, "relationships_supports": 204, "standards_framework_items": 242},
+    "statement_type_counts": {"Grade": 3, "Performance Objective": 155, "Sub-Theme": 21, "Theme": 15, "Topic": 48},
+    "top_level_keys": ["entity_provenance", "framework", "items", "learning_components", "relationships_has_child", "relationships_supports", "summary", "unresolved_items", "validation_report"],
+    "unresolved_root_fallback_count": 0
+  }
+}

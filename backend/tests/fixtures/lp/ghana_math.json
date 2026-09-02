@@ -1,0 +1,42 @@
+{
+  "curriculum": "ghana_math",
+  "distinctive_property": "unresolved_fallback_and_code_anomaly",
+  "expectations": {
+    "counts": {"items": 3, "learning_components": 1, "relationships_has_child": 2, "relationships_supports": 1},
+    "cross_grade_item_sets": [],
+    "direct_parent_sets": {
+      "2535c2b3-2ad5-5ae3-9ec6-802572e2df35": ["61ff6c68-36c2-590a-95a2-d3f248117ca7"],
+      "8b40571f-deca-50b1-a101-295e4f31056b": ["ba89cec9-d58f-528b-aeba-b4879b9c9eb5"]
+    },
+    "lc_alignments": {"8d6774f1-101e-515d-bc23-e3d8f72611b3": ["8b40571f-deca-50b1-a101-295e4f31056b"]},
+    "required_identity_scope_values": {"Grade": ["BASIC 4", "BASIC 5"]},
+    "required_statement_types": ["Content Standard", "Indicator"],
+    "unresolved_item_ids": ["2535c2b3-2ad5-5ae3-9ec6-802572e2df35"]
+  },
+  "framework": {"academic_subject": "Mathematics", "case_identifier_uuid": "61ff6c68-36c2-590a-95a2-d3f248117ca7", "metadata": {"doc_key": "8d59d76cb439110ad9409e9c12561023df60d12f234ced7285796f7e320fd9fa"}, "name": "Mathematics Curriculum for Primary Schools (Basic 4 - 6)"},
+  "items": [
+    {"case_identifier_uuid": "2535c2b3-2ad5-5ae3-9ec6-802572e2df35", "description": "Multiply multi-digit numbers by 2-digit numbers efficiently", "metadata": {"audit_flags": ["same_code_different_content"], "audit_notes": ["Shares code_scope_key=None, canonical_code_type='indicator', and normalized_statement_code='b5.1.2.1.1' with another mintable merge group, but the source-visible descriptions/source_text differ. SFI finalization should mint separate deterministic final SFIs with source/text/provenance disambiguators and preserve this same-code/different-content evidence for manual review."], "identity_scope_values": {"Grade": "BASIC 5", "Strand": "Number"}, "source_page_indexes": [97]}, "normalized_statement_type": "Standard", "statement_code": "B5.1.2.1.1", "statement_type": "Indicator"},
+    {"case_identifier_uuid": "ba89cec9-d58f-528b-aeba-b4879b9c9eb5", "description": "Demonstrate an understanding of factors, multiples and squared numbers", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "BASIC 4", "Strand": "Number"}, "source_page_indexes": [29, 30, 31, 32]}, "normalized_statement_type": "Standard", "statement_code": "B4.1.1.3", "statement_type": "Content Standard"},
+    {"case_identifier_uuid": "8b40571f-deca-50b1-a101-295e4f31056b", "description": "Determine the highest common factor (HCF) of any two whole numbers between 1 and 50.", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "BASIC 4", "Strand": "Number"}, "source_page_indexes": [30]}, "normalized_statement_type": "Standard", "statement_code": "B4.1.1.3.2", "statement_type": "Indicator"}
+  ],
+  "learning_components": [
+    {"description": "Determine the highest common factor (HCF) of any two whole numbers between 1 and 50", "identifier": "8d6774f1-101e-515d-bc23-e3d8f72611b3", "metadata": {"source_page_indexes": [30], "source_sfi_uuids": ["8b40571f-deca-50b1-a101-295e4f31056b"]}}
+  ],
+  "relationships_has_child": [
+    {"identifier": "64cc37ab-7287-5e37-8494-5efefed04168", "metadata": {"unresolved_root_fallback": true}, "relationship_type": "hasChild", "source_entity": "StandardsFramework", "source_entity_key": "case_identifier_uuid", "source_entity_value": "61ff6c68-36c2-590a-95a2-d3f248117ca7", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "2535c2b3-2ad5-5ae3-9ec6-802572e2df35"},
+    {"identifier": "a6a27f13-7b47-5b5c-ae1d-a52ee51be8b6", "metadata": {"unresolved_root_fallback": false}, "relationship_type": "hasChild", "source_entity": "StandardsFrameworkItem", "source_entity_key": "case_identifier_uuid", "source_entity_value": "ba89cec9-d58f-528b-aeba-b4879b9c9eb5", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "8b40571f-deca-50b1-a101-295e4f31056b"}
+  ],
+  "relationships_supports": [
+    {"identifier": "f9809526-4a61-5dc7-9fb7-760f8d3b9a66", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "8d6774f1-101e-515d-bc23-e3d8f72611b3", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "8b40571f-deca-50b1-a101-295e4f31056b"}
+  ],
+  "source_bundle": {
+    "bundle_sha256": "2a77c429f60f7bd84cb89ef270fa253950e2e34e7c17c31e12ac809f1936ab80",
+    "doc_key": "8d59d76cb439110ad9409e9c12561023df60d12f234ced7285796f7e320fd9fa",
+    "entity_provenance_sections": ["framework", "items", "kg_run_manifest", "learning_components", "relationships_has_child"],
+    "framework_case_identifier_uuid": "61ff6c68-36c2-590a-95a2-d3f248117ca7",
+    "object_counts": {"frameworks": 1, "learning_components": 230, "relationships_has_child": 302, "relationships_supports": 273, "standards_framework_items": 302},
+    "statement_type_counts": {"Content Standard": 72, "Grade": 3, "Indicator": 184, "Strand": 12, "Sub-Strand": 31},
+    "top_level_keys": ["entity_provenance", "framework", "items", "learning_components", "relationships_has_child", "relationships_supports", "summary", "unresolved_items", "validation_report"],
+    "unresolved_root_fallback_count": 13
+  }
+}
