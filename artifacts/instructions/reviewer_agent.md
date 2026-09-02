@@ -113,7 +113,7 @@ For each load-bearing rule, ask:
 - Is local order inferred from labels or US grades?
 - Can an evidence signal directly become an edge?
 - Can producer/checker output leak endpoints or omit pairs?
-- Can stale artifacts be reused under mismatched fingerprints?
+- Can stale artifacts be reused when actual material inputs or content hashes differ?
 - Can `kg_run.json` report success after LP/combined validation failure?
 - Are existing AS and AS+LC outputs truly unchanged?
 - Are generated full-run artifacts tied to the candidate code/config/source state?
@@ -167,7 +167,7 @@ When the step relies on generated pipeline outputs or evaluation evidence, state
 - config paths and hashes;
 - source document hashes/doc keys;
 - result directory paths;
-- run manifests/fingerprints;
+- run manifests and actual material content hashes/identifiers;
 - artifact checksums or immutable manifest;
 - commands executed;
 - whether live LLM calls occurred; and
@@ -277,11 +277,13 @@ Reject lexical sorting, hard-coded grade parsing, or dependence on Learning Comm
 
 Verify LP eligibility is not implicitly defined by leafness, normalized type, LC eligibility, or exact LC reuse.
 
-Verify all six configs exactly reproduce the D1 closed-world matrices and D2 coordinate sources/orders/missing/same-rank/gap rules. Verify D10 is the required profile-wide two-state policy with no per-SFI exception/sidecar path and that all six initial profiles include every otherwise-eligible unresolved SFI with warnings while never treating fallback-root placement as evidence.
+Verify all six configs exactly reproduce the D1 closed-world matrices and D2 coordinate types/orders. Verify Python—not repeated runtime fields—owns canonical coordinate lookup and the settled D2 missing/invalid-coordinate, same-rank, direction, and gap rules. Verify D10 is the required profile-wide two-state policy with no per-SFI exception/sidecar path and that all six initial profiles include every otherwise-eligible unresolved SFI with warnings while never treating fallback-root placement as evidence.
 
 ### 5.8 Candidate generation
 
 Verify candidate generation is deterministic, explainable, and bounded before any LLM call.
+
+Verify runtime candidate configuration contains only explicit per-SFI and total budgets. Ranking inputs, precedence, sort directions, missing-value handling, and tie-breaking must be code-owned rather than profile-selectable.
 
 Inspect:
 
@@ -290,12 +292,12 @@ Inspect:
 - pair orientation;
 - deterministic IDs;
 - named evidence features;
-- rank/tie-breaking;
-- per-rule/per-node/global budgets;
+- code-owned stable ranking and total tie-breaking;
+- configured per-SFI/total budgets;
 - stable behavior under input reordering;
 - audit-flag treatment;
 - candidate-summary counts; and
-- chosen D3 technology.
+- the built-in D3 policy and non-embedding technology boundary.
 
 No feature may directly publish an edge.
 
@@ -314,7 +316,7 @@ Verify:
 - checker corrections are complete responses;
 - `no_relation`, `needs_review`, and failure remain distinct;
 - confidence cannot bypass the checker;
-- resume files align exactly by deterministic prefix/fingerprint; and
+- resume files align exactly by deterministic prefix and actual material-input/artifact hashes or identifiers; and
 - D13's no-tolerance halt, complete pre-call candidate/request materialization, separate deterministic draft/verdict/final prefixes, and earliest-unfinished-stage resume are enforced.
 
 Do not treat structured model output as trusted merely because Pydantic parsed it.
@@ -345,7 +347,7 @@ Verify every accepted relationship resolves to:
 - checker verdict/correction;
 - evidence summary;
 - framework/doc key;
-- config/input/prompt/model/policy fingerprints;
+- effective-config/input/prompt content hashes and actual model-settings identifiers;
 - deterministic relationship UUID; and
 - settled author/provider/license/attribution metadata.
 
@@ -371,13 +373,13 @@ A report saying `passed=true` is not enough. Inspect the validator and independe
 
 ### 5.13 Resume, reuse, and run status
 
-Verify prefix-safe resume and stale-fingerprint rejection.
+Verify code-owned prefix-safe resume and stale-input rejection without runtime checkpoint, resume, fingerprint-selection, or mismatch-policy fields.
 
 Test/review changes to:
 
 - `kgs.lp` config;
 - upstream bundle;
-- candidate algorithm/version;
+- a separately governed candidate-policy replacement, for which affected artifacts must be deleted and regenerated rather than reused;
 - prompt/model settings;
 - request batching/order;
 - response files;
@@ -411,7 +413,7 @@ For Step 24, Step 25, Step 27, and Step 29, verify:
 - D13 processing failures remain distinct and any failed pair blocks success;
 - structural/process validation and producer/checker agreement are never presented as pedagogical correctness;
 - the absence of independent pre-release semantic validation is disclosed as the accepted D12 LIMIT;
-- optional post-release audits, when present, record their actual reviewed population/sampling, reviewer/time, findings/rationale, affected IDs, and release/policy fingerprints; and
+- optional post-release audits, when present, record their actual reviewed population/sampling, reviewer/time, findings/rationale, affected IDs, and released artifact/effective-config content hashes; and
 - findings follow D12/D14 earliest-stage remediation and rerun rather than hand-edited graphs.
 
 Step 24 must test that release-policy contract with deterministic fixtures/fakes rather than inventing a semantic oracle. Step 25 must exercise, without a semantic pass/fail claim:
@@ -423,7 +425,7 @@ Step 24 must test that release-policy contract with deterministic fixtures/fakes
 - Rwanda noisy generic LC reuse; and
 - Ghana English recurrence versus developmental extension.
 
-Step 26 is explicitly deferred and creates no implementation, candidate, or reviewer gate; confirmed Step 25 defects return to the earliest owner. Full-run validation must use exact candidate code/config/source fingerprints and the approved `LLM_KG_MODEL` setup while retaining every structural, provenance, count, collision, checkpoint, and D13 requirement.
+Step 26 is explicitly deferred and creates no implementation, candidate, or reviewer gate; confirmed Step 25 defects return to the earliest owner. Full-run validation must record the exact candidate code SHA plus config/source content hashes and use the approved `LLM_KG_MODEL` setup while retaining every structural, provenance, count, collision, checkpoint, and D13 requirement.
 
 ### 5.16 Documentation
 

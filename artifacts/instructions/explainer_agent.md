@@ -51,7 +51,7 @@ The current codebase is authoritative for what the implementation **currently do
 
 Runtime configs are authoritative for the curriculum-specific policy they actually declare, once they validate under the current schema.
 
-Generated artifacts are evidence of what a particular run produced under a particular source/config/model/fingerprint. They are not universal product semantics.
+Generated artifacts are evidence of what a particular run produced under particular source/config/model inputs and content hashes. They are not universal product semantics.
 
 Tests are executable claims and evidence of coverage. They are not specification authority.
 
@@ -87,7 +87,7 @@ What a particular curriculum profile asks generic code to do.
 
 ### Generated artifacts
 
-What a particular run emitted, including its counts, unresolved items, provenance, validation state, and fingerprints.
+What a particular run emitted, including its counts, unresolved items, provenance, validation state, and material content hashes.
 
 ### Tests and evaluation
 
@@ -160,7 +160,7 @@ Before answering, determine whether the user is asking about:
 - one curriculum's behavior;
 - a comparison across curricula;
 - one test/evaluation result;
-- one failure, resume, or stale-fingerprint path;
+- one failure, resume, or stale-input path;
 - one reviewer/testing finding; or
 - the end-to-end architecture.
 
@@ -235,7 +235,7 @@ Explain the settled pair/finalization contract together when relevant:
 - D8 requires the complete `buildsTowards` graph to be acyclic and reports deterministic cyclic-component/node/edge/provenance diagnostics rather than silently dropping edges; and
 - D9 publishes only directly adjudicated edges, performs neither transitive closure nor reduction, and leaves reachability to consumers.
 
-For D11 metadata, use the exact values: `author = "LLM generated"`, `provider = "IDinsight"`, the validated source-framework license copied verbatim, and the exact inference-disclosing attribution template from the brief with only the source attribution statement substituted. IDinsight is the organizational approver, and the complete source-framework, endpoint, adjudication, evidence, and fingerprint provenance remains attached.
+For D11 metadata, use the exact configured values: `author = "LLM generated"`, `provider = "IDinsight"`, the inference-disclosing attribution template, and IDinsight as organizational approver. Explain that Python—not runtime selector fields—copies the validated source-framework license verbatim, performs the single approved attribution substitution, and attaches the complete required source-framework, endpoint, adjudication, evidence, and material-content-hash provenance.
 
 ### 5.3 Candidate is not edge
 
@@ -264,6 +264,8 @@ published relationship or explicit no-edge/review outcome
 
 Candidate nomination is a recall mechanism. It is not semantic truth.
 
+Runtime configuration supplies only per-SFI and total candidate budgets. The built-in Python policy owns evidence handling, ranking-input precedence, sort directions, missing-value behavior, and the final total tie-breaker; profiles cannot select or reorder them.
+
 ### 5.4 Generic mechanics versus curriculum policy
 
 Explain the boundary explicitly:
@@ -273,11 +275,12 @@ Python owns                         kgs.lp owns
 -----------                         -----------
 strict validation                   participating statement types
 DAG-safe indexing                   allowed type pairings
-stable IDs/fingerprints             local grade/class/stage order
-bounded retrieval machinery         same-level progression policy
-producer/checker orchestration      curriculum-specific evidence use
-endpoint/count validation           curriculum prompt instructions
-artifact writing                    unresolved-context policy
+canonical coordinate mechanics      coordinate statement type/order
+stable IDs/ranking/content hashes   candidate budgets
+built-in bounded candidate policy   evidence/request limits
+producer/checker orchestration      curriculum prompt instructions
+endpoint/count validation           unresolved-context policy
+artifact writing                    attribution/ownership metadata
 ```
 
 Do not claim that the code “knows” what `Class`, `Basic`, `Primary`, `P1`, `Indicator`, or `Content` universally means.
@@ -295,9 +298,9 @@ Ghana English:  BASIC 1 < BASIC 2 < BASIC 3
 Pratham:  Class IX < Class X
 ```
 
-Explain that some curricula encode level in scope metadata, some as hierarchy nodes, and some in both. Generic code follows the configured canonical local coordinate and never lexical-sorts labels.
+Explain that some curricula encode level in scope metadata, some as hierarchy nodes, and some in both. Runtime configuration supplies the local coordinate statement type and exact order; generic Python resolves the canonical identity-scope value and never lexical-sorts labels.
 
-Explain the uniform D2 behavior: a missing coordinate excludes `buildsTowards` but retains otherwise-eligible `relatesTo`; an unknown, ambiguous, or conflicting coordinate fails validation; same-rank `buildsTowards` is allowed; different-rank direction is lower-to-higher with no maximum forward gap; and `relatesTo` may span any configured gap or missing coordinates.
+Explain the uniform D2 behavior: a missing coordinate excludes `buildsTowards` but retains otherwise-eligible `relatesTo`; an unknown, ambiguous, or conflicting coordinate fails validation; same-rank `buildsTowards` is allowed; different-rank direction is lower-to-higher with no maximum forward gap; and `relatesTo` may span any rank gap or missing coordinates.
 
 When D1 matters, name the closed-world same-type grains rather than saying “all Standards”: Madhi `Content`; Nigeria `Performance Objective`; Pratham `NCERT Learning Outcome`, `Content Domain Specific Learning Outcome`, and `Indicator`; Rwanda its five settled competence/objective types; and Ghana mathematics/English `Content Standard` and `Indicator`. Every cross-type, grouping, omitted, and future unconfigured pair is excluded.
 
@@ -378,7 +381,7 @@ When relevant, explain:
 - `no_relation` versus `needs_review` versus processing failure;
 - confidence as audit data rather than automatic acceptance;
 - deterministic IDs; and
-- resume/fingerprint behavior.
+- resume/material-input-integrity behavior.
 
 Do not imply that producer/checker agreement proves pedagogical truth.
 
@@ -424,7 +427,7 @@ For each artifact, explain:
 - what stage writes it;
 - what inputs it derives from;
 - whether it is an LLM proposal, deterministic result, audit record, or consumer output;
-- how it is fingerprinted/reused;
+- how its actual material inputs are hashed and reused;
 - what later stage consumes it; and
 - what validation reconciles its counts.
 
@@ -440,15 +443,15 @@ as_lc_lp_*  = Academic Standards + Learning Components + Learning Progressions
 
 Since LP adds no nodes, the AS+LC+LP node file normally has the same logical node set as AS+LC, while the relationship file adds `buildsTowards` and `relatesTo`.
 
-## 9. Explain determinism, resume, and fingerprints concretely
+## 9. Explain determinism, resume, and content hashes concretely
 
 Use “same inputs, same identity” as the mental model, but explain what counts as an input.
 
 Potentially material inputs include:
 
-- upstream AS+LC bundle/fingerprints;
+- upstream AS+LC bundle content;
 - `kgs.lp` policy;
-- candidate algorithm/version;
+- serialized candidate content;
 - prompt/model settings;
 - request ordering/batching;
 - producer/checker responses;
@@ -459,10 +462,10 @@ Explain prefix-safe resume as:
 
 ```text
 existing progress is reusable only when it is the exact valid beginning
-of the deterministic stage-specific sequence for the current fingerprints
+of the deterministic stage-specific sequence for the current material inputs
 ```
 
-Also explain the settled D13 sequence: the complete candidate and request populations are validated/materialized before external calls; producer drafts, checker verdicts, and reconciled responses are separate validated contiguous prefixes; failures are separate; any failed pair after permitted retries/recovery halts LP; and `overwrite=false` resumes at the earliest unfinished stage without repeating valid completed calls. Gaps, duplicates, out-of-order/truncated rows, misalignment, and stale fingerprints fail closed. Do not describe “file exists” as sufficient for reuse.
+Also explain the settled D13 sequence: the complete candidate and request populations are validated/materialized before external calls; producer drafts, checker verdicts, and reconciled responses are separate validated contiguous prefixes; failures are separate; any failed pair after permitted retries/recovery halts LP; and `overwrite=false` resumes at the earliest unfinished stage without repeating valid completed calls. Gaps, duplicates, out-of-order/truncated rows, misalignment, and hashes or identifiers showing stale material inputs fail closed. These are code-owned invariants, not runtime checkpoint/resume/fingerprint policy. Candidate-policy replacement requires deletion and regeneration of affected artifacts rather than a version compatibility check. Do not describe “file exists” as sufficient for reuse.
 
 Explain that stable serialization order aids reproducibility, but line order is not graph semantics.
 
@@ -488,13 +491,13 @@ Important LP test categories include:
 - LP eligibility independent of leaf/normalized/LC selection;
 - deterministic pair IDs and stable ordering;
 - bounded candidate budgets and named evidence;
-- deterministic nomination/non-nomination fixtures that exercise D3 strategies without claiming a recall metric;
+- deterministic nomination/non-nomination fixtures that exercise the built-in D3 candidate policy without claiming a recall metric;
 - exact request/response coverage and endpoint containment;
 - producer/checker evidence parity;
 - settled relation/direction/cycle/transitivity behavior;
 - deterministic edge IDs and metadata;
 - provenance/count/collision reconciliation;
-- stale resume/fingerprint rejection;
+- stale-input resume rejection;
 - AS/AS+LC backward compatibility; and
 - D12 release-policy conformance and the six-curriculum structural/process matrix.
 
@@ -575,7 +578,7 @@ State that a concrete answer is not yet available when:
 - the relevant code/config/artifact is unavailable;
 - the checked-out code is incomplete or internally inconsistent;
 - a test oracle conflicts with the brief and governing text does not resolve it;
-- a run lacks the fingerprints/evidence needed to attribute behavior;
+- a run lacks the content hashes/evidence needed to attribute behavior;
 - a semantic claim would require unsupported pedagogical inference; or
 - several unresolved branches remain possible.
 
@@ -607,7 +610,7 @@ When explaining config, name the actual profile path and field.
 
 When explaining tests, name the actual test file and test/group.
 
-When explaining artifacts, name the result directory and relevant artifact file, plus run/fingerprint context when available.
+When explaining artifacts, name the result directory and relevant artifact file, plus actual run/input/content-hash context when available.
 
 Do not invent line numbers, fields, functions, or counts you have not inspected.
 

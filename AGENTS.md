@@ -173,7 +173,7 @@ Full curriculum result directories are not committed. When generated outputs are
 - exact runtime config path and hash;
 - source PDF/document key or hash;
 - result directory path;
-- run manifest and fingerprint identifiers;
+- run manifest and actual material content hashes/identifiers;
 - commands used;
 - whether external LLM calls occurred; and
 - checksums or a reproducible manifest for the artifacts under review.
@@ -256,12 +256,16 @@ The following constraints apply across roles:
 - `hasChild` expresses curricular hierarchy/decomposition and is not automatically progression.
 - No country, organization, subject, grade label, statement type, or hierarchy shape may be hard-coded into generic LP Python.
 - Curriculum-specific semantics belong in required `kgs.lp` runtime configuration.
+- Runtime configuration carries only genuine curriculum-specific or operational choices. Universal settled behavior with one permitted value is code-owned and must not be repeated as selector or literal-only fields.
+- Under the current brief, Python owns D2 canonical-coordinate and fixed rank/missing-value mechanics, the D3 candidate evidence/ranking/tie-breaking procedure, D11 license-inheritance and required-provenance mechanics, and D13 checkpoint/resume/stale-input behavior. `kgs.lp` still explicitly configures the D2 coordinate type/order, D3 per-SFI and total candidate budgets, D11 attribution/ownership values, and D13 retry counts.
 - Local curriculum order is authoritative; code must not derive progression order by lexical label sorting or by assuming US grade enums.
 - AS hierarchies may be trees or DAGs. Code and tests must not assume one parent or one ancestor path.
 - Framework-root fallback relationships for unresolved AS ancestry are not positive curricular evidence.
 - LP eligibility is independent of normalized statement type, leafness, and LC eligibility.
 - Candidate generation must be deterministic, explainable, and bounded before any LLM call.
-- The complete candidate and request populations must be validated, materialized, and count/fingerprint-aligned before any external LP LLM call.
+- D3 uses one built-in deterministic non-embedding candidate policy. Runtime configuration must not select its algorithm, strategies, technology, enabled signals, ranking/tie-breaking, fingerprint inputs, or implementation version. Replacing that policy is separately governed and requires deletion and regeneration of affected artifacts rather than cross-implementation reuse.
+- The complete candidate and request populations must be validated, materialized, and count/content-hash-aligned before any external LP LLM call.
+- Integrity and reuse use hashes/identifiers derived from actual material inputs and artifacts, not manually maintained candidate-policy versions or configurable fingerprint-input lists.
 - No single signal—hierarchy, LC overlap, text similarity, code proximity, source order, or local rank—automatically publishes an edge.
 - LLM producer/checker responses are untrusted proposals. Deterministic code owns validation, reconciliation, endpoint containment, IDs, counts, and release status.
 - `no_relation`, `needs_review`, and processing failure remain distinct.

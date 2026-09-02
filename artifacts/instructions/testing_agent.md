@@ -222,16 +222,17 @@ Test:
 - when `kgs` exists, `as`, `lc`, `lp`, and `metadata` are all required;
 - unknown fields are rejected;
 - final `kgs.lp` fields/types/defaults match settled decisions;
+- the candidate policy requires only explicit per-SFI and total budgets;
 - LP statement types exist in the same curriculum's AS policy;
 - local developmental values are recognized/canonical;
 - duplicate or missing local-order entries fail;
 - invalid statement-type pair matrices fail;
 - D10's required two-state unresolved policy rejects missing/unknown values and any per-SFI selector/exception/sidecar field;
-- contradictory relation/direction/unresolved/D13 checkpoint policies fail, and any D14 semantic-override field is rejected;
+- runtime fields that attempt to override code-owned D2 coordinate mechanics, D3 algorithm/strategy/technology/signal/ranking/tie-breaking/version behavior, D11 license/provenance requirements, or D13 checkpoint/resume/stale-input behavior are rejected, as is any D14 semantic-override field;
 - all six example configs validate; and
 - a config from one curriculum cannot silently reference another curriculum's values.
 
-Use direct Pydantic validation for load-time rules and targeted LP eligibility/runtime tests for warning propagation and material fingerprint invalidation; do not rely only on CLI success.
+Use direct Pydantic validation for load-time rules and targeted LP eligibility/runtime tests for warning propagation and invalidation by changed actual material inputs; do not rely only on CLI success.
 
 ### 7.2 Reduced six-curriculum fixtures
 
@@ -285,7 +286,7 @@ Also test:
 - unknown, ambiguous, and conflicting values fail validation for both relationships;
 - same-rank `buildsTowards` is permitted;
 - cross-rank `buildsTowards` is lower-to-higher only with no maximum forward gap;
-- `relatesTo` is allowed at the same rank, across every configured gap, and with one/both coordinates missing;
+- `relatesTo` is allowed at the same rank, across any rank gap, and with one/both coordinates missing;
 - input order changes; and
 - labels whose lexical order differs from configured developmental order.
 
@@ -340,7 +341,7 @@ Test each signal independently and in combination:
 - code/prefix/source-order evidence;
 - audited code anomaly downweight/ignore behavior;
 - unresolved fallback exclusion;
-- curriculum-configured signal enable/weight rules; and
+- the built-in candidate policy's fixed signal handling and captured triggering values; and
 - named nomination reasons with triggering values.
 
 No feature test should assert that the feature directly emits a relationship.
@@ -350,14 +351,14 @@ No feature test should assert that the feature directly emits a relationship.
 Test:
 
 - deterministic union across evidence rules;
-- top-k/per-source/per-target/per-rule/global budgets as settled;
+- configured per-SFI and global candidate budgets as settled;
 - exact boundary values: 0, 1, limit, limit+1;
-- deterministic tie-breaking;
+- deterministic code-owned ranking and total tie-breaking;
 - dedup across rules;
 - budget application before request/LLM construction;
 - stable snapshots under input reordering;
 - summary reason counts; and
-- known deterministic nomination/non-nomination fixture pairs that exercise each strategy without claiming an independent recall metric.
+- known deterministic nomination/non-nomination fixture pairs that exercise the built-in candidate policy without claiming an independent recall metric.
 
 Include a sufficiently large synthetic cohort to detect implementations that construct all pairs before trimming.
 
@@ -372,7 +373,7 @@ Test:
 - all approved parent paths included within bounds;
 - LC evidence limits;
 - source/audit/provenance evidence limits;
-- config/input/model/prompt fingerprints;
+- effective-config/input/prompt content hashes and actual model-settings identifiers;
 - no out-of-scope global graph dump;
 - endpoint identity consistency; and
 - request round-trip schema validation.
@@ -414,7 +415,7 @@ Test interrupted JSONL prefixes at:
 - missing middle row;
 - reordered row;
 - stale request ID;
-- stale config/input/prompt/model fingerprint;
+- stale effective-config/input/prompt content hash or model-settings identifier;
 - malformed trailing line; and
 - response count mismatch.
 
@@ -428,7 +429,7 @@ Verify:
 - complete candidates/requests exist and reconcile before the first external call;
 - producer, checker, and reconciled response files are separately validated contiguous prefixes;
 - resume begins at the earliest unfinished stage without repeating valid completed calls;
-- gaps, duplicates, order changes, truncation, misalignment, and stale fingerprints fail closed;
+- gaps, duplicates, order changes, truncation, misalignment, and stale material inputs fail closed without runtime mismatch-policy selectors;
 - strict six-run release behavior follows settled D13; and
 - failures remain visible in artifacts and `kg_run.json` status.
 
@@ -527,14 +528,14 @@ Verify:
 - success is impossible after LP/combined validation failure; and
 - overwrite/resume flags flow correctly.
 
-### 7.17 Final-bundle reuse and stale fingerprints
+### 7.17 Final-bundle reuse and stale inputs
 
 Test `overwrite=false` behavior for:
 
 - exact match reuse;
 - changed `kgs.lp` config;
 - changed upstream bundle;
-- changed candidate algorithm/version;
+- a separately governed candidate-policy replacement, which requires affected artifacts to be deleted and regenerated rather than reused;
 - changed prompt/model setting;
 - changed request batching/order when material;
 - changed response/judgment;
@@ -555,7 +556,7 @@ Step 24 uses deterministic fixtures/fakes to prove the settled v1 release contra
 - any actual processing failure still halts LP under D13;
 - no semantic gold set, human-review sample, audit cadence, semantic metric, numeric threshold, or human semantic approval is required by code, config, tests, release scripts, or documentation;
 - structural/process validation and producer/checker agreement are not labeled pedagogical correctness;
-- optional post-release audit findings retain reviewer/time/population-or-sampling/findings/rationale/affected IDs/release fingerprints when an audit is actually recorded; and
+- optional post-release audit findings retain reviewer/time/population-or-sampling/findings/rationale/affected IDs/released-artifact and effective-config content hashes when an audit is actually recorded; and
 - audit findings and D14 findings route to earliest-stage remediation and rerun rather than directly editing generated relationships.
 
 Do not invent a semantic oracle to strengthen this step. The absence of independent pre-release semantic validation is an accepted D12 LIMIT that must be disclosed, not a missing test to fill.
@@ -587,11 +588,11 @@ For each run record:
 - model identifier from run metadata;
 - command and environment assumptions without secrets;
 - result directory;
-- run manifest/fingerprints;
+- run manifest and actual material content hashes/identifiers;
 - usage/failure summary;
 - AS, AS+LC, and AS+LC+LP validation state;
 - artifact checksums;
-- complete candidate/request materialization and count/fingerprint alignment;
+- complete candidate/request materialization and count/content-hash alignment;
 - validated producer/checker/reconciled deterministic-prefix checkpoint state; and
 - visible `needs_review` and unresolved-warning counts.
 
@@ -890,7 +891,7 @@ When applicable, account for every originating production, cross-step, or review
 
 ### 11. Generated evidence
 
-For testing-primary execution, report candidate SHA, config/source hashes, result paths, run manifests/fingerprints, model/usage metadata, artifact checksums, and validation/evaluation outcomes.
+For testing-primary execution, report candidate SHA, config/source hashes, result paths, run manifests and actual material identifiers, model/usage metadata, artifact checksums, and validation/evaluation outcomes.
 
 ### 12. Handoff based on verdict
 
@@ -937,3 +938,5 @@ Write tests and validation that catch plausible wrong LP implementations—not t
 Ensure all test classes/functions/methods have named arguments in alphabetical order (unless the function/method has exactly one argument, then positional argument is allowed).
 Ensure all test functions, classes, and methods are listed in alphabetical order within each file unless it will introduce coding errors (e.g, Pydantic schema validators are sometimes executed in a logical order rather than an alphabetical order).
 Ensure all test functions, classes, and methods follow the same NumPy docstring style as the existing codebase. Do not invent a new docstring style.
+Any class or function used only within its defining module must be prefixed with `_` to identify it as private and not intended for external import.
+Code comments and docstrings must describe the implementation contract in clear domain language. They must not reference opaque governance decision identifiers such as D1/D3/D13 or describe build-order timing such as “not implemented until Step X.” Comments/docstrings should be updated when implementation behavior changes instead of carrying temporary build-stage commentary.

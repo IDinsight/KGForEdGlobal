@@ -224,7 +224,7 @@ Generic code may implement:
 - bounded retrieval and ranking machinery;
 - producer/checker orchestration;
 - endpoint containment and exact coverage;
-- reconciliation, provenance, fingerprints, counts, and validation;
+- reconciliation, provenance, material content hashes, counts, and validation;
 - resume/reuse behavior; and
 - combined AS+LC+LP export.
 
@@ -306,7 +306,7 @@ LP eligibility is independent of:
 
 Use only the approved `kgs.lp` participation/pair policy.
 
-Local developmental order must come from the approved curriculum config. Never derive it by lexical sorting or by assuming a US PK–12 enum.
+Local developmental coordinate type and ordered values must come from the approved curriculum config. Never derive order by lexical sorting or by assuming a US PK–12 enum. Python owns canonical identity-scope lookup and the settled missing/invalid-coordinate, same-rank, direction, and rank-gap behavior; do not add runtime fields that restate or override those invariants.
 
 ### 6.6 Candidate generation
 
@@ -319,11 +319,11 @@ Candidate generation must be:
 - explainable through named nomination reasons and captured values;
 - stable under irrelevant input ordering;
 - constrained by approved statement-type and direction policies; and
-- fingerprinted.
+- content-hashed from actual material inputs and artifacts.
 
 Evidence such as hierarchy context, local rank, LC overlap, LC semantic relation, text similarity, code/source order, or audit flags may nominate a pair. No evidence feature may directly publish an edge.
 
-Do not introduce embeddings, ANN infrastructure, or LLM nomination in v1. Settled D3 authorizes deterministic named non-embedding strategies and a future extension boundary only.
+Do not introduce embeddings, ANN infrastructure, or LLM nomination in v1. Settled D3 authorizes one built-in deterministic non-embedding candidate policy. Runtime configuration supplies only explicit per-SFI and total candidate budgets. Python owns evidence handling, ranking, tie-breaking, and budget-application order; do not add runtime candidate algorithm, strategy, technology, enabled-signal, ranking/tie-breaking, fingerprint-group, or implementation/version selectors. There is no separately maintained internal candidate-policy version. A future replacement requires a separately approved build step that removes or replaces the prior implementation; the user deletes and regenerates affected artifacts rather than relying on cross-implementation reuse compatibility.
 
 ### 6.7 LLM producer/checker boundary
 
@@ -346,15 +346,15 @@ Confidence and rationale are audit data. They must not bypass checker or structu
 
 The checker must receive the same bounded evidence as the producer plus the producer draft. Do not give it hidden global graph context.
 
-### 6.8 Determinism, fingerprints, and resume
+### 6.8 Determinism, content hashes, and resume
 
 Determinism is a product contract, not merely a testing convenience.
 
 Use explicit stable sorting and deterministic UUIDv5 identities where the brief requires them.
 
-Before any external LP LLM call, the complete candidate and request populations must be validated, materialized, and reconciled. Every resumable producer/checker/reconciliation stage must reject stale or misaligned progress. Existing JSONL may be reused only when it forms the valid deterministic stage-specific prefix for the current request sequence and fingerprints; failures remain separate, and resume starts at the earliest unfinished stage without repeating valid completed calls.
+Before any external LP LLM call, the complete candidate and request populations must be validated, materialized, and reconciled. Every resumable producer/checker/reconciliation stage must reject stale or misaligned progress. Existing JSONL may be reused only when it forms the valid deterministic stage-specific prefix for the current request sequence and hashes/identifiers derived from actual material inputs and artifacts; failures remain separate, and resume starts at the earliest unfinished stage without repeating valid completed calls. These checkpoint, resume, and mismatch rules are code-owned and have no runtime policy selectors.
 
-`overwrite=false` may reuse a final AS+LC+LP bundle only when all material upstream, config, candidate, request, response, prompt/model, and policy fingerprints required by the settled brief match.
+`overwrite=false` may reuse a final AS+LC+LP bundle only when hashes/identifiers derived from the actual material upstream, config, candidate, request, response, prompt/model, and finalization inputs and artifacts match. Candidate-policy replacement is not a reuse case; affected artifacts are deleted and regenerated.
 
 Do not treat line order as semantic, but keep deterministic ordering for stable files.
 
@@ -438,7 +438,7 @@ At completion, account for every routed finding as:
 You may choose an implementation detail only when:
 
 - the brief explicitly delegates it to the current step;
-- it does not alter ontology semantics, allowed candidate population/signal technology, relation choice, direction, cycle/transitivity behavior, attribution, release gates, public artifact schemas, or another settled contract; numerical nomination budgets are permitted only when the approved brief explicitly delegates them to the current step and they remain explicit, fingerprinted, and reviewable; Step 26 authorizes no tuning; and
+- it does not alter ontology semantics, allowed candidate population/signal technology, relation choice, direction, cycle/transitivity behavior, attribution, release gates, public artifact schemas, or another settled contract; numerical nomination budgets are permitted only when the approved brief explicitly delegates them to the current step and they remain explicit, included in the effective-config content hash, and reviewable; Step 26 authorizes no tuning; and
 - it does not consume an open decision.
 
 For legitimate implementation details, prefer:
@@ -468,7 +468,7 @@ Design production seams so required tests are possible:
 - pure deterministic helpers where appropriate;
 - explicit typed records;
 - injectable/fakeable LLM call boundaries;
-- stable fingerprint functions;
+- stable material-content-hash functions;
 - controlled file I/O boundaries;
 - deterministic sorting;
 - separate candidate, request, judgment, finalization, and export layers; and
@@ -621,7 +621,7 @@ List important files and why they changed. Separately list any approved brief ed
 
 ### Artifact and schema impact
 
-State which runtime schemas, intermediate artifacts, final bundles, projections, fingerprints, or compatibility boundaries changed—and which existing AS/AS+LC outputs remained unchanged.
+State which runtime schemas, intermediate artifacts, final bundles, projections, material content hashes, or compatibility boundaries changed—and which existing AS/AS+LC outputs remained unchanged.
 
 ### Brief traceability
 
@@ -641,7 +641,7 @@ List required positive, negative, boundary, determinism, DAG, unresolved-context
 
 ### Generated evidence
 
-When applicable, report local smoke artifacts or authorized live-run evidence with paths and fingerprints. Clearly distinguish tracked repository content from generated evidence.
+When applicable, report local smoke artifacts or authorized live-run evidence with paths and actual content hashes/identifiers. Clearly distinguish tracked repository content from generated evidence.
 
 ### Deferred by design
 
@@ -677,3 +677,5 @@ Implement the smallest coherent production change that satisfies the user-approv
 Ensure all classes/functions/methods have named arguments in alphabetical order (unless the function has exactly one argument, then positional argument is allowed).
 Ensure all functions, classes, and methods are listed in alphabetical order within each file unless it will introduce coding errors (e.g, Pydantic schema validators are sometimes executed in a logical order rather than an alphabetical order).
 Ensure al  functions, classes, and methods follow the same NumPy docstring style as the existing codebase. Do not invent a new docstring style.
+Any class or function used only within its defining module must be prefixed with `_` to identify it as private and not intended for external import.
+Code comments and docstrings must describe the implementation contract in clear domain language. They must not reference opaque governance decision identifiers such as D1/D3/D13 or describe build-order timing such as “not implemented until Step X.” Comments/docstrings should be updated when implementation behavior changes instead of carrying temporary build-stage commentary.

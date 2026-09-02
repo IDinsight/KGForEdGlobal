@@ -1,6 +1,6 @@
 # Engineering Brief: Learning Progressions KG Construction
 
-**Status:** Approved for implementation. D1–D14 are fully recorded as **SETTLED**, and the user explicitly approved this updated canonical brief—including its accepted LIMITs—for Step 1+ implementation on 2026-09-01. Step 0 is closed. No Step 1 work may begin until the user creates the required baseline commit.
+**Status:** Approved for implementation. D1–D14 remain fully recorded as **SETTLED**. The user approved the prior canonical brief—including its accepted LIMITs—for Step 1+ implementation on 2026-09-01, approved the first D3 amendment on 2026-09-02, and explicitly approved this governance simplification amendment on 2026-09-02. The approved amendment removes internal candidate-policy versioning and runtime candidate ranking/tie-breaking configuration, and moves universal single-valued coordinate, candidate-policy, provenance, checkpoint, resume, license-inheritance, and stale-input behavior into code-owned invariants. The reviewer-approved Step 1 state remains the predecessor because Step 1 does not implement or consume these LP configuration fields. Dependent Step 2 production remediation may now resume in a coding-primary task using `345bb517957d90e9bb68793947ec4428bd9f0997` as its review base.
 
 **Repository area:** `backend/src/kgfeg/`
 
@@ -120,9 +120,7 @@ Examples of configuration-owned policy:
 
 - participating local statement types and allowed statement-type pairings;
 - the curriculum's local grade/class/stage progression order;
-- whether same-level `buildsTowards` is permitted;
 - relation-specific inclusion and exclusion rules;
-- which hierarchy, code, source-order, text, and LC signals are useful for that curriculum;
 - curriculum-specific producer and checker instructions;
 - the required two-state unresolved-context participation policy;
 - candidate budgets and request batching.
@@ -131,12 +129,15 @@ Examples of code-owned behavior:
 
 - strict Pydantic validation and cross-field checks;
 - DAG-safe graph indexing;
+- canonical coordinate lookup plus the settled missing-coordinate, same-rank, and rank-gap behavior;
 - deterministic candidate and request identities;
-- bounded candidate generation;
-- producer/checker orchestration and resume behavior;
+- the single built-in deterministic non-embedding candidate policy;
+- bounded, explainable candidate generation using configured budgets plus code-owned ranking and tie-breaking;
+- producer/checker orchestration, deterministic-prefix checkpointing, fail-closed resume, and stale-input rejection;
+- source-license inheritance and the required relationship-provenance categories;
 - endpoint, relation-shape, duplicate, cycle, provenance, and count validation;
 - deterministic UUIDv5 relationship identities;
-- artifact writing, fingerprints, and combined graph compilation.
+- artifact writing, content hashing, and combined graph compilation.
 
 ## 1.4 LLM model
 
@@ -474,7 +475,7 @@ Class IX < Class X
 
 Those orders must come from reviewed curriculum configuration.
 
-Settled D2 uses one explicit primary ordered dimension for v1. Coordinate resolution, missing/invalid values, same-rank behavior, and rank gaps follow the complete six-profile policy in Section 3 D2.
+Settled D2 uses one explicit primary ordered dimension for v1. Runtime configuration supplies only the local coordinate statement type and ordered canonical values. Python owns coordinate resolution plus the settled missing/invalid-value, same-rank, direction, and rank-gap behavior in Section 3 D2.
 
 ## 2.8 Eligibility and progression grain
 
@@ -510,8 +511,8 @@ A candidate pair should carry explainable evidence rather than one opaque simila
 - exact shared Learning Components;
 - related LC text/tags;
 - SFI text similarity;
-- common action, object, representation, or concept language;
-- curriculum-specific named signals.
+- common action, object, representation, or concept language; and
+- other generic named evidence values owned by the built-in policy.
 
 **SETTLED — No single evidence signal automatically creates an edge.**
 
@@ -527,7 +528,7 @@ code prefix           != progression
 
 Every published edge must pass semantic producer/checker adjudication and deterministic validation.
 
-Settled D3 uses a bounded deterministic union of named, explainable non-embedding strategies. V1 must expose a small strategy boundary so a separately governed future embedding strategy can be added without changing candidate, judgment, or final relationship schemas.
+Settled D3 uses one built-in deterministic non-embedding candidate policy. The implementation may combine multiple named, explainable evidence signals internally, but runtime configuration does not select algorithms, strategies, enabled-signal lists, ranking inputs or precedence, tie-breaking rules, fingerprint groups, or implementation versions. The policy records every nomination reason and triggering value, applies explicit configured budgets, and ranks and tie-breaks candidates through one stable code-owned procedure. A future candidate-policy replacement is a separately governed build step that removes or replaces the prior implementation; the user deletes and regenerates affected candidate and downstream artifacts rather than maintaining a runtime compatibility/version layer.
 
 ## 2.10 Producer/checker contract
 
@@ -553,7 +554,7 @@ The final field names should be finalized after Section 3 decisions, but the imp
 |---------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------|
 | `LPEligibleSFI`                 | Final SFI plus statement type, coordinate, hierarchy status, and eligibility reason                                                                 |
 | `LPCandidatePair`               | Deterministic pair identity, allowed decisions/directions, nomination signals, and bounded evidence references                                      |
-| `LPGenerationRequest`           | One or more exact candidate pairs plus SFI/LC/hierarchy context and config fingerprint                                                              |
+| `LPGenerationRequest`           | One or more exact candidate pairs plus SFI/LC/hierarchy context and material config/input content hashes                                            |
 | `LPPairJudgment`                | One structured accepted, negative, or unresolved judgment for one pair                                                                              |
 | `LPGenerationResponse`          | Exact complete judgment set for one request                                                                                                         |
 | `LPGenerationValidationVerdict` | Checker pass/fail, issues, and optional corrected complete response                                                                                 |
@@ -561,7 +562,7 @@ The final field names should be finalized after Section 3 decisions, but the imp
 | `LPFinalClaim`                  | Reconciled semantic claim before conversion to `Relationship`                                                                                       |
 | `LPGenerationSummary`           | Eligibility, candidate, decision, edge, failure, and distribution counts                                                                            |
 | `LPUnresolvedItems`             | `needs_review` judgments; normal eligibility exclusions remain in the eligibility report and D13 processing failures remain in the failure artifact |
-| `LPValidationReport`            | Standalone LP graph checks and fingerprints                                                                                                         |
+| `LPValidationReport`            | Standalone LP graph checks and material input/artifact content hashes                                                                               |
 | `AcademicStandardsLCLPKGBundle` | Complete triplet graph and merged validation state                                                                                                  |
 
 ## 2.12 Proposed combined bundle
@@ -607,20 +608,20 @@ A `no_relation` judgment is a normal adjudication outcome and is counted in the 
 
 This section fixes configuration meaning without inventing final schema field names or literal encodings. Step 2 defines intrinsic models and Step 3 chooses the concrete `kgs.lp` field names while preserving these semantics exactly.
 
-Every profile must explicitly provide:
+Every profile must explicitly provide only the curriculum-specific or operationally variable inputs:
 
 - curriculum-specific producer and checker instructions;
 - the closed-world D1 `buildsTowards` and `relatesTo` statement-type pair matrices;
-- the one-axis D2 coordinate statement type, canonical source, and exact ordered values;
-- same-rank and gap behavior: same-rank `buildsTowards` allowed, forward `buildsTowards` gaps unbounded, and `relatesTo` allowed at the same rank and across any configured gap;
-- missing-coordinate behavior: exclude from `buildsTowards` but retain for `relatesTo` when otherwise eligible; unknown, ambiguous, or conflicting coordinates fail validation;
+- the one-axis D2 coordinate statement type and exact ordered canonical values;
 - one required D10 unresolved-participation state with no default; all six initial profiles select inclusion of all otherwise-eligible unresolved SFIs with warnings;
-- D3 named deterministic signal selection, budgets, stable ranking/tie-breaking inputs, and material fingerprints, with no embedding capability in v1;
+- D3 candidate budgets;
 - positive request batch size and bounded evidence limits;
-- exact D11 author, provider, source-license inheritance, attribution template, and retained provenance policy; and
-- D13 retry/recovery, deterministic-prefix checkpoint, and resume inputs. D13 permits no failed-pair rate/count tolerance and therefore requires no per-profile tolerance threshold.
+- exact D11 author, provider, attribution template, and approving identity; and
+- D13 producer and checker retry counts. D13 permits no failed-pair rate/count tolerance and therefore requires no per-profile tolerance threshold.
 
-The config must be cross-validated against `kgs.as.statement_type_policy`, controlled values, identity scope, and the final local coordinate vocabulary. Unknown, missing, contradictory, or silently defaulted policy must fail at config load time. Illustrative names in this brief are not final API names.
+The config must be cross-validated against `kgs.as.statement_type_policy`, controlled values, identity scope, and the final local coordinate vocabulary. Unknown, missing, contradictory, or silently defaulted variable policy must fail at config load time.
+
+Python owns the universal settled behavior: canonical coordinate lookup through identity scope; missing/invalid-coordinate, same-rank, direction, and rank-gap rules; the single candidate implementation and its evidence handling, ranking, tie-breaking, and budget-application order; exact source-license inheritance; required relationship provenance; deterministic-prefix checkpointing; earliest-unfinished-stage resume; and rejection of stale or misaligned progress. `kgs.lp` must reject fields that attempt to restate or override those invariants, including `algorithm_version`, `strategies`, candidate technology markers, enabled-signal or ranking/tie-breaking selectors, `fingerprint_inputs`, candidate-policy versions, coordinate-source/rank-gap/missing-coordinate selectors, `license_source`, retained-provenance switches, checkpoint policy, resume policy, or fingerprint-mismatch policy. Content hashes are computed from the actual material inputs and artifacts needed for integrity; they are not configured field lists or manually maintained policy versions. Illustrative names in this brief are not final API names.
 
 ## 2.14 Core limitations
 
@@ -630,7 +631,7 @@ The adjudicator can only accept pairs that candidate generation nominates. Stron
 
 **LIMIT — Upstream AS and LC errors can influence LP.**
 
-LP endpoints are stable SFIs, but hierarchy errors, missing scope values, faulty unresolved flags, or weak LC decomposition can change candidate evidence. LP provenance must retain the upstream bundle fingerprint so these dependencies are visible.
+LP endpoints are stable SFIs, but hierarchy errors, missing scope values, faulty unresolved flags, or weak LC decomposition can change candidate evidence. LP provenance must retain the upstream bundle content hash so these dependencies are visible.
 
 **LIMIT — The six reviewed examples are English-language artifacts.**
 
@@ -675,7 +676,7 @@ A known weakness or scope boundary we are accepting. It must be documented where
 |-----|----------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------|-------------|
 | D1  | How LP progression grain and statement-type pairings are configured  | B — closed-world relation-specific pair matrices                                                                   | **SETTLED** |
 | D2  | How local developmental order is represented                         | A — one explicit primary ordered dimension for v1                                                                  | **SETTLED** |
-| D3  | Candidate nomination technology                                      | A — explainable deterministic multi-signal retrieval, no embeddings in v1                                          | **SETTLED** |
+| D3  | Candidate nomination technology                                      | A — one built-in explainable deterministic non-embedding candidate policy                                          | **SETTLED** |
 | D4  | Candidate-pair orientation and adjudication shape                    | A — one canonical unordered pair and one unified relation/direction judgment                                       | **SETTLED** |
 | D5  | How conceptually symmetric `relatesTo` is serialized                 | A — one UUID-canonicalized relationship per unordered pair                                                         | **SETTLED** |
 | D6  | Whether one pair may publish both relation types                     | A — mutually exclusive, with `buildsTowards` precedence                                                            | **SETTLED** |
@@ -851,7 +852,9 @@ Missing, invalid, and relationship behavior is uniform:
 - same-rank `buildsTowards` is allowed;
 - different-rank `buildsTowards` is allowed only from lower configured rank to higher configured rank;
 - there is no maximum forward-rank gap; and
-- `relatesTo` is allowed at the same rank, across any configured rank gap, and when one or both otherwise-eligible endpoints lack a coordinate.
+- `relatesTo` is allowed at the same rank, across any rank gap, and when one or both otherwise-eligible endpoints lack a coordinate.
+
+These uniform rules are Python invariants, not repeated profile settings. Runtime `developmental_coordinate` configuration supplies only `statement_type` and `ordered_values`; fields that restate canonical-source, missing-coordinate, same-rank, direction, or gap behavior are rejected.
 
 The exact initial coordinate profiles are:
 
@@ -930,12 +933,7 @@ This is documented for contrast, but it is **not selectable** under the current 
 
 The draft recommended Option A, which is now settled by the complete coordinate policy above.
 
-Relation-specific config can still decide:
-
-- whether same-level `buildsTowards` is allowed;
-- maximum forward level gap;
-- whether `relatesTo` may cross any number of levels;
-- what to do with standards missing the coordinate.
+The selected canonical-source, same-level, direction, rank-gap, and missing-coordinate behavior is code-owned. A future policy change requires governance and implementation changes rather than profile-specific selector fields.
 
 **LIMIT if Option A is chosen:** Frameworks with genuine multi-axis progression will require a later schema extension rather than silent heuristic inference.
 
@@ -945,17 +943,19 @@ The complete required D2 payload is recorded above. Step 3 must encode and cross
 
 ## D3. Candidate nomination technology
 
-**SETTLED — Option A: v1 uses explainable deterministic multi-signal retrieval without embeddings.**
+**SETTLED — Option A: v1 uses one built-in explainable deterministic non-embedding candidate policy.**
 
-Candidate nomination is the deterministic, bounded union of named strategies. Every candidate records all nominating signals and the concrete triggering values. D1 and D2 are hard admissibility boundaries; no signal bypasses them or publishes an edge. Generic Python owns deterministic strategy execution, union, deduplication, stable ranking/tie-breaking, budgets, identities, and fingerprints, while curriculum-specific signal selection/policy stays in required runtime configuration.
+Candidate nomination is performed by one code-owned deterministic policy. The policy may combine multiple named evidence rules internally, but those rules are implementation components rather than runtime-selectable algorithms or strategies. Every candidate records all nominating reasons and the concrete triggering values. D1 and D2 are hard admissibility boundaries; no evidence rule bypasses them or publishes an edge. Generic Python owns evidence extraction, bounded nomination, union, deduplication, stable ranking/tie-breaking, budget-application order, identities, and content hashing. Required runtime configuration owns only the explicit per-SFI and total candidate budgets.
 
-No embedding model, provider, vector index, cache, dependency, cost boundary, or fallback is approved for v1. The implementation must nevertheless provide a small named-signal strategy boundary, or an equivalently clear extension point, so a separately approved future embedding signal can be added without redesigning candidate-pair, producer/checker-judgment, or final-relationship schemas. Such a future change must first settle model/provider/version, multilingual scope, runtime/dependency boundary, vector/cache persistence and invalidation, batching/cost controls, fingerprint inputs, and unavailable-capability behavior.
+`_CreateKGLearningProgressionsCandidatePolicy` therefore contains only the configured budgets. It has no runtime `ranking`, ranking-input list, tie-breaking rule list, `algorithm_version`, `strategies`, technology marker, enabled-signal list, `fingerprint_inputs` selector, strategy-specific policy version, or open-ended candidate-algorithm parameter bag. No embedding model, provider, vector index, cache, dependency, cost boundary, or fallback is approved for v1.
 
-Candidate algorithm/version, enabled signals, signal configuration, budgets, and other material retrieval inputs are fingerprinted.
+**SETTLED — Candidate policy has no separately maintained implementation identifier or version.** Integrity hashes are derived from the actual material runtime inputs and serialized artifacts; they do not include a manually maintained candidate-policy version or a configurable list of fingerprint groups.
 
-### Selected design background — Option A: explainable deterministic multi-signal retrieval without embeddings
+A future candidate-policy replacement requires a separately approved build step. Changing the evidence rules, ranking precedence or directions, missing-value handling, total tie-breaking procedure, or budget-application order counts as replacing this code-owned policy. That step removes or replaces the prior implementation rather than registering a second runtime-selectable strategy or retaining both policies side by side. The user will delete and regenerate every affected candidate and downstream artifact after the replacement; reuse compatibility across candidate-policy implementations is not supported or inferred. Any future embedding-based replacement defines its required runtime, dependency, persistence, cost, and unavailable-capability behavior in that future governance step rather than predeclaring version fields in v1.
 
-Candidate pairs are the union of bounded nominations from named rules such as:
+### Selected design background — Option A: one built-in explainable deterministic non-embedding policy
+
+The built-in policy can combine bounded evidence rules such as:
 
 ```text
 same/related local hierarchy context
@@ -964,12 +964,11 @@ shared exact LC
 related LC tokens/tags
 SFI token or character-ngram similarity
 reviewed code-prefix signal
-curriculum-specific rule
 ```
 
-Each rule records why it nominated the pair. The union is deduplicated and bounded by per-rule and per-SFI budgets.
+Each rule records why it nominated the pair. The fixed code-owned policy bounds nomination work, deduplicates the union, applies one stable ranking and total tie-breaking procedure, and enforces the configured per-SFI and total candidate budgets before request construction or any LLM call.
 
-**ELI5:** Several transparent scouts each suggest a short list and say why. The judge reviews the combined list.
+**ELI5:** One transparent scouting process uses several visible clues, explains every suggestion, and produces a bounded ranked list for the judge.
 
 **Pros**
 
@@ -982,7 +981,7 @@ Each rule records why it nominated the pair. The union is deduplicated and bound
 
 - May miss conceptually related standards with little wording or hierarchy overlap.
 - Multilingual recall may be weak.
-- Threshold tuning is curriculum-sensitive.
+- Replacing the evidence-policy implementation requires a governed code change and artifact regeneration rather than a runtime strategy toggle.
 
 ### Rejected alternative for v1 — Option B: add semantic embeddings/ANN
 
@@ -995,7 +994,7 @@ Each rule records why it nominated the pair. The union is deduplicated and bound
 
 **Cons**
 
-- Introduces an embedding model, dependency, cache, version, cost, and reproducibility contract.
+- Introduces an embedding model, dependency, cache, cost, and reproducibility contract.
 - Requires multilingual evaluation.
 - Similarity still does not prove progression direction.
 - The user-set requirement currently names one shared KG LLM, not an embedding stack.
@@ -1008,11 +1007,11 @@ Additional drawbacks are large cohorts, higher token cost, positional bias, weak
 
 ### Historical recommendation — superseded by the settled policy above
 
-The draft recommended Option A with a small strategy boundary; that recommendation is now the settled D3 policy above.
+The draft recommended explainable deterministic non-embedding retrieval. The amended settled policy keeps that technology boundary but fixes one built-in policy instead of a runtime strategy boundary.
 
 **LIMIT — Deterministic non-embedding retrieval creates an unmeasured v1 candidate-recall ceiling.** It may miss semantically related standards with weak lexical, hierarchy, code, or LC overlap. D12 Option D accepts that no independent pre-release candidate-recall metric is required; this limitation must be disclosed rather than presented as measured quality.
 
-The embedding payload listed above is a future governance requirement, not a v1 implementation field.
+Embedding remains outside v1. A future replacement must be governed on its own terms and does not create v1 configuration or version fields.
 
 ---
 
@@ -1022,7 +1021,7 @@ The embedding payload listed above is a future governance requirement, not a v1 
 
 Each pair of distinct eligible endpoints appears once for candidate identity, request coverage, adjudication, failure accounting, and provenance. Encounter order cannot change pair identity, and canonical record ordering asserts no semantic direction. Before prompting, Python derives the admissible outcomes from D1, D2, and all other settled structural rules. The one judgment chooses among permitted `buildsTowards` directions, `relatesTo`, `no_relation`, and `needs_review`. Each pair appears in exactly one deterministic request; the producer returns one complete judgment and the checker accepts it or returns one complete corrected judgment from the same bounded evidence plus the draft. Python still enforces identity, coverage, endpoint containment, schema integrity, relation/direction permissions, and D6 cardinality.
 
-This pair/judgment contract also remains stable for any separately approved future D3 nomination strategy.
+This pair/judgment contract also remains stable for any separately approved future D3 candidate-policy replacement.
 
 ### Selected design background — Option A: one canonical unordered pair and one unified judgment
 
@@ -1373,7 +1372,7 @@ The draft recommended Option A, which is now settled by D8 above.
 
 **SETTLED — Option A: publish only directly adjudicated `buildsTowards` edges, with no automatic transitive closure or reduction.**
 
-An edge is publishable only when its exact pair was nominated, assigned to one D4 request, directly producer/checker-adjudicated, and accepted under D1–D8. Reachability never creates another edge. An independently accepted direct edge remains even when an alternate accepted multi-hop path connects the same endpoints. Each published edge keeps its own candidate/request/judgment/evidence/fingerprint/identity/source provenance. Multi-hop reachability is neither a separate accepted judgment nor a published edge, and v1 does not measure it as candidate recall under D12. D8 applies to the complete direct graph, while `relatesTo` receives neither closure nor reduction. Validation rejects provenance-free generated edges, silently omitted accepted edges, and count mismatches. Consumer documentation distinguishes direct assertions from computed reachability.
+An edge is publishable only when its exact pair was nominated, assigned to one D4 request, directly producer/checker-adjudicated, and accepted under D1–D8. Reachability never creates another edge. An independently accepted direct edge remains even when an alternate accepted multi-hop path connects the same endpoints. Each published edge keeps its own candidate/request/judgment/evidence/content-hash/identity/source provenance. Multi-hop reachability is neither a separate accepted judgment nor a published edge, and v1 does not measure it as candidate recall under D12. D8 applies to the complete direct graph, while `relatesTo` receives neither closure nor reduction. Validation rejects provenance-free generated edges, silently omitted accepted edges, and count mismatches. Consumer documentation distinguishes direct assertions from computed reachability.
 
 **LIMIT — The DAG may contain both a direct edge and an alternate multi-hop path.** Consumers compute minimal or reachability views without changing the released evidence-level rows.
 
@@ -1461,7 +1460,7 @@ The initial profile matrix is:
 | Ghana mathematics   | Include all otherwise-eligible unresolved SFIs with warnings |
 | Ghana English       | Include all otherwise-eligible unresolved SFIs with warnings |
 
-The selected state is material to every relevant policy/config fingerprint. A change invalidates stale eligibility, candidate, request, response, final-claim, relationship, and combined-bundle reuse. Validation reconciles unresolved eligible/excluded counts, verifies warning/provenance propagation, and rejects fallback-root placement as positive evidence.
+The selected state is part of the effective-config content hash. A change invalidates stale eligibility, candidate, request, response, final-claim, relationship, and combined-bundle reuse. Validation reconciles unresolved eligible/excluded counts, verifies warning/provenance propagation, and rejects fallback-root placement as positive evidence.
 
 **LIMIT — The profile-level state cannot distinguish a strong individual unresolved case from a weak one.** Inclusion may admit unresolved SFIs with insufficient non-fallback evidence, while exclusion may omit usable SFIs. Producer/checker adjudication reduces but does not remove this all-or-nothing weakness, and D12 provides no independent pre-release semantic gate.
 
@@ -1497,10 +1496,10 @@ Under this rejected design, a reviewed exception would identify the SFI, reviewe
 
 The rejected design considered two possible storage locations:
 
-| Sub-option | Representation                                                                                                    | ELI5                                                              | Advantages                                                                             | Costs                                                                                                                |
-|------------|-------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------|----------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------|
-| **C1**     | Inline `kgs.lp` list keyed by final SFI `case_identifier_uuid`, with reviewer/time/rationale/evidence permissions | Keep each signed exception card inside the curriculum's LP policy | Smallest v1 surface; one config fingerprint; straightforward deployment and validation | Mixes general policy with a small number of instance decisions; UUIDs must be revisited if upstream identity changes |
-| **C2**     | Separate reviewed sidecar referenced and fingerprinted by `kgs.lp`                                                | Keep exception cards in a separate audited binder                 | Cleaner policy/data separation; scales better if exceptions grow                       | Adds a file lifecycle, path/schema validation, deployment, and review surface                                        |
+| Sub-option | Representation                                                                                                    | ELI5                                                              | Advantages                                                                                        | Costs                                                                                                                |
+|------------|-------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------|---------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------|
+| **C1**     | Inline `kgs.lp` list keyed by final SFI `case_identifier_uuid`, with reviewer/time/rationale/evidence permissions | Keep each signed exception card inside the curriculum's LP policy | Smallest v1 surface; one effective-config content hash; straightforward deployment and validation | Mixes general policy with a small number of instance decisions; UUIDs must be revisited if upstream identity changes |
+| **C2**     | Separate reviewed sidecar referenced by `kgs.lp` and covered by its material-content hash                         | Keep exception cards in a separate audited binder                 | Cleaner policy/data separation; scales better if exceptions grow                                  | Adds a file lifecycle, path/schema validation, deployment, and review surface                                        |
 
 **Pros**
 
@@ -1511,13 +1510,13 @@ The rejected design considered two possible storage locations:
 **Cons**
 
 - Requires manual review for exceptions.
-- Exception selectors must be stable and fingerprinted.
+- Exception selectors must be stable and included in the material effective-config content hash.
 
 ### Historical recommendation — rejected by the settled two-state profile policy
 
 The earlier C1 recommendation is rejected. V1 has no inline UUID exception list and no exception sidecar.
 
-Under the settled policy, eligibility and candidate artifacts always retain unresolved status for every included unresolved SFI, and the profile-wide state participates in every material config/policy fingerprint.
+Under the settled policy, eligibility and candidate artifacts always retain unresolved status for every included unresolved SFI, and the profile-wide state participates in the effective-config content hash.
 
 No D10 exception payload exists. Step 3 implements the required two-state profile policy and the six initial inclusion-with-warning selections above.
 
@@ -1541,20 +1540,20 @@ Every `Relationship` requires `author`, `provider`, `license`, and `attribution_
 - Can misleadingly imply that the source authority authored the inferred progression.
 - Makes it difficult to distinguish source content from pipeline analysis.
 
-### Selected option — Option B: dedicated LP relationship metadata in `kgs.lp`
+### Selected option — Option B: configured LP attribution/ownership with code-owned integrity
 
-Every one of the six initial curriculum profiles carries this policy explicitly in required `kgs.lp` configuration. The final field names and schema layout are implementation details for Step 3; the following values and behavior are authoritative and must not be hard-coded into generic Python:
+Every one of the six initial curriculum profiles explicitly supplies the author, provider, attribution template, and approving identity in required `kgs.lp` configuration. Python universally owns source-license inheritance, template-substitution validation, provenance capture, and validation. The final variable field names and schema layout are implementation details for Step 3; the following values and behavior are authoritative:
 
-| Policy element                   | Settled value or behavior                                                                                                                                                                                                                                   |
-|----------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `author`                         | Exact string `LLM generated`, matching existing Learning Components.                                                                                                                                                                                        |
-| `provider`                       | Exact string `IDinsight`, matching existing Learning Components.                                                                                                                                                                                            |
-| `license`                        | Copy the validated source-framework `license` value verbatim for the current curriculum. There is no fallback or generic default; a missing or blank upstream value is a validation error.                                                                  |
-| `attribution_statement` template | Exact text: `Learning progression relationship generated by IDinsight using an LLM producer/checker workflow. Source framework attribution: {source_attribution_statement}. This inferred relationship was not stated or endorsed by the source publisher.` |
-| Approved template substitution   | Replace the single `{source_attribution_statement}` token with the validated source framework's `attribution_statement` verbatim. No other runtime substitutions are permitted. A missing or blank source attribution statement is a validation error.      |
-| Approving identity/role          | `IDinsight` as the organizational approver for the author, provider, source-license inheritance policy, attribution template, and required provenance.                                                                                                      |
+| Policy element                              | Settled value or behavior                                                                                                                                                                                                                                   |
+|---------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Configured `author`                         | Exact string `LLM generated`, matching existing Learning Components.                                                                                                                                                                                        |
+| Configured `provider`                       | Exact string `IDinsight`, matching existing Learning Components.                                                                                                                                                                                            |
+| Code-owned `license` inheritance            | Copy the validated source-framework `license` value verbatim for the current curriculum. There is no fallback or generic default; a missing or blank upstream value is a validation error.                                                                  |
+| Configured `attribution_statement` template | Exact text: `Learning progression relationship generated by IDinsight using an LLM producer/checker workflow. Source framework attribution: {source_attribution_statement}. This inferred relationship was not stated or endorsed by the source publisher.` |
+| Code-owned template substitution            | Replace the single `{source_attribution_statement}` token with the validated source framework's `attribution_statement` verbatim. No other runtime substitutions are permitted. A missing or blank source attribution statement is a validation error.      |
+| Configured approving identity/role          | `IDinsight` as the organizational approver for the author, provider, source-license inheritance policy, attribution template, and required provenance.                                                                                                      |
 
-Source-license inheritance is an explicit selected policy rather than unresolved “inherit later” language. Option B remains distinct from Option A and Option C because the LP relationship's author, provider, and attribution statement identify and disclose the inference instead of presenting the relationship as a source-publisher assertion.
+Source-license inheritance and the required provenance set are explicit code-owned invariants rather than runtime choices. `kgs.lp` has no `license_source`, retained-provenance switch, or fingerprint-category selector. Option B remains distinct from Option A and Option C because the configured LP relationship author, provider, and attribution statement identify and disclose the inference instead of presenting the relationship as a source-publisher assertion.
 
 Internal provenance for every published LP relationship retains all of the following:
 
@@ -1563,9 +1562,9 @@ Internal provenance for every published LP relationship retains all of the follo
 - source and target SFI `case_identifier_uuid` values;
 - candidate ID and evidence summary;
 - producer and checker request, judgment, and outcome references;
-- upstream AS+LC bundle fingerprint;
-- LP configuration/policy, candidate/evidence, and request fingerprints; and
-- producer/checker prompt and model-settings fingerprints.
+- upstream AS+LC bundle content hash;
+- effective LP configuration, candidate/evidence artifact, and request content hashes; and
+- producer/checker prompt content hashes and actual model-settings identifiers.
 
 Deterministic finalization, not the producer or checker, attaches these values. Validation requires exact author/provider strings, exact source-license equality, exact template expansion, complete provenance, and consistency across the standalone LP relationships, combined bundle, and relationship projection.
 
@@ -1578,7 +1577,7 @@ Deterministic finalization, not the producer or checker, attaches these values. 
 **Cons**
 
 - Requires explicit organizational and licensing decisions.
-- Adds config fields.
+- Retains explicit attribution/ownership configuration even though the six initial profiles share the same values.
 
 ### Rejected alternative — Option C: mixed source-author/pipeline-provider metadata
 
@@ -1595,7 +1594,7 @@ For example, source authority as `author`, pipeline as `provider`, and inference
 
 ### Settled decision
 
-Use the selected Option B policy exactly as specified above. Changing the author, provider, license-source rule, attribution wording or substitution rule, organizational approval, or retained provenance fields reopens D11.
+Use the selected Option B policy exactly as specified above. Changing the author, provider, source-license inheritance rule, attribution wording or substitution rule, organizational approval, or required provenance set reopens D11.
 
 **LIMIT — This brief is not legal advice.** IDinsight's organizational approval is recorded above; IDinsight remains responsible for confirming that copying each source-framework license to inferred LP relationship records is legally and organizationally appropriate.
 
@@ -1609,7 +1608,7 @@ Independent human semantic review is not required before acceptance or release. 
 
 V1 defines no independently reviewed gold set, minimum human-review sample, audit cadence, semantic metric, numeric semantic threshold, or semantic pass/fail authority. Structural correctness, producer/checker agreement, and D13-compliant completion must never be described as proof of pedagogical correctness.
 
-Human audit may occur after acceptance or release. When performed, it records the reviewed population or sampling method, reviewer identity, review time, findings, rationale, affected candidate/relationship IDs, and exact released artifact and policy fingerprints. IDinsight is the organizational authority for audit findings and remediation/re-release decisions. Findings inform a later remediation or release; they do not retroactively become a prerequisite for the original release.
+Human audit may occur after acceptance or release. When performed, it records the reviewed population or sampling method, reviewer identity, review time, findings, rationale, affected candidate/relationship IDs, and exact released artifact/effective-config content hashes. IDinsight is the organizational authority for audit findings and remediation/re-release decisions. Findings inform a later remediation or release; they do not retroactively become a prerequisite for the original release.
 
 Confirmed defects are corrected at the earliest incorrect configuration, candidate, prompt, judgment, finalization, or validation stage and the affected pipeline is rerun. Generated graphs are never hand-edited.
 
@@ -1618,7 +1617,7 @@ The v1 build-order contract is exact:
 - Step 24 adds deterministic D12 release-policy conformance coverage, not a semantic harness or gold set;
 - Step 25 runs the targeted six-curriculum structural/process matrix without a semantic-quality pass/fail claim;
 - Step 26 is explicitly deferred with no implementation or tuning work, and progression goes from reviewer-approved Step 25 directly to Step 27;
-- Step 27 retains the six complete runs and every structural, provenance, count, collision, checkpoint/fingerprint, and D13 requirement without a D12 semantic-pass prerequisite; and
+- Step 27 retains the six complete runs and every structural, provenance, count, collision, checkpoint/material-input-integrity, and D13 requirement without a D12 semantic-pass prerequisite; and
 - Step 29 verifies accurate disclosure of this LIMIT and rejects pedagogical-correctness claims derived from structural/process evidence.
 
 **LIMIT — V1 may release semantically incorrect or incomplete progression relationships because no independent human or gold-set semantic evaluation is required before release.** Producer/checker separation and deterministic validation reduce structural and process risk but do not establish pedagogical correctness. This limitation must be visible in release documentation and final review.
@@ -1737,18 +1736,20 @@ The limitations of the rejected gold-set alternatives are retained as historical
 
 A valid `buildsTowards`, `relatesTo`, `no_relation`, or `needs_review` judgment is not a processing failure. A timeout, malformed response, exhausted retry path, missing/extra pair coverage, endpoint leakage, illegal relation/direction, or other unresolved producer/checker integrity violation is a failure. Once any pair fails, LP halts. There is no failed-pair count/rate tolerance, exploratory exception, or per-profile threshold. Checkpoints and failure evidence remain inspectable, but the run cannot report successful LP or combined release status.
 
-Before the first external LP LLM call, the pipeline validates and writes the complete deterministic candidate population to `lp_candidate_pairs.jsonl`, its summary/material fingerprints, and the complete bounded request sequence to `lp_generation_requests.jsonl`. Candidate/request counts, IDs, order, coverage, and fingerprints must reconcile exactly; execution never begins from an in-memory-only or partially materialized population.
+The producer/checker retry counts are runtime configuration because they are operational choices. Checkpoint shape, validation-before-write, separate failure storage, stale-input rejection, prefix reuse, and earliest-unfinished-stage resume are universal Python invariants. `kgs.lp` has no checkpoint, resume-mode, reuse-prefix, fingerprint-mismatch, or fingerprint-selection fields.
+
+Before the first external LP LLM call, the pipeline validates and writes the complete deterministic candidate population to `lp_candidate_pairs.jsonl`, its summary/material content hashes, and the complete bounded request sequence to `lp_generation_requests.jsonl`. Candidate/request counts, IDs, order, coverage, and content hashes must reconcile exactly; execution never begins from an in-memory-only or partially materialized population.
 
 Successful checkpoints are written in deterministic request order as validated contiguous prefixes:
 
-- producer drafts enter `lp_generation_draft_responses.jsonl` only after schema, request-ID, pair-coverage, endpoint, and fingerprint validation;
+- producer drafts enter `lp_generation_draft_responses.jsonl` only after schema, request-ID, pair-coverage, endpoint, and material-input validation;
 - checker verdicts enter `lp_generation_validation_verdicts.jsonl` only after the corresponding draft and complete verdict validate;
 - reconciled judgments enter `lp_generation_responses.jsonl` only after the complete request has one valid final judgment per pair; and
 - failures are written separately to `lp_generation_failures.json`; partial or failed responses never enter successful checkpoint files.
 
 Concurrent/out-of-order completions must be buffered or otherwise serialized without reusable prefix gaps.
 
-With `overwrite=false`, the pipeline reloads and validates candidates, requests, every successful checkpoint prefix, the failure record, and all material upstream/policy/config/prompt/model/input fingerprints. It reuses fully validated prefixes without repeating completed calls and resumes at the earliest unfinished producer/checker stage for the first incomplete request. A valid saved producer draft may therefore be reused when the checker failed. Gaps, duplicates, out-of-order rows, truncation/invalid JSONL, misalignment, or stale fingerprints fail closed. Material changes regenerate the affected deterministic stages before calls resume. Prior failure records remain audit evidence and the resumed run records later disposition.
+With `overwrite=false`, the pipeline reloads and validates candidates, requests, every successful checkpoint prefix, the failure record, and hashes/identifiers derived from the actual material upstream bundle, effective config, prompts, model settings, requests, and stored artifacts. It reuses fully validated prefixes without repeating completed calls and resumes at the earliest unfinished producer/checker stage for the first incomplete request. A valid saved producer draft may therefore be reused when the checker failed. Gaps, duplicates, out-of-order rows, truncation/invalid JSONL, misalignment, or stale material inputs fail closed. Material changes regenerate the affected deterministic stages before calls resume. Prior failure records remain audit evidence and the resumed run records later disposition. Candidate-policy replacement is not a resume case: affected artifacts are deleted and regenerated under D3.
 
 This contract applies identically to all six curricula.
 
@@ -1813,7 +1814,7 @@ The complete D13 payload is the zero-tolerance halt, pre-call materialization, c
 
 **SETTLED — Option A: v1 supports no forced semantic include, exclude, relation-type, or direction override.**
 
-A human review or D12 post-release audit finding may lead to an approved change at the earliest incorrect curriculum configuration, candidate policy, producer/checker instruction, prompt, or universally valid generic-code stage, followed by a complete affected rerun. The producer and checker adjudicate the pair again under updated fingerprinted inputs; a human finding never directly manufactures, changes, or deletes a published edge. Generated final graphs are never hand-edited.
+A human review or D12 post-release audit finding may lead to an approved change at the earliest incorrect curriculum configuration, candidate policy, producer/checker instruction, prompt, or universally valid generic-code stage, followed by a complete affected rerun. The producer and checker adjudicate the pair again under updated material inputs; a human finding never directly manufactures, changes, or deletes a published edge. Generated graphs are never hand-edited.
 
 D10's profile-level unresolved-participation state cannot force a relationship, and a manual finding cannot conceal or replace a D13 processing failure. Every rerun remains subject to all settled pair, direction, recurrence, exclusivity, cycle, transitivity, attribution, provenance, structural-validation, checkpoint, and stale-reuse rules.
 
@@ -1823,7 +1824,7 @@ This decision is separate from D10's reviewed eligibility exception.
 
 ### Selected design background — Option A: no forced semantic edges in v1
 
-Operators can adjust config/prompts/candidate policy and rerun, but cannot force a particular `buildsTowards` or `relatesTo` edge into the production graph.
+Operators can adjust approved curriculum config or prompts and rerun, but cannot force a particular `buildsTowards` or `relatesTo` edge into the production graph. Replacing the code-owned candidate policy requires the separately governed replacement workflow in D3.
 
 **Pros**
 
@@ -1850,7 +1851,7 @@ Operators can adjust config/prompts/candidate policy and rerun, but cannot force
 
 ### Rejected alternative — Option C: semantic-override sidecar
 
-Each row records pair identity, chosen decision, reviewer, timestamp, notes, and upstream bundle fingerprint.
+Each row records pair identity, chosen decision, reviewer, timestamp, notes, and upstream bundle content hash.
 
 **Pros**
 
@@ -1875,13 +1876,13 @@ The payload requirements for rejected override options are historical only and c
 
 ## 3.3 Decision response template
 
-A concise Step 0 approval response can use this form:
+A concise approval response for this governance simplification amendment can use this form:
 
 ```text
-I approve the updated Learning Progressions engineering brief, including settled D1–D14 and the accepted LIMITs, for Step 1+ implementation.
+I approve the amended Learning Progressions engineering brief, including removal of runtime candidate ranking/tie-breaking and internal candidate-policy versioning, and movement of universal single-valued LP behavior from runtime configuration to code-owned invariants, for dependent Step 2+ implementation.
 ```
 
-The decision ledger is already incorporated in full. A response that merely approves an option letter, only part of the brief, or an implementation with unstated exceptions does not close Step 0. After approval, the user creates the baseline commit required by `AGENTS.md`; no agent may infer that commit authorization from the approval sentence.
+The decision ledger and this amendment are incorporated in full. A response that merely approves an option letter, only part of the brief, or an implementation with unstated exceptions does not approve the amendment. Approval does not authorize an agent to stage or commit. Dependent Step 2 production remediation may resume only after the user explicitly approves the amended brief.
 
 ---
 
@@ -1905,7 +1906,7 @@ The invariants below are settled code-level contracts.
 9. **SETTLED — Local order is explicit:** code never determines developmental order through lexical sorting of labels.
 10. **SETTLED — LP selection is independent:** normalized type, leafness, and LC eligibility are available evidence but never implicit LP eligibility rules.
 11. **SETTLED — D1 closed-world matrices:** only the exact relation-specific statement-type pairs recorded in D1 may become candidates or final edges; omitted, cross-type, grouping, and future unconfigured pairs are excluded.
-12. **SETTLED — D2 one-axis coordinate:** every direction/rank check follows the exact six-profile coordinate orders, missing/invalid behavior, same-rank permission, unlimited forward gap, and `relatesTo` gap rules recorded in D2.
+12. **SETTLED — D2 one-axis coordinate:** runtime configuration supplies only the coordinate statement type and exact ordered values; Python owns canonical identity-scope resolution, missing/invalid behavior, same-rank permission, lower-to-higher direction, unlimited forward gap, and `relatesTo` gap rules recorded in D2.
 13. **SETTLED — D10 two-state unresolved policy:** every profile explicitly selects exclude-all or include-all-otherwise-eligible-with-warnings; no per-SFI exceptions/sidecars exist, the six initial profiles select inclusion with warnings, and status remains visible through all affected artifacts/provenance.
 
 ## 4.3 Candidate generation
@@ -1917,7 +1918,7 @@ The invariants below are settled code-level contracts.
 18. **SETTLED — Explainable nomination:** every pair records one or more named nomination reasons and the values that triggered them.
 19. **SETTLED — No automatic semantic edge:** hierarchy, LC overlap, text similarity, code proximity, rank proximity, or source order can nominate but cannot publish a relationship.
 20. **SETTLED — Audit flags propagate:** known AS code, merge, and unresolved anomalies remain available to producer/checker and final provenance.
-21. **SETTLED — D3 non-embedding strategies:** candidate retrieval uses only deterministic named non-embedding strategies in v1, behind an extension boundary, and fingerprints every material algorithm/version/signal/budget input.
+21. **SETTLED — D3 built-in non-embedding policy:** candidate retrieval uses one code-owned deterministic non-embedding policy in v1. Runtime configuration supplies only explicit per-SFI and total budgets; Python owns evidence handling, ranking, tie-breaking, and budget-application order. No runtime algorithm/version, strategy list, technology marker, enabled-signal list, ranking/tie-breaking selector, fingerprint selector, or implementation identifier exists. Integrity hashes use actual material inputs and serialized artifacts, not a separately maintained policy version. Any future replacement is a separately governed build step that replaces the implementation and requires affected artifacts to be deleted and regenerated.
 
 ## 4.4 LLM adjudication
 
@@ -1940,21 +1941,21 @@ The invariants below are settled code-level contracts.
 35. **SETTLED — No self-loops.**
 36. **SETTLED — Deterministic relationship UUID:** UUIDv5 identity is derived from doc_key, relationship type, and finalized endpoints; the LLM never chooses it.
 37. **SETTLED — Correct description:** `buildsTowards` does not claim a strict prerequisite; `relatesTo` does not imply sequence/dependency.
-38. **SETTLED — Complete provenance:** every edge resolves to candidate ID, request ID, producer/checker outcome, evidence summary, config/input fingerprints, and source framework.
+38. **SETTLED — Complete provenance:** every edge resolves to candidate ID, request ID, producer/checker outcome, evidence summary, material config/input content hashes, and source framework. The required provenance set is code-owned and cannot be selected or disabled in runtime configuration.
 39. **SETTLED — D4 unified pair judgment:** each unordered logical pair appears once and receives one complete judgment among its deterministically admissible directions/relations, `no_relation`, and `needs_review`.
 40. **SETTLED — D5 canonical `relatesTo`:** one row is stored per accepted unordered pair with lower canonical endpoint UUID as source and higher as target; consumers traverse both endpoint positions.
 41. **SETTLED — D6 exclusivity:** one logical pair publishes at most one LP edge, and semantically supported `buildsTowards` takes precedence over `relatesTo`.
 42. **SETTLED — D8 acyclicity:** the complete finalized `buildsTowards` graph is a DAG; violations fail release and produce deterministic SCC/edge/node/provenance diagnostics without silent repair.
 43. **SETTLED — D9 direct edges only:** finalization performs neither transitive closure nor reduction, retains every independently accepted direct edge, and never publishes reachability as an edge.
-44. **SETTLED — LP inference ownership:** every published LP relationship uses exact `author = "LLM generated"` and `provider = "IDinsight"`, copies the validated source-framework license verbatim, expands only the approved source-attribution token in the exact D11 template, and retains the complete D11 provenance set. The LLM cannot author or alter these fields.
+44. **SETTLED — LP inference ownership:** every published LP relationship uses configured exact `author = "LLM generated"`, `provider = "IDinsight"`, attribution template, and approving identity. Python copies the validated source-framework license verbatim, expands only the approved source-attribution token, and retains the complete D11 provenance set. Runtime configuration cannot override the inheritance/substitution mechanics or choose provenance categories, and the LLM cannot author or alter these fields.
 45. **SETTLED — D14 no semantic overrides:** v1 has no forced include/exclude/relation/direction mechanism; findings cause earliest-stage remediation, producer/checker re-adjudication, and rerun rather than generated-graph edits.
 
 ## 4.6 Artifacts, resume, and combined export
 
-46. **SETTLED — Pre-call population materialization:** the complete validated candidate and request populations, IDs, order, coverage, counts, and fingerprints are written and reconciled before any external LP LLM call.
-47. **SETTLED — Stage-specific prefix-safe checkpoints:** validated producer drafts, checker verdicts, and reconciled responses are written in deterministic contiguous prefixes; failures are separate, and `overwrite=false` resumes at the earliest unfinished stage without repeating valid completed calls.
-48. **SETTLED — Prefix validation fails closed:** gaps, duplicates, out-of-order records, truncation, invalid JSONL, request misalignment, and stale material fingerprints are rejected.
-49. **SETTLED — Stale final bundle rejection:** `overwrite=false` reuses `as_lc_lp_kg_bundle.json` only when all material LP and upstream fingerprints match.
+46. **SETTLED — Pre-call population materialization:** the complete validated candidate and request populations, IDs, order, coverage, counts, and material content hashes are written and reconciled before any external LP LLM call.
+47. **SETTLED — Stage-specific prefix-safe checkpoints:** validated producer drafts, checker verdicts, and reconciled responses are written in deterministic contiguous prefixes; failures are separate, and `overwrite=false` resumes at the earliest unfinished stage without repeating valid completed calls. This behavior is code-owned and has no runtime checkpoint/resume policy fields.
+48. **SETTLED — Prefix validation fails closed:** gaps, duplicates, out-of-order records, truncation, invalid JSONL, request misalignment, and hashes or identifiers that show stale material inputs are rejected. Runtime configuration cannot select fingerprint inputs or mismatch behavior.
+49. **SETTLED — Stale final bundle rejection:** `overwrite=false` reuses `as_lc_lp_kg_bundle.json` only when hashes/identifiers derived from the actual material LP and upstream inputs and artifacts match. Candidate-policy replacements do not use a version compatibility check; affected artifacts are deleted and regenerated.
 50. **SETTLED — Failed validation remains inspectable:** final artifacts may be written for diagnosis, but `kg_run.json` cannot report success when LP or combined validation fails.
 51. **SETTLED — Count reconciliation:** summary counts equal actual list and JSONL counts for eligible SFIs, candidates, requests, judgments, failures, final relationships, nodes, and all four relationship types.
 52. **SETTLED — Identifier collision absence:** framework, SFI, LC, `hasChild`, `supports`, `buildsTowards`, and `relatesTo` identifiers are unique in the combined graph.
@@ -1971,38 +1972,38 @@ The invariants below are settled code-level contracts.
 
 No implementation starts at Step 1 until Step 0 is complete.
 
-| Step | One reviewable implementation aspect                                                              | Primary files/outputs                                                                                                                                                   | Review and test boundary                                                                                                                                                                                                                                                                                                                                                              |
-|------|---------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| 0    | Record D1–D14 consistently as **SETTLED** and obtain implementation approval                      | This brief plus synchronized repository/role governance instructions                                                                                                    | Every concrete payload is present; dependent model/config/invariant/build/test language agrees; no implementation-governing placeholder or unresolved decision remains; user implementation OK recorded                                                                                                                                                                               |
-| 1    | Establish six-curriculum LP regression fixtures                                                   | New reduced fixtures under the repository's test area                                                                                                                   | Fixture loader verifies current AS+LC bundle shapes, counts, DAG parents, unresolved flags, and LC alignments without changing production code                                                                                                                                                                                                                                        |
-| 2    | Define the intrinsic `kgs.lp` Pydantic models and standalone field validators                     | `backend/src/kgfeg/schemas.py`                                                                                                                                          | Tests cover strict relation-specific pair policies, one-axis coordinates, D10's required two-state policy without exceptions, D3 strategy/budget inputs, D11 metadata semantics, positive batch/evidence bounds, and D13 checkpoint/retry inputs without failure-tolerance thresholds; concrete cross-profile wiring remains Step 3                                                   |
-| 3    | Wire `kgs.lp` as required, add AS-policy cross-validation, and update all six configs atomically  | `backend/src/kgfeg/schemas.py`; `examples/**/config*.json`                                                                                                              | Tests prove all six profiles reproduce the exact D1 matrices, D2 coordinate sources/orders/missing/same-rank/gap rules, D10 inclusion-with-warning state, D11 values/template, and curriculum instructions; reject unknown types/values, omitted policy, cross-type pairs, silent defaults, invalid attribution, and copy/paste errors                                                |
-| 4    | Replace dormant LP schemas with the approved intrinsic pair/evidence/judgment record schemas      | `backend/src/kgfeg/kgs/schemas.py`                                                                                                                                      | Schema tests cover valid accepted/negative/review records and reject intrinsic defects such as malformed UUIDs, self-pairs, illegal enum combinations, and invalid confidence/rationale fields; request-relative endpoint/coverage checks remain owned by Steps 12 and 14                                                                                                             |
-| 5    | Add LP usage buckets and model-settings plumbing using `LLM_KG_MODEL`                             | `kgs/llm.py`, existing model registry calls                                                                                                                             | Usage serialization includes producer/checker buckets and `kgs_settings("learning_progressions")` is exercised; no prompt or agent factory is implemented before Steps 13–14, and no new model environment setting is introduced                                                                                                                                                      |
-| 6    | Build an AS+LC graph index that is safe for trees and DAGs                                        | New `kgs/lp_index.py` or equivalent                                                                                                                                     | Tests verify Pratham multi-parent ancestry, framework-root handling, LC-by-SFI indexes, and deterministic traversal order                                                                                                                                                                                                                                                             |
-| 7    | Implement local developmental-coordinate resolution                                               | New LP index/selection utility                                                                                                                                          | Tests cover every exact D2 order, Madhi scope-only Class, explicit Grade/Class nodes, alias canonicalization, missing-coordinate `buildsTowards` exclusion and `relatesTo` retention, invalid/ambiguous/conflicting hard failure, same-rank permission, forward-only direction, and unlimited gaps                                                                                    |
-| 8    | Implement LP SFI eligibility and unresolved-policy reporting                                      | New `kgs/lp_selection.py`; `lp_eligible_sfis.json`; `lp_eligibility_report.json`                                                                                        | Tests cover exact D1 closed-world participation, D10 exclude/include states, all six inclusion-with-warning profiles, no exception/sidecar path, D2 precedence, independent LC eligibility, multiple grains, exact counts, and warning propagation without using fallback root as evidence                                                                                            |
-| 9    | Implement hard candidate filters and deterministic pair IDs                                       | New `kgs/lp_candidates.py`                                                                                                                                              | Tests prove no self-pairs, no D1-disallowed pairs, no D2-disallowed directions, one unordered D4 logical pair, and IDs stable under encounter/input ordering                                                                                                                                                                                                                          |
-| 10   | Implement named candidate evidence features behind the D3 strategy boundary                       | `lp_candidates.py` or `lp_evidence.py`                                                                                                                                  | Each deterministic non-embedding signal is tested independently; tests cover hierarchy/DAG context, local rank, LC overlap, text, code/source/audit handling, curriculum-configured hooks, named values, and the rule that no feature publishes an edge                                                                                                                               |
-| 11   | Implement candidate union, ranking, and budgets                                                   | `lp_candidates.py`; `lp_candidate_pairs.jsonl`; `lp_candidate_summary.json`                                                                                             | Deterministic tests verify union, deduplication, per-rule nomination, top-k/budget behavior before LLM work, tie-breaking, pair-scale bounds, fingerprints, and stable strategy-extension records; tests acknowledge rather than claim to measure the D3/D12 recall LIMIT                                                                                                             |
-| 12   | Implement bounded LP request construction and complete pre-call materialization                   | New `kgs/lp_generation.py`; `lp_generation_requests.jsonl`                                                                                                              | Tests verify complete validated candidate/request populations are written and reconcile before any external call, with exact coverage/order/IDs/counts/fingerprints, bounded context, all parent paths, LC evidence limits, warnings, and stable request IDs                                                                                                                          |
-| 13   | Implement the LP producer prompt and agent                                                        | `kgs/prompts.py`, `kgs/agents.py`, `kgs/llm.py`                                                                                                                         | Prompt fixtures demonstrate relation semantics, D6/D7 recurrence distinctions, curriculum-specific examples, D10 warnings, explicit `no_relation`/`needs_review`, D14 no overrides, and no out-of-request endpoints                                                                                                                                                                   |
-| 14   | Implement the independent LP checker and deterministic integrity validators                       | `kgs/prompts.py`, `kgs/agents.py`, `kgs/validators.py`, `kgs/llm.py`                                                                                                    | Tests cover one complete D4 pair judgment, accept/correct, missing/extra/duplicate pair, endpoint leakage, D1/D2/D5/D6 illegal outcomes, warning/evidence parity, and complete rather than patch correction                                                                                                                                                                           |
-| 15   | Implement resumable generation orchestration and D13 failure accounting                           | `kgs/lp_generation.py`; draft/verdict/final/failure artifacts                                                                                                           | Interrupted-stage tests verify validated deterministic draft/verdict/final prefixes, separate failures, zero tolerance after permitted retries/recovery, halt/no-success status, earliest-unfinished-stage resume without repeated valid calls, and fail-closed gaps/duplicates/order/truncation/alignment/fingerprint behavior                                                       |
-| 16   | Reconcile final pair decisions under D4–D10 and D14                                               | New `kgs/lp_finalization.py`; `lp_final_claims.json`                                                                                                                    | Tests cover unified judgments, D6 precedence/exclusivity, D7 recurrence, D5 canonical `relatesTo`, D8 global DAG diagnostics, D9 direct-edge-only behavior, D10 warnings, D14 absence of overrides/hand edits, duplicates/conflicts, and visible nonpublishing `needs_review`                                                                                                         |
-| 17   | Mint deterministic `Relationship` records and correct generic descriptions                        | `kgs/lp_finalization.py`, `kgs/schemas.py`                                                                                                                              | UUID snapshot tests cover both types; endpoint and metadata tests verify exact D11 author/provider values, source-license equality, attribution-template expansion, complete provenance, and Learning Commons-compatible semantics                                                                                                                                                    |
-| 18   | Implement standalone LP graph validation                                                          | New LP validator or `kgs/validators.py`                                                                                                                                 | Tests cover endpoints, self-loops, duplicates, D1/D2/D4–D10/D14 policy, complete D8 diagnostics, direct-edge provenance, exact D11 metadata/provenance, counts/collisions, unresolved-warning consistency, D13 zero-failure success condition, and rejection of structural-validity-as-semantic-proof claims                                                                          |
-| 19   | Write standalone LP provenance, summary, unresolved, failure, and validation artifacts            | `lp_relationship_provenance.json`, `lp_generation_summary.json`, `lp_unresolved_items.json`, `lp_generation_failures.json`, `lp_validation_report.json`, relation files | Round-trip validation and independent count reconciliation cover every artifact; `needs_review`, policy exclusions, and D13 failures remain separate; warnings/provenance and accepted/nonpublished counts agree                                                                                                                                                                      |
-| 20   | Add the AS+LC+LP bundle schema and compiler                                                       | New `kgs/lp_export.py`, `kgs/schemas.py`                                                                                                                                | Bundle tests verify all upstream nodes, relationships, summaries, unresolved data, and the complete AS+LC `entity_provenance` mapping are preserved verbatim; LP fields/provenance are additive; fingerprints are complete; invalid LP blocks successful compilation                                                                                                                  |
-| 21   | Write `as_lc_lp_nodes.jsonl` and `as_lc_lp_relationships.jsonl`                                   | `kgs/lp_export.py`                                                                                                                                                      | Projection tests prove node parity with AS+LC and exact relationship union/order across all four types                                                                                                                                                                                                                                                                                |
-| 22   | Integrate LP into `create_kgs.build_kgs()` after `compile_as_lc_kg()`                             | `entries/create_kgs.py`                                                                                                                                                 | Orchestration test verifies phase order, returned bundle use, failure propagation, usage accounting, and `kg_run.json` success/error state                                                                                                                                                                                                                                            |
-| 23   | Implement final-bundle reuse and stale-fingerprint detection                                      | `lp_export.py`, LP utilities                                                                                                                                            | Tests cover exact-match reuse, all material upstream/config/policy/candidate/request/checkpoint/response/prompt/model/finalization fingerprints, projection rewrite, invalid bundles, and D13 prefix alignment                                                                                                                                                                        |
-| 24   | Add deterministic D12 release-policy conformance coverage                                         | Automated tests and deterministic synthetic fixtures/fakes                                                                                                              | Prove `needs_review` is visible, nonpublishing, and nonblocking; processing failure remains D13-governed; no semantic gold set, metric, threshold, sample, cadence, or human approval is required; structural/process validity cannot be labeled pedagogical truth; audit findings cannot edit generated graphs                                                                       |
-| 25   | Run the targeted six-curriculum structural/process matrix                                         | Deterministic test outputs and validation evidence                                                                                                                      | Madhi: scope-only coordinate; Nigeria: tree baseline; Pratham: DAG/multiple grains; Ghana math: unresolved ancestry/code anomalies; Rwanda: noisy LC evidence cannot auto-publish; Ghana English: recurrence mapping. Validate policy, provenance, counts, identities, checkpoints, and artifacts without a semantic-quality pass/fail claim                                          |
-| 26   | Explicitly deferred from v1; no implementation or tuning work                                     | None                                                                                                                                                                    | No config, instruction, prompt, semantic-threshold, or generic-code tuning is authorized. Step 25 defects return to the earliest owning step through remediation/review; post-release findings follow D12/D14 remediation and rerun. Future semantic harness/tuning requires approved governance. After Step 25 approval, proceed directly to Step 27                                 |
-| 27   | Run all six complete pipelines from source PDFs                                                   | Six complete result directories                                                                                                                                         | All AS, AS+LC, and AS+LC+LP bundles validate; every candidate/request has successful D13 coverage; no failed pair; provenance, warnings, counts, collisions, projections, fingerprints, checkpoints, and reuse state reconcile. `needs_review` is visible/nonpublishing/nonblocking. No D12 semantic pass is required or claimed                                                      |
-| 28   | Update user-facing pipeline and artifact documentation                                            | New `docs/pipeline/learning-progressions.md`; update architecture, pipeline index, output artifacts, adding-curriculum, running/debugging docs                          | Examples match real artifacts; docs explain canonical undirected `relatesTo` lookup, direct-edge reachability, D10 warnings, D13 resume/failure behavior, optional post-release audit remediation, and every accepted LIMIT including D12/D14 without claiming pedagogical truth                                                                                                      |
-| 29   | Final release review                                                                              | Brief, configs, code, docs, six outputs                                                                                                                                 | Confirm every settled decision and invariant is implemented; Step 27 evidence satisfies structural/provenance/count/collision/D13 requirements; accepted LIMITs are disclosed; D12 absence of a pre-release semantic gate is explicit; no structural/process evidence is presented as pedagogical correctness; no implementation-governing placeholder or unresolved decision remains |
+| Step | One reviewable implementation aspect                                                             | Primary files/outputs                                                                                                                                                   | Review and test boundary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+|------|--------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 0    | Record D1–D14 and later governance amendments consistently, then obtain implementation approval  | This brief plus synchronized repository/role governance instructions                                                                                                    | Every concrete payload is present; dependent model/config/invariant/build/test language agrees; no implementation-governing placeholder or unresolved decision remains; user implementation OK recorded                                                                                                                                                                                                                                                                                                        |
+| 1    | Establish six-curriculum LP regression fixtures                                                  | New reduced fixtures under the repository's test area                                                                                                                   | Fixture loader verifies current AS+LC bundle shapes, counts, DAG parents, unresolved flags, and LC alignments without changing production code                                                                                                                                                                                                                                                                                                                                                                 |
+| 2    | Define the intrinsic `kgs.lp` Pydantic models and standalone field validators                    | `backend/src/kgfeg/schemas.py`                                                                                                                                          | Tests cover relation-specific pair policies; D2 coordinate type/order; D3 per-SFI/total budgets; D10's required two-state policy; D11 author/provider/template/approver; positive batch/evidence bounds; and D13 retry counts. Reject runtime candidate algorithm/version/strategy/technology/signal/ranking/tie-breaking/fingerprint selectors, D2 invariant selectors, license-source/provenance switches, checkpoint/resume policies, and failure-tolerance thresholds; cross-profile wiring remains Step 3 |
+| 3    | Wire `kgs.lp` as required, add AS-policy cross-validation, and update all six configs atomically | `backend/src/kgfeg/schemas.py`; `examples/**/config*.json`                                                                                                              | Tests prove all six profiles reproduce the exact D1 matrices, D2 coordinate types/orders, D3 per-SFI/total budgets, D10 inclusion-with-warning state, D11 configured values/template, retry counts, and curriculum instructions, with no repeated D2/D3/D11/D13 invariant fields. Cross-validation rejects unknown values, omitted variable policy, invariant-override fields, and copy/paste errors; later owning steps test the code-owned runtime behavior                                                  |
+| 4    | Replace dormant LP schemas with the approved intrinsic pair/evidence/judgment record schemas     | `backend/src/kgfeg/kgs/schemas.py`                                                                                                                                      | Schema tests cover valid accepted/negative/review records and reject intrinsic defects such as malformed UUIDs, self-pairs, illegal enum combinations, and invalid confidence/rationale fields; request-relative endpoint/coverage checks remain owned by Steps 12 and 14                                                                                                                                                                                                                                      |
+| 5    | Add LP usage buckets and model-settings plumbing using `LLM_KG_MODEL`                            | `kgs/llm.py`, existing model registry calls                                                                                                                             | Usage serialization includes producer/checker buckets and `kgs_settings("learning_progressions")` is exercised; no prompt or agent factory is implemented before Steps 13–14, and no new model environment setting is introduced                                                                                                                                                                                                                                                                               |
+| 6    | Build an AS+LC graph index that is safe for trees and DAGs                                       | New `kgs/lp_index.py` or equivalent                                                                                                                                     | Tests verify Pratham multi-parent ancestry, framework-root handling, LC-by-SFI indexes, and deterministic traversal order                                                                                                                                                                                                                                                                                                                                                                                      |
+| 7    | Implement local developmental-coordinate resolution                                              | New LP index/selection utility                                                                                                                                          | Tests cover every exact D2 order, Madhi scope-only Class, explicit Grade/Class nodes, alias canonicalization, missing-coordinate `buildsTowards` exclusion and `relatesTo` retention, invalid/ambiguous/conflicting hard failure, same-rank permission, forward-only direction, and unlimited gaps                                                                                                                                                                                                             |
+| 8    | Implement LP SFI eligibility and unresolved-policy reporting                                     | New `kgs/lp_selection.py`; `lp_eligible_sfis.json`; `lp_eligibility_report.json`                                                                                        | Tests cover exact D1 closed-world participation, D10 exclude/include states, all six inclusion-with-warning profiles, no exception/sidecar path, D2 precedence, independent LC eligibility, multiple grains, exact counts, and warning propagation without using fallback root as evidence                                                                                                                                                                                                                     |
+| 9    | Implement hard candidate filters and deterministic pair IDs                                      | New `kgs/lp_candidates.py`                                                                                                                                              | Tests prove no self-pairs, no D1-disallowed pairs, no D2-disallowed directions, one unordered D4 logical pair, and IDs stable under encounter/input ordering                                                                                                                                                                                                                                                                                                                                                   |
+| 10   | Implement named evidence features within the built-in D3 candidate policy                        | `lp_candidates.py` or `lp_evidence.py`                                                                                                                                  | Each code-owned deterministic non-embedding signal is tested independently; tests cover hierarchy/DAG context, local rank, LC overlap, text, code/source/audit handling, named triggering values, and the rule that no feature publishes an edge. No runtime strategy registry, algorithm selector, or enabled-signal list is introduced                                                                                                                                                                       |
+| 11   | Implement the built-in candidate policy's union, ranking, and budgets                            | `lp_candidates.py`; `lp_candidate_pairs.jsonl`; `lp_candidate_summary.json`                                                                                             | Deterministic tests verify bounded nomination, union, deduplication, configured per-SFI/total budget behavior before LLM work, code-owned stable ranking and total tie-breaking, pair-scale bounds, actual input/artifact content hashes, and stable candidate records without runtime ranking selectors or an internal policy version; tests acknowledge rather than claim to measure the D3/D12 recall LIMIT                                                                                                 |
+| 12   | Implement bounded LP request construction and complete pre-call materialization                  | New `kgs/lp_generation.py`; `lp_generation_requests.jsonl`                                                                                                              | Tests verify complete validated candidate/request populations are written and reconcile before any external call, with exact coverage/order/IDs/counts/content hashes, bounded context, all parent paths, LC evidence limits, warnings, and stable request IDs                                                                                                                                                                                                                                                 |
+| 13   | Implement the LP producer prompt and agent                                                       | `kgs/prompts.py`, `kgs/agents.py`, `kgs/llm.py`                                                                                                                         | Prompt fixtures demonstrate relation semantics, D6/D7 recurrence distinctions, curriculum-specific examples, D10 warnings, explicit `no_relation`/`needs_review`, D14 no overrides, and no out-of-request endpoints                                                                                                                                                                                                                                                                                            |
+| 14   | Implement the independent LP checker and deterministic integrity validators                      | `kgs/prompts.py`, `kgs/agents.py`, `kgs/validators.py`, `kgs/llm.py`                                                                                                    | Tests cover one complete D4 pair judgment, accept/correct, missing/extra/duplicate pair, endpoint leakage, D1/D2/D5/D6 illegal outcomes, warning/evidence parity, and complete rather than patch correction                                                                                                                                                                                                                                                                                                    |
+| 15   | Implement resumable generation orchestration and D13 failure accounting                          | `kgs/lp_generation.py`; draft/verdict/final/failure artifacts                                                                                                           | Interrupted-stage tests verify code-owned validated deterministic draft/verdict/final prefixes, separate failures, zero tolerance after configured retries, halt/no-success status, earliest-unfinished-stage resume without repeated valid calls, and fail-closed gaps/duplicates/order/truncation/alignment/material-input behavior without runtime checkpoint/resume/mismatch selectors                                                                                                                     |
+| 16   | Reconcile final pair decisions under D4–D10 and D14                                              | New `kgs/lp_finalization.py`; `lp_final_claims.json`                                                                                                                    | Tests cover unified judgments, D6 precedence/exclusivity, D7 recurrence, D5 canonical `relatesTo`, D8 global DAG diagnostics, D9 direct-edge-only behavior, D10 warnings, D14 absence of overrides/hand edits, duplicates/conflicts, and visible nonpublishing `needs_review`                                                                                                                                                                                                                                  |
+| 17   | Mint deterministic `Relationship` records and correct generic descriptions                       | `kgs/lp_finalization.py`, `kgs/schemas.py`                                                                                                                              | UUID snapshot tests cover both types; endpoint and metadata tests verify configured D11 author/provider/template/approver values plus code-owned source-license inheritance, template substitution, complete provenance, and Learning Commons-compatible semantics                                                                                                                                                                                                                                             |
+| 18   | Implement standalone LP graph validation                                                         | New LP validator or `kgs/validators.py`                                                                                                                                 | Tests cover endpoints, self-loops, duplicates, D1/D2/D4–D10/D14 policy, complete D8 diagnostics, direct-edge provenance, exact D11 metadata/provenance, counts/collisions, unresolved-warning consistency, D13 zero-failure success condition, and rejection of structural-validity-as-semantic-proof claims                                                                                                                                                                                                   |
+| 19   | Write standalone LP provenance, summary, unresolved, failure, and validation artifacts           | `lp_relationship_provenance.json`, `lp_generation_summary.json`, `lp_unresolved_items.json`, `lp_generation_failures.json`, `lp_validation_report.json`, relation files | Round-trip validation and independent count reconciliation cover every artifact; `needs_review`, policy exclusions, and D13 failures remain separate; warnings/provenance and accepted/nonpublished counts agree                                                                                                                                                                                                                                                                                               |
+| 20   | Add the AS+LC+LP bundle schema and compiler                                                      | New `kgs/lp_export.py`, `kgs/schemas.py`                                                                                                                                | Bundle tests verify all upstream nodes, relationships, summaries, unresolved data, and the complete AS+LC `entity_provenance` mapping are preserved verbatim; LP fields/provenance are additive; required content hashes are complete; invalid LP blocks successful compilation                                                                                                                                                                                                                                |
+| 21   | Write `as_lc_lp_nodes.jsonl` and `as_lc_lp_relationships.jsonl`                                  | `kgs/lp_export.py`                                                                                                                                                      | Projection tests prove node parity with AS+LC and exact relationship union/order across all four types                                                                                                                                                                                                                                                                                                                                                                                                         |
+| 22   | Integrate LP into `create_kgs.build_kgs()` after `compile_as_lc_kg()`                            | `entries/create_kgs.py`                                                                                                                                                 | Orchestration test verifies phase order, returned bundle use, failure propagation, usage accounting, and `kg_run.json` success/error state                                                                                                                                                                                                                                                                                                                                                                     |
+| 23   | Implement final-bundle reuse and stale-input detection                                           | `lp_export.py`, LP utilities                                                                                                                                            | Tests cover exact-match reuse using hashes/identifiers derived from actual material upstream/config/candidate/request/checkpoint/response/prompt/model/finalization inputs and artifacts, projection rewrite, invalid bundles, and D13 prefix alignment. Candidate-policy replacement requires deletion/regeneration rather than an internal version compatibility layer                                                                                                                                       |
+| 24   | Add deterministic D12 release-policy conformance coverage                                        | Automated tests and deterministic synthetic fixtures/fakes                                                                                                              | Prove `needs_review` is visible, nonpublishing, and nonblocking; processing failure remains D13-governed; no semantic gold set, metric, threshold, sample, cadence, or human approval is required; structural/process validity cannot be labeled pedagogical truth; audit findings cannot edit generated graphs                                                                                                                                                                                                |
+| 25   | Run the targeted six-curriculum structural/process matrix                                        | Deterministic test outputs and validation evidence                                                                                                                      | Madhi: scope-only coordinate; Nigeria: tree baseline; Pratham: DAG/multiple grains; Ghana math: unresolved ancestry/code anomalies; Rwanda: noisy LC evidence cannot auto-publish; Ghana English: recurrence mapping. Validate policy, provenance, counts, identities, checkpoints, and artifacts without a semantic-quality pass/fail claim                                                                                                                                                                   |
+| 26   | Explicitly deferred from v1; no implementation or tuning work                                    | None                                                                                                                                                                    | No config, instruction, prompt, semantic-threshold, or generic-code tuning is authorized. Step 25 defects return to the earliest owning step through remediation/review; post-release findings follow D12/D14 remediation and rerun. Future semantic harness/tuning requires approved governance. After Step 25 approval, proceed directly to Step 27                                                                                                                                                          |
+| 27   | Run all six complete pipelines from source PDFs                                                  | Six complete result directories                                                                                                                                         | All AS, AS+LC, and AS+LC+LP bundles validate; every candidate/request has successful D13 coverage; no failed pair; provenance, warnings, counts, collisions, projections, material content hashes, checkpoints, and reuse state reconcile. `needs_review` is visible/nonpublishing/nonblocking. No D12 semantic pass is required or claimed                                                                                                                                                                    |
+| 28   | Update user-facing pipeline and artifact documentation                                           | New `docs/pipeline/learning-progressions.md`; update architecture, pipeline index, output artifacts, adding-curriculum, running/debugging docs                          | Examples match real artifacts; docs explain canonical undirected `relatesTo` lookup, direct-edge reachability, D10 warnings, D13 resume/failure behavior, optional post-release audit remediation, and every accepted LIMIT including D12/D14 without claiming pedagogical truth                                                                                                                                                                                                                               |
+| 29   | Final release review                                                                             | Brief, configs, code, docs, six outputs                                                                                                                                 | Confirm every settled decision and invariant is implemented; Step 27 evidence satisfies structural/provenance/count/collision/D13 requirements; accepted LIMITs are disclosed; D12 absence of a pre-release semantic gate is explicit; no structural/process evidence is presented as pedagogical correctness; no implementation-governing placeholder or unresolved decision remains                                                                                                                          |
 
 ## 5.1 Suggested module boundary
 
