@@ -3150,9 +3150,10 @@ class CreateKGConfig(BaseSchema):
 
     - `as` for Academic Standards extraction settings.
     - `lc` for Learning Components settings.
+    - `lp` for Learning Progressions settings.
 
     Python code accesses those namespaces through the valid attribute names
-    `academic_standards` and `learning_components`.
+    `academic_standards`, `learning_components`, and `learning_progressions`.
     """
 
     # GENERAL ATTRIBUTES #
@@ -3172,6 +3173,12 @@ class CreateKGConfig(BaseSchema):
         description="Learning Components settings from the kgs.lc config namespace.",
     )
 
+    # LEARNING PROGRESSIONS #
+    learning_progressions: _CreateKGLearningProgressionsConfig = Field(
+        alias="lp",
+        description="Learning Progressions settings from the kgs.lp config namespace.",
+    )
+
     # FRAMEWORK METADATA #
     metadata: _CreateKGMetadata
 
@@ -3182,6 +3189,114 @@ class CreateKGConfig(BaseSchema):
         validate_by_alias=True,
         validate_by_name=False,
     )
+
+    @model_validator(mode="after")
+    def validate_learning_progressions_configuration(self) -> Self:
+        """Validate LP policy against the sibling Academic Standards policy.
+
+        Returns
+        -------
+        Self
+            The validated KG configuration.
+
+        Raises
+        ------
+        ValueError
+            If LP references a non-canonical or unknown statement type, the local
+            coordinate type is not an AS grade/class/stage type, its vocabulary differs
+            from the AS controlled values, or a ``buildsTowards`` type cannot expose
+            the coordinate through identity scope.
+        """
+
+        as_config = self.academic_standards
+        lp_config = self.learning_progressions
+        statement_type_policy = {
+            item.statement_type: item for item in as_config.statement_type_policy
+        }
+        builds_towards_pairs = lp_config.builds_towards.allowed_statement_type_pairs
+        builds_towards_statement_types: set[str] = set()
+
+        for builds_towards_pair in builds_towards_pairs:
+            builds_towards_statement_types.update(
+                (
+                    builds_towards_pair.source_statement_type,
+                    builds_towards_pair.target_statement_type,
+                )
+            )
+
+        participating_statement_types = set(builds_towards_statement_types)
+
+        for relates_to_pair in lp_config.relates_to.allowed_statement_type_pairs:
+            participating_statement_types.update(
+                (
+                    relates_to_pair.first_statement_type,
+                    relates_to_pair.second_statement_type,
+                )
+            )
+
+        coordinate_statement_type = lp_config.developmental_coordinate.statement_type
+        referenced_statement_types = participating_statement_types | {
+            coordinate_statement_type
+        }
+        unknown_statement_types = sorted(
+            referenced_statement_types - statement_type_policy.keys()
+        )
+
+        if unknown_statement_types:
+            raise ValueError(
+                f"CreateKGConfig.lp must use canonical statement_type labels from "
+                f"CreateKGConfig.as.statement_type_policy. Unknown LP labels: "
+                f"{unknown_statement_types}."
+            )
+
+        if coordinate_statement_type not in as_config.grade_level_statement_types:
+            raise ValueError(
+                f"CreateKGConfig.lp.developmental_coordinate.statement_type must be "
+                f"declared by CreateKGConfig.as.grade_level_statement_types. "
+                f"Configured LP coordinate type: {coordinate_statement_type!r}; "
+                f"AS grade/class/stage types: {as_config.grade_level_statement_types}."
+            )
+
+        coordinate_policy = statement_type_policy[coordinate_statement_type]
+        configured_coordinate_values = set(
+            lp_config.developmental_coordinate.ordered_values
+        )
+        controlled_coordinate_values = {
+            item.canonical_value for item in coordinate_policy.controlled_values
+        }
+
+        if configured_coordinate_values != controlled_coordinate_values:
+            missing_values = sorted(
+                controlled_coordinate_values - configured_coordinate_values
+            )
+            unknown_values = sorted(
+                configured_coordinate_values - controlled_coordinate_values
+            )
+            raise ValueError(
+                f"CreateKGConfig.lp.developmental_coordinate.ordered_values must "
+                f"contain exactly the canonical controlled_values configured for AS "
+                f"statement type {coordinate_statement_type!r}. Missing values: "
+                f"{missing_values}; unknown or non-canonical values: {unknown_values}."
+            )
+
+        missing_coordinate_scopes = sorted(
+            statement_type
+            for statement_type in builds_towards_statement_types
+            if statement_type != coordinate_statement_type
+            and coordinate_statement_type
+            not in as_config.identity_scope_statement_types.get(statement_type, [])
+        )
+
+        if missing_coordinate_scopes:
+            raise ValueError(
+                f"Every buildsTowards-participating statement type must expose the "
+                f"developmental coordinate through "
+                f"CreateKGConfig.as.identity_scope_statement_types, unless it is the "
+                f"coordinate statement type itself. Statement types missing "
+                f"{coordinate_statement_type!r}: {missing_coordinate_scopes}."
+            )
+
+        return self
 
 
 class ExtractionConfig(BaseSchema):

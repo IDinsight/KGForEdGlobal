@@ -451,9 +451,42 @@
 		"lc": {
 			"generation_instructions": "Decompose each Ghana Mathematics Indicator SFI into atomic mathematical skills or concepts directly supported by the Indicator's own text. The leading code (e.g. B5.1.1.3.4) is an identifier, not content: never copy it into skill text and never derive grade, strand, or sub-strand scope from it - codes in this source contain visible errors. Many Indicators are already atomic (e.g. 'Round decimals to the nearest tenth'): emit exactly one clean skill for these and never pad the skill count. Compound Indicators split along their own structure: paired verbs ('read and write', 'compare and order', 'count and convert ... and vice versa', 'estimate and calculate') are usually two skills; clause chains ('identify the unknown, represent the problem with an equation, and solve the problem') split per clause. Keep parenthetical scope qualifiers ('up to 100,000', 'to the nearest tenth', '(cm, m)') attached to their skill - never drop them or spin them off as separate skills. If exemplar text leaked into the seed (starting 'E.g. 1.' or 'Ask learners to...'), ignore everything from that point: exemplars, subject-specific practices, and core competencies are activities, never skills; lowercase 'e.g.'/'i.e.' inside a statement is legitimate content, not an exemplar boundary. Preserve NaCCA terminology and British spelling exactly (factorisation, multi-base materials, referents, highest common factor (HCF), Ghana Cedis). Output skills in English.",
 			"lc_dedup_batch_size": 25,
-			"lc_dedup_blocking": {"containment_min_shared_tokens": 2, "containment_threshold": 0.75, "corpus_stopword_df": 0.15, "neighborhood_all_pairs_max_size": 12, "tag_jaccard_threshold": 0.5, "token_jaccard_threshold": 0.55, "trigram_jaccard_threshold": 0.6},
+			"lc_dedup_blocking": {
+				"containment_min_shared_tokens": 2,
+				"containment_threshold": 0.75,
+				"corpus_stopword_df": 0.15,
+				"neighborhood_all_pairs_max_size": 12,
+				"tag_jaccard_threshold": 0.5,
+				"token_jaccard_threshold": 0.55,
+				"trigram_jaccard_threshold": 0.6
+			},
 			"lc_dedup_instructions": null,
-			"lc_dedup_language_pack": {"min_fold_length": 5, "stopwords": ["a", "an", "the", "of", "to", "in", "on", "for", "with", "and", "or", "using", "given", "their", "its"], "strip_prefixes": [], "strip_suffixes": ["ing", "es", "s"]},
+			"lc_dedup_language_pack": {
+				"min_fold_length": 5,
+				"stopwords": [
+					"a",
+					"an",
+					"the",
+					"of",
+					"to",
+					"in",
+					"on",
+					"for",
+					"with",
+					"and",
+					"or",
+					"using",
+					"given",
+					"their",
+					"its"
+				],
+				"strip_prefixes": [],
+				"strip_suffixes": [
+					"ing",
+					"es",
+					"s"
+				]
+			},
 			"lc_dedup_scope": "framework",
 			"lc_generation_validation_instructions": null,
 			"lc_include_sibling_context": false,
@@ -465,6 +498,67 @@
 			"lc_request_batch_size": 1,
 			"lc_semantic_dedup": true,
 			"lc_source_statement_types": null
+		},
+		"lp": {
+			"builds_towards": {
+				"allowed_statement_type_pairs": [
+					{
+						"source_statement_type": "Content Standard",
+						"target_statement_type": "Content Standard"
+					},
+					{
+						"source_statement_type": "Indicator",
+						"target_statement_type": "Indicator"
+					}
+				]
+			},
+			"candidate_policy": {
+				"budgets": {
+					"max_candidates_per_sfi": 12,
+					"max_total_candidates": 5000
+				}
+			},
+			"checker_instructions": "Independently check Content Standard and Indicator judgments only within their respective grains and the BASIC 4 through BASIC 6 order. Treat known source-code anomalies and unresolved hierarchy warnings as audit context, never as positive placement evidence; reject cross-grain claims, reversed development, and claims based only on shared codes, hierarchy, wording, or Learning Components.",
+			"developmental_coordinate": {
+				"ordered_values": [
+					"BASIC 4",
+					"BASIC 5",
+					"BASIC 6"
+				],
+				"statement_type": "Grade"
+			},
+			"evidence_limits": {
+				"max_ancestor_path_depth": 8,
+				"max_ancestor_paths_per_sfi": 4,
+				"max_learning_components_per_sfi": 8,
+				"max_source_evidence_characters_per_sfi": 2000,
+				"max_source_evidence_items_per_sfi": 4
+			},
+			"producer_instructions": "Judge Content Standard pairs and Indicator pairs only within the same statement-type grain. Use the configured BASIC 4 through BASIC 6 sequence for developmental direction and use trustworthy Strand, Sub-Strand, statement text, and Learning Components as bounded evidence. Preserve code-anomaly and unresolved-placement warnings, and never treat a framework-root fallback or source code as positive hierarchy evidence.",
+			"relates_to": {
+				"allowed_statement_type_pairs": [
+					{
+						"first_statement_type": "Content Standard",
+						"second_statement_type": "Content Standard"
+					},
+					{
+						"first_statement_type": "Indicator",
+						"second_statement_type": "Indicator"
+					}
+				]
+			},
+			"relationship_metadata": {
+				"approved_by": "IDinsight",
+				"attribution_statement_template": "Learning progression relationship generated by IDinsight using an LLM producer/checker workflow. Source framework attribution: {source_attribution_statement}. This inferred relationship was not stated or endorsed by the source publisher.",
+				"author": "LLM generated",
+				"provider": "IDinsight"
+			},
+			"request_batch_size": 1,
+			"retry": {
+				"checker_max_retries": 2,
+				"producer_max_retries": 2
+			},
+			"unresolved_participation": "include_unresolved_with_warnings"
 		},
 		"metadata": {
 			"adoption_status": "Adopted",

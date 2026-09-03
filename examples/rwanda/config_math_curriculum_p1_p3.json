@@ -670,9 +670,42 @@
 		"lc": {
 			"generation_instructions": "Decompose each Rwanda P1-P3 Mathematics objective SFI according to its type. Knowledge and understanding objectives ('Explain...', 'Differentiate...') yield conceptual components; Skills objectives ('Count...', 'Convert...', 'Draw...') yield procedural components; Attitudes and Values objectives ('Appreciate...', 'Develop...') yield disposition components - preserve the disposition meaning and never convert it into an activity or measurable task. Strip leading dash/bullet markers from seed text. A single objective often bundles a comma enumeration ('Draw right, acute, and obtuse angles'): split such enumerations into atomic components. Ultra-terse objectives ('Estimate.', 'Locate objects.') state an action whose object lives in the ancestors: this is the one case where ancestor content is licensed, so take the object and scope from the ancestor Unit and Key Unit Competence (e.g. estimating length measurements in m, dm and cm under a length-measurement unit), and add nothing beyond what that Unit scope supports. Never generate skills from Content listings, Learning activities, Assessment criteria, Links to other subjects, or Teaching aids. Normalize source typos ('substract') without inventing new skills. Preserve CBC terminology (Key Unit Competence, competence), comparison symbols (<, >, =), and Rwandan currency (Frw). Output skills in English.",
 			"lc_dedup_batch_size": 25,
-			"lc_dedup_blocking": {"containment_min_shared_tokens": 2, "containment_threshold": 0.75, "corpus_stopword_df": 0.15, "neighborhood_all_pairs_max_size": 12, "tag_jaccard_threshold": 0.5, "token_jaccard_threshold": 0.55, "trigram_jaccard_threshold": 0.6},
+			"lc_dedup_blocking": {
+				"containment_min_shared_tokens": 2,
+				"containment_threshold": 0.75,
+				"corpus_stopword_df": 0.15,
+				"neighborhood_all_pairs_max_size": 12,
+				"tag_jaccard_threshold": 0.5,
+				"token_jaccard_threshold": 0.55,
+				"trigram_jaccard_threshold": 0.6
+			},
 			"lc_dedup_instructions": null,
-			"lc_dedup_language_pack": {"min_fold_length": 5, "stopwords": ["a", "an", "the", "of", "to", "in", "on", "for", "with", "and", "or", "using", "given", "their", "its"], "strip_prefixes": [], "strip_suffixes": ["ing", "es", "s"]},
+			"lc_dedup_language_pack": {
+				"min_fold_length": 5,
+				"stopwords": [
+					"a",
+					"an",
+					"the",
+					"of",
+					"to",
+					"in",
+					"on",
+					"for",
+					"with",
+					"and",
+					"or",
+					"using",
+					"given",
+					"their",
+					"its"
+				],
+				"strip_prefixes": [],
+				"strip_suffixes": [
+					"ing",
+					"es",
+					"s"
+				]
+			},
 			"lc_dedup_scope": "framework",
 			"lc_generation_validation_instructions": null,
 			"lc_include_sibling_context": false,
@@ -688,6 +721,91 @@
 				"Skills Objective",
 				"Attitudes and Values Objective"
 			]
+		},
+		"lp": {
+			"builds_towards": {
+				"allowed_statement_type_pairs": [
+					{
+						"source_statement_type": "Grade Key Competence",
+						"target_statement_type": "Grade Key Competence"
+					},
+					{
+						"source_statement_type": "Key Unit Competence",
+						"target_statement_type": "Key Unit Competence"
+					},
+					{
+						"source_statement_type": "Knowledge Objective",
+						"target_statement_type": "Knowledge Objective"
+					},
+					{
+						"source_statement_type": "Skills Objective",
+						"target_statement_type": "Skills Objective"
+					},
+					{
+						"source_statement_type": "Attitudes and Values Objective",
+						"target_statement_type": "Attitudes and Values Objective"
+					}
+				]
+			},
+			"candidate_policy": {
+				"budgets": {
+					"max_candidates_per_sfi": 12,
+					"max_total_candidates": 5000
+				}
+			},
+			"checker_instructions": "Independently check each Rwanda judgment within its same statement-type grain and the P1 through P3 order. Keep Grade Key Competence, Key Unit Competence, Knowledge Objective, Skills Objective, and Attitudes and Values Objective semantics distinct; reject cross-grain claims, reversed development, and claims based only on shared Unit, Topic Area, wording, or Learning Components.",
+			"developmental_coordinate": {
+				"ordered_values": [
+					"P1",
+					"P2",
+					"P3"
+				],
+				"statement_type": "Grade"
+			},
+			"evidence_limits": {
+				"max_ancestor_path_depth": 8,
+				"max_ancestor_paths_per_sfi": 4,
+				"max_learning_components_per_sfi": 8,
+				"max_source_evidence_characters_per_sfi": 2000,
+				"max_source_evidence_items_per_sfi": 4
+			},
+			"producer_instructions": "Judge Grade Key Competence, Key Unit Competence, Knowledge Objective, Skills Objective, and Attitudes and Values Objective pairs only within the same statement-type grain. Use the configured P1 through P3 sequence for developmental direction while preserving the distinct conceptual, procedural, and disposition meanings. Shared Unit, Topic Area, wording, or Learning Components may nominate but never establishes a relationship by itself.",
+			"relates_to": {
+				"allowed_statement_type_pairs": [
+					{
+						"first_statement_type": "Grade Key Competence",
+						"second_statement_type": "Grade Key Competence"
+					},
+					{
+						"first_statement_type": "Key Unit Competence",
+						"second_statement_type": "Key Unit Competence"
+					},
+					{
+						"first_statement_type": "Knowledge Objective",
+						"second_statement_type": "Knowledge Objective"
+					},
+					{
+						"first_statement_type": "Skills Objective",
+						"second_statement_type": "Skills Objective"
+					},
+					{
+						"first_statement_type": "Attitudes and Values Objective",
+						"second_statement_type": "Attitudes and Values Objective"
+					}
+				]
+			},
+			"relationship_metadata": {
+				"approved_by": "IDinsight",
+				"attribution_statement_template": "Learning progression relationship generated by IDinsight using an LLM producer/checker workflow. Source framework attribution: {source_attribution_statement}. This inferred relationship was not stated or endorsed by the source publisher.",
+				"author": "LLM generated",
+				"provider": "IDinsight"
+			},
+			"request_batch_size": 1,
+			"retry": {
+				"checker_max_retries": 2,
+				"producer_max_retries": 2
+			},
+			"unresolved_participation": "include_unresolved_with_warnings"
 		},
 		"metadata": {
 			"adoption_status": "Adopted",
