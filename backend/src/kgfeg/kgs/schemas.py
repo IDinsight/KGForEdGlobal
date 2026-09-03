@@ -14,12 +14,13 @@ from __future__ import annotations
 
 # Standard Library
 from datetime import datetime
+from math import isfinite
 from typing import Any, Callable, Literal, Optional, Self, Sequence
 from urllib.parse import urlparse
 from uuid import UUID
 
 # Third Party Library
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, JsonValue, field_validator, model_validator
 
 # Package Library
 from kgfeg.schemas import BaseSchema, LanguageField, NormalizedStatementType
@@ -28,7 +29,18 @@ from kgfeg.utils.general import strip_and_require_non_empty_str
 _AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo"}
 _AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
 _MetadataT = dict[str, Any]
-_ProgressionSubtype = Literal["developmental_prerequisite", "recurring_practice"]
+LCAncestorPathStatus = Literal["resolved", "unresolved_ancestor_path"]
+LCExclusionReason = Literal[
+    "empty_text",
+    "grouping_node",
+    "not_a_leaf",
+    "not_in_allowlist",
+    "unresolved_ancestor_path",
+]
+LCSelectionMode = Literal["explicit_allowlist", "leaf_default"]
+LPDecision = Literal["buildsTowards", "relatesTo", "no_relation", "needs_review"]
+LPDirection = Literal["first_to_second", "second_to_first"]
+LPRelationshipType = Literal["buildsTowards", "relatesTo"]
 SFICodeResolutionMethod = Literal[
     "no_source_code",
     "review_selected_source_code",
@@ -172,6 +184,129 @@ def _validate_iso8601_str(v: Optional[str]) -> Optional[str]:
         raise ValueError(f"Invalid ISO-8601 datetime string: {v2}") from e
 
     return v2
+
+
+def _validate_lp_evidence_value(*, field_name: str, value: JsonValue) -> JsonValue:
+    """Validate one recursively JSON-safe concrete LP evidence value.
+
+    Parameters
+    ----------
+    field_name
+        Path used to identify the evidence value in validation errors.
+    value
+        JSON-compatible evidence value to validate.
+
+    Returns
+    -------
+    JsonValue
+        Validated evidence with string values and mapping keys stripped.
+
+    Raises
+    ------
+    ValueError
+        If the value is null, blank, empty, non-finite, or contains duplicate mapping
+        keys after whitespace is stripped.
+    """
+
+    if value is None:
+        raise ValueError(f"{field_name} must not be null.")
+
+    if isinstance(value, str):
+        return strip_and_require_non_empty_str(value)
+
+    if isinstance(value, float) and not isfinite(value):
+        raise ValueError(f"{field_name} must be a finite number.")
+
+    if isinstance(value, list):
+        if not value:
+            raise ValueError(f"{field_name} must not be an empty list.")
+
+        return [
+            _validate_lp_evidence_value(field_name=f"{field_name}[{index}]", value=item)
+            for index, item in enumerate(value)
+        ]
+
+    if isinstance(value, dict):
+        if not value:
+            raise ValueError(f"{field_name} must not be an empty mapping.")
+
+        cleaned: dict[str, JsonValue] = {}
+
+        for name, item in value.items():
+            name_clean = strip_and_require_non_empty_str(name)
+
+            if name_clean in cleaned:
+                raise ValueError(
+                    f"{field_name} must not contain duplicate names after stripping "
+                    f"whitespace."
+                )
+
+            cleaned[name_clean] = _validate_lp_evidence_value(
+                field_name=f"{field_name}.{name_clean}", value=item
+            )
+
+        return cleaned
+
+    return value
+
+
+def _validate_lp_pair_endpoints(*, first_sfi_uuid: UUID, second_sfi_uuid: UUID) -> None:
+    """Validate the identity and order of one logical LP pair.
+
+    Parameters
+    ----------
+    first_sfi_uuid
+        Canonically first SFI endpoint UUID.
+    second_sfi_uuid
+        Canonically second SFI endpoint UUID.
+
+    Raises
+    ------
+    ValueError
+        If the pair is a self-pair or its endpoints are not in canonical UUID order.
+    """
+
+    if first_sfi_uuid == second_sfi_uuid:
+        raise ValueError("Learning Progressions pairs must contain two distinct SFIs.")
+
+    if first_sfi_uuid.int > second_sfi_uuid.int:
+        raise ValueError(
+            "Learning Progressions pair endpoints must be in ascending UUID order."
+        )
+
+
+def _validate_lp_string_list(*, field_name: str, values: Sequence[str]) -> list[str]:
+    """Validate an ordered list of non-empty unique LP strings.
+
+    Parameters
+    ----------
+    field_name
+        Human-readable field name used in validation errors.
+    values
+        Strings to strip and validate without changing their order.
+
+    Returns
+    -------
+    list[str]
+        Stripped strings in their original order.
+
+    Raises
+    ------
+    ValueError
+        If an entry is blank or duplicated after stripping.
+    """
+
+    cleaned: list[str] = []
+
+    for value in values:
+        item = strip_and_require_non_empty_str(value)
+
+        if item in cleaned:
+            raise ValueError(f"{field_name} must not contain duplicate values.")
+
+        cleaned.append(item)
+
+    return cleaned
 
 
 def _validate_unique_source_anchors(
@@ -5632,18 +5767,7 @@ class AcademicStandardsValidationReport(BaseSchema):
     validation_checks: list[str] = Field(default_factory=list)
 
 
-# Schemas for Learning Component generation.
-LCAncestorPathStatus = Literal["resolved", "unresolved_ancestor_path"]
-LCExclusionReason = Literal[
-    "empty_text",
-    "grouping_node",
-    "not_a_leaf",
-    "not_in_allowlist",
-    "unresolved_ancestor_path",
-]
-LCSelectionMode = Literal["explicit_allowlist", "leaf_default"]
-
-
+# Schemas for Learning Components.
 class LCAtomicSkill(BaseSchema):
     """One atomic teachable skill decomposed from an LC-source SFI."""
 
@@ -6034,6 +6158,459 @@ class LCUnresolvedItems(BaseSchema):
 
     lc_generation_failures: list[LCGenerationFailure] = Field(default_factory=list)
     lc_source_exclusion_reason_counts: dict[str, int] = Field(default_factory=dict)
+
+
+# Schemas for Learning Progressions.
+class LPAdmissibleDecision(BaseSchema):
+    """One valid decision that may be made for an LP pair."""
+
+    decision: LPDecision
+    direction: Optional[LPDirection] = Field(
+        default=None,
+        description=(
+            "Semantic direction for buildsTowards; omitted for symmetric, negative, "
+            "and unresolved decisions."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_decision_direction(self) -> LPAdmissibleDecision:
+        """Validate whether this decision permits or requires a direction.
+
+        Returns
+        -------
+        LPAdmissibleDecision
+            The validated decision option.
+
+        Raises
+        ------
+        ValueError
+            If a directional decision omits direction or another decision supplies it.
+        """
+
+        if self.decision == "buildsTowards" and self.direction is None:
+            raise ValueError("buildsTowards decisions require a direction.")
+
+        if self.decision != "buildsTowards" and self.direction is not None:
+            raise ValueError(f"{self.decision} decisions must not specify a direction.")
+
+        return self
+
+
+class LPCandidateEvidence(BaseSchema):
+    """One named nomination signal and its concrete triggering values."""
+
+    evidence_type: str = Field(
+        description="Stable name of the code-owned nomination signal.", min_length=1
+    )
+    nominated_relationships: list[LPRelationshipType] = Field(
+        description="Relationship outcomes for which this signal nominated the pair.",
+        min_length=1,
+    )
+    references: list[str] = Field(
+        default_factory=list,
+        description="Bounded identifiers for source records supporting this signal.",
+    )
+    triggering_values: dict[str, JsonValue] = Field(
+        description="Named concrete values that caused this signal to nominate the pair.",
+        min_length=1,
+    )
+
+    @field_validator("evidence_type", mode="before")
+    @classmethod
+    def _strip_evidence_type(cls, v: str) -> str:
+        """Strip and require a non-empty evidence type.
+
+        Parameters
+        ----------
+        v
+            Evidence type to validate.
+
+        Returns
+        -------
+        str
+            The stripped evidence type.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+    @field_validator("nominated_relationships")
+    @classmethod
+    def _validate_nominated_relationships(
+        cls, v: list[LPRelationshipType]
+    ) -> list[LPRelationshipType]:
+        """Reject duplicate relationship nominations from one evidence signal.
+
+        Parameters
+        ----------
+        v
+            Relationship types nominated by this evidence signal.
+
+        Returns
+        -------
+        list[LPRelationshipType]
+            Unique relationship nominations in deterministic input order.
+
+        Raises
+        ------
+        ValueError
+            If the same relationship type is nominated more than once.
+        """
+
+        if len(v) != len(set(v)):
+            raise ValueError("nominated_relationships must not contain duplicates.")
+
+        return v
+
+    @field_validator("references")
+    @classmethod
+    def _validate_references(cls, v: list[str]) -> list[str]:
+        """Validate bounded evidence-reference identifiers.
+
+        Parameters
+        ----------
+        v
+            Evidence-reference identifiers to validate.
+
+        Returns
+        -------
+        list[str]
+            Stripped unique reference identifiers in input order.
+        """
+
+        return _validate_lp_string_list(field_name="references", values=v)
+
+    @field_validator("triggering_values")
+    @classmethod
+    def _validate_triggering_values(
+        cls, v: dict[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        """Validate names and top-level presence for JSON evidence values.
+
+        Parameters
+        ----------
+        v
+            Evidence value names and their JSON-compatible concrete values.
+
+        Returns
+        -------
+        dict[str, JsonValue]
+            Evidence values keyed by stripped unique names in input order.
+
+        Raises
+        ------
+        ValueError
+            If the mapping, a name, or a top-level value is empty.
+        """
+
+        if not v:
+            raise ValueError("triggering_values must not be empty.")
+
+        cleaned: dict[str, JsonValue] = {}
+
+        for name, value in v.items():
+            name_clean = strip_and_require_non_empty_str(name)
+
+            if name_clean in cleaned:
+                raise ValueError(
+                    "triggering_values must not contain duplicate names after "
+                    "stripping whitespace."
+                )
+
+            cleaned[name_clean] = _validate_lp_evidence_value(
+                field_name=f"triggering_values[{name_clean!r}]", value=value
+            )
+
+        return cleaned
+
+
+class LPCandidatePair(BaseSchema):
+    """One canonical unordered SFI pair nominated for LP adjudication."""
+
+    admissible_decisions: list[LPAdmissibleDecision] = Field(
+        description=(
+            "Complete intrinsic decision set after deterministic policy filtering."
+        ),
+        min_length=1,
+    )
+    evidence: list[LPCandidateEvidence] = Field(
+        description="Named evidence signals that nominated this pair.", min_length=1
+    )
+    first_sfi_uuid: UUID = Field(
+        description="Lower canonical SFI CASE UUID; this order is not semantic."
+    )
+    pair_id: str = Field(
+        description="Deterministic logical-pair identifier.", min_length=1
+    )
+    second_sfi_uuid: UUID = Field(
+        description="Higher canonical SFI CASE UUID; this order is not semantic."
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Upstream audit or unresolved-context warnings for the pair.",
+    )
+
+    @field_validator("admissible_decisions")
+    @classmethod
+    def _validate_admissible_decisions(
+        cls, v: list[LPAdmissibleDecision]
+    ) -> list[LPAdmissibleDecision]:
+        """Require a complete, unique intrinsic decision set.
+
+        Parameters
+        ----------
+        v
+            Decision options derived for this candidate pair.
+
+        Returns
+        -------
+        list[LPAdmissibleDecision]
+            The validated decision options in deterministic input order.
+
+        Raises
+        ------
+        ValueError
+            If options are duplicated or omit required nonpublishing outcomes or every
+            publishable relationship outcome.
+        """
+
+        signatures = [(option.decision, option.direction) for option in v]
+
+        if len(signatures) != len(set(signatures)):
+            raise ValueError("admissible_decisions must not contain duplicates.")
+
+        decisions = {option.decision for option in v}
+
+        if not {"no_relation", "needs_review"}.issubset(decisions):
+            raise ValueError(
+                "admissible_decisions must include no_relation and needs_review."
+            )
+
+        if not decisions.intersection({"buildsTowards", "relatesTo"}):
+            raise ValueError(
+                "admissible_decisions must include at least one relationship outcome."
+            )
+
+        return v
+
+    @model_validator(mode="after")
+    def _validate_canonical_pair(self) -> LPCandidatePair:
+        """Validate that the candidate contains one canonical non-self pair.
+
+        Returns
+        -------
+        LPCandidatePair
+            The validated candidate pair.
+        """
+
+        _validate_lp_pair_endpoints(
+            first_sfi_uuid=self.first_sfi_uuid, second_sfi_uuid=self.second_sfi_uuid
+        )
+        return self
+
+    @field_validator("evidence")
+    @classmethod
+    def _validate_evidence(
+        cls, v: list[LPCandidateEvidence]
+    ) -> list[LPCandidateEvidence]:
+        """Require one consolidated record per named nomination signal.
+
+        Parameters
+        ----------
+        v
+            Evidence records that nominated the pair.
+
+        Returns
+        -------
+        list[LPCandidateEvidence]
+            The validated evidence records in deterministic input order.
+
+        Raises
+        ------
+        ValueError
+            If a named evidence type occurs more than once.
+        """
+
+        evidence_types = [item.evidence_type for item in v]
+
+        if len(evidence_types) != len(set(evidence_types)):
+            raise ValueError("evidence must contain each evidence_type at most once.")
+
+        return v
+
+    @model_validator(mode="after")
+    def _validate_evidence_decisions(self) -> LPCandidatePair:
+        """Ensure evidence nominates only intrinsically admissible relationships.
+
+        Returns
+        -------
+        LPCandidatePair
+            The validated candidate pair.
+
+        Raises
+        ------
+        ValueError
+            If evidence nominates a relationship absent from the admissible set.
+        """
+
+        admissible_relationships = {
+            option.decision
+            for option in self.admissible_decisions
+            if option.decision in {"buildsTowards", "relatesTo"}
+        }
+        nominated_relationships = {
+            relationship_type
+            for evidence in self.evidence
+            for relationship_type in evidence.nominated_relationships
+        }
+
+        if not nominated_relationships.issubset(admissible_relationships):
+            raise ValueError(
+                "evidence must not nominate a relationship absent from admissible_decisions."
+            )
+
+        return self
+
+    @field_validator("pair_id", mode="before")
+    @classmethod
+    def _validate_pair_id(cls, v: str) -> str:
+        """Strip and require a non-empty deterministic pair identifier.
+
+        Parameters
+        ----------
+        v
+            Pair identifier to validate.
+
+        Returns
+        -------
+        str
+            The stripped pair identifier.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+    @field_validator("warnings")
+    @classmethod
+    def _validate_warnings(cls, v: list[str]) -> list[str]:
+        """Validate audit warnings carried by the candidate pair.
+
+        Parameters
+        ----------
+        v
+            Warning messages to validate.
+
+        Returns
+        -------
+        list[str]
+            Stripped unique warning messages in input order.
+        """
+
+        return _validate_lp_string_list(field_name="warnings", values=v)
+
+
+class LPPairJudgment(BaseSchema):
+    """One complete accepted, negative, or unresolved LP pair judgment."""
+
+    confidence: float = Field(
+        description="Audit confidence for this judgment; it does not publish an edge.",
+        ge=0.0,
+        le=1.0,
+        strict=True,
+    )
+    decision: LPDecision
+    direction: Optional[LPDirection] = Field(
+        default=None,
+        description=(
+            "Semantic direction for buildsTowards; omitted for symmetric, negative, "
+            "and unresolved decisions."
+        ),
+    )
+    first_sfi_uuid: UUID = Field(
+        description="Lower canonical SFI CASE UUID; this order is not semantic."
+    )
+    pair_id: str = Field(
+        description="Deterministic logical-pair identifier.", min_length=1
+    )
+    rationale: str = Field(
+        description="Evidence-grounded explanation for the complete pair decision.",
+        min_length=1,
+    )
+    second_sfi_uuid: UUID = Field(
+        description="Higher canonical SFI CASE UUID; this order is not semantic."
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Upstream audit or unresolved-context warnings considered.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_decision_direction(self) -> LPPairJudgment:
+        """Validate whether the selected decision permits or requires direction.
+
+        Returns
+        -------
+        LPPairJudgment
+            The validated complete pair judgment.
+
+        Raises
+        ------
+        ValueError
+            If a directional decision omits direction or another decision supplies it.
+        """
+
+        LPAdmissibleDecision(decision=self.decision, direction=self.direction)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_pair(self) -> LPPairJudgment:
+        """Validate that the judgment contains one canonical non-self pair.
+
+        Returns
+        -------
+        LPPairJudgment
+            The validated complete pair judgment.
+        """
+
+        _validate_lp_pair_endpoints(
+            first_sfi_uuid=self.first_sfi_uuid, second_sfi_uuid=self.second_sfi_uuid
+        )
+        return self
+
+    @field_validator("pair_id", "rationale", mode="before")
+    @classmethod
+    def _validate_required_strings(cls, v: str) -> str:
+        """Strip and require a non-empty pair identifier or rationale.
+
+        Parameters
+        ----------
+        v
+            Required string to validate.
+
+        Returns
+        -------
+        str
+            The stripped required string.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+    @field_validator("warnings")
+    @classmethod
+    def _validate_warnings(cls, v: list[str]) -> list[str]:
+        """Validate audit warnings carried by the judgment.
+
+        Parameters
+        ----------
+        v
+            Warning messages to validate.
+
+        Returns
+        -------
+        list[str]
+            Stripped unique warning messages in input order.
+        """
+
+        return _validate_lp_string_list(field_name="warnings", values=v)
 
 
 # Schemas for nodes.
@@ -6484,7 +7061,115 @@ class StandardsFrameworkItem(_CaseIdentifierMixin, _DateValidationMixin, BaseSch
         return self
 
 
-# Schemas for relationship.
+class LearningComponent(_DateValidationMixin, BaseSchema):
+    """Granular skill/concept aligned to one or more standards items via `supports`.
+
+    LearningComponents represent skill/concept units that can be aligned to
+    StandardsFrameworkItems using `supports` relationships:
+
+      (:LearningComponent)-[:supports]->(:StandardsFrameworkItem)
+    """
+
+    academic_subject: str = Field(
+        description=(
+            "High-level academic subject classification for the component "
+            "(e.g., Mathematics, English Language Arts). In strict exports this should "
+            "conform to LC enum values; in relaxed exports free-form values are allowed."
+        ),
+    )
+    attribution_statement: str = Field(
+        description=(
+            "Attribution text required to credit the original publisher/owner of the "
+            "source curriculum content that this component derives from."
+        ),
+    )
+    author: str = Field(
+        description=(
+            "Human or organization name considered the author/owner of this component, "
+            "typically inherited from the framework (e.g., Ministry of Education)."
+        ),
+    )
+    date_created: Optional[str] = Field(
+        default=None,
+        description=(
+            "Creation timestamp for the component (ISO-8601 string), if known. Optional."
+        ),
+    )
+    date_modified: Optional[str] = Field(
+        default=None,
+        description=(
+            "Last-modified timestamp for the component (ISO-8601 string), if known. Optional."
+        ),
+    )
+    description: str = Field(
+        description=(
+            "Primary human-readable text describing the skill/concept represented by the "
+            "LearningComponent. In a 1-to-1 policy, this may be identical to the supporting "
+            "standards expectation statement."
+        ),
+    )
+    identifier: UUID = Field(
+        description=(
+            "Primary internal identifier for this entity in the export. Must be deterministic "
+            "across reruns (UUIDv5 recommended)."
+        ),
+    )
+    in_language: LanguageField = Field(
+        description=(
+            "Language tag for the component text (e.g., en-US). In strict exports this should "
+            "conform to LC enum values; in relaxed exports any valid BCP-47 language tag is allowed."
+        ),
+    )
+    license: str = Field(
+        description=(
+            "License string for the component content. Must be present even if it is a "
+            "conservative placeholder when the original license is unknown."
+        ),
+    )
+    metadata: _MetadataT = Field(
+        default_factory=dict,
+        description=(
+            "Free-form metadata for pipeline/internal use (e.g., canonical node ids, "
+            "doc_key references, provenance pointers, dialect fallback notes). "
+            "Not a core LC KG field; consider omitting from strict exports."
+        ),
+    )
+    provider: str = Field(
+        description=(
+            "Provider/host name for the exported KG dataset (often your organization/product). "
+            "Used for attribution and provenance in downstream systems."
+        ),
+    )
+
+    @field_validator(
+        "academic_subject",
+        "attribution_statement",
+        "author",
+        "description",
+        "in_language",
+        "license",
+        "provider",
+        mode="before",
+    )
+    @classmethod
+    def _strip_and_require_non_empty(cls, v: str) -> str:
+        """Strip whitespace and require non-empty strings for required fields.
+
+        Parameters
+        ----------
+        v
+            The input string value to validate.
+
+        Returns
+        -------
+        str
+            The validated and stripped string value.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+
+# Schemas for relationships.
 class Relationship(_DateValidationMixin, BaseSchema):
     """LC KG relationship record (shared schema across relationship types).
 
@@ -6841,6 +7526,21 @@ class _LearningCommonsWireModel(BaseSchema):
     )
 
 
+class LearningCommonsLearningComponentProperties(_LearningCommonsWireModel):
+    """String-valued properties for one Learning Commons learning-component node."""
+
+    academic_subject: str = Field(alias="academicSubject")
+    attribution_statement: str = Field(alias="attributionStatement")
+    author: str
+    description: str
+    identifier: str
+    identity_key: str = Field(alias="identityKey")
+    in_language: str = Field(alias="inLanguage")
+    license: str
+    provider: str
+    tags: str | None = None
+
+
 class LearningCommonsNode(_LearningCommonsWireModel):
     """One Learning Commons graph-node JSONL record."""
 
@@ -7025,227 +7725,3 @@ class LearningCommonsStandardsFrameworkProperties(_LearningCommonsWireModel):
     name: str
     notes: str | None = None
     provider: str
-
-
-class LearningCommonsLearningComponentProperties(_LearningCommonsWireModel):
-    """String-valued properties for one Learning Commons learning-component node."""
-
-    academic_subject: str = Field(alias="academicSubject")
-    attribution_statement: str = Field(alias="attributionStatement")
-    author: str
-    description: str
-    identifier: str
-    identity_key: str = Field(alias="identityKey")
-    in_language: str = Field(alias="inLanguage")
-    license: str
-    provider: str
-    tags: str | None = None
-
-
-# CURRENTLY UNUSED #
-# Schemas for LLM responses.
-class ProgressionEdge(BaseSchema):
-    """A single suggested edge between two StandardsFrameworkItems."""
-
-    confidence: float = Field(
-        description="0..1 calibrated confidence (higher = more certain).",
-        ge=0.0,
-        le=1.0,
-    )
-    progression_subtype: Optional[_ProgressionSubtype] = Field(
-        default=None,
-        description=(
-            "For Phase 1 within-level buildsTowards only: "
-            "'developmental_prerequisite' means the source is a meaningful prerequisite "
-            "for a more complex or dependent target; 'recurring_practice' means the "
-            "target is a later curriculum occurrence continuing practice of the same "
-            "or substantially similar skill."
-        ),
-    )
-    rationale: str = Field(
-        description="Brief rationale for the edge (>= 50 chars).",
-        min_length=50,
-    )
-    source_sfi_uuid: str = Field(description="UUID string of the source SFI.")
-    target_sfi_uuid: str = Field(description="UUID string of the target SFI.")
-
-    @field_validator("rationale", mode="before")
-    @classmethod
-    def _strip_rationale(cls, v: Any) -> str:
-        """Strip whitespace and validate that rationale is a string of at least 50
-        characters.
-
-        Parameters
-        ----------
-        v
-            The input value to validate.
-
-        Returns
-        -------
-        str
-            The validated and stripped rationale string.
-
-        Raises
-        ------
-        ValueError
-            If the rationale is not a string or is less than 50 characters after
-            stripping.
-        """
-
-        s = str(v or "").strip()
-
-        if len(s) < 50:
-            raise ValueError("rationale must be >= 50 characters")
-
-        return s
-
-    @field_validator("source_sfi_uuid", "target_sfi_uuid", mode="before")
-    @classmethod
-    def _validate_uuid_str(cls, v: Any) -> str:
-        """Strip whitespace and validate that the value is a parseable UUID string.
-
-        Parameters
-        ----------
-        v
-            The input value to validate.
-
-        Returns
-        -------
-        str
-            The validated and stripped UUID string.
-
-        Raises
-        ------
-        ValueError
-            If the input value is null, empty, or not a valid UUID string.
-        """
-
-        if v is None:
-            raise ValueError("UUID cannot be null")
-
-        s = str(v).strip()
-
-        if not s:
-            raise ValueError("UUID cannot be empty")
-
-        try:
-            UUID(s)
-        except Exception as e:  # pylint: disable=broad-except
-            raise ValueError(f"Invalid UUID string: {s}") from e
-
-        return s
-
-
-class ProgressionEdgesResponse(BaseSchema):
-    """Top-level structured response: a list of edges (may be empty)."""
-
-    edges: list[ProgressionEdge] = Field(default_factory=list)
-
-
-# Schemas for nodes.
-class LearningComponent(_DateValidationMixin, BaseSchema):
-    """Granular skill/concept aligned to one or more standards items via `supports`.
-
-    LearningComponents represent skill/concept units that can be aligned to
-    StandardsFrameworkItems using `supports` relationships:
-
-      (:LearningComponent)-[:supports]->(:StandardsFrameworkItem)
-    """
-
-    academic_subject: str = Field(
-        description=(
-            "High-level academic subject classification for the component "
-            "(e.g., Mathematics, English Language Arts). In strict exports this should "
-            "conform to LC enum values; in relaxed exports free-form values are allowed."
-        ),
-    )
-    attribution_statement: str = Field(
-        description=(
-            "Attribution text required to credit the original publisher/owner of the "
-            "source curriculum content that this component derives from."
-        ),
-    )
-    author: str = Field(
-        description=(
-            "Human or organization name considered the author/owner of this component, "
-            "typically inherited from the framework (e.g., Ministry of Education)."
-        ),
-    )
-    date_created: Optional[str] = Field(
-        default=None,
-        description=(
-            "Creation timestamp for the component (ISO-8601 string), if known. Optional."
-        ),
-    )
-    date_modified: Optional[str] = Field(
-        default=None,
-        description=(
-            "Last-modified timestamp for the component (ISO-8601 string), if known. Optional."
-        ),
-    )
-    description: str = Field(
-        description=(
-            "Primary human-readable text describing the skill/concept represented by the "
-            "LearningComponent. In a 1-to-1 policy, this may be identical to the supporting "
-            "standards expectation statement."
-        ),
-    )
-    identifier: UUID = Field(
-        description=(
-            "Primary internal identifier for this entity in the export. Must be deterministic "
-            "across reruns (UUIDv5 recommended)."
-        ),
-    )
-    in_language: LanguageField = Field(
-        description=(
-            "Language tag for the component text (e.g., en-US). In strict exports this should "
-            "conform to LC enum values; in relaxed exports any valid BCP-47 language tag is allowed."
-        ),
-    )
-    license: str = Field(
-        description=(
-            "License string for the component content. Must be present even if it is a "
-            "conservative placeholder when the original license is unknown."
-        ),
-    )
-    metadata: _MetadataT = Field(
-        default_factory=dict,
-        description=(
-            "Free-form metadata for pipeline/internal use (e.g., canonical node ids, "
-            "doc_key references, provenance pointers, dialect fallback notes). "
-            "Not a core LC KG field; consider omitting from strict exports."
-        ),
-    )
-    provider: str = Field(
-        description=(
-            "Provider/host name for the exported KG dataset (often your organization/product). "
-            "Used for attribution and provenance in downstream systems."
-        ),
-    )
-
-    @field_validator(
-        "academic_subject",
-        "attribution_statement",
-        "author",
-        "description",
-        "in_language",
-        "license",
-        "provider",
-        mode="before",
-    )
-    @classmethod
-    def _strip_and_require_non_empty(cls, v: str) -> str:
-        """Strip whitespace and require non-empty strings for required fields.
-
-        Parameters
-        ----------
-        v
-            The input string value to validate.
-
-        Returns
-        -------
-        str
-            The validated and stripped string value.
-        """
-
-        return strip_and_require_non_empty_str(v)
