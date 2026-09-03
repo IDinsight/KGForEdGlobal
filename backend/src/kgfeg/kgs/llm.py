@@ -94,6 +94,8 @@ class KGUsageTracker:
     lc_dedup: AgentUsageBucket
     lc_generation: AgentUsageBucket
     lc_generation_validation: AgentUsageBucket
+    lp_generation: AgentUsageBucket
+    lp_generation_validation: AgentUsageBucket
     sfi_dedup: AgentUsageBucket
     sfi_dedup_validation: AgentUsageBucket
     sfi_extraction: AgentUsageBucket
@@ -108,6 +110,10 @@ class KGUsageTracker:
         self.lc_generation = AgentUsageBucket(agent_name="lc_generation")
         self.lc_generation_validation = AgentUsageBucket(
             agent_name="lc_generation_validation"
+        )
+        self.lp_generation = AgentUsageBucket(agent_name="lp_generation")
+        self.lp_generation_validation = AgentUsageBucket(
+            agent_name="lp_generation_validation"
         )
         self.sfi_dedup = AgentUsageBucket(agent_name="sfi_dedup")
         self.sfi_dedup_validation = AgentUsageBucket(agent_name="sfi_dedup_validation")
@@ -133,6 +139,8 @@ class KGUsageTracker:
             "lc_dedup": self.lc_dedup,
             "lc_generation": self.lc_generation,
             "lc_generation_validation": self.lc_generation_validation,
+            "lp_generation": self.lp_generation,
+            "lp_generation_validation": self.lp_generation_validation,
             "sfi_dedup": self.sfi_dedup,
             "sfi_dedup_validation": self.sfi_dedup_validation,
             "sfi_extraction": self.sfi_extraction,
