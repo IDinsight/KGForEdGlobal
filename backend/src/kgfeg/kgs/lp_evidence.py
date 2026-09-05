@@ -1,10 +1,12 @@
-"""Named, non-embedding evidence for explicitly supplied LP endpoint pairs.
+"""Named, non-embedding evidence and bounded nomination for LP endpoint pairs.
 
 Evidence is weak nomination support, never a semantic judgment or a published edge. The
 extractor applies the authoritative pair filter before inspecting any features. It does
-not enumerate, rank, budget, persist, or adjudicate a candidate population. Weakly
-overlapping concepts can be missed; candidate recall is unmeasured and these lexical
-features have not been validated for multilingual progression judgments.
+not rank, persist, or adjudicate a candidate population. Its nomination index
+contributes a bounded pair stream from each fixed evidence family without constructing
+a large complete pair matrix. Weakly overlapping concepts can be missed; candidate
+recall is unmeasured and these lexical features have not been validated for
+multilingual progression judgments.
 """
 
 # Future Library
@@ -14,7 +16,8 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from collections import deque
+from collections import defaultdict, deque
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -22,7 +25,7 @@ from uuid import UUID
 from pydantic import JsonValue
 
 # Package Library
-from kgfeg.kgs.lp_candidates import (
+from kgfeg.kgs.lp_admissibility import (
     LPCandidateFilter,
     LPPairAdmissibility,
     build_lp_pair_filter,
@@ -37,6 +40,19 @@ from kgfeg.kgs.schemas import (
 )
 from kgfeg.schemas import CreateKGConfig
 
+_NOMINATION_EVIDENCE_TYPES = (
+    "shared_learning_components",
+    "hierarchy_context",
+    "lc_text_token_overlap",
+    "lc_tag_token_overlap",
+    "sfi_text_token_overlap",
+    "sfi_text_trigram_overlap",
+    "source_code_prefix",
+    "local_rank_proximity",
+    "source_page_proximity",
+)
+_NominationBuckets = dict[str, dict[str, set[UUID]]]
+
 
 @dataclass(frozen=True, slots=True)
 class LPEvidenceExtractor:
@@ -49,6 +65,18 @@ class LPEvidenceExtractor:
 
     _graph_index: LPGraphIndex
     _pair_filter: LPCandidateFilter
+
+    @property
+    def evidence_types(self) -> tuple[str, ...]:
+        """Return the fixed nomination and ranking evidence order.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Code-owned evidence names from strongest precedence to weakest.
+        """
+
+        return _NOMINATION_EVIDENCE_TYPES
 
     def extract_pair(
         self, *, first_sfi_uuid: UUID | str, second_sfi_uuid: UUID | str
@@ -94,6 +122,68 @@ class LPEvidenceExtractor:
             evidence=tuple(sorted(evidence, key=lambda item: item.evidence_type)),
         )
 
+    def nominate_pair_endpoints(self, pair_limit: int) -> tuple[tuple[UUID, UUID], ...]:
+        """Build a bounded union of endpoint pairs indexed by fixed evidence signals.
+
+        Each evidence family contributes at most ``pair_limit`` deterministic endpoint
+        pairs. Duplicate pairs across buckets and signals are retained once. Every
+        population follows these evidence-indexed streams; no complete-pair shortcut
+        bypasses nomination when a matrix happens to fit the aggregate ceiling.
+
+        Parameters
+        ----------
+        pair_limit
+            Maximum retained candidate population implied by configured budgets.
+
+        Returns
+        -------
+        tuple[tuple[UUID, UUID], ...]
+            Canonical unordered endpoint pairs requiring hard-filtered evidence
+            extraction, bounded by evidence-family count times ``pair_limit``.
+
+        Raises
+        ------
+        ValueError
+            If the pair limit is not a nonnegative integer.
+        """
+
+        if (
+            isinstance(pair_limit, bool)
+            or not isinstance(pair_limit, int)
+            or pair_limit < 0
+        ):
+            raise ValueError("LP nomination pair_limit must be a nonnegative integer.")
+
+        eligible_sfis = self._pair_filter.eligible_sfis
+        eligible_sfi_uuids = tuple(
+            record.sfi.case_identifier_uuid for record in eligible_sfis
+        )
+        statement_type_by_sfi_uuid = {
+            record.sfi.case_identifier_uuid: record.statement_type
+            for record in eligible_sfis
+        }
+        if pair_limit == 0 or len(eligible_sfi_uuids) < 2:
+            return ()
+
+        buckets_by_evidence_type = _evidence_nomination_buckets(
+            eligible_sfis=eligible_sfis, graph_index=self._graph_index
+        )
+        nominated_pairs: dict[tuple[UUID, UUID], None] = {}
+
+        for proposal_offset, evidence_type in enumerate(_NOMINATION_EVIDENCE_TYPES):
+            for pair in _bounded_pairs_from_buckets(
+                admissible_statement_type_pairs=(
+                    self._pair_filter.admissible_statement_type_pairs
+                ),
+                buckets=buckets_by_evidence_type[evidence_type],
+                pair_limit=pair_limit,
+                proposal_offset=proposal_offset,
+                statement_type_by_sfi_uuid=statement_type_by_sfi_uuid,
+            ):
+                nominated_pairs.setdefault(pair, None)
+
+        return tuple(nominated_pairs)
+
 
 @dataclass(frozen=True, slots=True)
 class LPPairEvidence:
@@ -112,6 +202,56 @@ class LPPairEvidence:
 
     admissibility: LPPairAdmissibility
     evidence: tuple[LPCandidateEvidence, ...]
+
+
+def _add_nomination_bucket(
+    *, buckets: dict[str, set[UUID]], key: str, sfi_uuid: UUID
+) -> None:
+    """Add one SFI to one deterministic evidence-value bucket.
+
+    Parameters
+    ----------
+    buckets
+        Mutable evidence-value index under construction.
+    key
+        Canonical value whose shared presence can nominate a pair.
+    sfi_uuid
+        Eligible endpoint carrying the value.
+    """
+
+    buckets.setdefault(key, set()).add(sfi_uuid)
+
+
+def _add_nomination_values(
+    *,
+    buckets_by_evidence_type: _NominationBuckets,
+    evidence_type: str,
+    sfi_uuid: UUID,
+    values: Iterable[str],
+) -> None:
+    """Add unique nomination values to evidence buckets for one endpoint.
+
+    Values are deduplicated and processed in deterministic sorted order. Each value is
+    used unchanged as a bucket key, and the endpoint UUID is added to that bucket's set.
+
+    Parameters
+    ----------
+    buckets_by_evidence_type
+        Mutable nomination buckets organized by evidence type and evidence value.
+    evidence_type
+        Evidence category whose buckets receive the endpoint.
+    sfi_uuid
+        Endpoint UUID to add to each selected bucket.
+    values
+        Evidence values to deduplicate, sort, and index.
+    """
+
+    for value in sorted(set(values)):
+        _add_nomination_bucket(
+            buckets=buckets_by_evidence_type[evidence_type],
+            key=value,
+            sfi_uuid=sfi_uuid,
+        )
 
 
 def _ancestor_distances(
@@ -151,6 +291,114 @@ def _ancestor_distances(
         )
 
     return distances
+
+
+def _bounded_pair_stream_window(
+    *,
+    pair_limit: int,
+    pair_streams: deque[Iterator[tuple[UUID, UUID]]],
+    proposal_offset: int,
+) -> tuple[tuple[UUID, UUID], ...]:
+    """Select a bounded, offset window from lazy pair streams.
+
+    The streams are advanced in round-robin order, with each produced pair considered
+    at most once after deduplication. The first ``proposal_offset`` unique pairs are
+    deferred so different evidence families can begin from different positions.
+    Deferred pairs are used as fallback values when too few later pairs are available,
+    preventing the offset from eliminating an otherwise valid proposal population.
+
+    Enumeration stops after at most ``pair_limit + proposal_offset`` stream advances,
+    so the complete pair population is never materialized. The supplied deque and its
+    iterators are consumed during selection.
+
+    Parameters
+    ----------
+    pair_limit
+        Maximum number of unique pairs to return.
+    pair_streams
+        Ordered lazy pair iterators to consume in round-robin order.
+    proposal_offset
+        Number of initial unique pairs to defer before retaining later pairs.
+
+    Returns
+    -------
+    tuple[tuple[UUID, UUID], ...]
+        Deterministically ordered unique pairs, never exceeding ``pair_limit``.
+    """
+
+    pairs: list[tuple[UUID, UUID]] = []
+    skipped_pairs: list[tuple[UUID, UUID]] = []
+    seen: set[tuple[UUID, UUID]] = set()
+    pair_stream_advances = 0
+    pair_stream_advance_limit = pair_limit + proposal_offset
+
+    while pair_streams and pair_stream_advances < pair_stream_advance_limit:
+        pair_stream = pair_streams.popleft()
+
+        try:
+            pair = next(pair_stream)
+        except StopIteration:
+            continue
+
+        pair_streams.append(pair_stream)
+        pair_stream_advances += 1
+
+        if pair in seen:
+            continue
+
+        seen.add(pair)
+
+        if len(skipped_pairs) < proposal_offset:
+            skipped_pairs.append(pair)
+        else:
+            pairs.append(pair)
+
+    pairs.extend(skipped_pairs[: pair_limit - len(pairs)])
+
+    return tuple(pairs)
+
+
+def _bounded_pairs_from_buckets(
+    *,
+    admissible_statement_type_pairs: tuple[tuple[str, str], ...],
+    buckets: dict[str, set[UUID]],
+    pair_limit: int,
+    proposal_offset: int,
+    statement_type_by_sfi_uuid: dict[UUID, str],
+) -> tuple[tuple[UUID, UUID], ...]:
+    """Round-robin bounded proposals inside D1-admissible type cohorts.
+
+    Parameters
+    ----------
+    admissible_statement_type_pairs
+        Canonical unordered statement-type cohorts permitted by D1.
+    buckets
+        Evidence values mapped to eligible endpoints carrying each value.
+    pair_limit
+        Maximum retained pair proposals for this evidence family.
+    proposal_offset
+        Fixed evidence-family offset used to diversify otherwise identical bounded
+        streams. Skipped proposals wrap to the end when the stream is smaller than the
+        requested window, so offsetting cannot erase a family's only evidence pairs.
+    statement_type_by_sfi_uuid
+        Validated statement type for every eligible endpoint.
+
+    Returns
+    -------
+    tuple[tuple[UUID, UUID], ...]
+        Stable unique endpoint proposals, never exceeding ``pair_limit``.
+    """
+
+    pair_group_specs = _nomination_pair_group_specs(
+        admissible_statement_type_pairs=admissible_statement_type_pairs,
+        buckets=buckets,
+        statement_type_by_sfi_uuid=statement_type_by_sfi_uuid,
+    )
+    return _bounded_pair_stream_window(
+        pair_limit=pair_limit,
+        pair_streams=_nomination_pair_streams(pair_group_specs=pair_group_specs),
+        proposal_offset=proposal_offset,
+    )
 
 
 def _code_evidence(pair: LPPairAdmissibility) -> list[LPCandidateEvidence]:
@@ -201,6 +449,113 @@ def _code_evidence(pair: LPPairAdmissibility) -> list[LPCandidateEvidence]:
             )
         ]
     )
+
+
+def _cross_type_pairs(
+    *, first_sfi_uuids: tuple[UUID, ...], second_sfi_uuids: tuple[UUID, ...]
+) -> Iterator[tuple[UUID, UUID]]:
+    """Yield a balanced Cartesian stream for two distinct statement types.
+
+    Parameters
+    ----------
+    first_sfi_uuids
+        Canonically ordered endpoints from the first statement type.
+    second_sfi_uuids
+        Canonically ordered endpoints from the second statement type.
+
+    Yields
+    ------
+    tuple[UUID, UUID]
+        Every cross-type pair once, in balanced cyclic order and canonical UUID order.
+    """
+
+    for distance in range(len(second_sfi_uuids)):
+        for first_index, first_sfi_uuid in enumerate(first_sfi_uuids):
+            second_sfi_uuid = second_sfi_uuids[
+                (first_index + distance) % len(second_sfi_uuids)
+            ]
+            first_endpoint, second_endpoint = sorted(
+                (first_sfi_uuid, second_sfi_uuid), key=str
+            )
+            yield first_endpoint, second_endpoint
+
+
+def _cyclic_pairs(sfi_uuids: tuple[UUID, ...]) -> Iterator[tuple[UUID, UUID]]:
+    """Yield balanced canonical unordered pairs without eager matrix construction.
+
+    Parameters
+    ----------
+    sfi_uuids
+        Unique endpoint UUIDs in canonical order.
+
+    Yields
+    ------
+    tuple[UUID, UUID]
+        Each logical pair at most once, visiting increasing cyclic distance.
+    """
+
+    seen: set[tuple[UUID, UUID]] = set()
+
+    for distance in range(1, len(sfi_uuids)):
+        for first_index, first_sfi_uuid in enumerate(sfi_uuids):
+            second_sfi_uuid = sfi_uuids[(first_index + distance) % len(sfi_uuids)]
+            first_endpoint, second_endpoint = sorted(
+                (first_sfi_uuid, second_sfi_uuid), key=str
+            )
+            pair = (first_endpoint, second_endpoint)
+
+            if pair in seen:
+                continue
+
+            seen.add(pair)
+            yield pair
+
+
+def _evidence_nomination_buckets(
+    *, eligible_sfis: tuple[LPSFIEligibility, ...], graph_index: LPGraphIndex
+) -> dict[str, dict[str, set[UUID]]]:
+    """Index eligible endpoints by values used by every fixed evidence family.
+
+    Parameters
+    ----------
+    eligible_sfis
+        Canonical participation records with coordinates and source context.
+    graph_index
+        Validated DAG and LC indexes for the same immutable upstream bundle.
+
+    Returns
+    -------
+    dict[str, dict[str, set[UUID]]]
+        Evidence type, then canonical triggering value, then matching endpoints.
+        Framework-root fallback placement and audit warnings are never indexed.
+    """
+
+    buckets_by_evidence_type: _NominationBuckets = {
+        evidence_type: defaultdict(set) for evidence_type in _NOMINATION_EVIDENCE_TYPES
+    }
+
+    for record in eligible_sfis:
+        _index_hierarchy_nomination_values(
+            buckets_by_evidence_type=buckets_by_evidence_type,
+            graph_index=graph_index,
+            record=record,
+        )
+        _index_lc_nomination_values(
+            buckets_by_evidence_type=buckets_by_evidence_type,
+            graph_index=graph_index,
+            record=record,
+        )
+        _index_sfi_nomination_values(
+            buckets_by_evidence_type=buckets_by_evidence_type, record=record
+        )
+        _index_proximity_nomination_values(
+            buckets_by_evidence_type=buckets_by_evidence_type, record=record
+        )
+
+    return {
+        evidence_type: dict(buckets)
+        for evidence_type, buckets in buckets_by_evidence_type.items()
+    }
 
 
 def _hierarchy_evidence(
@@ -259,6 +614,174 @@ def _hierarchy_evidence(
             )
         ]
     )
+
+
+def _index_hierarchy_nomination_values(
+    *,
+    buckets_by_evidence_type: _NominationBuckets,
+    graph_index: LPGraphIndex,
+    record: LPSFIEligibility,
+) -> None:
+    """Index one endpoint under its own and reachable ancestor identifiers.
+
+    The endpoint is added to the ``hierarchy_context`` bucket for its own UUID and for
+    every SFI ancestor reachable through the graph index. Only ancestor identity is
+    indexed; path and distance information are not retained.
+
+    Parameters
+    ----------
+    buckets_by_evidence_type
+        Mutable nomination buckets organized by evidence type and evidence value.
+    graph_index
+        Graph index containing the endpoint's parent and ancestor relationships.
+    record
+        Eligibility record for the endpoint being indexed.
+    """
+
+    sfi_uuid = record.sfi.case_identifier_uuid
+    ancestor_uuids = _ancestor_distances(graph_index=graph_index, sfi_uuid=sfi_uuid)
+    _add_nomination_values(
+        buckets_by_evidence_type=buckets_by_evidence_type,
+        evidence_type="hierarchy_context",
+        sfi_uuid=sfi_uuid,
+        values=(str(ancestor_uuid) for ancestor_uuid in {sfi_uuid, *ancestor_uuids}),
+    )
+
+
+def _index_lc_nomination_values(
+    *,
+    buckets_by_evidence_type: _NominationBuckets,
+    graph_index: LPGraphIndex,
+    record: LPSFIEligibility,
+) -> None:
+    """Index Learning Component evidence values for one endpoint.
+
+    The endpoint is indexed by the identifiers of its supporting Learning Components,
+    tokens from their descriptions, and tokens from well-formed optional tags. These
+    values allow endpoints sharing an exact component or lexical component evidence to
+    enter the same nomination bucket.
+
+    Parameters
+    ----------
+    buckets_by_evidence_type
+        Mutable nomination buckets organized by evidence type and evidence value.
+    graph_index
+        Graph index containing the Learning Components associated with the
+        endpoint.
+    record
+        Eligibility record for the endpoint being indexed.
+    """
+
+    sfi_uuid = record.sfi.case_identifier_uuid
+    components = graph_index.learning_components_by_sfi_uuid[sfi_uuid]
+    _add_nomination_values(
+        buckets_by_evidence_type=buckets_by_evidence_type,
+        evidence_type="shared_learning_components",
+        sfi_uuid=sfi_uuid,
+        values=(str(component.identifier) for component in components),
+    )
+    _add_nomination_values(
+        buckets_by_evidence_type=buckets_by_evidence_type,
+        evidence_type="lc_text_token_overlap",
+        sfi_uuid=sfi_uuid,
+        values=(
+            token
+            for component in components
+            for token in _word_tokens(component.description)
+        ),
+    )
+    _add_nomination_values(
+        buckets_by_evidence_type=buckets_by_evidence_type,
+        evidence_type="lc_tag_token_overlap",
+        sfi_uuid=sfi_uuid,
+        values=(token for component in components for token in _tag_tokens(component)),
+    )
+
+
+def _index_proximity_nomination_values(
+    *, buckets_by_evidence_type: _NominationBuckets, record: LPSFIEligibility
+) -> None:
+    """Index local-rank and source-page proximity values for one endpoint.
+
+    A populated local rank is indexed under its current and immediately preceding
+    integer values, allowing equal or adjacent ranks to share a bucket. Each validated
+    source-page index is handled the same way, allowing endpoints on equal or adjacent
+    pages to share a bucket. Missing ranks and unavailable, malformed, or conflicting
+    page indexes contribute no values.
+
+    Parameters
+    ----------
+    buckets_by_evidence_type
+        Mutable nomination buckets organized by evidence type and evidence value.
+    record
+        Eligibility record containing the endpoint's coordinate and source-page
+        provenance.
+    """
+
+    sfi_uuid = record.sfi.case_identifier_uuid
+
+    if record.coordinate.rank is not None:
+        _add_nomination_values(
+            buckets_by_evidence_type=buckets_by_evidence_type,
+            evidence_type="local_rank_proximity",
+            sfi_uuid=sfi_uuid,
+            values=(
+                str(record.coordinate.rank - 1),
+                str(record.coordinate.rank),
+            ),
+        )
+
+    _add_nomination_values(
+        buckets_by_evidence_type=buckets_by_evidence_type,
+        evidence_type="source_page_proximity",
+        sfi_uuid=sfi_uuid,
+        values=(
+            str(page_bucket)
+            for page_index in _source_pages(record)
+            for page_bucket in (page_index - 1, page_index)
+        ),
+    )
+
+
+def _index_sfi_nomination_values(
+    *, buckets_by_evidence_type: _NominationBuckets, record: LPSFIEligibility
+) -> None:
+    """Index statement text and source-code evidence values for one endpoint.
+
+    The endpoint is indexed by normalized word tokens and character trigrams from its
+    description. When the statement code contains at least one normalized word token,
+    its leading token is also indexed as the source-code prefix.
+
+    Parameters
+    ----------
+    buckets_by_evidence_type
+        Mutable nomination buckets organized by evidence type and evidence value.
+    record
+        Eligibility record containing the statement text, source code, and
+        endpoint UUID to index.
+    """
+
+    sfi_uuid = record.sfi.case_identifier_uuid
+    _add_nomination_values(
+        buckets_by_evidence_type=buckets_by_evidence_type,
+        evidence_type="sfi_text_token_overlap",
+        sfi_uuid=sfi_uuid,
+        values=_word_tokens(record.sfi.description),
+    )
+    _add_nomination_values(
+        buckets_by_evidence_type=buckets_by_evidence_type,
+        evidence_type="sfi_text_trigram_overlap",
+        sfi_uuid=sfi_uuid,
+        values=_trigrams(record.sfi.description),
+    )
+    code_tokens = _word_tokens(record.sfi.statement_code or "")
+
+    if code_tokens:
+        _add_nomination_bucket(
+            buckets=buckets_by_evidence_type["source_code_prefix"],
+            key=code_tokens[0],
+            sfi_uuid=sfi_uuid,
+        )
 
 
 def _lc_evidence(
@@ -365,6 +888,109 @@ def _nomination(
         references=sorted(set(references)),
         triggering_values=triggering_values,
     )
+
+
+def _nomination_pair_group_specs(
+    *,
+    admissible_statement_type_pairs: tuple[tuple[str, str], ...],
+    buckets: dict[str, set[UUID]],
+    statement_type_by_sfi_uuid: dict[UUID, str],
+) -> tuple[tuple[tuple[UUID, ...], tuple[UUID, ...]], ...]:
+    """Build deterministic endpoint-group specifications for lazy nomination.
+
+    Each evidence bucket is partitioned by statement type. For every admissible type
+    pairing, this function records a group capable of producing candidate pairs.
+    Same-type groups place all endpoints in the first tuple and use an empty second
+    tuple; cross-type groups keep the two endpoint cohorts separate.
+
+    Groups repeated across evidence buckets are deduplicated. Endpoints and the
+    returned groups are sorted deterministically by UUID string. This function does not
+    materialize the combinatorial pair population; downstream code enumerates each
+    group lazily under the configured nomination bound.
+
+    Parameters
+    ----------
+    admissible_statement_type_pairs
+        Canonical unordered statement-type pairings eligible for nomination.
+    buckets
+        Evidence values mapped to the eligible SFI endpoints carrying each value.
+    statement_type_by_sfi_uuid
+        Validated statement type for every endpoint present in ``buckets``.
+
+    Returns
+    -------
+    tuple[tuple[tuple[UUID, ...], tuple[UUID, ...]], ...]
+        Stable, unique endpoint-group specifications. Same-type groups contain at least
+        two endpoints in the first tuple and an empty second tuple. Cross-type groups
+        contain at least one endpoint in each tuple.
+    """
+
+    pair_group_specs: set[tuple[tuple[UUID, ...], tuple[UUID, ...]]] = set()
+
+    for _, sfi_uuids in sorted(buckets.items()):
+        sfi_uuids_by_type: dict[str, set[UUID]] = defaultdict(set)
+
+        for sfi_uuid in sfi_uuids:
+            sfi_uuids_by_type[statement_type_by_sfi_uuid[sfi_uuid]].add(sfi_uuid)
+
+        for first_type, second_type in admissible_statement_type_pairs:
+            first_sfi_uuids = tuple(sorted(sfi_uuids_by_type[first_type], key=str))
+
+            if first_type == second_type:
+                if len(first_sfi_uuids) > 1:
+                    pair_group_specs.add((first_sfi_uuids, ()))
+
+                continue
+
+            second_sfi_uuids = tuple(sorted(sfi_uuids_by_type[second_type], key=str))
+
+            if first_sfi_uuids and second_sfi_uuids:
+                pair_group_specs.add((first_sfi_uuids, second_sfi_uuids))
+
+    return tuple(
+        sorted(
+            pair_group_specs,
+            key=lambda group: (tuple(map(str, group[0])), tuple(map(str, group[1]))),
+        )
+    )
+
+
+def _nomination_pair_streams(
+    *, pair_group_specs: tuple[tuple[tuple[UUID, ...], tuple[UUID, ...]], ...]
+) -> deque[Iterator[tuple[UUID, UUID]]]:
+    """Create lazy pair streams from deterministic endpoint-group specifications.
+
+    Each group produces one iterator. Cross-type groups enumerate pairs between their
+    two endpoint cohorts, while same-type groups use the single populated cohort to
+    produce distinct endpoint pairs. The group order is preserved in a deque so
+    downstream code can consume the streams in round-robin order without materializing
+    every possible pair.
+
+    Parameters
+    ----------
+    pair_group_specs
+        Ordered endpoint-group specifications. An empty second endpoint tuple
+        identifies a same-type group; a populated second tuple identifies a cross-type
+        group.
+
+    Returns
+    -------
+    deque[Iterator[tuple[UUID, UUID]]]
+        Lazy pair iterators in the same deterministic order as the input groups.
+    """
+
+    pair_streams: deque[Iterator[tuple[UUID, UUID]]] = deque()
+
+    for first_sfi_uuids, second_sfi_uuids in pair_group_specs:
+        pair_streams.append(
+            _cross_type_pairs(
+                first_sfi_uuids=first_sfi_uuids, second_sfi_uuids=second_sfi_uuids
+            )
+            if second_sfi_uuids
+            else _cyclic_pairs(first_sfi_uuids)
+        )
+
+    return pair_streams
 
 
 def _overlap_evidence(

@@ -13,6 +13,7 @@ These models are intentionally **non-US-centric**:
 from __future__ import annotations
 
 # Standard Library
+from collections.abc import Mapping
 from datetime import datetime
 from math import isfinite
 from typing import Any, Callable, Literal, Optional, Self, Sequence
@@ -4279,8 +4280,7 @@ class SFIMergeGroup(BaseSchema):
 
         if self.canonical_code_source_candidate_id is not None:
             raise ValueError(
-                "single_source_code must not require an LLM-selected source "
-                "candidate."
+                "single_source_code must not require an LLM-selected source candidate."
             )
 
     def _check_review_selected_source_code_contract(
@@ -5073,8 +5073,7 @@ class SFIFinalRecord(BaseSchema):
 
         if not self.canonical_code_type:
             raise ValueError(
-                "review_selected_source_code final records require "
-                "canonical_code_type."
+                "review_selected_source_code final records require canonical_code_type."
             )
 
         if (
@@ -6506,6 +6505,308 @@ class LPCandidatePair(BaseSchema):
         """
 
         return _validate_lp_string_list(field_name="warnings", values=v)
+
+
+class LPCandidateSummary(BaseSchema):
+    """Deterministic audit summary for one bounded LP candidate population.
+
+    The summary reconciles the bounded evaluated admissible/evidence union with the
+    retained JSONL population and exposes its warning-bearing rows. Counts and hashes
+    describe structural candidate processing only; they do not measure semantic recall
+    or pedagogical correctness.
+    """
+
+    candidate_pair_bound: int = Field(
+        description=(
+            "Tight simple-graph upper bound implied by eligible SFIs and both "
+            "configured candidate budgets."
+        ),
+        ge=0,
+        strict=True,
+    )
+    candidate_pair_evaluation_bound: int = Field(
+        description=(
+            "Maximum number of endpoint pairs the bounded nomination neighborhood "
+            "may pass to hard-filter and evidence evaluation."
+        ),
+        ge=0,
+        strict=True,
+    )
+    candidate_pairs_content_hash: str = Field(
+        description="SHA-256 of the retained candidate records as canonical JSON.",
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    candidate_pairs_per_sfi: dict[UUID, int] = Field(
+        description="Retained incident-pair count for every eligible SFI."
+    )
+    candidate_warning_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Retained candidate-warning occurrence counts; warnings remain audit "
+            "state and are not nomination evidence."
+        ),
+    )
+    config_content_hash: str = Field(
+        description="SHA-256 of the complete effective KG configuration.",
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    eligible_sfis_content_hash: str = Field(
+        description="SHA-256 of the exact eligible-SFI artifact population.",
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    evidence_type_counts: dict[str, int] = Field(
+        description="Retained evidence-record counts by fixed signal name."
+    )
+    framework_uuid: UUID
+    limitations: list[str] = Field(
+        description="Accepted candidate-recall and semantic-validation limitations.",
+        min_length=1,
+    )
+    max_candidates_per_sfi: int = Field(ge=1, strict=True)
+    max_total_candidates: int = Field(ge=1, strict=True)
+    total_admissible_pairs: int = Field(ge=0, strict=True)
+    total_candidate_pairs: int = Field(ge=0, strict=True)
+    total_candidate_pairs_dropped_by_per_sfi_budget: int = Field(ge=0, strict=True)
+    total_candidate_pairs_dropped_by_total_budget: int = Field(ge=0, strict=True)
+    total_candidate_pairs_with_warnings: int = Field(default=0, ge=0, strict=True)
+    total_candidate_shortlist_entries: int = Field(ge=0, strict=True)
+    total_candidate_union_pairs: int = Field(ge=0, strict=True)
+    total_duplicate_shortlist_entries: int = Field(ge=0, strict=True)
+    total_eligible_sfis: int = Field(ge=0, strict=True)
+    total_nominated_pairs: int = Field(ge=0, strict=True)
+    total_pair_evaluations: int = Field(ge=0, strict=True)
+    total_pairs_without_evidence: int = Field(ge=0, strict=True)
+    total_policy_disallowed_pairs: int = Field(ge=0, strict=True)
+    total_unordered_pairs_considered: int = Field(
+        description="Complete eligible unordered-pair population before nomination.",
+        ge=0,
+        strict=True,
+    )
+    upstream_content_hash: str = Field(
+        description="SHA-256 of the complete authoritative upstream AS+LC bundle.",
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _populate_derived_audit_counts(cls, v: Any) -> Any:
+        """Populate evaluation counts from the supplied pair-population partitions.
+
+        Parameters
+        ----------
+        v
+            Candidate summary payload before field validation.
+
+        Returns
+        -------
+        Any
+            A copied mapping with deterministic derived counts when callers omit them.
+        """
+
+        if not isinstance(v, Mapping):
+            return v
+
+        payload = dict(v)
+        payload.setdefault(
+            "candidate_pair_evaluation_bound",
+            payload.get("total_unordered_pairs_considered", 0),
+        )
+        payload.setdefault(
+            "total_pair_evaluations",
+            payload.get("total_admissible_pairs", 0)
+            + payload.get("total_policy_disallowed_pairs", 0),
+        )
+        return payload
+
+    def _validate_pair_partitions(self, unordered_pair_count: int) -> None:
+        """Validate bounded evaluation and evidence partitions.
+
+        Parameters
+        ----------
+        unordered_pair_count
+            Total eligible unordered SFI pairs implied by the eligible SFI population.
+        """
+
+        if self.total_unordered_pairs_considered != unordered_pair_count:
+            raise ValueError(
+                "total_unordered_pairs_considered must cover every eligible "
+                "unordered pair exactly once."
+            )
+
+        if (
+            self.total_admissible_pairs + self.total_policy_disallowed_pairs
+            != self.total_pair_evaluations
+        ):
+            raise ValueError(
+                "Admissible and policy-disallowed counts must partition evaluated pairs."
+            )
+
+        if self.total_pair_evaluations > self.candidate_pair_evaluation_bound:
+            raise ValueError(
+                "Pair evaluations exceed the bounded nomination neighborhood."
+            )
+
+        if self.candidate_pair_evaluation_bound > self.total_unordered_pairs_considered:
+            raise ValueError(
+                "Pair evaluation bound exceeds the eligible unordered-pair population."
+            )
+
+        if (
+            self.total_nominated_pairs + self.total_pairs_without_evidence
+            != self.total_admissible_pairs
+        ):
+            raise ValueError(
+                "Nominated and evidence-free counts must partition admissible pairs."
+            )
+
+    def _validate_candidate_partitions(self) -> None:
+        """Validate shortlist, union, and budget-drop partitions."""
+
+        if (
+            self.total_candidate_pairs
+            + self.total_candidate_pairs_dropped_by_per_sfi_budget
+            + self.total_candidate_pairs_dropped_by_total_budget
+            != self.total_nominated_pairs
+        ):
+            raise ValueError(
+                "Retained and budget-dropped counts must reconcile to nominations."
+            )
+
+        if (
+            self.total_candidate_union_pairs + self.total_duplicate_shortlist_entries
+            != self.total_candidate_shortlist_entries
+        ):
+            raise ValueError(
+                "Candidate union and duplicate-entry counts must reconcile to the "
+                "bounded per-SFI shortlists."
+            )
+
+        if self.total_candidate_union_pairs > self.total_nominated_pairs:
+            raise ValueError("Candidate union cannot exceed evidence nominations.")
+
+        if (
+            self.total_candidate_shortlist_entries
+            > self.total_eligible_sfis * self.max_candidates_per_sfi
+        ):
+            raise ValueError(
+                "Candidate shortlist entries exceed the configured per-SFI bound."
+            )
+
+        if (
+            self.total_candidate_pairs
+            + self.total_candidate_pairs_dropped_by_total_budget
+            > self.total_candidate_union_pairs
+        ):
+            raise ValueError(
+                "Per-SFI budget survivors cannot exceed the deduplicated candidate union."
+            )
+
+    def _validate_candidate_bounds(self, unordered_pair_count: int) -> None:
+        """Validate configured pair, incidence, and evaluation ceilings.
+
+        Parameters
+        ----------
+        unordered_pair_count
+            Total eligible unordered SFI pairs implied by the eligible SFI population.
+        """
+
+        candidate_pair_bound = min(
+            self.max_total_candidates,
+            unordered_pair_count,
+            self.total_eligible_sfis * self.max_candidates_per_sfi // 2,
+        )
+
+        if self.candidate_pair_bound != candidate_pair_bound:
+            raise ValueError(
+                "candidate_pair_bound must equal the tight configured simple-graph bound."
+            )
+
+        if self.total_candidate_pairs > self.candidate_pair_bound:
+            raise ValueError("Retained candidates exceed the configured pair bound.")
+
+        if self.candidate_pair_bound > self.candidate_pair_evaluation_bound:
+            raise ValueError(
+                "Candidate pair bound cannot exceed the pair evaluation bound."
+            )
+
+    def _validate_candidate_incidence(self) -> None:
+        """Validate complete per-SFI retained-pair incidence counts."""
+
+        if len(self.candidate_pairs_per_sfi) != self.total_eligible_sfis:
+            raise ValueError(
+                "candidate_pairs_per_sfi must contain every eligible SFI exactly once."
+            )
+
+        if any(
+            isinstance(count, bool) or count < 0 or count > self.max_candidates_per_sfi
+            for count in self.candidate_pairs_per_sfi.values()
+        ):
+            raise ValueError(
+                "Every candidate_pairs_per_sfi count must satisfy the configured "
+                "incidence budget."
+            )
+
+        if sum(self.candidate_pairs_per_sfi.values()) != 2 * self.total_candidate_pairs:
+            raise ValueError(
+                "Candidate incidence counts must equal twice the retained pair count."
+            )
+
+    def _validate_candidate_audit_counts(self) -> None:
+        """Validate evidence and warning count mappings."""
+
+        if any(
+            not name.strip() or isinstance(count, bool) or count <= 0
+            for name, count in self.evidence_type_counts.items()
+        ):
+            raise ValueError(
+                "evidence_type_counts must contain nonblank names and positive counts."
+            )
+
+        if any(
+            not warning.strip() or isinstance(count, bool) or count <= 0
+            for warning, count in self.candidate_warning_counts.items()
+        ):
+            raise ValueError(
+                "candidate_warning_counts must contain nonblank warnings and positive "
+                "counts."
+            )
+
+        if (
+            self.total_candidate_pairs_with_warnings > self.total_candidate_pairs
+            or bool(self.candidate_warning_counts)
+            != bool(self.total_candidate_pairs_with_warnings)
+        ):
+            raise ValueError(
+                "Warning counts must describe a possible retained candidate population."
+            )
+
+    @model_validator(mode="after")
+    def _validate_counts(self) -> LPCandidateSummary:
+        """Reconcile pair populations, budgets, and retained incidence counts.
+
+        Returns
+        -------
+        LPCandidateSummary
+            The internally consistent summary.
+
+        Raises
+        ------
+        ValueError
+            If counts do not describe one bounded simple candidate graph.
+        """
+
+        unordered_pair_count = (
+            self.total_eligible_sfis * (self.total_eligible_sfis - 1) // 2
+        )
+        self._validate_pair_partitions(unordered_pair_count)
+        self._validate_candidate_partitions()
+        self._validate_candidate_bounds(unordered_pair_count)
+        self._validate_candidate_incidence()
+        self._validate_candidate_audit_counts()
+        self.limitations = _validate_lp_string_list(
+            field_name="limitations", values=self.limitations
+        )
+        return self
 
 
 class LPPairJudgment(BaseSchema):

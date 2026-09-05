@@ -4,28 +4,52 @@
 from __future__ import annotations
 
 # Standard Library
+import ast
 import builtins
+import hashlib
 import json
 import socket
+import subprocess
+import sys
 
+from collections import Counter
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import fields
-from itertools import combinations
+from itertools import combinations, permutations
+from operator import itemgetter
 from pathlib import Path
+from textwrap import dedent
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 # Third Party Library
 import pytest
 
 # Package Library
-from kgfeg.kgs.lp_candidates import (
+from kgfeg.kgs import lp_admissibility, lp_candidates, lp_evidence
+from kgfeg.kgs.lp_admissibility import (
     LPCandidateFilter,
     LPPairAdmissibility,
     build_lp_pair_filter,
     build_lp_pair_id,
 )
-from kgfeg.kgs.schemas import AcademicStandardsLCKGBundle, StandardsFrameworkItem
+from kgfeg.kgs.lp_candidates import (
+    LPCandidatePopulation,
+    build_lp_candidates,
+    write_lp_candidate_artifacts,
+)
+from kgfeg.kgs.lp_evidence import LPPairEvidence
+from kgfeg.kgs.lp_selection import build_lp_selection
+from kgfeg.kgs.schemas import (
+    AcademicStandardsLCKGBundle,
+    LPCandidateEvidence,
+    LPCandidatePair,
+    LPCandidateSummary,
+    StandardsFrameworkItem,
+)
+from kgfeg.kgs.utils import KGDirs
 from kgfeg.schemas import CreateKGConfig
 from tests.constants import PACKAGE_PATH, PARAM
 from tests.fixtures.lp.loader import LP_FIXTURES_DIR, load_lp_regression_fixture
@@ -277,6 +301,69 @@ def _bundle(
     )
 
 
+def _candidate_evidence(
+    *, evidence_types: tuple[str, ...], pair: LPPairAdmissibility
+) -> tuple[LPCandidateEvidence, ...]:
+    """Create controlled named evidence without changing pair permissions.
+
+    Parameters
+    ----------
+    evidence_types
+        Fixed built-in signal names to attach to the pair.
+    pair
+        Real hard-filter result supplying admissible relationship outcomes.
+
+    Returns
+    -------
+    tuple[LPCandidateEvidence, ...]
+        Deterministic evidence records for ranking and union tests.
+    """
+
+    relationships = sorted(
+        {
+            decision.decision
+            for decision in pair.admissible_decisions
+            if decision.decision in {"buildsTowards", "relatesTo"}
+        }
+    )
+    return tuple(
+        LPCandidateEvidence(
+            evidence_type=evidence_type,
+            nominated_relationships=relationships,
+            references=[
+                f"sfi:{pair.first_sfi_uuid}",
+                f"sfi:{pair.second_sfi_uuid}",
+            ],
+            triggering_values={"controlled_match": evidence_type},
+        )
+        for evidence_type in evidence_types
+    )
+
+
+def _canonical_hash(value: Any) -> str:
+    """Compute an independent canonical JSON content digest.
+
+    Parameters
+    ----------
+    value
+        JSON-compatible material whose exact serialized content is identified.
+
+    Returns
+    -------
+    str
+        SHA-256 digest of stable compact Unicode JSON.
+    """
+
+    serialized = json.dumps(
+        allow_nan=False,
+        ensure_ascii=False,
+        obj=value,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
 def _config(profile: str = "nigeria_math") -> CreateKGConfig:
     """Read and cross-validate a real profile without executing its pipeline.
 
@@ -293,6 +380,86 @@ def _config(profile: str = "nigeria_math") -> CreateKGConfig:
 
     return CreateKGConfig.model_validate(
         json.loads((PACKAGE_PATH / _PROFILES[profile][0]).read_text())["kgs"]
+    )
+
+
+def _config_with_budgets(
+    *,
+    max_candidates_per_sfi: int,
+    max_total_candidates: int,
+    profile: str = "nigeria_math",
+) -> CreateKGConfig:
+    """Return one real profile with only its explicit budgets changed.
+
+    Parameters
+    ----------
+    max_candidates_per_sfi
+        Maximum retained incident pairs for one eligible SFI.
+    max_total_candidates
+        Maximum retained pairs for the complete candidate population.
+    profile
+        Real cross-validated curriculum profile to clone.
+
+    Returns
+    -------
+    CreateKGConfig
+        Complete validated configuration with the requested positive budgets.
+    """
+
+    payload = _config(profile).model_dump(mode="json", by_alias=True)
+    payload["lp"]["candidate_policy"]["budgets"] = {
+        "max_candidates_per_sfi": max_candidates_per_sfi,
+        "max_total_candidates": max_total_candidates,
+    }
+    return CreateKGConfig.model_validate(payload)
+
+
+def _corrupt_population(
+    *, defect: str, original: LPCandidatePopulation
+) -> LPCandidatePopulation:
+    """Create schema-valid material disagreement for the artifact writer to reject.
+
+    Parameters
+    ----------
+    defect
+        Row or summary inconsistency to inject.
+    original
+        Real population whose material was independently constructed.
+
+    Returns
+    -------
+    LPCandidatePopulation
+        Intrinsically valid rows and summary that disagree with each other or inputs.
+    """
+
+    rows = [row.model_dump(mode="json") for row in original.candidates]
+    summary = original.summary.model_dump(mode="json")
+    assert len(rows) == summary["total_candidate_pairs_with_warnings"] == 5
+    if defect == "decisions":
+        rows[0]["admissible_decisions"] = rows[0]["admissible_decisions"][1:]
+    elif defect == "duplicate_row":
+        rows = [deepcopy(rows[0]), deepcopy(rows[0])]
+        summary["total_candidate_pairs_dropped_by_per_sfi_budget"] += 3
+        _match_summary_to_rows(rows=rows, summary=summary)
+    elif defect == "pair_id":
+        rows[0]["pair_id"] = str(UUID(int=999))
+    elif defect == "row_count":
+        rows.pop()
+    elif defect == "row_order":
+        rows.reverse()
+    elif defect in {"invented_row_warnings", "row_warnings"}:
+        rows[0]["warnings"] = {
+            "invented_row_warnings": ["Invented warning absent from endpoint context."],
+            "row_warnings": [],
+        }[defect]
+        _match_summary_to_rows(rows=rows, summary=summary)
+    else:
+        summary.update(_summary_corruptions(summary)[defect])
+    if defect != "candidate_hash":
+        summary["candidate_pairs_content_hash"] = _canonical_hash(rows)
+    return LPCandidatePopulation(
+        candidates=tuple(LPCandidatePair.model_validate(row) for row in rows),
+        summary=LPCandidateSummary.model_validate(summary),
     )
 
 
@@ -441,23 +608,128 @@ def _fixture_bundle(profile: str) -> AcademicStandardsLCKGBundle:
     )
 
 
+def _independent_upstream_hash(
+    bundle: AcademicStandardsLCKGBundle,
+) -> str:
+    """Hash the authoritative bundle after semantic population ordering.
+
+    Parameters
+    ----------
+    bundle
+        Complete AS+LC bundle whose graph encounter order is not material.
+
+    Returns
+    -------
+    str
+        Independent upstream material content digest.
+    """
+
+    material = bundle.model_dump(mode="json")
+    for field_name, identifier_name in (
+        ("items", "case_identifier_uuid"),
+        ("learning_components", "identifier"),
+        ("relationships_has_child", "identifier"),
+        ("relationships_supports", "identifier"),
+    ):
+        material[field_name] = sorted(
+            material[field_name], key=itemgetter(identifier_name)
+        )
+    return _canonical_hash(material)
+
+
+def _install_evidence_map(
+    *,
+    bundle: AcademicStandardsLCKGBundle,
+    config: CreateKGConfig,
+    evidence_by_endpoints: Mapping[frozenset[UUID], tuple[str, ...]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> MagicMock:
+    """Install a deterministic evidence seam around the real hard pair filter.
+
+    Parameters
+    ----------
+    bundle
+        Complete upstream graph used to derive real eligibility and permissions.
+    config
+        Validated curriculum policy and budgets.
+    evidence_by_endpoints
+        Exact built-in signal names for selected unordered endpoint pairs.
+    monkeypatch
+        Fixture that restores the approved evidence constructor after the test.
+
+    Returns
+    -------
+    MagicMock
+        Extractor spy whose call count exposes pair-population scale.
+    """
+
+    pair_filter = _filter(bundle=bundle, config=config)
+    extractor = MagicMock()
+
+    def _extract_pair(
+        *, first_sfi_uuid: UUID | str, second_sfi_uuid: UUID | str
+    ) -> LPPairEvidence | None:
+        """Return real permission plus controlled evidence for one logical pair.
+
+        Parameters
+        ----------
+        first_sfi_uuid
+            One final SFI CASE UUID.
+        second_sfi_uuid
+            The other final SFI CASE UUID.
+
+        Returns
+        -------
+        LPPairEvidence | None
+            Real hard-filter outcome with only the mapped evidence signals.
+        """
+
+        pair = pair_filter.filter_pair(
+            first_sfi_uuid=first_sfi_uuid, second_sfi_uuid=second_sfi_uuid
+        )
+        if pair is None:
+            return None
+
+        key = frozenset((pair.first_sfi_uuid, pair.second_sfi_uuid))
+        return LPPairEvidence(
+            admissibility=pair,
+            evidence=_candidate_evidence(
+                evidence_types=evidence_by_endpoints.get(key, ()), pair=pair
+            ),
+        )
+
+    extractor.extract_pair.side_effect = _extract_pair
+    monkeypatch.setattr(
+        name="build_lp_evidence_extractor",
+        target=lp_candidates,
+        value=MagicMock(return_value=extractor),
+    )
+    return extractor
+
+
 def _item(
     *,
+    description: str = "A synthetic skill; display PRIMARY THREE / Grade 12.",
     metadata: dict[str, Any] | None = None,
     normalized_statement_type: str = "Standard",
     number: int = 1,
+    statement_code: str = "PRIMARY THREE.99",
     statement_type: str = "Performance Objective",
 ) -> StandardsFrameworkItem:
     """Create an SFI whose CASE key differs from its other identifier.
 
     Parameters
     ----------
+    description
+        Authoritative SFI text used by the built-in lexical evidence rules.
     metadata
         Unfiltered metadata, defaulting to one valid coordinate.
     normalized_statement_type
         Exported normalized type, independent of the local statement type.
     number
         Deterministic CASE UUID suffix.
+    statement_code
+        Source-authoritative code used by the weak generic prefix feature.
     statement_type
         Local AS type whose LP permission must come from configuration.
 
@@ -473,7 +745,7 @@ def _item(
             **_COMMON,
             "case_identifier_uri": f"urn:uuid:{case_uuid}",
             "case_identifier_uuid": case_uuid,
-            "description": "A synthetic skill; display PRIMARY THREE / Grade 12.",
+            "description": description,
             "grade_level": ["12"],
             "identifier": UUID(int=number + 2**112),
             "jurisdiction": "Synthetic jurisdiction",
@@ -483,10 +755,350 @@ def _item(
                 else {"identity_scope_values": {"Grade": "PRIMARY ONE"}}
             ),
             "normalized_statement_type": normalized_statement_type,
-            "statement_code": "PRIMARY THREE.99",
+            "statement_code": statement_code,
             "statement_type": statement_type,
         }
     )
+
+
+def _match_summary_to_rows(
+    *, rows: list[dict[str, Any]], summary: dict[str, Any]
+) -> None:
+    """Keep retained counts consistent so another defect cannot mask the target rule.
+
+    Parameters
+    ----------
+    rows
+        Deliberately corrupted candidate rows that still satisfy intrinsic schemas.
+    summary
+        Summary updated in place to agree with all retained-row counts.
+    """
+
+    incidence = Counter(
+        endpoint
+        for row in rows
+        for endpoint in (row["first_sfi_uuid"], row["second_sfi_uuid"])
+    )
+    summary.update(
+        candidate_pairs_per_sfi={
+            endpoint: incidence[endpoint]
+            for endpoint in summary["candidate_pairs_per_sfi"]
+        },
+        candidate_warning_counts=dict(
+            Counter(warning for row in rows for warning in row["warnings"])
+        ),
+        evidence_type_counts=dict(
+            Counter(
+                evidence["evidence_type"]
+                for row in rows
+                for evidence in row["evidence"]
+            )
+        ),
+        total_candidate_pairs=len(rows),
+        total_candidate_pairs_with_warnings=sum(bool(row["warnings"]) for row in rows),
+    )
+
+
+def _observe_extractions(monkeypatch: pytest.MonkeyPatch) -> list[tuple[UUID, UUID]]:
+    """Count actual evidence evaluations without replacing nomination or filtering.
+
+    Parameters
+    ----------
+    monkeypatch
+        Restoring observer around the production class method.
+
+    Returns
+    -------
+    list[tuple[UUID, UUID]]
+        Mutable log populated by subsequent production candidate builds.
+    """
+
+    evaluations: list[tuple[UUID, UUID]] = []
+    original = lp_evidence.LPEvidenceExtractor.extract_pair
+
+    def _extract_pair(
+        self: lp_evidence.LPEvidenceExtractor,
+        *,
+        first_sfi_uuid: UUID | str,
+        second_sfi_uuid: UUID | str,
+    ) -> LPPairEvidence | None:
+        """Observe one real extraction while preserving its complete behavior.
+
+        Parameters
+        ----------
+        self
+            Real run-scoped extractor.
+        first_sfi_uuid
+            First proposed CASE endpoint.
+        second_sfi_uuid
+            Second proposed CASE endpoint.
+
+        Returns
+        -------
+        LPPairEvidence | None
+            Unmodified real evidence result.
+        """
+
+        evaluations.append((UUID(str(first_sfi_uuid)), UUID(str(second_sfi_uuid))))
+        return original(
+            first_sfi_uuid=first_sfi_uuid,
+            second_sfi_uuid=second_sfi_uuid,
+            self=self,
+        )
+
+    monkeypatch.setattr(
+        name="extract_pair", target=lp_evidence.LPEvidenceExtractor, value=_extract_pair
+    )
+    return evaluations
+
+
+def _observe_nomination_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[tuple[UUID, UUID], ...]]:
+    """Observe every real family window and enforce its configured proposal cap.
+
+    Parameters
+    ----------
+    monkeypatch
+        Restoring observer around the real bounded bucket stream.
+
+    Returns
+    -------
+    list[tuple[tuple[UUID, UUID], ...]]
+        Mutable log of per-family proposals from subsequent production builds.
+    """
+
+    original = lp_evidence._bounded_pairs_from_buckets
+    contributions: list[tuple[tuple[UUID, UUID], ...]] = []
+
+    def _nominate(**kwargs: Any) -> tuple[tuple[UUID, UUID], ...]:
+        """Observe each unmodified family proposal population.
+
+        Parameters
+        ----------
+        kwargs
+            Real cohort buckets, budget, and fixed offset.
+
+        Returns
+        -------
+        tuple[tuple[UUID, UUID], ...]
+            Unmodified proposals from the production bucket stream.
+        """
+
+        pairs = original(**kwargs)
+        assert len(pairs) <= kwargs["pair_limit"]
+        contributions.append(pairs)
+        return pairs
+
+    monkeypatch.setattr(
+        name="_bounded_pairs_from_buckets", target=lp_evidence, value=_nominate
+    )
+    return contributions
+
+
+def _signal_bundle(
+    *, count: int, endpoints: tuple[int, ...], signals: tuple[str, ...]
+) -> AcademicStandardsLCKGBundle:
+    """Supply selected real signals amid otherwise evidence-free eligible endpoints.
+
+    Parameters
+    ----------
+    count
+        Total number of eligible endpoints.
+    endpoints
+        UUID integers that share each requested signal.
+    signals
+        Evidence families represented by concrete upstream content.
+
+    Returns
+    -------
+    AcademicStandardsLCKGBundle
+        Validated synthetic graph without inherited lexical, rank, or page overlap.
+    """
+
+    items = [
+        _item(description=chr(0x4E00 + n), metadata={}, number=n, statement_code="")
+        for n in range(1, count + 1)
+    ]
+    edges: list[dict[str, Any]] = []
+    if "hierarchy_context" in signals:
+        items.append(
+            _item(
+                description="!",
+                metadata={},
+                normalized_statement_type="Standard Grouping",
+                number=10000,
+                statement_code="",
+                statement_type="Topic",
+            )
+        )
+        edges.extend(
+            _edge(source=UUID(int=10000), target=UUID(int=n)) for n in endpoints
+        )
+    for n in endpoints:
+        item = items[n - 1]
+        if "sfi_text_token_overlap" in signals:
+            item.description = "x"
+        if "sfi_text_trigram_overlap" in signals:
+            item.description = (
+                f"abc{chr(0x4E00 + n)}"
+                if "sfi_text_token_overlap" not in signals
+                else "common text"
+            )
+        if "source_code_prefix" in signals:
+            item.statement_code = f"A.{n}"
+        if "local_rank_proximity" in signals:
+            item.metadata["identity_scope_values"] = {"Grade": "PRIMARY ONE"}
+        if "source_page_proximity" in signals:
+            item.metadata["source_page_indexes"] = [1]
+    components, supports = _signal_components(endpoints=endpoints, signals=signals)
+    bundle = _bundle(
+        components=tuple(components),
+        edges=tuple(edges),
+        items=tuple(items),
+        supports=tuple(supports),
+    )
+    bundle.entity_provenance["items"] = {
+        str(item.case_identifier_uuid): {} for item in items
+    }
+    return bundle
+
+
+def _signal_components(
+    *, endpoints: tuple[int, ...], signals: tuple[str, ...]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Create exact-support or lexical component evidence with complete support rows.
+
+    Parameters
+    ----------
+    endpoints
+        UUID integers that share the requested component signals.
+    signals
+        Concrete component signal families to supply.
+
+    Returns
+    -------
+    tuple[list[dict[str, Any]], list[dict[str, Any]]]
+        Synthetic components and their support relationships.
+    """
+
+    components: list[dict[str, Any]] = []
+    supports: list[dict[str, Any]] = []
+    lc_signals = {
+        "shared_learning_components",
+        "lc_text_token_overlap",
+        "lc_tag_token_overlap",
+    }
+    if lc_signals.intersection(signals):
+        groups = (
+            (endpoints,)
+            if "shared_learning_components" in signals
+            else tuple((n,) for n in endpoints)
+        )
+        for index, group in enumerate(groups):
+            component_id = 20000 + index
+            components.append(
+                {
+                    **_COMMON,
+                    "description": (
+                        "common component"
+                        if "lc_text_token_overlap" in signals
+                        else "!"
+                    ),
+                    "identifier": str(UUID(int=component_id)),
+                    "metadata": {
+                        "source_sfi_uuids": [str(UUID(int=n)) for n in group],
+                        "tags": (
+                            ["common tag"] if "lc_tag_token_overlap" in signals else []
+                        ),
+                    },
+                }
+            )
+            for n in group:
+                edge = _edge(
+                    source=UUID(int=component_id),
+                    source_entity="LearningComponent",
+                    target=UUID(int=n),
+                )
+                edge.update(
+                    relationship_type="supports", source_entity_key="identifier"
+                )
+                supports.append(edge)
+    return components, supports
+
+
+def _summary_corruptions(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Build explicit, internally consistent counterexamples for summary reconciliation.
+
+    Parameters
+    ----------
+    summary
+        Valid five-row summary over ten endpoints with warning-bearing rows.
+
+    Returns
+    -------
+    dict[str, dict[str, Any]]
+        Named field updates that preserve intrinsic schemas but contradict material.
+    """
+
+    counts = summary["candidate_pairs_per_sfi"]
+    low = min(counts, key=lambda key: counts[key])
+    high = max(counts, key=lambda key: counts[key])
+    assert counts[low] == 0 < counts[high]
+    extra = str(UUID(int=999))
+    warning = next(iter(summary["candidate_warning_counts"]))
+    return {
+        "candidate_hash": {"candidate_pairs_content_hash": "0" * 64},
+        "config_hash": {"config_content_hash": "0" * 64},
+        "eligible_hash": {"eligible_sfis_content_hash": "0" * 64},
+        "eligible_population": {
+            "candidate_pairs_per_sfi": {
+                **{key: count for key, count in counts.items() if key != low},
+                extra: 0,
+            }
+        },
+        "eligible_total": {
+            "candidate_pairs_per_sfi": {**counts, extra: 0},
+            "total_eligible_sfis": 11,
+            "total_unordered_pairs_considered": 55,
+        },
+        "evaluation_bound": {
+            "candidate_pair_evaluation_bound": summary[
+                "candidate_pair_evaluation_bound"
+            ]
+            - 1
+        },
+        "evidence_counts": {
+            "evidence_type_counts": dict(
+                list(summary["evidence_type_counts"].items())[1:]
+            )
+        },
+        "framework": {"framework_uuid": extra},
+        "incidence": {
+            "candidate_pairs_per_sfi": {**counts, low: counts[high], high: counts[low]}
+        },
+        "max_per_sfi": {"max_candidates_per_sfi": 3},
+        "max_total": {"candidate_pair_bound": 6, "max_total_candidates": 6},
+        "summary_count": {
+            "candidate_pairs_per_sfi": {key: 0 for key in counts},
+            "candidate_warning_counts": {},
+            "evidence_type_counts": {},
+            "total_candidate_pairs": 0,
+            "total_candidate_pairs_dropped_by_per_sfi_budget": summary[
+                "total_candidate_pairs_dropped_by_per_sfi_budget"
+            ]
+            + 5,
+            "total_candidate_pairs_with_warnings": 0,
+        },
+        "upstream_hash": {"upstream_content_hash": "0" * 64},
+        "warning_counts": {
+            "candidate_warning_counts": {
+                **summary["candidate_warning_counts"],
+                warning: summary["candidate_warning_counts"][warning] + 1,
+            }
+        },
+        "warning_rows": {"total_candidate_pairs_with_warnings": 4},
+    }
 
 
 @PARAM(argnames="profile", argvalues=tuple(_PROFILES))
@@ -547,6 +1159,297 @@ def test_aliases_preserve_permissions_and_authoritative_endpoint_records(
             assert result.first_sfi.coordinate.rank == 0
 
 
+@PARAM(argnames="existing", argvalues=(False, True))
+@PARAM(
+    argnames="defect",
+    argvalues=(
+        "candidate_hash",
+        "config_hash",
+        "decisions",
+        "duplicate_row",
+        "eligible_hash",
+        "eligible_population",
+        "eligible_total",
+        "evaluation_bound",
+        "evidence_counts",
+        "framework",
+        "incidence",
+        "invented_row_warnings",
+        "max_per_sfi",
+        "max_total",
+        "pair_id",
+        "row_count",
+        "row_order",
+        "row_warnings",
+        "summary_count",
+        "upstream_hash",
+        "warning_counts",
+        "warning_rows",
+    ),
+)
+def test_artifact_reconciliation_rejects_material_mismatch_before_any_mutation(
+    *, defect: str, existing: bool, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Internally valid but false candidate material cannot create or replace artifacts.
+
+    Parameters
+    ----------
+    defect
+        Independent material inconsistency to inject after candidate construction.
+    existing
+        Protect existing sentinel artifacts or an absent destination directory.
+    monkeypatch
+        Restoring population injection and real filesystem-call observers.
+    tmp_path
+        Isolated artifact destination.
+    """
+
+    config = _config_with_budgets(max_candidates_per_sfi=2, max_total_candidates=5)
+    items = tuple(_item(number=n) for n in range(1, 11))
+    bundle = _bundle(
+        edges=tuple(
+            _edge(
+                fallback=True,
+                source=_FRAMEWORK_UUID,
+                source_entity="StandardsFramework",
+                target=item.case_identifier_uuid,
+            )
+            for item in items
+        ),
+        items=items,
+    )
+    original = build_lp_candidates(
+        as_lc_bundle=bundle, doc_key=_DOC_KEY, kg_config=config
+    )
+    false_population = _corrupt_population(defect=defect, original=original)
+    monkeypatch.setattr(
+        name="build_lp_candidates",
+        target=lp_candidates,
+        value=MagicMock(return_value=false_population),
+    )
+    mkdir = MagicMock(wraps=lp_candidates.make_dir)
+    write = MagicMock(wraps=lp_candidates.write_to_json)
+    monkeypatch.setattr(name="make_dir", target=lp_candidates, value=mkdir)
+    monkeypatch.setattr(name="write_to_json", target=lp_candidates, value=write)
+    root = tmp_path / "candidate-artifacts"
+    sentinels = {
+        "lp_candidate_pairs.jsonl": b"prior rows\n",
+        "lp_candidate_summary.json": b"prior summary\n",
+        "unrelated.txt": b"preserve user work\n",
+    }
+    if existing:
+        root.mkdir()
+        for name, payload in sentinels.items():
+            (root / name).write_bytes(payload)
+    with pytest.raises(expected_exception=ValueError):
+        write_lp_candidate_artifacts(
+            as_lc_bundle=bundle,
+            doc_key=_DOC_KEY,
+            kg_config=config,
+            kg_dirs=KGDirs(root=root),
+        )
+    mkdir.assert_not_called()
+    write.assert_not_called()
+    if existing:
+        assert {path.name: path.read_bytes() for path in root.iterdir()} == sentinels
+    else:
+        assert not root.exists()
+
+
+def test_artifact_writer_rejects_summary_count_mismatch_before_writing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Candidate rows and summary counts must reconcile before either artifact changes.
+
+    Parameters
+    ----------
+    monkeypatch
+        Fixture that injects a structurally valid but materially false population.
+    tmp_path
+        Isolated candidate artifact destination.
+    """
+
+    config = _config_with_budgets(max_candidates_per_sfi=1, max_total_candidates=1)
+    bundle = _bundle(items=(_item(number=1), _item(number=2)))
+    population = build_lp_candidates(
+        as_lc_bundle=bundle, doc_key=_DOC_KEY, kg_config=config
+    )
+    summary_payload = population.summary.model_dump(mode="json")
+    summary_payload.update(
+        {
+            "candidate_pairs_per_sfi": {
+                sfi_uuid: 0 for sfi_uuid in summary_payload["candidate_pairs_per_sfi"]
+            },
+            "evidence_type_counts": {},
+            "total_candidate_pairs": 0,
+            "total_candidate_pairs_dropped_by_per_sfi_budget": 1,
+        }
+    )
+    false_summary = LPCandidateSummary.model_validate(summary_payload)
+    assert len(population.candidates) == 1
+    assert false_summary.total_candidate_pairs == 0
+    monkeypatch.setattr(
+        lp_candidates,
+        "build_lp_candidates",
+        MagicMock(
+            return_value=LPCandidatePopulation(
+                candidates=population.candidates, summary=false_summary
+            )
+        ),
+    )
+    kg_dirs = KGDirs(root=tmp_path / "candidate-artifacts")
+
+    with pytest.raises(expected_exception=ValueError):
+        write_lp_candidate_artifacts(
+            as_lc_bundle=bundle,
+            doc_key=_DOC_KEY,
+            kg_config=config,
+            kg_dirs=kg_dirs,
+        )
+
+    assert not kg_dirs.root.exists()
+    assert not (kg_dirs.root / "lp_candidate_pairs.jsonl").exists()
+    assert not (kg_dirs.root / "lp_candidate_summary.json").exists()
+
+
+def test_artifacts_are_deterministic_and_hash_actual_candidate_rows(
+    tmp_path: Path,
+) -> None:
+    """Input permutations produce byte-stable, round-trippable candidate artifacts.
+
+    Parameters
+    ----------
+    tmp_path
+        Isolated destinations for independently generated artifacts.
+    """
+
+    config = _config_with_budgets(max_candidates_per_sfi=10, max_total_candidates=10)
+    items = tuple(_item(number=number) for number in range(1, 5))
+    first_dirs = KGDirs(root=tmp_path / "first")
+    second_dirs = KGDirs(root=tmp_path / "second")
+    first = write_lp_candidate_artifacts(
+        as_lc_bundle=_bundle(items=items),
+        doc_key=_DOC_KEY,
+        kg_config=config,
+        kg_dirs=first_dirs,
+    )
+    second = write_lp_candidate_artifacts(
+        as_lc_bundle=_bundle(items=tuple(reversed(items))),
+        doc_key=_DOC_KEY,
+        kg_config=config,
+        kg_dirs=second_dirs,
+    )
+
+    for artifact_name in (
+        "lp_candidate_pairs.jsonl",
+        "lp_candidate_summary.json",
+    ):
+        assert (first_dirs.root / artifact_name).read_bytes() == (
+            second_dirs.root / artifact_name
+        ).read_bytes()
+
+    rows = [
+        json.loads(line)
+        for line in (first_dirs.root / "lp_candidate_pairs.jsonl")
+        .read_text()
+        .splitlines()
+    ]
+    summary_payload = json.loads(
+        (first_dirs.root / "lp_candidate_summary.json").read_text()
+    )
+    summary = LPCandidateSummary.model_validate(summary_payload)
+    incidence = Counter(
+        endpoint
+        for row in rows
+        for endpoint in (row["first_sfi_uuid"], row["second_sfi_uuid"])
+    )
+
+    assert first == second
+    assert [row["pair_id"] for row in rows] == sorted(row["pair_id"] for row in rows)
+    assert len(rows) == summary.total_candidate_pairs
+    assert summary.candidate_pairs_content_hash == _canonical_hash(rows)
+    assert summary.candidate_pairs_per_sfi == {
+        UUID(sfi_uuid): incidence[sfi_uuid]
+        for sfi_uuid in summary_payload["candidate_pairs_per_sfi"]
+    }
+
+
+@PARAM(argnames="eligible_count", argvalues=(10, 48))
+def test_bounded_nomination_does_not_evaluate_the_complete_pair_matrix(
+    *, eligible_count: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real evidence nomination stays bounded even when the matrix fits its ceiling.
+
+    Parameters
+    ----------
+    eligible_count
+        Moderate or large eligible population with identical evidence streams.
+    monkeypatch
+        Restoring observer around the real production extractor.
+    """
+
+    config = _config_with_budgets(max_candidates_per_sfi=2, max_total_candidates=5)
+    bundle = _bundle(
+        items=tuple(_item(number=number) for number in range(1, eligible_count + 1))
+    )
+    evaluations = _observe_extractions(monkeypatch)
+    population = build_lp_candidates(
+        as_lc_bundle=bundle, doc_key=_DOC_KEY, kg_config=config
+    )
+    complete_pair_matrix_size = eligible_count * (eligible_count - 1) // 2
+
+    # Four identical signal streams use successive five-pair windows, producing
+    # eight distinct proposals before evidence extraction and final incidence limits.
+    assert len(evaluations) == len(set(evaluations)) == 8
+    assert len(evaluations) < complete_pair_matrix_size
+    assert population.summary.candidate_pair_evaluation_bound == 45
+    assert population.summary.total_pair_evaluations == len(evaluations)
+    assert population.summary.total_candidate_pairs == 5
+    assert population.summary.total_policy_disallowed_pairs == 0
+    assert max(population.summary.candidate_pairs_per_sfi.values()) == 2
+    assert sum(population.summary.candidate_pairs_per_sfi.values()) == 10
+
+
+@PARAM(
+    argnames=("expected", "item_count", "total_budget"),
+    argvalues=((0, 1, 1), (1, 2, 1), (3, 3, 3), (5, 4, 5)),
+)
+def test_budget_boundaries_cover_empty_one_limit_and_limit_plus_one(
+    *, expected: int, item_count: int, total_budget: int
+) -> None:
+    """Empty, one-pair, exact-limit, and limit-plus-one populations are bounded.
+
+    Parameters
+    ----------
+    expected
+        Expected retained candidate count.
+    item_count
+        Eligible SFI population size.
+    total_budget
+        Configured run-wide candidate cap.
+    """
+
+    config = _config_with_budgets(
+        max_candidates_per_sfi=max(1, item_count),
+        max_total_candidates=total_budget,
+    )
+    population = build_lp_candidates(
+        as_lc_bundle=_bundle(
+            items=tuple(_item(number=number) for number in range(1, item_count + 1))
+        ),
+        doc_key=_DOC_KEY,
+        kg_config=config,
+    )
+    possible = item_count * (item_count - 1) // 2
+
+    assert len(population.candidates) == expected
+    assert population.summary.candidate_pair_bound == min(possible, total_budget)
+    assert population.summary.total_candidate_pairs == expected
+    assert population.summary.total_candidate_pairs_dropped_by_total_budget == max(
+        0, possible - total_budget
+    )
+
+
 @PARAM(argnames="budget", argvalues=(1, 3, 10))
 def test_budgets_do_not_nominate_trim_or_accumulate_permission_results(
     budget: int,
@@ -583,6 +1486,259 @@ def test_budgets_do_not_nominate_trim_or_accumulate_permission_results(
         (field.name, repr(getattr(pair_filter, field.name)))
         for field in fields(pair_filter)
     ] == before
+
+
+def test_candidate_ranking_uses_fixed_precedence_and_pair_id_total_ties(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ranking uses signal breadth, fixed precedence, then stable pair identity.
+
+    Parameters
+    ----------
+    monkeypatch
+        Fixture that installs controlled built-in signal combinations.
+    """
+
+    config = _config_with_budgets(max_candidates_per_sfi=10, max_total_candidates=10)
+    items = tuple(_item(number=number) for number in range(1, 5))
+    bundle = _bundle(items=items)
+    evidence_by_endpoints = {
+        frozenset((UUID(int=1), UUID(int=2))): (
+            "local_rank_proximity",
+            "sfi_text_token_overlap",
+        ),
+        frozenset((UUID(int=1), UUID(int=3))): ("shared_learning_components",),
+        frozenset((UUID(int=1), UUID(int=4))): ("hierarchy_context",),
+        frozenset((UUID(int=2), UUID(int=3))): ("local_rank_proximity",),
+        frozenset((UUID(int=2), UUID(int=4))): ("local_rank_proximity",),
+    }
+    _install_evidence_map(
+        bundle=bundle,
+        config=config,
+        evidence_by_endpoints=evidence_by_endpoints,
+        monkeypatch=monkeypatch,
+    )
+
+    candidates = build_lp_candidates(
+        as_lc_bundle=bundle, doc_key=_DOC_KEY, kg_config=config
+    ).candidates
+    pair_id_by_endpoints = {
+        frozenset((candidate.first_sfi_uuid, candidate.second_sfi_uuid)): (
+            candidate.pair_id
+        )
+        for candidate in candidates
+    }
+    tied_pair_ids = sorted(
+        (
+            pair_id_by_endpoints[frozenset((UUID(int=2), UUID(int=3)))],
+            pair_id_by_endpoints[frozenset((UUID(int=2), UUID(int=4)))],
+        )
+    )
+    expected_pair_ids = [
+        pair_id_by_endpoints[frozenset((UUID(int=1), UUID(int=2)))],
+        pair_id_by_endpoints[frozenset((UUID(int=1), UUID(int=3)))],
+        pair_id_by_endpoints[frozenset((UUID(int=1), UUID(int=4)))],
+        *tied_pair_ids,
+    ]
+
+    assert [candidate.pair_id for candidate in candidates] == expected_pair_ids
+
+
+def test_candidate_summary_reconciles_union_evidence_and_incidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Endpoint shortlist union keeps all evidence once and enforces final degree.
+
+    Parameters
+    ----------
+    monkeypatch
+        Fixture that installs a three-edge controlled nomination union.
+    """
+
+    config = _config_with_budgets(max_candidates_per_sfi=2, max_total_candidates=10)
+    bundle = _bundle(items=tuple(_item(number=number) for number in range(1, 5)))
+    broad_pair = frozenset((UUID(int=1), UUID(int=2)))
+    evidence_by_endpoints = {
+        broad_pair: ("local_rank_proximity", "shared_learning_components"),
+        frozenset((UUID(int=1), UUID(int=3))): ("local_rank_proximity",),
+        frozenset((UUID(int=1), UUID(int=4))): ("local_rank_proximity",),
+    }
+    _install_evidence_map(
+        bundle=bundle,
+        config=config,
+        evidence_by_endpoints=evidence_by_endpoints,
+        monkeypatch=monkeypatch,
+    )
+
+    population = build_lp_candidates(
+        as_lc_bundle=bundle, doc_key=_DOC_KEY, kg_config=config
+    )
+    summary = population.summary
+    broad = next(
+        candidate
+        for candidate in population.candidates
+        if frozenset((candidate.first_sfi_uuid, candidate.second_sfi_uuid))
+        == broad_pair
+    )
+    incidence = Counter(
+        endpoint
+        for candidate in population.candidates
+        for endpoint in (candidate.first_sfi_uuid, candidate.second_sfi_uuid)
+    )
+    evidence_counts = Counter(
+        evidence.evidence_type
+        for candidate in population.candidates
+        for evidence in candidate.evidence
+    )
+
+    assert [item.evidence_type for item in broad.evidence] == [
+        "local_rank_proximity",
+        "shared_learning_components",
+    ]
+    assert len({candidate.pair_id for candidate in population.candidates}) == 2
+    assert summary.candidate_pairs_per_sfi == {
+        item.case_identifier_uuid: incidence[item.case_identifier_uuid]
+        for item in bundle.items
+    }
+    assert summary.evidence_type_counts == dict(sorted(evidence_counts.items()))
+    assert summary.total_candidate_pairs == 2
+    assert summary.total_candidate_pairs_dropped_by_per_sfi_budget == 1
+    assert summary.total_candidate_shortlist_entries == 5
+    assert summary.total_candidate_union_pairs == 3
+    assert summary.total_duplicate_shortlist_entries == 2
+
+
+def test_content_hashes_identify_actual_material_without_policy_version() -> None:
+    """Candidate summaries hash actual config, eligibility, upstream, and row content."""
+
+    config = _config_with_budgets(max_candidates_per_sfi=5, max_total_candidates=5)
+    items = (
+        _item(description="Add fractions using models.", number=1),
+        _item(description="Compare fractions using models.", number=2),
+    )
+    bundle = _bundle(items=items)
+    selection = build_lp_selection(as_lc_bundle=bundle, kg_config=config)
+    population = build_lp_candidates(
+        as_lc_bundle=bundle, doc_key=_DOC_KEY, kg_config=config
+    )
+    candidate_payload = [
+        candidate.model_dump(mode="json") for candidate in population.candidates
+    ]
+    eligible_payload = [
+        record.model_dump(mode="json") for record in selection.eligible_sfis
+    ]
+    summary = population.summary
+
+    assert summary.candidate_pairs_content_hash == _canonical_hash(candidate_payload)
+    assert summary.config_content_hash == _canonical_hash(
+        config.model_dump(mode="json")
+    )
+    assert summary.eligible_sfis_content_hash == _canonical_hash(eligible_payload)
+    assert summary.upstream_content_hash == _independent_upstream_hash(bundle)
+
+    changed_bundle = _bundle(
+        items=(
+            _item(description="Rotate triangles around a point.", number=1),
+            items[1],
+        )
+    )
+    changed = build_lp_candidates(
+        as_lc_bundle=changed_bundle, doc_key=_DOC_KEY, kg_config=config
+    ).summary
+
+    assert changed.candidate_pairs_content_hash != summary.candidate_pairs_content_hash
+    assert changed.eligible_sfis_content_hash != summary.eligible_sfis_content_hash
+    assert changed.upstream_content_hash != summary.upstream_content_hash
+    assert not any(
+        "version" in name
+        for name in LPCandidateSummary.model_json_schema()["properties"]
+    )
+
+
+def test_d1_d2_d4_permissions_survive_candidate_population_budgeting() -> None:
+    """Population selection preserves type, coordinate, and unordered-pair rules."""
+
+    config = _config_with_budgets(max_candidates_per_sfi=10, max_total_candidates=20)
+    items = (
+        _item(
+            metadata={"identity_scope_values": {"Grade": "PRIMARY ONE"}},
+            number=1,
+        ),
+        _item(
+            metadata={"identity_scope_values": {"Grade": "PRIMARY THREE"}},
+            number=2,
+        ),
+        _item(metadata={"identity_scope_values": {}}, number=3),
+        _item(number=4, statement_type="Topic"),
+        _item(
+            metadata={"identity_scope_values": {"Grade": "PRIMARY ONE"}},
+            number=5,
+        ),
+    )
+    population = build_lp_candidates(
+        as_lc_bundle=_bundle(items=items), doc_key=_DOC_KEY, kg_config=config
+    )
+    candidate_by_endpoints = {
+        frozenset((candidate.first_sfi_uuid, candidate.second_sfi_uuid)): candidate
+        for candidate in population.candidates
+    }
+
+    assert all(UUID(int=4) not in endpoints for endpoints in candidate_by_endpoints)
+    assert len(candidate_by_endpoints) == len(population.candidates)
+    assert {
+        (decision.decision, decision.direction)
+        for decision in candidate_by_endpoints[
+            frozenset((UUID(int=1), UUID(int=2)))
+        ].admissible_decisions
+    } == _NONPUBLISHING | {
+        ("buildsTowards", "first_to_second"),
+        ("relatesTo", None),
+    }
+    assert {
+        (decision.decision, decision.direction)
+        for decision in candidate_by_endpoints[
+            frozenset((UUID(int=1), UUID(int=3)))
+        ].admissible_decisions
+    } == _NONPUBLISHING | {("relatesTo", None)}
+    assert {
+        (decision.decision, decision.direction)
+        for decision in candidate_by_endpoints[
+            frozenset((UUID(int=1), UUID(int=5)))
+        ].admissible_decisions
+    } == _NONPUBLISHING | {
+        ("buildsTowards", "first_to_second"),
+        ("buildsTowards", "second_to_first"),
+        ("relatesTo", None),
+    }
+
+
+def test_d3_d12_limitations_disclose_unmeasured_candidate_and_semantic_quality() -> (
+    None
+):
+    """Candidate audit text acknowledges recall and semantic limits without metrics."""
+
+    population = build_lp_candidates(
+        as_lc_bundle=_bundle(items=(_item(number=1), _item(number=2))),
+        doc_key=_DOC_KEY,
+        kg_config=_config_with_budgets(
+            max_candidates_per_sfi=1, max_total_candidates=1
+        ),
+    )
+    disclosure = " ".join(population.summary.limitations).casefold()
+    summary_fields = set(type(population.summary).model_fields)
+
+    assert "candidate recall is unmeasured" in disclosure
+    assert "non-embedding" in disclosure
+    assert "do not establish pedagogical correctness" in disclosure
+    assert not summary_fields.intersection(
+        {
+            "accepted_edge_precision",
+            "candidate_recall_rate",
+            "gold_set_version",
+            "semantic_passed",
+            "semantic_threshold",
+        }
+    )
 
 
 @PARAM(argnames="missing", argvalues=(False, True))
@@ -1073,6 +2229,230 @@ def test_invalid_coordinate_anywhere_prevents_filter_construction(
         _filter(bundle=bundle, config=CreateKGConfig.model_validate(payload))
 
 
+@PARAM(argnames="mixed", argvalues=(False, True))
+def test_large_alias_population_uses_canonical_nomination_cohorts(
+    *, mixed: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Configured aliases preserve bounded nomination for canonical type cohorts.
+
+    Parameters
+    ----------
+    mixed
+        Mix canonical and aliased labels or use aliases on every endpoint.
+    monkeypatch
+        Real extraction observer.
+    """
+
+    config = _config_with_budgets(max_candidates_per_sfi=2, max_total_candidates=5)
+    policy = next(
+        p
+        for p in config.academic_standards.statement_type_policy
+        if p.statement_type == "Performance Objective"
+    )
+    assert policy.aliases
+    canonical = _bundle(items=tuple(_item(number=n) for n in range(1, 65)))
+    aliased = canonical.model_copy(deep=True)
+    for index, item in enumerate(aliased.items):
+        if not mixed or index % 2 == 0:
+            item.statement_type = policy.aliases[0]
+    evaluations = _observe_extractions(monkeypatch)
+    expected = build_lp_candidates(
+        as_lc_bundle=canonical, doc_key=_DOC_KEY, kg_config=config
+    )
+    canonical_evaluations = tuple(evaluations)
+    evaluations.clear()
+    actual = build_lp_candidates(
+        as_lc_bundle=aliased, doc_key=_DOC_KEY, kg_config=config
+    )
+
+    assert actual.candidates == expected.candidates
+    assert tuple(evaluations) == canonical_evaluations
+    assert len(evaluations) == 8
+    assert actual.summary.total_eligible_sfis == 64
+    assert actual.summary.total_candidate_pairs == 5
+    assert actual.summary.total_policy_disallowed_pairs == 0
+    assert (
+        actual.summary.upstream_content_hash != expected.summary.upstream_content_hash
+    )
+    assert (
+        actual.summary.eligible_sfis_content_hash
+        != expected.summary.eligible_sfis_content_hash
+    )
+
+
+@PARAM(argnames="interleaved", argvalues=(False, True))
+def test_large_mixed_types_never_evaluate_excluded_cross_type_pairs(
+    *, interleaved: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closed-world cohorts nominate both grains without consuming excluded pairs.
+
+    Parameters
+    ----------
+    interleaved
+        Alternate grains by UUID or place each grain in a contiguous block.
+    monkeypatch
+        Real extraction observer.
+    """
+
+    config = _config_with_budgets(
+        max_candidates_per_sfi=2, max_total_candidates=5, profile="ghana_math"
+    )
+    bundle = _bundle(
+        items=tuple(
+            _item(
+                metadata={"identity_scope_values": {"Grade": "BASIC 4"}},
+                number=n,
+                statement_type=(
+                    "Content Standard"
+                    if (n % 2 == 0 if interleaved else n <= 64)
+                    else "Indicator"
+                ),
+            )
+            for n in range(1, 129)
+        )
+    )
+    types = {item.case_identifier_uuid: item.statement_type for item in bundle.items}
+    evaluations = _observe_extractions(monkeypatch)
+    first = build_lp_candidates(as_lc_bundle=bundle, doc_key=_DOC_KEY, kg_config=config)
+    observed = tuple(evaluations)
+    assert observed and len(observed) == len(set(observed)) <= 45
+    assert all(types[left] == types[right] for left, right in observed)
+    assert {types[left] for left, _ in observed} == {"Content Standard", "Indicator"}
+    assert {types[row.first_sfi_uuid] for row in first.candidates} == {
+        "Content Standard",
+        "Indicator",
+    }
+    assert first.summary.total_policy_disallowed_pairs == 0
+    assert first.summary.total_candidate_pairs == 5
+    assert first.summary.total_pair_evaluations == len(observed)
+    assert first.summary.candidate_pair_evaluation_bound == 45
+    assert max(first.summary.candidate_pairs_per_sfi.values()) <= 2
+
+    bundle.items.reverse()
+    bundle.relationships_has_child.reverse()
+    evaluations.clear()
+    second = build_lp_candidates(
+        as_lc_bundle=bundle, doc_key=_DOC_KEY, kg_config=config
+    )
+    assert second == first
+    assert tuple(evaluations) == observed
+
+
+def test_module_boundary_uses_top_level_canonical_imports() -> None:
+    """Pair services have one owner and no local-import or re-export workaround."""
+
+    dependencies = {
+        "lp_admissibility": {"lp_coordinates", "lp_selection"},
+        "lp_candidates": {"lp_admissibility", "lp_evidence", "lp_selection"},
+        "lp_evidence": {"lp_admissibility", "lp_index", "lp_selection"},
+    }
+    for module in (lp_admissibility, lp_candidates, lp_evidence):
+        assert module.__file__ is not None
+        tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+        imports = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+        ]
+        assert all(node in tree.body for node in imports)
+        assert {
+            node.module.rsplit(".", 1)[-1]
+            for node in imports
+            if isinstance(node, ast.ImportFrom)
+            and node.module is not None
+            and node.module.startswith("kgfeg.kgs.lp_")
+        } == dependencies[module.__name__.rsplit(".", 1)[-1]]
+        assert "__all__" not in vars(module)
+
+    assert not hasattr(lp_candidates, "LPPairAdmissibility")
+    candidate_imports = ast.parse(
+        Path(lp_candidates.__file__).read_text(encoding="utf-8")
+    )
+    assert all(
+        alias.asname != alias.name
+        for node in ast.walk(candidate_imports)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    )
+
+
+@PARAM(
+    argnames="module_order",
+    argvalues=tuple(permutations(("lp_admissibility", "lp_evidence", "lp_candidates"))),
+)
+def test_modules_import_independently_in_every_order(
+    module_order: tuple[str, ...],
+) -> None:
+    """Fresh interpreters import every boundary order with one canonical service owner.
+
+    Parameters
+    ----------
+    module_order
+        One permutation of admissibility, evidence, and candidate modules.
+    """
+
+    script = dedent(
+        """
+        import importlib
+        import sys
+
+        def _reject_network(event, args):
+            if event.startswith(("socket.connect", "socket.getaddrinfo")):
+                raise AssertionError("Importing LP modules must not access the network.")
+
+        sys.addaudithook(_reject_network)
+        sys.path.insert(0, sys.argv[1])
+        order = sys.argv[2:]
+        for name in order:
+            importlib.import_module("kgfeg.kgs." + name)
+            if name == order[0] and name == "lp_admissibility":
+                assert "kgfeg.kgs.lp_evidence" not in sys.modules
+                assert "kgfeg.kgs.lp_candidates" not in sys.modules
+            if name == order[0] and name == "lp_evidence":
+                assert "kgfeg.kgs.lp_candidates" not in sys.modules
+
+        admissibility = sys.modules["kgfeg.kgs.lp_admissibility"]
+        candidates = sys.modules["kgfeg.kgs.lp_candidates"]
+        evidence = sys.modules["kgfeg.kgs.lp_evidence"]
+        for name in (
+            "LPCandidateFilter", "LPPairAdmissibility",
+            "build_lp_pair_filter", "build_lp_pair_id",
+        ):
+            assert getattr(admissibility, name).__module__ == admissibility.__name__
+        assert evidence.LPCandidateFilter is admissibility.LPCandidateFilter
+        assert evidence.LPPairAdmissibility is admissibility.LPPairAdmissibility
+        assert evidence.build_lp_pair_filter is admissibility.build_lp_pair_filter
+        assert candidates.build_lp_pair_filter is admissibility.build_lp_pair_filter
+        assert candidates.build_lp_pair_id is admissibility.build_lp_pair_id
+        assert candidates.LPEvidenceExtractor is evidence.LPEvidenceExtractor
+        assert candidates.build_lp_evidence_extractor is evidence.build_lp_evidence_extractor
+        assert not hasattr(candidates, "LPPairAdmissibility")
+        assert not hasattr(candidates, "__all__")
+        assert admissibility.build_lp_pair_id(
+            doc_key="synthetic-selection-document",
+            first_sfi_uuid="00000000-0000-0000-0000-000000000001",
+            second_sfi_uuid="00000000-0000-0000-0000-000000000002",
+        ) == "4e319395-a183-5315-9838-072975f2aa22"
+        """
+    )
+    completed = subprocess.run(
+        args=[
+            sys.executable,
+            "-B",
+            "-I",
+            "-c",
+            script,
+            str(PACKAGE_PATH / "backend" / "src"),
+            *module_order,
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
 def test_no_file_access_or_pair_enumeration_occurs_while_building_filter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1182,6 +2562,34 @@ def test_pair_ids_match_independently_pinned_uuidv5_vectors(
         UUID(int=second),
     )
     assert pair.first_sfi_uuid != pair.first_sfi.sfi.identifier
+
+
+def test_policy_surface_contains_budgets_without_ranking_or_version_selectors() -> None:
+    """Runtime and candidate artifacts expose no selectable ranking or policy version."""
+
+    config = _config()
+    candidate_policy_fields = set(
+        type(config.learning_progressions.candidate_policy).model_fields
+    )
+    budget_fields = set(
+        type(config.learning_progressions.candidate_policy.budgets).model_fields
+    )
+    candidate_fields = set(LPCandidateSummary.model_fields)
+
+    assert candidate_policy_fields == {"budgets"}
+    assert budget_fields == {"max_candidates_per_sfi", "max_total_candidates"}
+    assert not candidate_fields.intersection(
+        {
+            "algorithm_version",
+            "candidate_policy_version",
+            "enabled_signals",
+            "ranking",
+            "ranking_inputs",
+            "strategies",
+            "technology",
+            "tie_breaking",
+        }
+    )
 
 
 @PARAM(argnames="reverse_matrix", argvalues=(False, True))
@@ -1483,6 +2891,150 @@ def test_snapshot_isolates_nested_bundle_and_configuration_mutations() -> None:
     )
 
 
+@PARAM(argnames="endpoint_count", argvalues=(2, 3))
+@PARAM(
+    argnames="signal",
+    argvalues=(
+        "hierarchy_context",
+        "lc_tag_token_overlap",
+        "lc_text_token_overlap",
+        "local_rank_proximity",
+        "sfi_text_token_overlap",
+        "sfi_text_trigram_overlap",
+        "shared_learning_components",
+        "source_code_prefix",
+        "source_page_proximity",
+    ),
+)
+def test_sparse_nonadjacent_signal_streams_survive_offsets(
+    *, endpoint_count: int, monkeypatch: pytest.MonkeyPatch, signal: str
+) -> None:
+    """Each real evidence family retains its only sparse, nonadjacent proposals.
+
+    Parameters
+    ----------
+    endpoint_count
+        Two or three distant endpoints sharing the sole signal.
+    monkeypatch
+        Real extraction observer.
+    signal
+        Fixed family supplied by concrete upstream content.
+    """
+
+    endpoints = (1, 31, 64)[:endpoint_count]
+    bundle = _signal_bundle(count=64, endpoints=endpoints, signals=(signal,))
+    evaluations = _observe_extractions(monkeypatch)
+    population = build_lp_candidates(
+        as_lc_bundle=bundle,
+        doc_key=_DOC_KEY,
+        kg_config=_config_with_budgets(
+            max_candidates_per_sfi=2, max_total_candidates=5
+        ),
+    )
+    expected = {
+        (UUID(int=left), UUID(int=right)) for left, right in combinations(endpoints, 2)
+    }
+
+    assert set(evaluations) == expected
+    assert len(evaluations) == len(expected)
+    assert {
+        (row.first_sfi_uuid, row.second_sfi_uuid) for row in population.candidates
+    } == expected
+    assert population.summary.total_pair_evaluations == len(expected)
+    assert population.summary.evidence_type_counts == {signal: len(expected)}
+    assert all(
+        {entry.evidence_type for entry in row.evidence} == {signal}
+        for row in population.candidates
+    )
+
+
+@PARAM(argnames="item_count", argvalues=(3, 4, 6))
+def test_tight_population_diversifies_overlapping_evidence_windows(
+    *, item_count: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Overlapping bounded families contribute enough distinct pairs at tight limits.
+
+    Parameters
+    ----------
+    item_count
+        Small boundary population whose evidence families share the same bucket.
+    monkeypatch
+        Real family-output and extraction observers.
+    """
+
+    contributions = _observe_nomination_windows(monkeypatch)
+    evaluations = _observe_extractions(monkeypatch)
+    population = build_lp_candidates(
+        as_lc_bundle=_bundle(
+            items=tuple(_item(number=n) for n in range(1, item_count + 1))
+        ),
+        doc_key=_DOC_KEY,
+        kg_config=_config_with_budgets(
+            max_candidates_per_sfi=2, max_total_candidates=5
+        ),
+    )
+    union = {pair for contribution in contributions for pair in contribution}
+    expected_retained = {3: 3, 4: 4, 6: 5}[item_count]
+
+    assert len(contributions) == 9
+    assert len(evaluations) == len(union)
+    assert set(evaluations) == union
+    assert len(union) > max(map(len, contributions)) or item_count == 3
+    assert len(population.candidates) == expected_retained
+    assert population.summary.candidate_pair_bound == min(5, item_count)
+    assert max(population.summary.candidate_pairs_per_sfi.values()) <= 2
+
+
+def test_ubiquitous_evidence_families_respect_each_window_and_union_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ubiquitous signals diversify a bounded union without quadratic extraction.
+
+    Parameters
+    ----------
+    monkeypatch
+        Real extraction observer.
+    """
+
+    signals = (
+        "shared_learning_components",
+        "hierarchy_context",
+        "lc_text_token_overlap",
+        "lc_tag_token_overlap",
+        "sfi_text_token_overlap",
+        "sfi_text_trigram_overlap",
+        "source_code_prefix",
+        "local_rank_proximity",
+        "source_page_proximity",
+    )
+    bundle = _signal_bundle(count=64, endpoints=tuple(range(1, 65)), signals=signals)
+    contributions = _observe_nomination_windows(monkeypatch)
+    evaluations = _observe_extractions(monkeypatch)
+    config = _config_with_budgets(max_candidates_per_sfi=2, max_total_candidates=5)
+    population = build_lp_candidates(
+        as_lc_bundle=bundle, doc_key=_DOC_KEY, kg_config=config
+    )
+
+    assert [len(pairs) for pairs in contributions] == [5] * 9
+    assert len(evaluations) == len(set(evaluations)) == 13
+    assert population.summary.total_pair_evaluations == 13
+    assert population.summary.candidate_pair_evaluation_bound == 45
+    assert population.summary.total_unordered_pairs_considered == 2016
+    assert len(population.candidates) == 5
+    assert max(population.summary.candidate_pairs_per_sfi.values()) <= 2
+    assert population.summary.evidence_type_counts == {signal: 5 for signal in signals}
+    bundle.items.reverse()
+    bundle.relationships_has_child.reverse()
+    bundle.learning_components.reverse()
+    bundle.relationships_supports.reverse()
+    evaluations.clear()
+    assert (
+        build_lp_candidates(as_lc_bundle=bundle, doc_key=_DOC_KEY, kg_config=config)
+        == population
+    )
+    assert len(evaluations) == 13
+
+
 @PARAM(argnames="bad_first", argvalues=(False, True))
 @PARAM(
     argnames="kind",
@@ -1516,6 +3068,88 @@ def test_unknown_and_non_sfi_endpoints_fail_containment(
             first_sfi_uuid=foreign if bad_first else valid,
             second_sfi_uuid=valid if bad_first else foreign,
         )
+
+
+def test_unresolved_warning_state_is_visible_in_candidate_summary() -> None:
+    """A summary must retain visible unresolved-warning state for nominated pairs."""
+
+    unresolved = _item(number=1)
+    resolved = _item(number=2)
+    bundle = _bundle(
+        edges=(
+            _edge(
+                fallback=True,
+                source=_FRAMEWORK_UUID,
+                source_entity="StandardsFramework",
+                target=unresolved.case_identifier_uuid,
+            ),
+        ),
+        items=(unresolved, resolved),
+    )
+    population = build_lp_candidates(
+        as_lc_bundle=bundle,
+        doc_key=_DOC_KEY,
+        kg_config=_config_with_budgets(
+            max_candidates_per_sfi=1, max_total_candidates=1
+        ),
+    )
+    assert len(population.candidates) == 1
+    assert any("unresolved" in warning for warning in population.candidates[0].warnings)
+
+    warnings = population.candidates[0].warnings
+    assert population.summary.candidate_warning_counts == dict(Counter(warnings))
+    assert population.summary.total_candidate_pairs_with_warnings == 1
+    assert not set(warnings).intersection(population.summary.evidence_type_counts)
+    assert all(
+        warning not in entry.model_dump_json()
+        for warning in warnings
+        for entry in population.candidates[0].evidence
+    )
+
+
+def test_unresolved_warnings_survive_candidate_artifact_round_trip(
+    tmp_path: Path,
+) -> None:
+    """Candidate JSONL preserves the exact warning union from both endpoints.
+
+    Parameters
+    ----------
+    tmp_path
+        Isolated candidate artifact destination.
+    """
+
+    unresolved = _item(number=1)
+    resolved = _item(number=2)
+    bundle = _bundle(
+        edges=(
+            _edge(
+                fallback=True,
+                source=_FRAMEWORK_UUID,
+                source_entity="StandardsFramework",
+                target=unresolved.case_identifier_uuid,
+            ),
+        ),
+        items=(unresolved, resolved),
+    )
+    kg_dirs = KGDirs(root=tmp_path / "candidate-artifacts")
+    population = write_lp_candidate_artifacts(
+        as_lc_bundle=bundle,
+        doc_key=_DOC_KEY,
+        kg_config=_config_with_budgets(
+            max_candidates_per_sfi=1, max_total_candidates=1
+        ),
+        kg_dirs=kg_dirs,
+    )
+    row = json.loads((kg_dirs.root / "lp_candidate_pairs.jsonl").read_text().strip())
+
+    assert row["warnings"] == population.candidates[0].warnings
+    assert any("Framework-root fallback" in warning for warning in row["warnings"])
+    summary = json.loads((kg_dirs.root / "lp_candidate_summary.json").read_text())
+    assert summary["candidate_warning_counts"] == dict(Counter(row["warnings"]))
+    assert summary["total_candidate_pairs_with_warnings"] == 1
+    assert summary["evidence_type_counts"] == dict(
+        Counter(entry["evidence_type"] for entry in row["evidence"])
+    )
 
 
 @PARAM(
@@ -1594,3 +3228,36 @@ def test_uuid_spellings_and_reversed_encounters_share_one_pair(spelling: str) ->
         build_lp_pair_id(doc_key=_DOC_KEY, first_sfi_uuid=two, second_sfi_uuid=one)
         == pair.pair_id
     )
+
+
+def test_warning_only_population_never_nominates_from_audit_text() -> None:
+    """Shared unresolved warnings and framework fallback never become positive evidence."""
+
+    items = tuple(
+        _item(description=chr(0x4E00 + n), metadata={}, number=n, statement_code="")
+        for n in range(1, 49)
+    )
+    bundle = _bundle(
+        edges=tuple(
+            _edge(
+                fallback=True,
+                source=_FRAMEWORK_UUID,
+                source_entity="StandardsFramework",
+                target=item.case_identifier_uuid,
+            )
+            for item in items
+        ),
+        items=items,
+    )
+    config = _config_with_budgets(max_candidates_per_sfi=2, max_total_candidates=5)
+    selection = build_lp_selection(as_lc_bundle=bundle, kg_config=config)
+    assert len(selection.eligible_sfis) == 48
+    assert all(record.warnings for record in selection.eligible_sfis)
+    population = build_lp_candidates(
+        as_lc_bundle=bundle, doc_key=_DOC_KEY, kg_config=config
+    )
+    assert not population.candidates
+    assert population.summary.total_pair_evaluations == 0
+    assert population.summary.evidence_type_counts == {}
+    assert population.summary.candidate_warning_counts == {}
+    assert population.summary.total_candidate_pairs_with_warnings == 0

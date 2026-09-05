@@ -18,6 +18,7 @@ from kgfeg.kgs.schemas import (
     LPAdmissibleDecision,
     LPCandidateEvidence,
     LPCandidatePair,
+    LPCandidateSummary,
     LPPairJudgment,
 )
 from tests.constants import PARAM
@@ -178,6 +179,48 @@ def _valid_judgment_payload(
             if warnings is not None
             else ["Source hierarchy warning was considered."]
         ),
+    }
+
+
+def _valid_summary_payload() -> dict[str, Any]:
+    """Build one internally reconciled bounded candidate-summary payload.
+
+    Returns
+    -------
+    dict[str, Any]
+        Summary for two eligible SFIs and one retained evidence-bearing pair.
+    """
+
+    return {
+        "candidate_pair_bound": 1,
+        "candidate_pairs_content_hash": "a" * 64,
+        "candidate_pairs_per_sfi": {
+            _FIRST_SFI_UUID: 1,
+            _SECOND_SFI_UUID: 1,
+        },
+        "config_content_hash": "b" * 64,
+        "eligible_sfis_content_hash": "c" * 64,
+        "evidence_type_counts": {"local_rank_proximity": 1},
+        "framework_uuid": "00000000-0000-0000-0000-000000000100",
+        "limitations": [
+            "Candidate recall is unmeasured.",
+            "Structural checks do not prove pedagogical correctness.",
+        ],
+        "max_candidates_per_sfi": 1,
+        "max_total_candidates": 1,
+        "total_admissible_pairs": 1,
+        "total_candidate_pairs": 1,
+        "total_candidate_pairs_dropped_by_per_sfi_budget": 0,
+        "total_candidate_pairs_dropped_by_total_budget": 0,
+        "total_candidate_shortlist_entries": 2,
+        "total_candidate_union_pairs": 1,
+        "total_duplicate_shortlist_entries": 1,
+        "total_eligible_sfis": 2,
+        "total_nominated_pairs": 1,
+        "total_pairs_without_evidence": 0,
+        "total_policy_disallowed_pairs": 0,
+        "total_unordered_pairs_considered": 1,
+        "upstream_content_hash": "d" * 64,
     }
 
 
@@ -452,6 +495,136 @@ def test_candidate_pair_rejects_invalid_identifiers_and_warnings(
 
     with pytest.raises(expected_exception=_INVALID_STRING_EXCEPTIONS):
         LPCandidatePair.model_validate(payload)
+
+
+def test_candidate_summary_accepts_reconciled_bounded_population() -> None:
+    """A complete summary round-trips without changing hashes, counts, or UUID keys."""
+
+    summary = LPCandidateSummary.model_validate(_valid_summary_payload())
+    reparsed = LPCandidateSummary.model_validate_json(summary.model_dump_json())
+
+    assert reparsed == summary
+    assert {str(summary_key) for summary_key in reparsed.candidate_pairs_per_sfi} == {
+        _FIRST_SFI_UUID,
+        _SECOND_SFI_UUID,
+    }
+    assert sum(reparsed.candidate_pairs_per_sfi.values()) == 2
+
+
+@PARAM(
+    argnames=("field_name", "value"),
+    argvalues=(
+        ("candidate_pair_bound", 0),
+        ("candidate_pairs_per_sfi", {_FIRST_SFI_UUID: 1}),
+        ("total_candidate_pairs", 2),
+        ("total_candidate_shortlist_entries", 3),
+        ("total_candidate_union_pairs", 2),
+        ("total_duplicate_shortlist_entries", 2),
+        ("total_pairs_without_evidence", 1),
+        ("total_policy_disallowed_pairs", 1),
+        ("total_unordered_pairs_considered", 2),
+    ),
+)
+def test_candidate_summary_rejects_inconsistent_counts_and_bounds(
+    *, field_name: str, value: Any
+) -> None:
+    """Every pair partition, shortlist union, degree, and simple-graph bound reconciles.
+
+    Parameters
+    ----------
+    field_name
+        One count or mapping made inconsistent with the remaining summary.
+    value
+        Invalid replacement value.
+    """
+
+    payload = _valid_summary_payload()
+    payload[field_name] = value
+
+    with pytest.raises(expected_exception=ValidationError):
+        LPCandidateSummary.model_validate(payload)
+
+
+@PARAM(
+    argnames=("field_name", "value"),
+    argvalues=(
+        ("candidate_pairs_content_hash", "A" * 64),
+        ("candidate_pairs_per_sfi", {_FIRST_SFI_UUID: 2, _SECOND_SFI_UUID: 0}),
+        ("config_content_hash", "short"),
+        ("evidence_type_counts", {"local_rank_proximity": 0}),
+        ("eligible_sfis_content_hash", ""),
+        ("limitations", []),
+        ("limitations", ["same", " same "]),
+        ("max_candidates_per_sfi", 0),
+        ("max_total_candidates", 0),
+        ("upstream_content_hash", "g" * 64),
+    ),
+)
+def test_candidate_summary_rejects_invalid_material_fields(
+    *, field_name: str, value: Any
+) -> None:
+    """Hashes, positive budgets, evidence counts, incidence, and limits stay strict.
+
+    Parameters
+    ----------
+    field_name
+        Summary material field made invalid.
+    value
+        Invalid replacement value.
+    """
+
+    payload = _valid_summary_payload()
+    payload[field_name] = value
+
+    with pytest.raises(expected_exception=ValidationError):
+        LPCandidateSummary.model_validate(payload)
+
+
+@PARAM(
+    argnames=("counts", "warned_rows"),
+    argvalues=(
+        ({"Unresolved ancestry.": 1}, 0),
+        ({}, 1),
+        ({"Unresolved ancestry.": 1}, 2),
+        ({"Unresolved ancestry.": 0}, 1),
+        ({"Unresolved ancestry.": -1}, 1),
+        ({" ": 1}, 1),
+    ),
+)
+def test_candidate_summary_rejects_invalid_warning_state(
+    *, counts: dict[str, int], warned_rows: int
+) -> None:
+    """Warning state uses positive named occurrences and possible retained row totals.
+
+    Parameters
+    ----------
+    counts
+        Invalid warning occurrence map or one inconsistent with the row total.
+    warned_rows
+        Invalid or inconsistent warning-bearing row count.
+    """
+
+    payload = _valid_summary_payload()
+    payload.update(
+        candidate_warning_counts=counts, total_candidate_pairs_with_warnings=warned_rows
+    )
+    with pytest.raises(expected_exception=ValidationError):
+        LPCandidateSummary.model_validate(payload)
+
+
+def test_candidate_summary_warning_fields_survive_round_trip() -> None:
+    """Two audit warnings on one candidate stay separate from nomination reasons."""
+
+    payload = _valid_summary_payload()
+    payload.update(
+        candidate_warning_counts={"Unresolved ancestry.": 1, "Fallback placement.": 1},
+        total_candidate_pairs_with_warnings=1,
+    )
+    summary = LPCandidateSummary.model_validate(payload)
+    actual = LPCandidateSummary.model_validate_json(summary.model_dump_json())
+    assert actual.candidate_warning_counts == payload["candidate_warning_counts"]
+    assert actual.total_candidate_pairs_with_warnings == 1
+    assert actual.evidence_type_counts == {"local_rank_proximity": 1}
 
 
 def test_evidence_accepts_recursive_json_values_and_round_trips() -> None:
@@ -742,6 +915,13 @@ def test_lp_models_reject_unknown_fields() -> None:
             },
         ),
         (
+            LPCandidateSummary,
+            {
+                **_valid_summary_payload(),
+                "unknown": "forbidden",
+            },
+        ),
+        (
             LPPairJudgment,
             {
                 **_valid_judgment_payload(),
@@ -786,6 +966,7 @@ def test_lp_models_round_trip_without_material_changes() -> None:
         ),
         LPCandidateEvidence.model_validate(evidence_payload),
         LPCandidatePair.model_validate(candidate_payload),
+        LPCandidateSummary.model_validate(_valid_summary_payload()),
         LPPairJudgment.model_validate(
             _valid_judgment_payload(
                 confidence=1.0,

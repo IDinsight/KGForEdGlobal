@@ -20,7 +20,7 @@ import pytest
 
 # Package Library
 from kgfeg.kgs import lp_evidence
-from kgfeg.kgs.lp_candidates import LPCandidateFilter
+from kgfeg.kgs.lp_admissibility import LPCandidateFilter
 from kgfeg.kgs.lp_evidence import (
     LPEvidenceExtractor,
     LPPairEvidence,
