@@ -1051,6 +1051,62 @@ def build_lp_candidates(
     )
 
 
+def validate_lp_candidate_population(
+    *,
+    as_lc_bundle: AcademicStandardsLCKGBundle,
+    doc_key: str,
+    kg_config: CreateKGConfig,
+    population: LPCandidatePopulation,
+) -> LPCandidatePopulation:
+    """Reconcile a complete candidate population before downstream materialization.
+
+    This exposes the same candidate integrity boundary used by the artifact writer.
+    Models are round-trip validated so mutated instances cannot bypass intrinsic
+    validation. Current inputs independently determine permissions, warnings, material
+    hashes, budgets, ordering, and every row-derived summary count.
+
+    Parameters
+    ----------
+    as_lc_bundle
+        Current authoritative, validated AS+LC bundle.
+    doc_key
+        Current document identity used to reconstruct pair IDs.
+    kg_config
+        Current effective curriculum policy and budgets.
+    population
+        Complete deterministic candidate sequence and its proposed summary.
+
+    Returns
+    -------
+    LPCandidatePopulation
+        Independently owned, validated candidate sequence and reconciled summary.
+
+    Raises
+    ------
+    ValueError
+        If candidate records, summary counts, ordering, or material inputs disagree.
+    """
+
+    candidates = tuple(
+        LPCandidatePair.model_validate_json(candidate.model_dump_json())
+        for candidate in population.candidates
+    )
+    summary = LPCandidateSummary.model_validate_json(
+        population.summary.model_dump_json()
+    )
+    _reconcile_candidate_population(
+        candidates=candidates,
+        doc_key=doc_key,
+        kg_config=kg_config,
+        pair_filter=build_lp_pair_filter(
+            as_lc_bundle=as_lc_bundle, doc_key=doc_key, kg_config=kg_config
+        ),
+        selection=build_lp_selection(as_lc_bundle=as_lc_bundle, kg_config=kg_config),
+        summary=summary,
+    )
+    return LPCandidatePopulation(candidates=candidates, summary=summary)
+
+
 def write_lp_candidate_artifacts(
     *,
     as_lc_bundle: AcademicStandardsLCKGBundle,
