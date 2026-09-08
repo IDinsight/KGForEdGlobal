@@ -1,9 +1,9 @@
 """Bounded LP requests and reconciled, complete pre-call artifact populations.
 
-Requests contain only explicit endpoint permissions and bounded upstream evidence.
-They grant no relationship and perform no model calls. The artifact writer returns
-only after the entire candidate/request population has been read back and matched
-against current material inputs. Structural reconciliation is not semantic validation.
+Requests contain only explicit endpoint permissions and bounded upstream evidence. They
+grant no relationship and perform no model calls. The artifact writer returns only
+after the entire candidate/request population has been read back and matched against
+current material inputs. Structural reconciliation is not semantic validation.
 """
 
 # Future Library
@@ -60,14 +60,22 @@ class _LPBoundedText(BaseSchema):
         -------
         _LPBoundedText
             Consistent bounded text record.
+
+        Raises
+        ------
+        ValueError
+            If the LP text excerpt has inconsistent truncation counts or does not match
+            its complete-text hash.
         """
 
         if self.original_characters < len(self.text) or self.truncated != (
             self.original_characters > len(self.text)
         ):
             raise ValueError("LP text excerpt has inconsistent truncation counts.")
+
         if not self.truncated and self.content_hash != _text_hash(self.text):
             raise ValueError("LP text excerpt does not match its complete-text hash.")
+
         return self
 
 
@@ -91,8 +99,8 @@ class _LPCoordinateContext(BaseSchema):
     """Canonical coordinate semantics with bounded origin references.
 
     Origin excerpts share the configured per-SFI character ceiling and source-item
-    ceiling independently of source-value excerpts. Full-origin lengths and hashes,
-    the complete ordered-origin hash, and omission counts retain material linkage.
+    ceiling independently of source-value excerpts. Full-origin lengths and hashes, the
+    complete ordered-origin hash, and omission counts retain material linkage.
     """
 
     canonical_value: str | None
@@ -135,12 +143,24 @@ class _LPRequestPair(BaseSchema):
     warnings: tuple[str, ...]
 
 
+class _LPSourceEvidence(BaseSchema):
+    """Bounded source value and origin, each identifying its complete upstream text.
+
+    Origin labels contain upstream metadata keys and are therefore untrusted text,
+    subject to the same individual excerpt ceiling as descriptive context fields.
+    Source-value excerpts additionally share the per-SFI aggregate character budget.
+    """
+
+    excerpt: _LPBoundedText
+    reference: _LPBoundedText
+
+
 class _LPRequestSFI(BaseSchema):
     """Endpoint evidence with all direct parents and depth-bounded DAG paths.
 
-    Path-count overflow fails construction rather than choosing a single branch.
-    Source excerpts share one character budget; LC and path counts are independently
-    bounded. Hashes identify complete omitted source material without uploading it.
+    Path-count overflow fails construction rather than choosing a single branch. Source
+    excerpts share one character budget; LC and path counts are independently bounded.
+    Hashes identify complete omitted source material without uploading it.
     """
 
     ancestor_paths: tuple[LPAncestorPath, ...]
@@ -155,18 +175,6 @@ class _LPRequestSFI(BaseSchema):
     source_evidence: tuple[_LPSourceEvidence, ...]
     source_evidence_content_hash: str
     warnings: tuple[str, ...]
-
-
-class _LPSourceEvidence(BaseSchema):
-    """Bounded source value and origin, each identifying its complete upstream text.
-
-    Origin labels contain upstream metadata keys and are therefore untrusted text,
-    subject to the same individual excerpt ceiling as descriptive context fields.
-    Source-value excerpts additionally share the per-SFI aggregate character budget.
-    """
-
-    excerpt: _LPBoundedText
-    reference: _LPBoundedText
 
 
 class LPGenerationRequest(BaseSchema):
@@ -199,11 +207,20 @@ class LPGenerationRequest(BaseSchema):
         -------
         LPGenerationRequest
             Request whose identifiers match its actual bounded evidence.
+
+        Raises
+        ------
+        ValueError
+            If the request has duplicate pair IDs, does not contain exactly its ordered
+            endpoints, does not match its material, or the request ID does not match
+            its material hash.
         """
 
         pair_ids = [pair.pair_id for pair in self.pairs]
+
         if len(pair_ids) != len(set(pair_ids)):
             raise ValueError("LP request contains duplicate pair IDs.")
+
         endpoints = sorted(
             {
                 endpoint
@@ -212,17 +229,22 @@ class LPGenerationRequest(BaseSchema):
             },
             key=str,
         )
+
         if [sfi.context.sfi_uuid for sfi in self.sfis] != endpoints:
             raise ValueError(
                 "LP request context must contain exactly its ordered endpoints."
             )
+
         material = self.model_dump(
             exclude={"request_content_hash", "request_id"}, mode="json"
         )
+
         if self.request_content_hash != _content_hash(material):
             raise ValueError("LP request content hash does not match its material.")
+
         if self.request_id != _request_id(self.request_content_hash):
             raise ValueError("LP request ID does not match its material hash.")
+
         return self
 
 
@@ -267,10 +289,6 @@ class LPRequestPopulation:
     candidates: LPCandidatePopulation
     manifest: LPRequestManifest
     requests: tuple[LPGenerationRequest, ...]
-
-
-# Resolve the private source-evidence type after alphabetical class declarations.
-LPGenerationRequest.model_rebuild()
 
 
 def _artifact_payloads(
@@ -421,24 +439,30 @@ def _context_sfi(*, max_characters: int, record: LPSFIEligibility) -> _LPContext
     """
 
     audit = _audit_context(record)
+
     if audit and len(_canonical_json(audit)) > max_characters:
         raise ValueError(
             f"LP SFI {record.sfi.case_identifier_uuid} audit context exceeds "
-            "max_source_evidence_characters_per_sfi; increase the evidence bound."
+            f"max_source_evidence_characters_per_sfi; increase the evidence bound."
         )
+
     warnings = list(record.warnings)
+
     if any(value for value in audit.values()):
         warnings.append(
             f"SFI {record.sfi.case_identifier_uuid} carries upstream audit/merge/code "
-            "context; inspect audit_context before interpreting its evidence."
+            f"context; inspect audit_context before interpreting its evidence."
         )
+
     description = _bounded_text(
         max_characters=max_characters, text=record.sfi.description
     )
+
     if description.truncated:
         warnings.append(
             f"SFI {record.sfi.case_identifier_uuid} description is truncated."
         )
+
     return _LPContextSFI(
         alternate_statement_code=(
             _bounded_text(
@@ -481,18 +505,21 @@ def _coordinate_context(
     Returns
     -------
     _LPCoordinateContext
-        Unchanged canonical semantics and explicitly bounded provenance linked to
-        the complete original references, including those omitted from the request.
+        Unchanged canonical semantics and explicitly bounded provenance linked to the
+        complete original references, including those omitted from the request.
     """
 
     references: list[_LPBoundedText] = []
     remaining = max_characters
+
     for source_field in coordinate.source_fields[:max_items]:
         if remaining == 0:
             break
+
         reference = _bounded_text(max_characters=remaining, text=source_field)
         references.append(reference)
         remaining -= len(reference.text)
+
     return _LPCoordinateContext(
         canonical_value=coordinate.canonical_value,
         omitted_source_field_count=len(coordinate.source_fields) - len(references),
@@ -550,6 +577,7 @@ def _nomination_context(
     original = [evidence.model_dump(mode="json") for evidence in candidate.evidence]
     projected = []
     truncated = False
+
     for evidence in original:
         retained = dict(evidence)
         retained["aggregate_scope"] = "complete_candidate_nomination"
@@ -562,6 +590,7 @@ def _nomination_context(
         )
         truncated |= bool(retained["omitted_reference_count"])
         values = dict(evidence["triggering_values"])
+
         if evidence["evidence_type"] == "shared_learning_components":
             shared = values["shared_values"]
             values["shared_values"] = [
@@ -571,6 +600,7 @@ def _nomination_context(
                 values["shared_values"]
             )
             truncated |= bool(retained["omitted_shared_value_count"])
+
         if "shared_ancestors" in values:
             ancestors = values["shared_ancestors"]
             values["shared_ancestors"] = [
@@ -580,8 +610,10 @@ def _nomination_context(
                 values["shared_ancestors"]
             )
             truncated |= bool(retained["omitted_shared_ancestor_count"])
+
         retained["triggering_values"] = values
         projected.append(retained)
+
     return _LPNominationContext(
         complete_evidence_content_hash=_content_hash(original),
         evidence=_bounded_text(
@@ -621,11 +653,13 @@ def _read_population(
         candidates=expected.candidates, requests=expected.requests
     )
     actual = {filename: (root / filename).read_bytes() for filename in payloads}
+
     for filename, payload in actual.items():
         if payload != payloads[filename]:
             raise ValueError(
                 f"LP pre-call artifact differs from current material: {filename}."
             )
+
     candidates = tuple(
         LPCandidatePair.model_validate_json(line)
         for line in actual["lp_candidate_pairs.jsonl"].splitlines()
@@ -639,12 +673,14 @@ def _read_population(
     )
     manifest_bytes = (root / _MANIFEST_FILENAME).read_bytes()
     manifest = LPRequestManifest.model_validate_json(manifest_bytes)
+
     if manifest != expected.manifest or manifest_bytes != (
         _canonical_json(expected.manifest.model_dump(mode="json")) + "\n"
     ).encode("utf-8"):
         raise ValueError(
             "LP request manifest does not match current material and counts."
         )
+
     if manifest.artifact_byte_hashes != {
         filename: hashlib.sha256(payload).hexdigest()
         for filename, payload in actual.items()
@@ -652,6 +688,7 @@ def _read_population(
         raise ValueError(
             "LP request manifest byte hashes do not match materialized files."
         )
+
     if (
         len(candidates) != manifest.total_candidate_pairs
         or len(requests) != manifest.total_requests
@@ -659,6 +696,7 @@ def _read_population(
         != tuple(candidate.pair_id for candidate in candidates)
     ):
         raise ValueError("LP materialized candidate/request counts or coverage differ.")
+
     return LPRequestPopulation(
         candidates=LPCandidatePopulation(candidates=candidates, summary=summary),
         manifest=manifest,
@@ -761,11 +799,13 @@ def _request_sfi(
         max_paths=limits.max_ancestor_paths_per_sfi,
         sfi_uuid=sfi_uuid,
     )
+
     if paths.paths_truncated:
         raise ValueError(
             f"LP SFI {sfi_uuid} has more DAG paths than max_ancestor_paths_per_sfi; "
-            "increase the bound to preserve every parent branch."
+            f"increase the bound to preserve every parent branch."
         )
+
     context = _context_sfi(max_characters=max_characters, record=record)
     ancestors = tuple(
         _context_sfi(max_characters=max_characters, record=records[ancestor_uuid])
@@ -797,9 +837,11 @@ def _request_sfi(
     source_values = _source_values(record)
     source_evidence: list[_LPSourceEvidence] = []
     remaining = max_characters
+
     for reference, value in source_values[: limits.max_source_evidence_items_per_sfi]:
         if remaining == 0:
             break
+
         excerpt = _bounded_text(max_characters=remaining, text=value)
         source_evidence.append(
             _LPSourceEvidence(
@@ -808,27 +850,33 @@ def _request_sfi(
             )
         )
         remaining -= len(excerpt.text)
+
     warnings = set(context.warnings)
     warnings.update(warning for ancestor in ancestors for warning in ancestor.warnings)
     omitted_components = len(components) - len(retained_components)
     omitted_source = len(source_values) - len(source_evidence)
+
     if any(path.depth_truncated for path in paths.paths):
         warnings.add(
             f"SFI {sfi_uuid} ancestor paths are depth-truncated; all bounded branches remain."
         )
+
     if omitted_components or any(
         component.description.truncated or component.metadata.truncated
         for component in retained_components
     ):
         warnings.add(f"SFI {sfi_uuid} supporting LC evidence is truncated.")
+
     if omitted_source or any(
         item.excerpt.truncated or item.reference.truncated for item in source_evidence
     ):
         warnings.add(f"SFI {sfi_uuid} source evidence is truncated.")
+
     if coordinate.omitted_source_field_count or any(
         reference.truncated for reference in coordinate.source_fields
     ):
         warnings.add(f"SFI {sfi_uuid} coordinate source references are truncated.")
+
     return _LPRequestSFI(
         ancestor_paths=paths.paths,
         ancestors=ancestors,
@@ -866,6 +914,7 @@ def _source_values(record: LPSFIEligibility) -> list[tuple[str, str]]:
 
     values: dict[str, str] = {}
     audit_keys = set(_audit_context(record))
+
     for origin, mapping in (
         ("metadata", record.sfi.model_dump(mode="json")["metadata"]),
         ("provenance", record.source_provenance),
@@ -873,11 +922,14 @@ def _source_values(record: LPSFIEligibility) -> list[tuple[str, str]]:
         for key, value in sorted(mapping.items()):
             if f"{origin}.{key}" in audit_keys:
                 continue
+
             items = value if isinstance(value, list) else [value]
+
             for index, item in enumerate(items):
                 values[f"{origin}.{key}[{index}]"] = (
                     item if isinstance(item, str) else _canonical_json(item)
                 )
+
     return sorted(
         values.items(),
         key=lambda item: ("candidate_source_texts[" not in item[0], item[0]),
@@ -975,6 +1027,7 @@ def build_lp_generation_requests(
     )
     summary_hash = _content_hash(summary.model_dump(mode="json"))
     requests: list[LPGenerationRequest] = []
+
     for start in range(0, len(population.candidates), batch_size):
         batch = population.candidates[start : start + batch_size]
         pairs = tuple(
@@ -1034,14 +1087,17 @@ def build_lp_generation_requests(
             )
         )
     request_rows = tuple(requests)
+
     if tuple(
         pair.pair_id for request in request_rows for pair in request.pairs
     ) != tuple(candidate.pair_id for candidate in population.candidates):
         raise ValueError(
             "LP request population does not exactly cover candidates in order."
         )
+
     if len({request.request_id for request in request_rows}) != len(request_rows):
         raise ValueError("LP request population contains an identifier collision.")
+
     payloads = _artifact_payloads(candidates=population, requests=request_rows)
     manifest = LPRequestManifest(
         artifact_byte_hashes={
@@ -1122,10 +1178,10 @@ def write_lp_generation_request_artifacts(
     """Materialize and reconcile the entire candidate/request population before calls.
 
     All validation and serialization complete before output files are changed. A
-    previous manifest is invalidated before population replacement; the new manifest
-    is written only after all population bytes match. Any failed or interrupted write
-    leaves no validated return value. The caller must use the complete writer result
-    or the on-disk validator as its pre-call gate.
+    previous manifest is invalidated before population replacement; the new manifest is
+    written only after all population bytes match. Any failed or interrupted write
+    leaves no validated return value. The caller must use the complete writer result or
+    the on-disk validator as its pre-call gate.
 
     Parameters
     ----------
@@ -1136,8 +1192,8 @@ def write_lp_generation_request_artifacts(
     kg_config
         Current explicit curriculum policy and operational evidence limits.
     kg_dirs
-        Directory receiving candidate JSONL, candidate summary, request JSONL, and
-        the request materialization manifest.
+        Directory receiving candidate JSONL, candidate summary, request JSONL, and the
+        request materialization manifest.
 
     Returns
     -------
@@ -1146,8 +1202,6 @@ def write_lp_generation_request_artifacts(
 
     Raises
     ------
-    OSError
-        If any artifact cannot be written or read completely.
     ValueError
         If validation, serialization, or read-back reconciliation fails.
     """
@@ -1163,12 +1217,15 @@ def write_lp_generation_request_artifacts(
     ).encode("utf-8")
     kg_dirs.root.mkdir(exist_ok=True, parents=True)
     (kg_dirs.root / _MANIFEST_FILENAME).unlink(missing_ok=True)
+
     for filename, payload in payloads.items():
         (kg_dirs.root / filename).write_bytes(payload)
+
     for filename, payload in payloads.items():
         if (kg_dirs.root / filename).read_bytes() != payload:
             raise ValueError(
                 f"LP pre-call artifact failed write reconciliation: {filename}."
             )
+
     (kg_dirs.root / _MANIFEST_FILENAME).write_bytes(manifest_bytes)
     return _read_population(expected=population, root=kg_dirs.root)
