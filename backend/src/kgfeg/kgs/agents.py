@@ -15,6 +15,7 @@ from kgfeg.kgs.schemas import (
     LCGenerationRequest,
     LCGenerationResponse,
     LCGenerationValidationVerdict,
+    LPGenerationResponse,
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
     SFIDedupValidationVerdict,
@@ -330,6 +331,37 @@ def create_lc_generation_validation_agent(
         return output
 
     return agent
+
+
+def create_lp_generation_agent(
+    *, instructions: str, max_retries: int, model_config: ModelConfig
+) -> Agent:
+    """Create a structured LP producer without running it or accepting its draft.
+
+    Parameters
+    ----------
+    instructions
+        Generic relation rubric and reviewed curriculum-specific instructions.
+    max_retries
+        Configured producer retry count for malformed structured output.
+    model_config
+        Shared KG model configuration with Learning Progressions settings.
+
+    Returns
+    -------
+    Agent
+        Tool-free producer returning an untrusted structured pair-judgment draft.
+        Callers must reconcile the complete on-disk candidate/request population before
+        execution and validate the draft before checkpointing or acceptance.
+    """
+
+    return Agent(
+        instructions=instructions,
+        model=model_config.model,
+        model_settings=model_config.kgs_settings("learning_progressions"),
+        output_retries=max_retries,
+        output_type=model_config.wrap_output_type(LPGenerationResponse),
+    )
 
 
 def create_sfi_dedup_agent(

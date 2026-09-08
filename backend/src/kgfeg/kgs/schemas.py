@@ -6809,6 +6809,19 @@ class LPCandidateSummary(BaseSchema):
         return self
 
 
+class LPGenerationResponse(BaseSchema):
+    """Untrusted producer draft tied to one bounded request's material identity.
+
+    Parsing does not establish request-relative coverage, permissions, or semantic
+    acceptance. A draft requires deterministic integrity checks and independent checker
+    adjudication before it can contribute to any published relationship.
+    """
+
+    judgments: list["LPPairJudgment"] = Field(min_length=1)
+    request_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    request_id: UUID
+
+
 class LPPairJudgment(BaseSchema):
     """One complete accepted, negative, or unresolved LP pair judgment."""
 

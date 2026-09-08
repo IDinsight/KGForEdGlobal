@@ -1,16 +1,9 @@
 """Test Learning Progressions usage and shared KG model plumbing."""
 
-# Standard Library
-from types import ModuleType
-
 # Third Party Library
 import pytest
 
 # Package Library
-import kgfeg.kgs.agents as kg_agents
-import kgfeg.kgs.llm as kg_llm
-import kgfeg.kgs.prompts as kg_prompts
-
 from kgfeg.config import BackendSettings, Settings
 from kgfeg.kgs.llm import KGUsageTracker
 
@@ -78,36 +71,6 @@ def test_learning_progressions_model_settings_resolve_from_shared_kg_model(
     assert model_config.kgs_settings("learning_progressions") == expected_settings
 
 
-@pytest.mark.parametrize(
-    "module",
-    (
-        pytest.param(kg_agents, id="agent-factories"),
-        pytest.param(kg_llm, id="llm-calls"),
-        pytest.param(kg_prompts, id="prompts"),
-    ),
-)
-def test_no_learning_progressions_agent_prompt_or_call_exists(
-    module: ModuleType,
-) -> None:
-    """Usage plumbing exposes no LP agent, prompt, or LLM-call implementation.
-
-    Parameters
-    ----------
-    module
-        Production module whose locally defined callables are inspected.
-    """
-
-    progression_callables = {
-        name
-        for name, value in vars(module).items()
-        if callable(value)
-        and getattr(value, "__module__", None) == module.__name__
-        and ("lp" in name.lower().split("_") or "progression" in name.lower())
-    }
-
-    assert progression_callables == set()
-
-
 def test_no_learning_progressions_model_environment_setting_exists() -> None:
     """LP uses the shared KG model field without a dedicated environment setting."""
 
@@ -139,6 +102,7 @@ def test_usage_tracker_aggregates_learning_progressions_with_existing_buckets() 
 
     serialized = tracker.to_dict()
 
+    assert isinstance(serialized["agents"], dict)
     assert set(serialized["agents"]) == set(_KG_AGENT_NAMES)
     assert serialized["totals"] == {
         "cache_read_tokens": 66,
@@ -187,6 +151,7 @@ def test_usage_tracker_serializes_learning_progressions_buckets() -> None:
 
     agents = tracker.to_dict()["agents"]
 
+    assert isinstance(agents, dict)
     assert agents["lp_generation"] == {
         "agent_name": "lp_generation",
         "cache_read_tokens": 11,

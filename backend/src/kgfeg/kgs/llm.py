@@ -20,6 +20,7 @@ from kgfeg.kgs.agents import (
     create_lc_dedup_agent,
     create_lc_generation_agent,
     create_lc_generation_validation_agent,
+    create_lp_generation_agent,
     create_sfi_dedup_agent,
     create_sfi_dedup_validation_agent,
     create_sfi_extraction_agent,
@@ -27,9 +28,11 @@ from kgfeg.kgs.agents import (
     create_sfi_has_child_agent,
     create_sfi_has_child_validation_agent,
 )
+from kgfeg.kgs.lp_generation import validate_lp_request_artifacts
 from kgfeg.kgs.prompts import (
     build_lc_dedup_prompt,
     build_lc_generation_prompt,
+    build_lp_generation_prompt,
     extract_sfi_candidates_from_window,
     resolve_sfi_has_child_parents,
     review_sfi_dedup_candidates,
@@ -39,12 +42,14 @@ from kgfeg.kgs.prompts import (
     validate_sfi_has_child_response,
 )
 from kgfeg.kgs.schemas import (
+    AcademicStandardsLCKGBundle,
     ExtractionWindow,
     LCDedupRequest,
     LCDedupResponse,
     LCGenerationRequest,
     LCGenerationResponse,
     LCGenerationValidationVerdict,
+    LPGenerationResponse,
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
     SFIDedupValidationVerdict,
@@ -54,6 +59,7 @@ from kgfeg.kgs.schemas import (
     SFIHasChildResolutionResponse,
     SFIHasChildValidationVerdict,
 )
+from kgfeg.kgs.utils import KGDirs
 from kgfeg.kgs.validators import (
     verify_lc_dedup_quality,
     verify_lc_generation_quality,
@@ -524,6 +530,75 @@ def generate_learning_components_for_request(
         final_response=final_response,
         validation_verdict=validation_verdict,
     )
+
+
+def generate_learning_progressions_for_request(
+    *,
+    as_lc_bundle: AcademicStandardsLCKGBundle,
+    doc_key: str,
+    kg_config: CreateKGConfig,
+    kg_dirs: KGDirs,
+    request_index: int,
+    usage_tracker: KGUsageTracker,
+) -> LPGenerationResponse:
+    """Produce one untrusted draft only after complete on-disk input reconciliation.
+
+    Parameters
+    ----------
+    as_lc_bundle
+        Current finalized, validated upstream AS+LC bundle.
+    doc_key
+        Current document identity.
+    kg_config
+        Effective curriculum configuration, including producer instructions and retries.
+    kg_dirs
+        Directory containing the complete candidate/request artifacts and manifest.
+    request_index
+        Zero-based request position in the reconciled deterministic population.
+    usage_tracker
+        Usage tracker receiving the producer run's token and request counts.
+
+    Returns
+    -------
+    LPGenerationResponse
+        Parsed producer draft, not a request-integrity-validated, checker-accepted
+        response or a successful checkpoint.
+
+    Raises
+    ------
+    ValueError
+        If the population is stale, incomplete, or inconsistent, or the requested
+        position is invalid. These failures occur before constructing or running an
+        agent.
+    """
+
+    if (
+        isinstance(request_index, bool)
+        or not isinstance(request_index, int)
+        or request_index < 0
+    ):
+        raise ValueError("LP request_index must be a non-negative integer.")
+
+    population = validate_lp_request_artifacts(
+        as_lc_bundle=as_lc_bundle, doc_key=doc_key, kg_config=kg_config, kg_dirs=kg_dirs
+    )
+
+    if request_index >= len(population.requests):
+        raise ValueError("LP request_index is outside the materialized population.")
+
+    lp_config = kg_config.learning_progressions
+    prompts = build_lp_generation_prompt(
+        lp_generation_request=population.requests[request_index],
+        producer_instructions=lp_config.producer_instructions,
+    )
+    agent = create_lp_generation_agent(
+        instructions=prompts.system_message,
+        max_retries=lp_config.retry.producer_max_retries,
+        model_config=Settings.llm_config("kgs"),
+    )
+    producer_run = agent.run_sync(prompts.user_message)
+    usage_tracker.lp_generation.add_run_usage(producer_run.usage())
+    return producer_run.output
 
 
 def resolve_sfi_has_child_parent_request(
