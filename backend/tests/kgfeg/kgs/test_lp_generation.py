@@ -17,7 +17,7 @@ from uuid import UUID, uuid5
 import pytest
 
 # Package Library
-from kgfeg.kgs import lp_generation
+from kgfeg.kgs import lp_generation, lp_requests
 from kgfeg.kgs.lp_candidates import (
     LPCandidatePopulation,
     validate_lp_candidate_population,
@@ -1465,7 +1465,7 @@ def test_request_uuid_collisions_fail_before_materialization(
         assert name.startswith("lc:lp_generation_request:")
         return UUID(int=999)
 
-    monkeypatch.setattr(name="uuid5", target=lp_generation, value=_constant_uuid)
+    monkeypatch.setattr(name="uuid5", target=lp_requests, value=_constant_uuid)
     with pytest.raises(expected_exception=ValueError, match="collision"):
         write_lp_generation_request_artifacts(
             as_lc_bundle=_bundle(),

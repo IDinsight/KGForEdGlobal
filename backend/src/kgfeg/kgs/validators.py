@@ -14,7 +14,7 @@ from typing import Any, Optional, Sequence
 from loguru import logger
 
 # Package Library
-from kgfeg.kgs.lp_generation import LPGenerationRequest
+from kgfeg.kgs.lp_requests import LPGenerationRequest
 from kgfeg.kgs.schemas import (
     ExtractionWindow,
     LCDedupRequest,

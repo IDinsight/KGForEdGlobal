@@ -5,7 +5,7 @@ from textwrap import dedent
 from typing import Any, Optional
 
 # Package Library
-from kgfeg.kgs.lp_generation import LPGenerationRequest
+from kgfeg.kgs.lp_requests import LPGenerationRequest
 from kgfeg.kgs.schemas import (
     ExtractionWindow,
     ExtractionWindowTablePayload,

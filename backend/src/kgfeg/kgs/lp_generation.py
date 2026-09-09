@@ -1,294 +1,85 @@
 """Bounded LP requests and reconciled, complete pre-call artifact populations.
 
 Requests contain only explicit endpoint permissions and bounded upstream evidence. They
-grant no relationship and perform no model calls. The artifact writer returns only
-after the entire candidate/request population has been read back and matched against
-current material inputs. Structural reconciliation is not semantic validation.
+grant no relationship. The artifact writer returns only after the entire
+candidate/request population has been read back and matched against current material
+inputs. Sequential execution validates and checkpoints independent producer/checker
+stages, preserving failed attempts for safe resume. Processing completion and
+structural reconciliation are not semantic validation.
 """
 
 # Future Library
 from __future__ import annotations
 
 # Standard Library
+import fcntl
 import hashlib
-import json
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
-from uuid import UUID, uuid5
+from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 # Third Party Library
-from pydantic import Field, JsonValue, model_validator
+from pydantic import JsonValue
+from pydantic_ai.usage import RunUsage
 
 # Package Library
 from kgfeg.config import Settings
+from kgfeg.kgs import agents, prompts, validators
 from kgfeg.kgs.lp_candidates import (
     LPCandidatePopulation,
     build_lp_candidates,
     validate_lp_candidate_population,
 )
+from kgfeg.kgs.lp_checkpoints import (
+    LPGenerationCheckpoints,
+    archive_lp_generation_artifacts,
+)
+from kgfeg.kgs.lp_checkpoints import content_hash as checkpoint_content_hash
+from kgfeg.kgs.lp_checkpoints import (
+    reconciled_response,
+)
 from kgfeg.kgs.lp_coordinates import LPDevelopmentalCoordinate
-from kgfeg.kgs.lp_index import LPAncestorPath, LPGraphIndex, build_lp_graph_index
+from kgfeg.kgs.lp_index import LPGraphIndex, build_lp_graph_index
+from kgfeg.kgs.lp_requests import (
+    LPBoundedText,
+    LPContextSFI,
+    LPCoordinateContext,
+    LPGenerationRequest,
+    LPLearningComponentContext,
+    LPNominationContext,
+    LPRequestManifest,
+    LPRequestPair,
+    LPRequestPopulation,
+    LPRequestSFI,
+    LPSourceEvidence,
+    build_lp_request_id,
+    canonical_lp_json,
+    lp_material_content_hash,
+    lp_text_content_hash,
+)
 from kgfeg.kgs.lp_selection import LPSFIEligibility, build_lp_selection
 from kgfeg.kgs.schemas import (
     AcademicStandardsLCKGBundle,
-    LPAdmissibleDecision,
     LPCandidatePair,
     LPCandidateSummary,
+    LPGenerationResponse,
+    LPGenerationValidationVerdict,
 )
 from kgfeg.kgs.utils import KGDirs
-from kgfeg.schemas import BaseSchema, CreateKGConfig
+from kgfeg.model_registry import ModelConfig
+from kgfeg.schemas import CreateKGConfig
+
+if TYPE_CHECKING:
+    # Package Library
+    from kgfeg.kgs.llm import KGUsageTracker
 
 _MANIFEST_FILENAME = "lp_generation_requests_manifest.json"
 _REQUESTS_FILENAME = "lp_generation_requests.jsonl"
 
 
-class _LPBoundedText(BaseSchema):
-    """Explicit text excerpt with a hash and size of its complete source text."""
-
-    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    original_characters: int = Field(ge=0, strict=True)
-    text: str
-    truncated: bool = Field(strict=True)
-
-    @model_validator(mode="after")
-    def _validate_extent(self) -> _LPBoundedText:
-        """Require truthful excerpt lengths and complete-text hashes.
-
-        Returns
-        -------
-        _LPBoundedText
-            Consistent bounded text record.
-
-        Raises
-        ------
-        ValueError
-            If the LP text excerpt has inconsistent truncation counts or does not match
-            its complete-text hash.
-        """
-
-        if self.original_characters < len(self.text) or self.truncated != (
-            self.original_characters > len(self.text)
-        ):
-            raise ValueError("LP text excerpt has inconsistent truncation counts.")
-
-        if not self.truncated and self.content_hash != _text_hash(self.text):
-            raise ValueError("LP text excerpt does not match its complete-text hash.")
-
-        return self
-
-
-class _LPContextSFI(BaseSchema):
-    """Bounded authoritative SFI text with complete audit and fallback warnings."""
-
-    alternate_statement_code: _LPBoundedText | None
-    audit_context: dict[str, JsonValue]
-    description: _LPBoundedText
-    normalized_statement_type: str
-    root_fallback_relationship_uuids: tuple[UUID, ...]
-    sfi_uuid: UUID
-    statement_code: _LPBoundedText | None
-    statement_type: str
-    upstream_sfi_content_hash: str
-    unresolved_ancestry: bool
-    warnings: tuple[str, ...]
-
-
-class _LPCoordinateContext(BaseSchema):
-    """Canonical coordinate semantics with bounded origin references.
-
-    Origin excerpts share the configured per-SFI character ceiling and source-item
-    ceiling independently of source-value excerpts. Full-origin lengths and hashes, the
-    complete ordered-origin hash, and omission counts retain material linkage.
-    """
-
-    canonical_value: str | None
-    omitted_source_field_count: int = Field(ge=0, strict=True)
-    rank: int | None
-    sfi_uuid: UUID
-    source_fields: tuple[_LPBoundedText, ...]
-    source_fields_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    statement_type: str
-    status: Literal["missing", "resolved"]
-
-
-class _LPLearningComponentContext(BaseSchema):
-    """One supporting LC with bounded text and metadata, never an LP endpoint."""
-
-    description: _LPBoundedText
-    identifier: UUID
-    metadata: _LPBoundedText
-    upstream_content_hash: str
-
-
-class _LPNominationContext(BaseSchema):
-    """Bounded excerpt of complete nomination values stored in the candidate file."""
-
-    complete_evidence_content_hash: str
-    evidence: _LPBoundedText
-    evidence_types: tuple[str, ...]
-    references_truncated: bool
-
-
-class _LPRequestPair(BaseSchema):
-    """Exact candidate identity and permissions, with bounded nomination context."""
-
-    admissible_decisions: tuple[LPAdmissibleDecision, ...]
-    candidate_content_hash: str
-    first_sfi_uuid: UUID
-    nomination: _LPNominationContext
-    pair_id: str
-    second_sfi_uuid: UUID
-    warnings: tuple[str, ...]
-
-
-class _LPSourceEvidence(BaseSchema):
-    """Bounded source value and origin, each identifying its complete upstream text.
-
-    Origin labels contain upstream metadata keys and are therefore untrusted text,
-    subject to the same individual excerpt ceiling as descriptive context fields.
-    Source-value excerpts additionally share the per-SFI aggregate character budget.
-    """
-
-    excerpt: _LPBoundedText
-    reference: _LPBoundedText
-
-
-class _LPRequestSFI(BaseSchema):
-    """Endpoint evidence with all direct parents and depth-bounded DAG paths.
-
-    Path-count overflow fails construction rather than choosing a single branch. Source
-    excerpts share one character budget; LC and path counts are independently bounded.
-    Hashes identify complete omitted source material without uploading it.
-    """
-
-    ancestor_paths: tuple[LPAncestorPath, ...]
-    ancestors: tuple[_LPContextSFI, ...]
-    context: _LPContextSFI
-    coordinate: _LPCoordinateContext
-    learning_components: tuple[_LPLearningComponentContext, ...]
-    learning_components_content_hash: str
-    omitted_learning_component_count: int = Field(ge=0, strict=True)
-    omitted_source_evidence_count: int = Field(ge=0, strict=True)
-    parent_sfi_uuids: tuple[UUID, ...]
-    source_evidence: tuple[_LPSourceEvidence, ...]
-    source_evidence_content_hash: str
-    warnings: tuple[str, ...]
-
-
-class LPGenerationRequest(BaseSchema):
-    """One exact ordered batch with the shared bounded producer/checker evidence.
-
-    The content hash covers every field except itself and the derived request UUID.
-    Prompt and model identities belong to execution records, not this evidence record.
-    """
-
-    candidate_pairs_content_hash: str
-    candidate_summary_content_hash: str
-    config_content_hash: str
-    doc_key: str
-    eligible_sfis_content_hash: str
-    framework_title: _LPBoundedText
-    framework_uuid: UUID
-    pairs: tuple[_LPRequestPair, ...] = Field(min_length=1)
-    request_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    request_id: UUID
-    request_index: int = Field(ge=0, strict=True)
-    sfis: tuple[_LPRequestSFI, ...] = Field(min_length=2)
-    upstream_content_hash: str
-    warnings: tuple[str, ...]
-
-    @model_validator(mode="after")
-    def _validate_identity_and_coverage(self) -> LPGenerationRequest:
-        """Require unique pair coverage, exact endpoint context, and material identity.
-
-        Returns
-        -------
-        LPGenerationRequest
-            Request whose identifiers match its actual bounded evidence.
-
-        Raises
-        ------
-        ValueError
-            If the request has duplicate pair IDs, does not contain exactly its ordered
-            endpoints, does not match its material, or the request ID does not match
-            its material hash.
-        """
-
-        pair_ids = [pair.pair_id for pair in self.pairs]
-
-        if len(pair_ids) != len(set(pair_ids)):
-            raise ValueError("LP request contains duplicate pair IDs.")
-
-        endpoints = sorted(
-            {
-                endpoint
-                for pair in self.pairs
-                for endpoint in (pair.first_sfi_uuid, pair.second_sfi_uuid)
-            },
-            key=str,
-        )
-
-        if [sfi.context.sfi_uuid for sfi in self.sfis] != endpoints:
-            raise ValueError(
-                "LP request context must contain exactly its ordered endpoints."
-            )
-
-        material = self.model_dump(
-            exclude={"request_content_hash", "request_id"}, mode="json"
-        )
-
-        if self.request_content_hash != _content_hash(material):
-            raise ValueError("LP request content hash does not match its material.")
-
-        if self.request_id != _request_id(self.request_content_hash):
-            raise ValueError("LP request ID does not match its material hash.")
-
-        return self
-
-
-class LPRequestManifest(BaseSchema):
-    """Material identities and counts for the complete pre-call file population.
-
-    File hashes are SHA-256 of actual UTF-8 bytes, including JSONL newlines. The
-    request population hash identifies the canonical ordered JSON array. Empty
-    candidate/request populations have explicit zero counts and empty-array hashes.
-    """
-
-    artifact_byte_hashes: dict[str, str]
-    candidate_pairs_content_hash: str
-    candidate_summary_content_hash: str
-    config_content_hash: str
-    doc_key: str
-    eligible_sfis_content_hash: str
-    framework_uuid: UUID
-    pair_ids: tuple[str, ...]
-    request_ids: tuple[UUID, ...]
-    requests_content_hash: str
-    total_candidate_pairs: int = Field(ge=0, strict=True)
-    total_requests: int = Field(ge=0, strict=True)
-    upstream_content_hash: str
-
-
-@dataclass(frozen=True, slots=True)
-class LPRequestPopulation:
-    """Complete candidate/request sequence and its material reconciliation receipt.
-
-    Attributes
-    ----------
-    candidates
-        Full bounded candidate population and original candidate summary.
-    manifest
-        Exact file hashes, ordered identities, population hashes, and counts.
-    requests
-        Candidate-ranking-ordered request batches. Building this value alone does not
-        prove persistence; use the writer or on-disk validator before execution.
-    """
-
-    candidates: LPCandidatePopulation
-    manifest: LPRequestManifest
-    requests: tuple[LPGenerationRequest, ...]
+class LPGenerationFailed(RuntimeError):
+    """A request exhausted its stage retries; LP processing cannot report success."""
 
 
 def _artifact_payloads(
@@ -311,14 +102,14 @@ def _artifact_payloads(
 
     return {
         "lp_candidate_pairs.jsonl": "".join(
-            _canonical_json(candidate.model_dump(mode="json")) + "\n"
+            canonical_lp_json(candidate.model_dump(mode="json")) + "\n"
             for candidate in candidates.candidates
         ).encode("utf-8"),
         "lp_candidate_summary.json": (
-            _canonical_json(candidates.summary.model_dump(mode="json")) + "\n"
+            canonical_lp_json(candidates.summary.model_dump(mode="json")) + "\n"
         ).encode("utf-8"),
         _REQUESTS_FILENAME: "".join(
-            _canonical_json(request.model_dump(mode="json")) + "\n"
+            canonical_lp_json(request.model_dump(mode="json")) + "\n"
             for request in requests
         ).encode("utf-8"),
     }
@@ -350,7 +141,7 @@ def _audit_context(record: LPSFIEligibility) -> dict[str, JsonValue]:
     }
 
 
-def _bounded_text(*, max_characters: int, text: str) -> _LPBoundedText:
+def _bounded_text(*, max_characters: int, text: str) -> LPBoundedText:
     """Bound a text value while identifying the original material exactly.
 
     Parameters
@@ -362,59 +153,85 @@ def _bounded_text(*, max_characters: int, text: str) -> _LPBoundedText:
 
     Returns
     -------
-    _LPBoundedText
+    LPBoundedText
         Prefix excerpt with explicit original length, hash, and truncation status.
     """
 
-    return _LPBoundedText(
-        content_hash=_text_hash(text),
+    return LPBoundedText(
+        content_hash=lp_text_content_hash(text),
         original_characters=len(text),
         text=text[:max_characters],
         truncated=len(text) > max_characters,
     )
 
 
-def _canonical_json(value: Any) -> str:
-    """Serialize actual material with stable keys and strict finite JSON values.
+def _call_lp_stage(
+    *,
+    draft: LPGenerationResponse | None,
+    kg_config: CreateKGConfig,
+    model_config: ModelConfig,
+    request: LPGenerationRequest,
+    usage_tracker: KGUsageTracker,
+) -> LPGenerationResponse | LPGenerationValidationVerdict:
+    """Execute one bounded agent attempt with orchestration-owned retry accounting.
 
     Parameters
     ----------
-    value
-        JSON-compatible material to serialize.
+    draft
+        Validated draft for checker execution, absent for a producer attempt.
+    kg_config
+        Effective curriculum instructions.
+    model_config
+        Captured shared KG model and actual Learning Progressions settings.
+    request
+        One request from the complete reconciled on-disk population.
+    usage_tracker
+        Existing producer/checker token accounting buckets.
 
     Returns
     -------
-    str
-        Canonical Unicode JSON.
+    LPGenerationResponse or LPGenerationValidationVerdict
+        Untrusted stage output for deterministic validation before checkpointing.
     """
 
-    return json.dumps(
-        allow_nan=False,
-        ensure_ascii=False,
-        obj=value,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
+    config = kg_config.learning_progressions
+
+    if draft is None:
+        prompt = prompts.build_lp_generation_prompt(
+            lp_generation_request=request,
+            producer_instructions=config.producer_instructions,
+        )
+        agent = agents.create_lp_generation_agent(
+            instructions=prompt.system_message, max_retries=0, model_config=model_config
+        )
+        bucket = usage_tracker.lp_generation
+    else:
+        prompt = prompts.validate_lp_generation_response(
+            checker_instructions=config.checker_instructions,
+            draft_response=draft,
+            lp_generation_request=request,
+            producer_instructions=config.producer_instructions,
+        )
+        agent = agents.create_lp_generation_validation_agent(
+            draft_response=draft,
+            instructions=prompt.system_message,
+            lp_generation_request=request,
+            max_retries=0,
+            model_config=model_config,
+            verify_integrity_fn=validators.verify_lp_generation_validation_integrity,
+        )
+        bucket = usage_tracker.lp_generation_validation
+
+    usage = RunUsage()
+
+    try:
+        run = agent.run_sync(usage=usage, user_prompt=prompt.user_message)
+        return run.output
+    finally:
+        bucket.add_run_usage(usage)
 
 
-def _content_hash(value: Any) -> str:
-    """Identify canonical JSON material by its SHA-256 digest.
-
-    Parameters
-    ----------
-    value
-        JSON-compatible material to identify.
-
-    Returns
-    -------
-    str
-        SHA-256 hexadecimal digest.
-    """
-
-    return _text_hash(_canonical_json(value))
-
-
-def _context_sfi(*, max_characters: int, record: LPSFIEligibility) -> _LPContextSFI:
+def _context_sfi(*, max_characters: int, record: LPSFIEligibility) -> LPContextSFI:
     """Project SFI text and preserve audit state without unbounded metadata copying.
 
     Complete audit state is mandatory. If it exceeds the configured text ceiling,
@@ -429,7 +246,7 @@ def _context_sfi(*, max_characters: int, record: LPSFIEligibility) -> _LPContext
 
     Returns
     -------
-    _LPContextSFI
+    LPContextSFI
         Bounded SFI descriptions and exact audit warnings.
 
     Raises
@@ -440,7 +257,7 @@ def _context_sfi(*, max_characters: int, record: LPSFIEligibility) -> _LPContext
 
     audit = _audit_context(record)
 
-    if audit and len(_canonical_json(audit)) > max_characters:
+    if audit and len(canonical_lp_json(audit)) > max_characters:
         raise ValueError(
             f"LP SFI {record.sfi.case_identifier_uuid} audit context exceeds "
             f"max_source_evidence_characters_per_sfi; increase the evidence bound."
@@ -463,7 +280,7 @@ def _context_sfi(*, max_characters: int, record: LPSFIEligibility) -> _LPContext
             f"SFI {record.sfi.case_identifier_uuid} description is truncated."
         )
 
-    return _LPContextSFI(
+    return LPContextSFI(
         alternate_statement_code=(
             _bounded_text(
                 max_characters=max_characters, text=record.sfi.alternate_statement_code
@@ -482,7 +299,9 @@ def _context_sfi(*, max_characters: int, record: LPSFIEligibility) -> _LPContext
             else None
         ),
         statement_type=record.statement_type,
-        upstream_sfi_content_hash=_content_hash(record.sfi.model_dump(mode="json")),
+        upstream_sfi_content_hash=lp_material_content_hash(
+            record.sfi.model_dump(mode="json")
+        ),
         unresolved_ancestry=record.unresolved_ancestry,
         warnings=tuple(sorted(set(warnings))),
     )
@@ -490,7 +309,7 @@ def _context_sfi(*, max_characters: int, record: LPSFIEligibility) -> _LPContext
 
 def _coordinate_context(
     *, coordinate: LPDevelopmentalCoordinate, max_characters: int, max_items: int
-) -> _LPCoordinateContext:
+) -> LPCoordinateContext:
     """Bound coordinate origins without changing resolved values or local ranks.
 
     Parameters
@@ -504,12 +323,12 @@ def _coordinate_context(
 
     Returns
     -------
-    _LPCoordinateContext
+    LPCoordinateContext
         Unchanged canonical semantics and explicitly bounded provenance linked to the
         complete original references, including those omitted from the request.
     """
 
-    references: list[_LPBoundedText] = []
+    references: list[LPBoundedText] = []
     remaining = max_characters
 
     for source_field in coordinate.source_fields[:max_items]:
@@ -520,15 +339,182 @@ def _coordinate_context(
         references.append(reference)
         remaining -= len(reference.text)
 
-    return _LPCoordinateContext(
+    return LPCoordinateContext(
         canonical_value=coordinate.canonical_value,
         omitted_source_field_count=len(coordinate.source_fields) - len(references),
         rank=coordinate.rank,
         sfi_uuid=coordinate.sfi_uuid,
         source_fields=tuple(references),
-        source_fields_content_hash=_content_hash(coordinate.source_fields),
+        source_fields_content_hash=lp_material_content_hash(coordinate.source_fields),
         statement_type=coordinate.statement_type,
         status=coordinate.status,
+    )
+
+
+def _execution_material(
+    *, kg_config: CreateKGConfig, population: LPRequestPopulation
+) -> dict[str, Any]:
+    """Capture actual configuration, model, schemas, and prompt definition material.
+
+    Parameters
+    ----------
+    kg_config
+        Complete effective KG configuration, including LP retry budgets.
+    population
+        Reconciled upstream, candidate, and request content identities.
+
+    Returns
+    -------
+    dict[str, Any]
+        Code-owned execution fingerprint inputs, with no manual version selectors.
+    """
+
+    model = Settings.llm_config("kgs")
+    return {
+        "checker_instructions": kg_config.learning_progressions.checker_instructions,
+        "config_content_hash": checkpoint_content_hash(
+            kg_config.model_dump(by_alias=True, mode="json")
+        ),
+        "model_config": model.model_dump(mode="json"),
+        "model_settings": dict(model.kgs_settings("learning_progressions")),
+        "producer_instructions": kg_config.learning_progressions.producer_instructions,
+        "prompt_definitions_content_hash": hashlib.sha256(
+            Path(prompts.__file__).read_bytes()
+        ).hexdigest(),
+        "request_manifest": population.manifest.model_dump(mode="json"),
+        "response_schema_content_hash": checkpoint_content_hash(
+            LPGenerationResponse.model_json_schema()
+        ),
+        "retry_limits": {
+            "draft": kg_config.learning_progressions.retry.producer_max_retries,
+            "verdict": kg_config.learning_progressions.retry.checker_max_retries,
+        },
+        "verdict_schema_content_hash": checkpoint_content_hash(
+            LPGenerationValidationVerdict.model_json_schema()
+        ),
+    }
+
+
+def _finish_lp_request(
+    *,
+    kg_config: CreateKGConfig,
+    model_config: ModelConfig,
+    population: LPRequestPopulation,
+    request_index: int,
+    store: LPGenerationCheckpoints,
+    usage_tracker: KGUsageTracker,
+) -> None:
+    """Resume one request at its earliest unfinished validated stage.
+
+    Parameters
+    ----------
+    kg_config
+        Captured effective policy and independent stage retry counts.
+    model_config
+        Captured shared KG model configuration.
+    population
+        Complete materialized request sequence.
+    request_index
+        First incomplete request position.
+    store
+        Validated locked checkpoint store.
+    usage_tracker
+        Existing LP token accounting buckets.
+    """
+
+    request = population.requests[request_index]
+    retries = kg_config.learning_progressions.retry
+
+    for stage, maximum in (
+        ("draft", retries.producer_max_retries),
+        ("verdict", retries.checker_max_retries),
+    ):
+        if request_index < len(store.rows[stage]):
+            continue
+
+        for attempt in range(1, maximum + 2):
+            _verify_execution_material(
+                kg_config=kg_config, population=population, store=store
+            )
+            draft = (
+                None
+                if stage == "draft"
+                else LPGenerationResponse.model_validate(
+                    store.rows["draft"][request_index].payload
+                )
+            )
+
+            try:
+                output = _call_lp_stage(
+                    draft=draft,
+                    kg_config=kg_config,
+                    model_config=model_config,
+                    request=request.model_copy(deep=True),
+                    usage_tracker=usage_tracker,
+                )
+
+                if stage == "draft":
+                    response = LPGenerationResponse.model_validate(
+                        output.model_dump(mode="python")
+                    )
+                    validators.verify_lp_generation_response_integrity(
+                        lp_generation_request=request, lp_generation_response=response
+                    )
+                    validated: LPGenerationResponse | LPGenerationValidationVerdict = (
+                        response
+                    )
+                else:
+                    if draft is None:
+                        raise ValueError("LP checker execution requires a valid draft.")
+
+                    verdict = LPGenerationValidationVerdict.model_validate(
+                        output.model_dump(mode="python")
+                    )
+                    validators.verify_lp_generation_validation_integrity(
+                        draft_response=draft,
+                        lp_generation_request=request,
+                        validation_verdict=verdict,
+                    )
+                    validated = verdict
+
+            except Exception as error:  # pylint: disable=broad-exception-caught
+                _verify_execution_material(
+                    kg_config=kg_config, population=population, store=store
+                )
+                exhausted = attempt == maximum + 1
+                store.record_failure(
+                    attempt=attempt,
+                    error=error,
+                    exhausted=exhausted,
+                    request_index=request_index,
+                    stage=stage,
+                )
+
+                if exhausted:
+                    raise LPGenerationFailed(
+                        f"LP {stage} failed for request {request.request_id} after "
+                        f"{attempt} attempts; processing halted. Inspect "
+                        f"lp_generation_failures.json."
+                    ) from None
+
+                continue
+
+            _verify_execution_material(
+                kg_config=kg_config, population=population, store=store
+            )
+            store.append(payload=validated, request_index=request_index, stage=stage)
+            break
+
+    draft = LPGenerationResponse.model_validate(
+        store.rows["draft"][request_index].payload
+    )
+    verdict = LPGenerationValidationVerdict.model_validate(
+        store.rows["verdict"][request_index].payload
+    )
+    store.append(
+        payload=reconciled_response(draft=draft, verdict=verdict),
+        request_index=request_index,
+        stage="response",
     )
 
 
@@ -536,8 +522,8 @@ def _nomination_context(
     *,
     candidate: LPCandidatePair,
     max_characters: int,
-    sfis: tuple[_LPRequestSFI, _LPRequestSFI],
-) -> _LPNominationContext:
+    sfis: tuple[LPRequestSFI, LPRequestSFI],
+) -> LPNominationContext:
     """Project nomination references through the retained LC and ancestor context.
 
     Candidate aggregates still describe the original nomination, not a recomputed
@@ -555,7 +541,7 @@ def _nomination_context(
 
     Returns
     -------
-    _LPNominationContext
+    LPNominationContext
         Original evidence hash and a bounded, explicitly partial projection.
     """
 
@@ -614,10 +600,10 @@ def _nomination_context(
         retained["triggering_values"] = values
         projected.append(retained)
 
-    return _LPNominationContext(
-        complete_evidence_content_hash=_content_hash(original),
+    return LPNominationContext(
+        complete_evidence_content_hash=lp_material_content_hash(original),
         evidence=_bounded_text(
-            max_characters=max_characters, text=_canonical_json(projected)
+            max_characters=max_characters, text=canonical_lp_json(projected)
         ),
         evidence_types=tuple(evidence.evidence_type for evidence in candidate.evidence),
         references_truncated=truncated,
@@ -675,7 +661,7 @@ def _read_population(
     manifest = LPRequestManifest.model_validate_json(manifest_bytes)
 
     if manifest != expected.manifest or manifest_bytes != (
-        _canonical_json(expected.manifest.model_dump(mode="json")) + "\n"
+        canonical_lp_json(expected.manifest.model_dump(mode="json")) + "\n"
     ).encode("utf-8"):
         raise ValueError(
             "LP request manifest does not match current material and counts."
@@ -704,32 +690,12 @@ def _read_population(
     )
 
 
-def _request_id(content_hash: str) -> UUID:
-    """Mint request identity from all bounded request material.
-
-    Parameters
-    ----------
-    content_hash
-        Digest of the ordered request payload and its upstream material identities.
-
-    Returns
-    -------
-    UUID
-        Deterministic UUIDv5 in the existing canonical KG namespace.
-    """
-
-    return uuid5(
-        name=f"lc:lp_generation_request:{content_hash}",
-        namespace=Settings.LC_CANONICAL_NAMESPACE_UUID,
-    )
-
-
 def _request_pair(
     *,
     candidate: LPCandidatePair,
     max_characters: int,
-    sfis: tuple[_LPRequestSFI, _LPRequestSFI],
-) -> _LPRequestPair:
+    sfis: tuple[LPRequestSFI, LPRequestSFI],
+) -> LPRequestPair:
     """Retain candidate identity and permissions without bypassing evidence bounds.
 
     Parameters
@@ -743,13 +709,15 @@ def _request_pair(
 
     Returns
     -------
-    _LPRequestPair
+    LPRequestPair
         Exact candidate linkage and bounded named nomination evidence.
     """
 
-    return _LPRequestPair(
+    return LPRequestPair(
         admissible_decisions=tuple(candidate.admissible_decisions),
-        candidate_content_hash=_content_hash(candidate.model_dump(mode="json")),
+        candidate_content_hash=lp_material_content_hash(
+            candidate.model_dump(mode="json")
+        ),
         first_sfi_uuid=candidate.first_sfi_uuid,
         nomination=_nomination_context(
             candidate=candidate, max_characters=max_characters, sfis=sfis
@@ -766,7 +734,7 @@ def _request_sfi(
     kg_config: CreateKGConfig,
     records: dict[UUID, LPSFIEligibility],
     sfi_uuid: UUID,
-) -> _LPRequestSFI:
+) -> LPRequestSFI:
     """Build bounded endpoint context without dropping a direct-parent DAG branch.
 
     Parameters
@@ -782,7 +750,7 @@ def _request_sfi(
 
     Returns
     -------
-    _LPRequestSFI
+    LPRequestSFI
         Bounded SFI, all retained-depth parent paths, supporting LCs, and source text.
 
     Raises
@@ -816,16 +784,18 @@ def _request_sfi(
     )
     components = graph_index.learning_components_by_sfi_uuid[sfi_uuid]
     retained_components = tuple(
-        _LPLearningComponentContext(
+        LPLearningComponentContext(
             description=_bounded_text(
                 max_characters=max_characters, text=component.description
             ),
             identifier=component.identifier,
             metadata=_bounded_text(
                 max_characters=max_characters,
-                text=_canonical_json(component.model_dump(mode="json")["metadata"]),
+                text=canonical_lp_json(component.model_dump(mode="json")["metadata"]),
             ),
-            upstream_content_hash=_content_hash(component.model_dump(mode="json")),
+            upstream_content_hash=lp_material_content_hash(
+                component.model_dump(mode="json")
+            ),
         )
         for component in components[: limits.max_learning_components_per_sfi]
     )
@@ -835,7 +805,7 @@ def _request_sfi(
         max_items=limits.max_source_evidence_items_per_sfi,
     )
     source_values = _source_values(record)
-    source_evidence: list[_LPSourceEvidence] = []
+    source_evidence: list[LPSourceEvidence] = []
     remaining = max_characters
 
     for reference, value in source_values[: limits.max_source_evidence_items_per_sfi]:
@@ -844,7 +814,7 @@ def _request_sfi(
 
         excerpt = _bounded_text(max_characters=remaining, text=value)
         source_evidence.append(
-            _LPSourceEvidence(
+            LPSourceEvidence(
                 excerpt=excerpt,
                 reference=_bounded_text(max_characters=max_characters, text=reference),
             )
@@ -877,20 +847,20 @@ def _request_sfi(
     ):
         warnings.add(f"SFI {sfi_uuid} coordinate source references are truncated.")
 
-    return _LPRequestSFI(
+    return LPRequestSFI(
         ancestor_paths=paths.paths,
         ancestors=ancestors,
         context=context,
         coordinate=coordinate,
         learning_components=retained_components,
-        learning_components_content_hash=_content_hash(
+        learning_components_content_hash=lp_material_content_hash(
             [component.model_dump(mode="json") for component in components]
         ),
         omitted_learning_component_count=omitted_components,
         omitted_source_evidence_count=omitted_source,
         parent_sfi_uuids=record.parent_sfi_uuids,
         source_evidence=tuple(source_evidence),
-        source_evidence_content_hash=_content_hash(source_values),
+        source_evidence_content_hash=lp_material_content_hash(source_values),
         warnings=tuple(sorted(warnings)),
     )
 
@@ -927,7 +897,7 @@ def _source_values(record: LPSFIEligibility) -> list[tuple[str, str]]:
 
             for index, item in enumerate(items):
                 values[f"{origin}.{key}[{index}]"] = (
-                    item if isinstance(item, str) else _canonical_json(item)
+                    item if isinstance(item, str) else canonical_lp_json(item)
                 )
 
     return sorted(
@@ -936,21 +906,38 @@ def _source_values(record: LPSFIEligibility) -> list[tuple[str, str]]:
     )
 
 
-def _text_hash(text: str) -> str:
-    """Identify exact UTF-8 text bytes without a manual implementation version.
+def _verify_execution_material(
+    *,
+    kg_config: CreateKGConfig,
+    population: LPRequestPopulation,
+    store: LPGenerationCheckpoints,
+) -> None:
+    """Reconcile population and checkpoint material immediately around every call.
 
     Parameters
     ----------
-    text
-        Complete text to identify.
+    kg_config
+        Captured effective configuration.
+    population
+        Complete authoritative request population.
+    store
+        Current validated checkpoint state and execution material.
 
-    Returns
-    -------
-    str
-        SHA-256 hexadecimal digest of the text bytes.
+    Raises
+    ------
+    ValueError
+        If the LP prompt, model, or material changed during execution.
     """
 
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    _read_population(expected=population, root=store.root)
+
+    if (
+        _execution_material(kg_config=kg_config, population=population)
+        != store.material
+    ):
+        raise ValueError("LP prompt or model material changed during execution.")
+
+    store.verify_bytes()
 
 
 def build_lp_generation_requests(
@@ -1025,7 +1012,7 @@ def build_lp_generation_requests(
     max_characters = (
         config.learning_progressions.evidence_limits.max_source_evidence_characters_per_sfi
     )
-    summary_hash = _content_hash(summary.model_dump(mode="json"))
+    summary_hash = lp_material_content_hash(summary.model_dump(mode="json"))
     requests: list[LPGenerationRequest] = []
 
     for start in range(0, len(population.candidates), batch_size):
@@ -1076,13 +1063,13 @@ def build_lp_generation_requests(
             "upstream_content_hash": summary.upstream_content_hash,
             "warnings": sorted(warnings),
         }
-        content_hash = _content_hash(material)
+        content_hash = lp_material_content_hash(material)
         requests.append(
             LPGenerationRequest.model_validate(
                 {
                     **material,
                     "request_content_hash": content_hash,
-                    "request_id": _request_id(content_hash),
+                    "request_id": build_lp_request_id(content_hash),
                 }
             )
         )
@@ -1112,7 +1099,7 @@ def build_lp_generation_requests(
         framework_uuid=summary.framework_uuid,
         pair_ids=tuple(candidate.pair_id for candidate in population.candidates),
         request_ids=tuple(request.request_id for request in request_rows),
-        requests_content_hash=_content_hash(
+        requests_content_hash=lp_material_content_hash(
             [request.model_dump(mode="json") for request in request_rows]
         ),
         total_candidate_pairs=len(population.candidates),
@@ -1122,6 +1109,123 @@ def build_lp_generation_requests(
     return LPRequestPopulation(
         candidates=population, manifest=manifest, requests=request_rows
     )
+
+
+def generate_learning_progressions(
+    *,
+    as_lc_bundle: AcademicStandardsLCKGBundle,
+    doc_key: str,
+    kg_config: CreateKGConfig,
+    kg_dirs: KGDirs,
+    overwrite: bool,
+    usage_tracker: KGUsageTracker,
+) -> tuple[LPGenerationResponse, ...]:
+    """Materialize, execute, and resume bounded LP producer/checker adjudication.
+
+    Each request finishes before another starts. Valid completed calls are reused; a
+    saved draft survives checker failure. Every failed attempt is retained outside
+    successful prefixes, with later completion linked to the resumed run ordinal. No
+    relationship finalization, graph validation, or release status is performed.
+
+    Parameters
+    ----------
+    as_lc_bundle
+        Final validated upstream AS+LC bundle for this document.
+    doc_key
+        Authoritative document identity.
+    kg_config
+        Effective curriculum policy, evidence bounds, and stage retry counts.
+    kg_dirs
+        Directory receiving the complete request and checkpoint artifacts.
+    overwrite
+        Explicit regeneration archives prior evidence before replacing affected files.
+        False requires exact current material and validated stage-prefix reuse.
+    usage_tracker
+        Existing LP producer/checker token accounting buckets.
+
+    Returns
+    -------
+    tuple[LPGenerationResponse, ...]
+        Complete ordered accepted/corrected responses, including normal negative and
+        ambiguous judgments. Processing completion does not establish semantic truth.
+
+    Raises
+    ------
+    LPGenerationFailed
+        If any request exhausts producer or checker retries; no partial success returns.
+    ValueError
+        If persisted material is malformed, stale, truncated, or misaligned.
+    OSError
+        If the directory is locked by another writer or persistence fails.
+    """
+
+    if not isinstance(overwrite, bool):
+        raise ValueError("LP overwrite must be an explicit boolean.")
+
+    bundle = AcademicStandardsLCKGBundle.model_validate_json(
+        as_lc_bundle.model_dump_json()
+    )
+    config = CreateKGConfig.model_validate_json(
+        kg_config.model_dump_json(by_alias=True)
+    )
+
+    # Complete deterministic construction must succeed before replacing any evidence.
+    expected = build_lp_generation_requests(
+        as_lc_bundle=bundle, doc_key=doc_key, kg_config=config
+    )
+    kg_dirs.root.mkdir(exist_ok=True, parents=True)
+
+    with (kg_dirs.root / ".lp_generation.lock").open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        if overwrite:
+            archive_lp_generation_artifacts(kg_dirs.root)
+
+        input_names = (*expected.manifest.artifact_byte_hashes, _MANIFEST_FILENAME)
+        execution_names = (
+            "lp_generation_checkpoint_manifest.json",
+            "lp_generation_checkpoint_transaction.json",
+            "lp_generation_failures.json",
+            "lp_generation_draft_responses.jsonl",
+            "lp_generation_validation_verdicts.jsonl",
+            "lp_generation_responses.jsonl",
+        )
+
+        if any(
+            (kg_dirs.root / name).exists() for name in (*input_names, *execution_names)
+        ):
+            population = _read_population(expected=expected, root=kg_dirs.root)
+        else:
+            population = write_lp_generation_request_artifacts(
+                as_lc_bundle=bundle, doc_key=doc_key, kg_config=config, kg_dirs=kg_dirs
+            )
+
+        material = _execution_material(kg_config=config, population=population)
+        store = LPGenerationCheckpoints(
+            material=material, population=population, root=kg_dirs.root
+        )
+        store.begin_run()
+        model = ModelConfig.model_validate(material["model_config"])
+
+        for index in range(len(store.rows["response"]), len(population.requests)):
+            _finish_lp_request(
+                kg_config=config,
+                model_config=model,
+                population=population,
+                request_index=index,
+                store=store,
+                usage_tracker=usage_tracker,
+            )
+
+        _verify_execution_material(kg_config=config, population=population, store=store)
+
+        if any(failure.resolved_run_number is None for failure in store.failures):
+            raise LPGenerationFailed("LP processing failures remain unresolved.")
+
+        return tuple(
+            LPGenerationResponse.model_validate(row.payload)
+            for row in store.rows["response"]
+        )
 
 
 def validate_lp_request_artifacts(
@@ -1213,7 +1317,7 @@ def write_lp_generation_request_artifacts(
         candidates=population.candidates, requests=population.requests
     )
     manifest_bytes = (
-        _canonical_json(population.manifest.model_dump(mode="json")) + "\n"
+        canonical_lp_json(population.manifest.model_dump(mode="json")) + "\n"
     ).encode("utf-8")
     kg_dirs.root.mkdir(exist_ok=True, parents=True)
     (kg_dirs.root / _MANIFEST_FILENAME).unlink(missing_ok=True)
