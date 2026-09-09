@@ -17,12 +17,13 @@ import tempfile
 from collections import deque
 from pathlib import Path
 from typing import Any, Literal
-from uuid import UUID
+from uuid import UUID, uuid5
 
 # Third Party Library
 from pydantic import Field, model_validator
 
 # Package Library
+from kgfeg.config import Settings
 from kgfeg.kgs.lp_checkpoints import LPGenerationCheckpoints, content_hash
 from kgfeg.kgs.lp_generation import LPGenerationFailed, lp_execution_material
 from kgfeg.kgs.lp_requests import (
@@ -38,6 +39,7 @@ from kgfeg.kgs.schemas import (
     LPGenerationResponse,
     LPGenerationValidationVerdict,
     LPPairJudgment,
+    Relationship,
 )
 from kgfeg.kgs.utils import KGDirs
 from kgfeg.schemas import BaseSchema, CreateKGConfig
@@ -45,6 +47,17 @@ from kgfeg.schemas import BaseSchema, CreateKGConfig
 _FINAL_CLAIMS = "lp_final_claims.json"
 _RECEIPT = "lp_generation_checkpoint_manifest.json"
 _TRANSACTION = "lp_generation_checkpoint_transaction.json"
+
+
+class _LPSourceFrameworkProvenance(BaseSchema):
+    """Verbatim validated source-framework identity, title, and ownership metadata."""
+
+    attribution_statement: str
+    author: str
+    case_identifier_uuid: UUID
+    license: str
+    provider: str
+    title: str
 
 
 class LPCycleComponent(BaseSchema):
@@ -228,6 +241,44 @@ class LPFinalizationCycleError(ValueError):
             f"cyclic components, {self.diagnostics.cyclic_node_count} participating SFIs, "
             f"and {self.diagnostics.cyclic_edge_count} participating edges."
         )
+
+
+class LPRelationshipProvenance(BaseSchema):
+    """Source ownership and actual evidence for one deterministically minted edge.
+
+    The complete claim retains nomination values, audit warnings, the producer
+    judgment, checker outcome, selected judgment, and request/checkpoint/prompt
+    references. Model configuration and settings are shared by producer and checker;
+    their hashes identify the actual captured values, not manually assigned versions.
+    """
+
+    approved_by: str
+    attribution_statement_template: str
+    candidate_artifact_byte_hashes: dict[str, str]
+    candidate_pairs_content_hash: str
+    candidate_summary_content_hash: str
+    claim: LPFinalClaim
+    config_content_hash: str
+    doc_key: str
+    effective_lp_config_content_hash: str
+    final_claims_content_hash: str
+    model_configuration: dict[str, Any]
+    model_configuration_content_hash: str
+    model_settings: dict[str, Any]
+    model_settings_content_hash: str
+    relationship_identity_key: str
+    requests_content_hash: str
+    source_framework: _LPSourceFrameworkProvenance
+    upstream_content_hash: str
+
+
+class LPRelationships(BaseSchema):
+    """In-memory relationship rows and matching provenance, without a release verdict."""
+
+    final_claims_content_hash: str
+    relationship_provenance: dict[str, LPRelationshipProvenance]
+    relationships_builds_towards: tuple[Relationship, ...]
+    relationships_relates_to: tuple[Relationship, ...]
 
 
 def _claim_endpoints(judgment: LPPairJudgment) -> tuple[UUID | None, UUID | None]:
@@ -714,6 +765,160 @@ def _write_claims(*, artifact: LPFinalClaims, path: Path) -> None:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def build_lp_relationships(
+    *,
+    as_lc_bundle: AcademicStandardsLCKGBundle,
+    doc_key: str,
+    kg_config: CreateKGConfig,
+    kg_dirs: KGDirs,
+) -> LPRelationships:
+    """Mint direct relationships only from reconstructed, validated final claims.
+
+    This boundary reads persisted evidence rather than accepting caller-supplied
+    semantic claims. It makes no external calls and writes no artifacts. Negative and
+    ambiguous outcomes remain in the final claims and never become edges. Relationship
+    identities depend only on document, relation, and resolved CASE endpoints; wording,
+    confidence, metadata, and model settings cannot change them.
+
+    Parameters
+    ----------
+    as_lc_bundle
+        Authoritative validated upstream graph and source-framework attribution.
+    doc_key
+        Document identity matching the persisted candidate/request population.
+    kg_config
+        Current effective policy, including configured relationship ownership.
+    kg_dirs
+        Directory containing completed adjudication and reconciled final claims.
+
+    Returns
+    -------
+    LPRelationships
+        UUID-ordered rows for both relation types with identical embedded and
+        separately keyed provenance. This is not a semantic or release verdict.
+
+    Raises
+    ------
+    LPFinalizationCycleError
+        If reconstructed claims contain a directed cycle.
+    ValueError
+        If inputs are stale or invalid, endpoints do not resolve, or source attribution
+        cannot be inherited exactly.
+    """
+
+    bundle = AcademicStandardsLCKGBundle.model_validate_json(
+        as_lc_bundle.model_dump_json()
+    )
+    config = CreateKGConfig.model_validate_json(
+        kg_config.model_dump_json(by_alias=True)
+    )
+    artifact = validate_lp_final_claims_artifact(
+        as_lc_bundle=bundle, doc_key=doc_key, kg_config=config, kg_dirs=kg_dirs
+    )
+    framework = bundle.framework
+    policy = config.learning_progressions.relationship_metadata
+    source_framework = _LPSourceFrameworkProvenance(
+        attribution_statement=framework.attribution_statement,
+        author=framework.author,
+        case_identifier_uuid=framework.case_identifier_uuid,
+        license=framework.license,
+        provider=framework.provider,
+        title=framework.name,
+    )
+    attribution = policy.attribution_statement_template.replace(
+        "{source_attribution_statement}", framework.attribution_statement
+    )
+    model_configuration = artifact.execution_material["model_config"]
+    model_settings = artifact.execution_material["model_settings"]
+    model_configuration_hash = content_hash(model_configuration)
+    model_settings_hash = content_hash(model_settings)
+    lp_config_hash = content_hash(config.learning_progressions.model_dump(mode="json"))
+    endpoints = {item.case_identifier_uuid for item in bundle.items}
+    edges: dict[UUID, Relationship] = {}
+    provenance_by_id: dict[str, LPRelationshipProvenance] = {}
+
+    for claim in artifact.claims:
+        if claim.judgment.decision in {"no_relation", "needs_review"}:
+            continue
+
+        source, target = claim.source_sfi_uuid, claim.target_sfi_uuid
+
+        if source not in endpoints or target not in endpoints or source == target:
+            raise ValueError("LP relationship endpoints must resolve to distinct SFIs.")
+
+        relationship_type = claim.judgment.decision
+        identity_key = (
+            f"lc:curriculum:{artifact.request_manifest.doc_key}:relationship:"
+            f"{relationship_type}:{source}:{target}"
+        )
+        identifier = uuid5(
+            name=identity_key, namespace=Settings.LC_CANONICAL_NAMESPACE_UUID
+        )
+
+        if identifier in edges:
+            raise ValueError("LP relationship identifiers collide.")
+
+        provenance = LPRelationshipProvenance(
+            approved_by=policy.approved_by,
+            attribution_statement_template=policy.attribution_statement_template,
+            candidate_artifact_byte_hashes=artifact.request_manifest.artifact_byte_hashes,
+            candidate_pairs_content_hash=artifact.request_manifest.candidate_pairs_content_hash,
+            candidate_summary_content_hash=artifact.request_manifest.candidate_summary_content_hash,
+            claim=claim,
+            config_content_hash=artifact.request_manifest.config_content_hash,
+            doc_key=artifact.request_manifest.doc_key,
+            effective_lp_config_content_hash=lp_config_hash,
+            final_claims_content_hash=artifact.content_hash,
+            model_configuration=model_configuration,
+            model_configuration_content_hash=model_configuration_hash,
+            model_settings=model_settings,
+            model_settings_content_hash=model_settings_hash,
+            relationship_identity_key=identity_key,
+            requests_content_hash=artifact.request_manifest.requests_content_hash,
+            source_framework=source_framework,
+            upstream_content_hash=artifact.request_manifest.upstream_content_hash,
+        )
+        edge = Relationship(
+            attribution_statement=attribution,
+            author=policy.author,
+            identifier=identifier,
+            license=framework.license,
+            metadata=provenance.model_dump(mode="json"),
+            provider=policy.provider,
+            relationship_type=relationship_type,
+            source_entity="StandardsFrameworkItem",
+            source_entity_key="case_identifier_uuid",
+            source_entity_value=str(source),
+            target_entity="StandardsFrameworkItem",
+            target_entity_key="case_identifier_uuid",
+            target_entity_value=str(target),
+        )
+
+        if (
+            edge.attribution_statement != attribution
+            or edge.license != framework.license
+        ):
+            raise ValueError("LP source license and attribution must remain verbatim.")
+
+        edges[identifier] = edge
+        provenance_by_id[str(identifier)] = provenance
+
+    ordered = tuple(edges[identifier] for identifier in sorted(edges, key=str))
+    return LPRelationships(
+        final_claims_content_hash=artifact.content_hash,
+        relationship_provenance={
+            str(edge.identifier): provenance_by_id[str(edge.identifier)]
+            for edge in ordered
+        },
+        relationships_builds_towards=tuple(
+            edge for edge in ordered if edge.relationship_type == "buildsTowards"
+        ),
+        relationships_relates_to=tuple(
+            edge for edge in ordered if edge.relationship_type == "relatesTo"
+        ),
+    )
 
 
 def finalize_learning_progressions(

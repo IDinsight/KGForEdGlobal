@@ -7877,8 +7877,8 @@ class Relationship(_DateValidationMixin, BaseSchema):
             default_map = {
                 "hasChild": "A hasChild relationship links a parent framework/item to a child standards item.",
                 "supports": "A supports relationship links a learning component to a standards item it supports.",
-                "buildsTowards": "A buildsTowards relationship indicates prerequisite progression from one standards item to another.",
-                "relatesTo": "A relatesTo relationship indicates an associative connection between two standards items.",
+                "buildsTowards": "A buildsTowards relationship indicates that proficiency in the source standards item supports the likelihood of success in the target standards item; it does not assert a mandatory prerequisite.",
+                "relatesTo": "A relatesTo relationship indicates substantive conceptual or skill coherence between two standards items without asserting sequence or dependency; endpoint ordering is technical, not semantic.",
             }
             self.description = default_map.get(
                 self.relationship_type,
