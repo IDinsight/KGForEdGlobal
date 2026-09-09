@@ -6822,6 +6822,66 @@ class LPGenerationResponse(BaseSchema):
     request_id: UUID
 
 
+class LPGenerationValidationIssue(BaseSchema):
+    """One pair-grounded checker error or advisory observation."""
+
+    issue_type: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    pair_id: Optional[str] = Field(default=None, min_length=1)
+    severity: Literal["error", "warning"]
+
+    @field_validator("issue_type", "message", "pair_id", mode="before")
+    @classmethod
+    def _validate_issue_strings(cls, v: Optional[str]) -> Optional[str]:
+        """Require nonblank issue text and any supplied pair reference.
+
+        Parameters
+        ----------
+        v
+            Raw issue text or an absent pair reference.
+
+        Returns
+        -------
+        Optional[str]
+            Cleaned text, or the absent reference.
+        """
+
+        return None if v is None else strip_and_require_non_empty_str(v)
+
+
+class LPGenerationValidationVerdict(BaseSchema):
+    """Independent checker proposal bound to the original request evidence.
+
+    Request-relative validation enforces acceptance without correction or a complete
+    replacement response. A verdict alone never publishes a relationship.
+    """
+
+    corrected_response: Optional[LPGenerationResponse] = Field(default=None)
+    issues: list[LPGenerationValidationIssue] = Field(default_factory=list)
+    passed: bool = Field(strict=True)
+    rationale: str = Field(min_length=1)
+    request_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    request_id: UUID
+
+    @field_validator("rationale", mode="before")
+    @classmethod
+    def _validate_rationale(cls, v: str) -> str:
+        """Require a nonblank overall checker assessment.
+
+        Parameters
+        ----------
+        v
+            Raw checker rationale.
+
+        Returns
+        -------
+        str
+            Cleaned nonempty rationale.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+
 class LPPairJudgment(BaseSchema):
     """One complete accepted, negative, or unresolved LP pair judgment."""
 

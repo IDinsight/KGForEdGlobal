@@ -21,6 +21,7 @@ from kgfeg.kgs.agents import (
     create_lc_generation_agent,
     create_lc_generation_validation_agent,
     create_lp_generation_agent,
+    create_lp_generation_validation_agent,
     create_sfi_dedup_agent,
     create_sfi_dedup_validation_agent,
     create_sfi_extraction_agent,
@@ -37,6 +38,7 @@ from kgfeg.kgs.prompts import (
     resolve_sfi_has_child_parents,
     review_sfi_dedup_candidates,
     validate_lc_generation_response,
+    validate_lp_generation_response,
     validate_sfi_dedup_response,
     validate_sfi_extraction_result,
     validate_sfi_has_child_response,
@@ -50,6 +52,7 @@ from kgfeg.kgs.schemas import (
     LCGenerationResponse,
     LCGenerationValidationVerdict,
     LPGenerationResponse,
+    LPGenerationValidationVerdict,
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
     SFIDedupValidationVerdict,
@@ -64,6 +67,8 @@ from kgfeg.kgs.validators import (
     verify_lc_dedup_quality,
     verify_lc_generation_quality,
     verify_lc_generation_validation_integrity,
+    verify_lp_generation_response_integrity,
+    verify_lp_generation_validation_integrity,
     verify_sfi_dedup_review_integrity,
     verify_sfi_dedup_validation_integrity,
     verify_sfi_extraction_integrity,
@@ -387,6 +392,96 @@ def adjudicate_lc_dedup_request(
     result = agent.run_sync(prompts.user_message)
     usage_tracker.lc_dedup.add_run_usage(result.usage())
     return result.output
+
+
+def check_learning_progressions_for_request(
+    *,
+    as_lc_bundle: AcademicStandardsLCKGBundle,
+    doc_key: str,
+    draft_response: LPGenerationResponse,
+    kg_config: CreateKGConfig,
+    kg_dirs: KGDirs,
+    request_index: int,
+    usage_tracker: KGUsageTracker,
+) -> LPGenerationValidationVerdict:
+    """Check one valid LP draft against the reconciled materialized evidence.
+
+    Parameters
+    ----------
+    as_lc_bundle
+        Current finalized, validated upstream AS+LC bundle.
+    doc_key
+        Current document identity.
+    draft_response
+        Complete producer proposal for the selected request.
+    kg_config
+        Effective curriculum policy including producer/checker instructions and retries.
+    kg_dirs
+        Directory holding the complete candidate/request population and manifest.
+    request_index
+        Zero-based request position in the deterministic population.
+    usage_tracker
+        Tracker receiving only this checker run's token and request counts.
+
+    Returns
+    -------
+    LPGenerationValidationVerdict
+        Integrity-validated accept/correct verdict, without final reconciliation,
+        checkpoint writes, relationship publication, or release status.
+
+    Raises
+    ------
+    ValueError
+        If the request position or current materialized population is invalid.
+    QualityError
+        If the producer draft or returned verdict violates request-relative integrity.
+        Transport failures and exhausted checker retries propagate unchanged.
+    """
+
+    if (
+        isinstance(request_index, bool)
+        or not isinstance(request_index, int)
+        or request_index < 0
+    ):
+        raise ValueError("LP request_index must be a non-negative integer.")
+
+    population = validate_lp_request_artifacts(
+        as_lc_bundle=as_lc_bundle, doc_key=doc_key, kg_config=kg_config, kg_dirs=kg_dirs
+    )
+
+    if request_index >= len(population.requests):
+        raise ValueError("LP request_index is outside the materialized population.")
+
+    request = population.requests[request_index]
+    draft = LPGenerationResponse.model_validate(
+        draft_response.model_dump(mode="python")
+    )
+    verify_lp_generation_response_integrity(
+        lp_generation_request=request, lp_generation_response=draft
+    )
+    lp_config = kg_config.learning_progressions
+    prompts = validate_lp_generation_response(
+        checker_instructions=lp_config.checker_instructions,
+        draft_response=draft,
+        lp_generation_request=request,
+        producer_instructions=lp_config.producer_instructions,
+    )
+    agent = create_lp_generation_validation_agent(
+        draft_response=draft,
+        instructions=prompts.system_message,
+        lp_generation_request=request,
+        max_retries=lp_config.retry.checker_max_retries,
+        model_config=Settings.llm_config("kgs"),
+        verify_integrity_fn=verify_lp_generation_validation_integrity,
+    )
+    checker_run = agent.run_sync(prompts.user_message)
+    usage_tracker.lp_generation_validation.add_run_usage(checker_run.usage())
+    verify_lp_generation_validation_integrity(
+        draft_response=draft,
+        lp_generation_request=request,
+        validation_verdict=checker_run.output,
+    )
+    return checker_run.output
 
 
 def extract_sfi_candidates(

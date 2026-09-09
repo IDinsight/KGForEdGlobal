@@ -14,6 +14,7 @@ from typing import Any, Optional, Sequence
 from loguru import logger
 
 # Package Library
+from kgfeg.kgs.lp_generation import LPGenerationRequest
 from kgfeg.kgs.schemas import (
     ExtractionWindow,
     LCDedupRequest,
@@ -21,6 +22,8 @@ from kgfeg.kgs.schemas import (
     LCGenerationRequest,
     LCGenerationResponse,
     LCGenerationValidationVerdict,
+    LPGenerationResponse,
+    LPGenerationValidationVerdict,
     SFICandidate,
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
@@ -371,6 +374,52 @@ def _log_duplicate_sfi_candidate_warnings(
             f"window_id={extraction_result.window_id!r}, "
             f"candidates={candidate_context!r}."
         )
+
+
+def _lp_required_warnings(request: LPGenerationRequest) -> dict[str, set[str]]:
+    """Collect applicable bounded warnings for each pair without changing evidence.
+
+    Parameters
+    ----------
+    request
+        Original material-validated request with endpoint and nomination context.
+
+    Returns
+    -------
+    dict[str, set[str]]
+        Required warnings by pair, including shared request-wide observations.
+    """
+
+    sfis = {sfi.context.sfi_uuid: sfi for sfi in request.sfis}
+    required: dict[str, set[str]] = {}
+
+    for pair in request.pairs:
+        warnings = set(pair.warnings)
+
+        for endpoint in (pair.first_sfi_uuid, pair.second_sfi_uuid):
+            sfi = sfis[endpoint]
+            warnings.update(sfi.warnings)
+            warnings.update(sfi.context.warnings)
+
+            for ancestor in sfi.ancestors:
+                warnings.update(ancestor.warnings)
+
+        nomination_warning = (
+            f"Pair {pair.pair_id} nomination evidence is truncated; "
+            f"complete evidence remains in the candidate artifact."
+        )
+
+        if nomination_warning in request.warnings:
+            warnings.add(nomination_warning)
+
+        required[pair.pair_id] = warnings
+
+    shared = set(request.warnings).difference(set().union(*required.values()))
+
+    for warnings in required.values():
+        warnings.update(shared)
+
+    return required
 
 
 def _normalize_anchor_composition_text(value: str) -> str:
@@ -2271,6 +2320,166 @@ def verify_lc_generation_validation_integrity(
     _verify_lc_generation_skill_bounds(
         lc_config=lc_config, lc_generation_response=selected_response
     )
+
+
+def verify_lp_generation_response_integrity(
+    *,
+    lp_generation_request: LPGenerationRequest,
+    lp_generation_response: LPGenerationResponse,
+) -> None:
+    """Require one permitted, warning-preserving judgment for every requested pair.
+
+    The caller supplies a request from the reconciled materialized population. Its
+    deterministic permissions encode statement-type and local-coordinate policy. This
+    check does not judge the pedagogical meaning of a rationale or confidence.
+
+    Parameters
+    ----------
+    lp_generation_request
+        Exact bounded request shared by producer and checker.
+    lp_generation_response
+        Untrusted producer draft or complete checker correction.
+
+    Raises
+    ------
+    QualityError
+        If schema, material identity, coverage, endpoints, decisions, or warnings fail.
+    """
+
+    try:
+        request = LPGenerationRequest.model_validate(
+            lp_generation_request.model_dump(mode="python")
+        )
+        response = LPGenerationResponse.model_validate(
+            lp_generation_response.model_dump(mode="python")
+        )
+    except ValueError as exc:
+        raise QualityError(
+            f"LP request/response schema or material is invalid: {exc}"
+        ) from exc
+
+    if (
+        response.request_id != request.request_id
+        or response.request_content_hash != request.request_content_hash
+    ):
+        raise QualityError(
+            "LP response request identity or content hash does not match."
+        )
+
+    pairs = {pair.pair_id: pair for pair in request.pairs}
+    judgment_ids = [judgment.pair_id for judgment in response.judgments]
+
+    if len(judgment_ids) != len(set(judgment_ids)):
+        raise QualityError("LP response contains duplicate pair judgments.")
+
+    if set(judgment_ids) != set(pairs):
+        raise QualityError(
+            f"LP response must cover every requested pair exactly once; "
+            f"missing={sorted(set(pairs) - set(judgment_ids))}, "
+            f"extra={sorted(set(judgment_ids) - set(pairs))}."
+        )
+
+    required_warnings = _lp_required_warnings(request)
+
+    for judgment in response.judgments:
+        pair = pairs[judgment.pair_id]
+
+        if (
+            judgment.first_sfi_uuid != pair.first_sfi_uuid
+            or judgment.second_sfi_uuid != pair.second_sfi_uuid
+        ):
+            raise QualityError(
+                f"LP pair {pair.pair_id} endpoints do not match the request."
+            )
+
+        if (judgment.decision, judgment.direction) not in {
+            (allowed.decision, allowed.direction)
+            for allowed in pair.admissible_decisions
+        }:
+            raise QualityError(
+                f"LP pair {pair.pair_id} decision/direction is not permitted."
+            )
+
+        missing_warnings = required_warnings[pair.pair_id] - set(judgment.warnings)
+
+        if missing_warnings:
+            raise QualityError(
+                f"LP pair {pair.pair_id} omitted required warnings: "
+                f"{sorted(missing_warnings)}."
+            )
+
+
+def verify_lp_generation_validation_integrity(
+    *,
+    draft_response: LPGenerationResponse,
+    lp_generation_request: LPGenerationRequest,
+    validation_verdict: LPGenerationValidationVerdict,
+) -> None:
+    """Validate checker identity, issue references, and a complete accept/correct
+    result.
+
+    A malformed producer response remains a processing failure even if a checker
+    proposes a replacement. Valid negative and ambiguous judgments remain distinct
+    nonpublishing outcomes. Advisory warnings may accompany acceptance.
+
+    Parameters
+    ----------
+    draft_response
+        Complete producer draft whose integrity must already hold.
+    lp_generation_request
+        Original bounded request supplied unchanged to both agents.
+    validation_verdict
+        Untrusted independent checker verdict.
+
+    Raises
+    ------
+    QualityError
+        If the draft, verdict, or complete correction violates universal integrity.
+    """
+
+    verify_lp_generation_response_integrity(
+        lp_generation_request=lp_generation_request,
+        lp_generation_response=draft_response,
+    )
+
+    try:
+        verdict = LPGenerationValidationVerdict.model_validate(
+            validation_verdict.model_dump(mode="python")
+        )
+    except ValueError as exc:
+        raise QualityError(f"LP checker verdict schema is invalid: {exc}") from exc
+
+    if (
+        verdict.request_id != lp_generation_request.request_id
+        or verdict.request_content_hash != lp_generation_request.request_content_hash
+    ):
+        raise QualityError(
+            "LP checker request identity or content hash does not match."
+        )
+
+    pair_ids = {pair.pair_id for pair in lp_generation_request.pairs}
+
+    for issue in verdict.issues:
+        if issue.pair_id is not None and issue.pair_id not in pair_ids:
+            raise QualityError("LP checker issue references an unrequested pair.")
+
+    has_errors = any(issue.severity == "error" for issue in verdict.issues)
+
+    if verdict.passed:
+        if has_errors or verdict.corrected_response is not None:
+            raise QualityError(
+                "A passing LP checker verdict must have no errors or corrected response."
+            )
+    else:
+        if not has_errors or verdict.corrected_response is None:
+            raise QualityError(
+                "A failing LP checker verdict requires an error and a complete corrected response."
+            )
+
+        verify_lp_generation_response_integrity(
+            lp_generation_request=lp_generation_request,
+            lp_generation_response=verdict.corrected_response,
+        )
 
 
 def verify_sfi_dedup_review_integrity(

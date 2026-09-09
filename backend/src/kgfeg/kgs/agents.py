@@ -8,6 +8,7 @@ from loguru import logger
 from pydantic_ai import Agent, ModelRetry
 
 # Package Library
+from kgfeg.kgs.lp_generation import LPGenerationRequest
 from kgfeg.kgs.schemas import (
     ExtractionWindow,
     LCDedupRequest,
@@ -16,6 +17,7 @@ from kgfeg.kgs.schemas import (
     LCGenerationResponse,
     LCGenerationValidationVerdict,
     LPGenerationResponse,
+    LPGenerationValidationVerdict,
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
     SFIDedupValidationVerdict,
@@ -362,6 +364,93 @@ def create_lp_generation_agent(
         output_retries=max_retries,
         output_type=model_config.wrap_output_type(LPGenerationResponse),
     )
+
+
+def create_lp_generation_validation_agent(
+    *,
+    draft_response: LPGenerationResponse,
+    instructions: str,
+    lp_generation_request: LPGenerationRequest,
+    max_retries: int,
+    model_config: ModelConfig,
+    verify_integrity_fn: Callable[..., None],
+) -> Agent:
+    """Create a tool-free independent LP checker with request-relative retries.
+
+    Parameters
+    ----------
+    draft_response
+        Complete producer draft, validated before checker execution.
+    instructions
+        Generic and curriculum-specific independent checker rubric.
+    lp_generation_request
+        Original bounded evidence and deterministic permissions.
+    max_retries
+        Configured checker retry count for malformed or integrity-invalid output.
+    model_config
+        Shared KG model configuration with Learning Progressions settings.
+    verify_integrity_fn
+        Callable accepting draft_response, lp_generation_request, and
+        validation_verdict; raises QualityError for an invalid verdict.
+
+    Returns
+    -------
+    Agent
+        Separate checker with no producer message history or evidence retrieval tools.
+        Callers must reconcile the complete materialized population before execution.
+    """
+
+    draft = draft_response.model_copy(deep=True)
+    request = lp_generation_request.model_copy(deep=True)
+    agent = Agent(
+        instructions=instructions,
+        model=model_config.model,
+        model_settings=model_config.kgs_settings("learning_progressions"),
+        output_retries=max_retries,
+        output_type=model_config.wrap_output_type(LPGenerationValidationVerdict),
+    )
+
+    @agent.output_validator
+    def _validate_lp_generation_verdict(
+        output: LPGenerationValidationVerdict,
+    ) -> LPGenerationValidationVerdict:
+        """Reject malformed checker decisions without applying partial corrections.
+
+        Parameters
+        ----------
+        output
+            Parsed untrusted checker verdict.
+
+        Returns
+        -------
+        LPGenerationValidationVerdict
+            Complete request-integrity-validated verdict.
+
+        Raises
+        ------
+        ModelRetry
+            If the checker must repair its complete structured verdict.
+        """
+
+        try:
+            verify_integrity_fn(
+                draft_response=draft,
+                lp_generation_request=request,
+                validation_verdict=output,
+            )
+        except QualityError as exc:
+            raise ModelRetry(
+                f"Your LP checker verdict violates request-relative integrity. "
+                f"ERROR: {exc}\nReturn a complete LPGenerationValidationVerdict. "
+                f"Copy the exact request_id and request_content_hash. Accept with no "
+                f"errors and no correction, or return an error and a complete corrected "
+                f"response covering every pair exactly once with unchanged endpoints, "
+                f"permitted outcomes, and all applicable request warnings. Never patch "
+                f"the draft or relabel a processing failure as a semantic judgment."
+            ) from exc
+        return output
+
+    return agent
 
 
 def create_sfi_dedup_agent(
