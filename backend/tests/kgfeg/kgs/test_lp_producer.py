@@ -23,8 +23,8 @@ from pydantic_ai.usage import RequestUsage, RunUsage
 
 # Package Library
 from kgfeg.config import Settings
-from kgfeg.kgs import agents, llm, prompts
-from kgfeg.kgs.lp_generation import (
+from kgfeg.kgs import agents, llm, lp_generation, prompts
+from kgfeg.kgs.lp_requests import (
     LPGenerationRequest,
     build_lp_generation_requests,
     write_lp_generation_request_artifacts,
@@ -96,6 +96,46 @@ def _draft(request: LPGenerationRequest) -> dict[str, Any]:
         "request_content_hash": request.request_content_hash,
         "request_id": str(request.request_id),
     }
+
+
+def _local_agent(*, output: LPGenerationResponse, recorded_usage: RunUsage) -> Mock:
+    """Supply one model proposal while accumulating deterministic usage.
+
+    Parameters
+    ----------
+    output
+        Untrusted producer proposal returned by the fake transport.
+    recorded_usage
+        Synthetic token and request counts consumed by one attempt.
+
+    Returns
+    -------
+    Mock
+        Agent with the same mutable usage protocol as real model execution.
+    """
+
+    def _run(*, usage: RunUsage, user_prompt: str) -> SimpleNamespace:
+        """Return the proposal and record usage in the supplied accumulator.
+
+        Parameters
+        ----------
+        usage
+            Mutable usage accumulator supplied by the execution layer.
+        user_prompt
+            Bounded request message passed to the model.
+
+        Returns
+        -------
+        SimpleNamespace
+            Synthetic untrusted model output.
+        """
+        assert user_prompt
+        usage.incr(recorded_usage)
+        return SimpleNamespace(output=output)
+
+    agent = Mock()
+    agent.run_sync.side_effect = _run
+    return agent
 
 
 def _request() -> LPGenerationRequest:
@@ -282,31 +322,35 @@ def test_execution_blocks_incomplete_or_forged_population_before_agent_creation(
     monkeypatch.setattr(name="create_lp_generation_agent", target=llm, value=factory)
     tracker = llm.KGUsageTracker()
     with pytest.raises(expected_exception=(OSError, ValueError)):
-        llm.generate_learning_progressions_for_request(
+        lp_generation.generate_learning_progressions(
             as_lc_bundle=bundle,
             doc_key=_DOC_KEY,
             kg_config=config,
             kg_dirs=dirs,
-            request_index=0,
+            overwrite=False,
             usage_tracker=tracker,
         )
     factory.assert_not_called()
     totals = tracker.to_dict()["totals"]
     assert isinstance(totals, dict)
     assert totals["requests"] == 0
-    assert before == {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    assert before == {
+        p.name: p.read_bytes()
+        for p in tmp_path.iterdir()
+        if p.name != ".lp_generation.lock"
+    }
 
 
 @pytest.mark.parametrize(argnames="index", argvalues=[-1, True, 1.0, "0", 999])
 def test_execution_blocks_invalid_request_positions(
     index: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Fail before model creation for non-integer or out-of-range positions.
+    """Reject invalid persisted request positions before model creation.
 
     Parameters
     ----------
     index
-        Invalid request selector.
+        Invalid request position persisted in the complete request population.
     monkeypatch
         Restoring factory spy.
     tmp_path
@@ -320,18 +364,39 @@ def test_execution_blocks_invalid_request_positions(
     write_lp_generation_request_artifacts(
         as_lc_bundle=bundle, doc_key=_DOC_KEY, kg_config=config, kg_dirs=dirs
     )
+    path = tmp_path / "lp_generation_requests.jsonl"
+    rows = path.read_bytes().splitlines(keepends=True)
+    row = json.loads(rows[0])
+    row["request_index"] = index
+    rows[0] = (
+        json.dumps(
+            allow_nan=False,
+            ensure_ascii=False,
+            obj=row,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+    path.write_bytes(b"".join(rows))
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
     factory = Mock()
     monkeypatch.setattr(name="create_lp_generation_agent", target=llm, value=factory)
-    with pytest.raises(expected_exception=ValueError, match="request_index"):
-        llm.generate_learning_progressions_for_request(
+    with pytest.raises(expected_exception=ValueError):
+        lp_generation.generate_learning_progressions(
             as_lc_bundle=bundle,
             doc_key=_DOC_KEY,
             kg_config=config,
             kg_dirs=dirs,
-            request_index=index,
+            overwrite=False,
             usage_tracker=llm.KGUsageTracker(),
         )
     factory.assert_not_called()
+    assert before == {
+        p.name: p.read_bytes()
+        for p in tmp_path.iterdir()
+        if p.name != ".lp_generation.lock"
+    }
 
 
 @pytest.mark.parametrize(
@@ -387,12 +452,12 @@ def test_execution_blocks_stale_effective_material(
     factory = Mock()
     monkeypatch.setattr(name="create_lp_generation_agent", target=llm, value=factory)
     with pytest.raises(expected_exception=ValueError):
-        llm.generate_learning_progressions_for_request(
+        lp_generation.generate_learning_progressions(
             as_lc_bundle=bundle,
             doc_key=doc_key,
             kg_config=config,
             kg_dirs=dirs,
-            request_index=0,
+            overwrite=False,
             usage_tracker=llm.KGUsageTracker(),
         )
     factory.assert_not_called()
@@ -424,7 +489,7 @@ def test_execution_propagates_failure_without_fabricated_judgment_or_checkpoint(
         _fixtures._config(),
         KGDirs(root=tmp_path),
     )
-    write_lp_generation_request_artifacts(
+    population = write_lp_generation_request_artifacts(
         as_lc_bundle=bundle, doc_key=_DOC_KEY, kg_config=config, kg_dirs=dirs
     )
     before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
@@ -435,11 +500,10 @@ def test_execution_propagates_failure_without_fabricated_judgment_or_checkpoint(
     )
     with pytest.raises(expected_exception=type(error)):
         llm.generate_learning_progressions_for_request(
-            as_lc_bundle=bundle,
-            doc_key=_DOC_KEY,
+            draft=None,
             kg_config=config,
-            kg_dirs=dirs,
-            request_index=0,
+            model_config=Settings.llm_config("kgs"),
+            request=population.requests[0],
             usage_tracker=llm.KGUsageTracker(),
         )
     agent.run_sync.assert_called_once()
@@ -522,37 +586,32 @@ def test_execution_returns_only_untrusted_draft_and_accounts_producer_usage(  # 
     elif defect == "request_id":
         payload["request_id"] = str(UUID(int=999999))
     draft = LPGenerationResponse.model_validate(payload)
-    usage = RunUsage(
+    observed_usage = RunUsage(
         cache_read_tokens=5,
         cache_write_tokens=6,
         input_tokens=11,
         output_tokens=13,
         requests=3,
     )
-    agent = Mock()
-    agent.run_sync.return_value = SimpleNamespace(
-        output=draft, usage=Mock(return_value=usage)
-    )
+
+    agent = _local_agent(output=draft, recorded_usage=observed_usage)
     factory = Mock(return_value=agent)
     monkeypatch.setattr(name="create_lp_generation_agent", target=llm, value=factory)
     monkeypatch.setattr(name="LLM_KG_MODEL", target=Settings, value=model_name)
     before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
     tracker = llm.KGUsageTracker()
     result = llm.generate_learning_progressions_for_request(
-        as_lc_bundle=bundle,
-        doc_key=_DOC_KEY,
+        draft=None,
         kg_config=config,
-        kg_dirs=dirs,
-        request_index=len(population.requests) - 1,
+        model_config=Settings.llm_config("kgs"),
+        request=request,
         usage_tracker=tracker,
     )
     assert result is draft
     factory.assert_called_once()
     agent.run_sync.assert_called_once()
     kwargs = factory.call_args.kwargs
-    assert (
-        kwargs["max_retries"] == config.learning_progressions.retry.producer_max_retries
-    )
+    assert kwargs["max_retries"] == 0
     assert kwargs["model_config"].model == model_name
     rendered = prompts.build_lp_generation_prompt(
         lp_generation_request=request,
@@ -562,7 +621,7 @@ def test_execution_returns_only_untrusted_draft_and_accounts_producer_usage(  # 
     assert rendered.user_message is not None
     assert kwargs["instructions"] == rendered.system_message
     assert config.learning_progressions.producer_instructions in kwargs["instructions"]
-    sent = agent.run_sync.call_args.args[0]
+    sent = agent.run_sync.call_args.kwargs["user_prompt"]
     assert sent == rendered.user_message
     assert json.loads(
         sent.split("## LP generation request JSON\n", 1)[1]

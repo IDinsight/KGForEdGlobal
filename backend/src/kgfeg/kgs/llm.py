@@ -13,6 +13,7 @@ from typing import Optional
 
 # Third Party Library
 from loguru import logger
+from pydantic_ai.usage import RunUsage
 
 # Package Library
 from kgfeg.config import Settings
@@ -29,7 +30,7 @@ from kgfeg.kgs.agents import (
     create_sfi_has_child_agent,
     create_sfi_has_child_validation_agent,
 )
-from kgfeg.kgs.lp_generation import validate_lp_request_artifacts
+from kgfeg.kgs.lp_requests import LPGenerationRequest, validate_lp_request_artifacts
 from kgfeg.kgs.prompts import (
     build_lc_dedup_prompt,
     build_lc_generation_prompt,
@@ -76,6 +77,7 @@ from kgfeg.kgs.validators import (
     verify_sfi_has_child_resolution_integrity,
     verify_sfi_has_child_validation_integrity,
 )
+from kgfeg.model_registry import ModelConfig
 from kgfeg.schemas import CreateKGConfig, _CreateKGLearningComponentsConfig
 from kgfeg.utils.general import AgentUsageBucket
 
@@ -629,71 +631,68 @@ def generate_learning_components_for_request(
 
 def generate_learning_progressions_for_request(
     *,
-    as_lc_bundle: AcademicStandardsLCKGBundle,
-    doc_key: str,
+    draft: LPGenerationResponse | None,
     kg_config: CreateKGConfig,
-    kg_dirs: KGDirs,
-    request_index: int,
+    model_config: ModelConfig,
+    request: LPGenerationRequest,
     usage_tracker: KGUsageTracker,
-) -> LPGenerationResponse:
-    """Produce one untrusted draft only after complete on-disk input reconciliation.
+) -> LPGenerationResponse | LPGenerationValidationVerdict:
+    """Execute one bounded agent attempt with orchestration-owned retry accounting.
 
     Parameters
     ----------
-    as_lc_bundle
-        Current finalized, validated upstream AS+LC bundle.
-    doc_key
-        Current document identity.
+    draft
+        Validated draft for checker execution, absent for a producer attempt.
     kg_config
-        Effective curriculum configuration, including producer instructions and retries.
-    kg_dirs
-        Directory containing the complete candidate/request artifacts and manifest.
-    request_index
-        Zero-based request position in the reconciled deterministic population.
+        Effective curriculum instructions.
+    model_config
+        Captured shared KG model and actual Learning Progressions settings.
+    request
+        One request from the complete reconciled on-disk population.
     usage_tracker
-        Usage tracker receiving the producer run's token and request counts.
+        Existing producer/checker token accounting buckets.
 
     Returns
     -------
-    LPGenerationResponse
-        Parsed producer draft, not a request-integrity-validated, checker-accepted
-        response or a successful checkpoint.
-
-    Raises
-    ------
-    ValueError
-        If the population is stale, incomplete, or inconsistent, or the requested
-        position is invalid. These failures occur before constructing or running an
-        agent.
+    LPGenerationResponse or LPGenerationValidationVerdict
+        Untrusted stage output for deterministic validation before checkpointing.
     """
 
-    if (
-        isinstance(request_index, bool)
-        or not isinstance(request_index, int)
-        or request_index < 0
-    ):
-        raise ValueError("LP request_index must be a non-negative integer.")
+    config = kg_config.learning_progressions
 
-    population = validate_lp_request_artifacts(
-        as_lc_bundle=as_lc_bundle, doc_key=doc_key, kg_config=kg_config, kg_dirs=kg_dirs
-    )
+    if draft is None:
+        prompt = build_lp_generation_prompt(
+            lp_generation_request=request,
+            producer_instructions=config.producer_instructions,
+        )
+        agent = create_lp_generation_agent(
+            instructions=prompt.system_message, max_retries=0, model_config=model_config
+        )
+        bucket = usage_tracker.lp_generation
+    else:
+        prompt = validate_lp_generation_response(
+            checker_instructions=config.checker_instructions,
+            draft_response=draft,
+            lp_generation_request=request,
+            producer_instructions=config.producer_instructions,
+        )
+        agent = create_lp_generation_validation_agent(
+            draft_response=draft,
+            instructions=prompt.system_message,
+            lp_generation_request=request,
+            max_retries=0,
+            model_config=model_config,
+            verify_integrity_fn=verify_lp_generation_validation_integrity,
+        )
+        bucket = usage_tracker.lp_generation_validation
 
-    if request_index >= len(population.requests):
-        raise ValueError("LP request_index is outside the materialized population.")
+    usage = RunUsage()
 
-    lp_config = kg_config.learning_progressions
-    prompts = build_lp_generation_prompt(
-        lp_generation_request=population.requests[request_index],
-        producer_instructions=lp_config.producer_instructions,
-    )
-    agent = create_lp_generation_agent(
-        instructions=prompts.system_message,
-        max_retries=lp_config.retry.producer_max_retries,
-        model_config=Settings.llm_config("kgs"),
-    )
-    producer_run = agent.run_sync(prompts.user_message)
-    usage_tracker.lp_generation.add_run_usage(producer_run.usage())
-    return producer_run.output
+    try:
+        run = agent.run_sync(usage=usage, user_prompt=prompt.user_message)
+        return run.output
+    finally:
+        bucket.add_run_usage(usage)
 
 
 def resolve_sfi_has_child_parent_request(

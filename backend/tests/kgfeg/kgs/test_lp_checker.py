@@ -23,7 +23,7 @@ from pydantic_ai.usage import RequestUsage, RunUsage
 # Package Library
 from kgfeg.config import Settings
 from kgfeg.kgs import agents, llm, prompts
-from kgfeg.kgs.lp_generation import (
+from kgfeg.kgs.lp_requests import (
     LPGenerationRequest,
     build_lp_generation_requests,
     write_lp_generation_request_artifacts,

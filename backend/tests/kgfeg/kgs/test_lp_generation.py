@@ -17,12 +17,12 @@ from uuid import UUID, uuid5
 import pytest
 
 # Package Library
-from kgfeg.kgs import lp_generation, lp_requests
+from kgfeg.kgs import lp_requests
 from kgfeg.kgs.lp_candidates import (
     LPCandidatePopulation,
     validate_lp_candidate_population,
 )
-from kgfeg.kgs.lp_generation import (
+from kgfeg.kgs.lp_requests import (
     LPGenerationRequest,
     build_lp_generation_requests,
     validate_lp_request_artifacts,
@@ -1062,7 +1062,7 @@ def test_invalid_candidate_population_cannot_reach_writer(
         return invalid
 
     monkeypatch.setattr(
-        name="build_lp_candidates", target=lp_generation, value=_invalid_population
+        name="build_lp_candidates", target=lp_requests, value=_invalid_population
     )
     for filename in _FILES:
         (tmp_path / filename).write_bytes(b"prior complete population")

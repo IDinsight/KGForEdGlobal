@@ -27,9 +27,10 @@ from pydantic_ai.usage import RequestUsage
 
 # Package Library
 from kgfeg.config import Settings
-from kgfeg.kgs import agents, lp_checkpoints, lp_generation
+from kgfeg.kgs import agents, llm, lp_checkpoints, lp_generation, lp_requests
 from kgfeg.kgs.llm import KGUsageTracker
-from kgfeg.kgs.lp_generation import LPGenerationFailed, LPGenerationRequest
+from kgfeg.kgs.lp_generation import LPGenerationFailed
+from kgfeg.kgs.lp_requests import LPGenerationRequest
 from kgfeg.kgs.schemas import LPGenerationResponse, LPGenerationValidationVerdict
 from kgfeg.kgs.utils import KGDirs
 from kgfeg.model_registry import ModelConfig
@@ -287,7 +288,9 @@ def _install(*, harness: _Harness, monkeypatch: pytest.MonkeyPatch) -> None:
         Restoring test seam.
     """
     monkeypatch.setattr(
-        name="_call_lp_stage", target=lp_generation, value=harness._call
+        name="generate_learning_progressions_for_request",
+        target=lp_generation,
+        value=harness._call,
     )
 
 
@@ -375,7 +378,7 @@ def test_actual_agents_keep_independent_evidence_exact_retries_and_usage(
     harness = _Harness(count=2, root=tmp_path)
     harness.config.learning_progressions.retry.producer_max_retries = retries
     harness.config.learning_progressions.retry.checker_max_retries = retries
-    request = lp_generation.build_lp_generation_requests(
+    request = lp_requests.build_lp_generation_requests(
         as_lc_bundle=harness.bundle,
         doc_key="synthetic-selection-document",
         kg_config=harness.config,
@@ -474,11 +477,9 @@ def test_actual_agents_keep_independent_evidence_exact_retries_and_usage(
             **new_kwargs,
         )
 
+    monkeypatch.setattr(name="create_lp_generation_agent", target=llm, value=_factory)
     monkeypatch.setattr(
-        name="create_lp_generation_agent", target=agents, value=_factory
-    )
-    monkeypatch.setattr(
-        name="create_lp_generation_validation_agent", target=agents, value=_factory
+        name="create_lp_generation_validation_agent", target=llm, value=_factory
     )
     if succeeds:
         assert len(harness._run()) == 1
@@ -905,7 +906,7 @@ def test_invalid_model_proposals_never_enter_success_prefixes(
         Isolated artifact directory.
     """
     harness = _Harness(batch=2, count=4, root=tmp_path)
-    request = lp_generation.build_lp_generation_requests(
+    request = lp_requests.build_lp_generation_requests(
         as_lc_bundle=harness.bundle,
         doc_key="synthetic-selection-document",
         kg_config=harness.config,
@@ -1135,7 +1136,11 @@ def test_material_corruption_during_call_is_not_retried_or_recorded_as_model_fai
                 raise TimeoutError("synthetic model failure after corruption")
         return result
 
-    monkeypatch.setattr(name="_call_lp_stage", target=lp_generation, value=_call)
+    monkeypatch.setattr(
+        name="generate_learning_progressions_for_request",
+        target=lp_generation,
+        value=_call,
+    )
     with pytest.raises(expected_exception=ValueError):
         harness._run()
     assert harness.calls == (
@@ -1201,7 +1206,7 @@ def test_modules_import_cold_from_each_entry_point_with_shared_request_identity(
         shared = sys.modules["kgfeg.kgs.lp_requests"]
         request = shared.LPGenerationRequest
         assert request.__module__ == shared.__name__
-        for name in ("agents", "lp_checkpoints", "lp_generation", "prompts", "validators"):
+        for name in ("agents", "llm", "lp_checkpoints", "prompts", "validators"):
             assert sys.modules["kgfeg.kgs." + name].LPGenerationRequest is request
         for name in ("lp_checkpoints", "lp_generation"):
             assert sys.modules["kgfeg.kgs." + name].LPRequestPopulation is shared.LPRequestPopulation
@@ -1390,7 +1395,7 @@ def test_required_warning_loss_halts_before_success_checkpoint(
     harness.config = _fixtures._config(batch=3, profile="ghana_math")
     harness.config.learning_progressions.retry.producer_max_retries = 0
     harness.config.learning_progressions.retry.checker_max_retries = 0
-    population = lp_generation.build_lp_generation_requests(
+    population = lp_requests.build_lp_generation_requests(
         as_lc_bundle=harness.bundle,
         doc_key="synthetic-selection-document",
         kg_config=harness.config,
