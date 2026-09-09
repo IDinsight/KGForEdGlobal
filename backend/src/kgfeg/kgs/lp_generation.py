@@ -25,7 +25,11 @@ from pydantic_ai.usage import RunUsage
 
 # Package Library
 from kgfeg.config import Settings
-from kgfeg.kgs import agents, prompts, validators
+from kgfeg.kgs import prompts
+from kgfeg.kgs.agents import (
+    create_lp_generation_agent,
+    create_lp_generation_validation_agent,
+)
 from kgfeg.kgs.lp_candidates import (
     LPCandidatePopulation,
     build_lp_candidates,
@@ -59,6 +63,10 @@ from kgfeg.kgs.lp_requests import (
     lp_text_content_hash,
 )
 from kgfeg.kgs.lp_selection import LPSFIEligibility, build_lp_selection
+from kgfeg.kgs.prompts import (
+    build_lp_generation_prompt,
+    validate_lp_generation_response,
+)
 from kgfeg.kgs.schemas import (
     AcademicStandardsLCKGBundle,
     LPCandidatePair,
@@ -67,6 +75,10 @@ from kgfeg.kgs.schemas import (
     LPGenerationValidationVerdict,
 )
 from kgfeg.kgs.utils import KGDirs
+from kgfeg.kgs.validators import (
+    verify_lp_generation_response_integrity,
+    verify_lp_generation_validation_integrity,
+)
 from kgfeg.model_registry import ModelConfig
 from kgfeg.schemas import CreateKGConfig
 
@@ -197,28 +209,28 @@ def _call_lp_stage(
     config = kg_config.learning_progressions
 
     if draft is None:
-        prompt = prompts.build_lp_generation_prompt(
+        prompt = build_lp_generation_prompt(
             lp_generation_request=request,
             producer_instructions=config.producer_instructions,
         )
-        agent = agents.create_lp_generation_agent(
+        agent = create_lp_generation_agent(
             instructions=prompt.system_message, max_retries=0, model_config=model_config
         )
         bucket = usage_tracker.lp_generation
     else:
-        prompt = prompts.validate_lp_generation_response(
+        prompt = validate_lp_generation_response(
             checker_instructions=config.checker_instructions,
             draft_response=draft,
             lp_generation_request=request,
             producer_instructions=config.producer_instructions,
         )
-        agent = agents.create_lp_generation_validation_agent(
+        agent = create_lp_generation_validation_agent(
             draft_response=draft,
             instructions=prompt.system_message,
             lp_generation_request=request,
             max_retries=0,
             model_config=model_config,
-            verify_integrity_fn=validators.verify_lp_generation_validation_integrity,
+            verify_integrity_fn=verify_lp_generation_validation_integrity,
         )
         bucket = usage_tracker.lp_generation_validation
 
@@ -457,7 +469,7 @@ def _finish_lp_request(
                     response = LPGenerationResponse.model_validate(
                         output.model_dump(mode="python")
                     )
-                    validators.verify_lp_generation_response_integrity(
+                    verify_lp_generation_response_integrity(
                         lp_generation_request=request, lp_generation_response=response
                     )
                     validated: LPGenerationResponse | LPGenerationValidationVerdict = (
@@ -470,7 +482,7 @@ def _finish_lp_request(
                     verdict = LPGenerationValidationVerdict.model_validate(
                         output.model_dump(mode="python")
                     )
-                    validators.verify_lp_generation_validation_integrity(
+                    verify_lp_generation_validation_integrity(
                         draft_response=draft,
                         lp_generation_request=request,
                         validation_verdict=verdict,
