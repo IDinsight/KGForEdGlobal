@@ -50,50 +50,6 @@ class LPGenerationFailed(RuntimeError):
     """A request exhausted its stage retries; LP processing cannot report success."""
 
 
-def _execution_material(
-    *, kg_config: CreateKGConfig, population: LPRequestPopulation
-) -> dict[str, Any]:
-    """Capture actual configuration, model, schemas, and prompt definition material.
-
-    Parameters
-    ----------
-    kg_config
-        Complete effective KG configuration, including LP retry budgets.
-    population
-        Reconciled upstream, candidate, and request content identities.
-
-    Returns
-    -------
-    dict[str, Any]
-        Code-owned execution fingerprint inputs, with no manual version selectors.
-    """
-
-    model = Settings.llm_config("kgs")
-    return {
-        "checker_instructions": kg_config.learning_progressions.checker_instructions,
-        "config_content_hash": content_hash(
-            kg_config.model_dump(by_alias=True, mode="json")
-        ),
-        "model_config": model.model_dump(mode="json"),
-        "model_settings": dict(model.kgs_settings("learning_progressions")),
-        "producer_instructions": kg_config.learning_progressions.producer_instructions,
-        "prompt_definitions_content_hash": hashlib.sha256(
-            Path(prompts.__file__).read_bytes()
-        ).hexdigest(),
-        "request_manifest": population.manifest.model_dump(mode="json"),
-        "response_schema_content_hash": content_hash(
-            LPGenerationResponse.model_json_schema()
-        ),
-        "retry_limits": {
-            "draft": kg_config.learning_progressions.retry.producer_max_retries,
-            "verdict": kg_config.learning_progressions.retry.checker_max_retries,
-        },
-        "verdict_schema_content_hash": content_hash(
-            LPGenerationValidationVerdict.model_json_schema()
-        ),
-    }
-
-
 def _finish_lp_request(
     *,
     kg_config: CreateKGConfig,
@@ -242,7 +198,7 @@ def _verify_execution_material(
     read_lp_request_population(expected=population, root=store.root)
 
     if (
-        _execution_material(kg_config=kg_config, population=population)
+        lp_execution_material(kg_config=kg_config, population=population)
         != store.material
     ):
         raise ValueError("LP prompt or model material changed during execution.")
@@ -341,7 +297,7 @@ def generate_learning_progressions(
                 as_lc_bundle=bundle, doc_key=doc_key, kg_config=config, kg_dirs=kg_dirs
             )
 
-        material = _execution_material(kg_config=config, population=population)
+        material = lp_execution_material(kg_config=config, population=population)
         store = LPGenerationCheckpoints(
             material=material, population=population, root=kg_dirs.root
         )
@@ -367,3 +323,47 @@ def generate_learning_progressions(
             LPGenerationResponse.model_validate(row.payload)
             for row in store.rows["response"]
         )
+
+
+def lp_execution_material(
+    *, kg_config: CreateKGConfig, population: LPRequestPopulation
+) -> dict[str, Any]:
+    """Capture actual configuration, model, schemas, and prompt definition material.
+
+    Parameters
+    ----------
+    kg_config
+        Complete effective KG configuration, including LP retry budgets.
+    population
+        Reconciled upstream, candidate, and request content identities.
+
+    Returns
+    -------
+    dict[str, Any]
+        Code-owned execution fingerprint inputs, with no manual version selectors.
+    """
+
+    model = Settings.llm_config("kgs")
+    return {
+        "checker_instructions": kg_config.learning_progressions.checker_instructions,
+        "config_content_hash": content_hash(
+            kg_config.model_dump(by_alias=True, mode="json")
+        ),
+        "model_config": model.model_dump(mode="json"),
+        "model_settings": dict(model.kgs_settings("learning_progressions")),
+        "producer_instructions": kg_config.learning_progressions.producer_instructions,
+        "prompt_definitions_content_hash": hashlib.sha256(
+            Path(prompts.__file__).read_bytes()
+        ).hexdigest(),
+        "request_manifest": population.manifest.model_dump(mode="json"),
+        "response_schema_content_hash": content_hash(
+            LPGenerationResponse.model_json_schema()
+        ),
+        "retry_limits": {
+            "draft": kg_config.learning_progressions.retry.producer_max_retries,
+            "verdict": kg_config.learning_progressions.retry.checker_max_retries,
+        },
+        "verdict_schema_content_hash": content_hash(
+            LPGenerationValidationVerdict.model_json_schema()
+        ),
+    }
