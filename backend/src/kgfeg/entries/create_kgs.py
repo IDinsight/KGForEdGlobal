@@ -41,6 +41,13 @@ from kgfeg.kgs.lc_generation import (
 )
 from kgfeg.kgs.lc_selection import select_lc_source_sfis
 from kgfeg.kgs.llm import KGUsageTracker
+from kgfeg.kgs.lp_artifacts import write_lp_artifacts
+from kgfeg.kgs.lp_export import compile_as_lc_lp_kg
+from kgfeg.kgs.lp_finalization import (
+    build_lp_relationships,
+    finalize_learning_progressions,
+)
+from kgfeg.kgs.lp_generation import generate_learning_progressions
 from kgfeg.kgs.sfi_dedup import merge_sfi_candidates
 from kgfeg.kgs.sfi_export import compile_academic_standards_kg
 from kgfeg.kgs.sfi_extraction import extract_sfi_candidates_from_windows
@@ -74,7 +81,7 @@ def build_kgs(
     kg_dirs: KGDirs,
     usage_tracker: KGUsageTracker,
 ) -> Path:
-    """Build Academic Standards + Learning Components KG artifacts for a DocumentIR.
+    """Build Academic Standards, Learning Components, and Learning Progressions KGs.
 
     The process is as follows:
 
@@ -105,6 +112,12 @@ def build_kgs(
         LC entity provenance.
     19. Merge the AS bundle and the LC layer into the single AS+LC KG
         bundle, with flat node/relationship projections.
+    20. Generate bounded LP judgments from the validated AS+LC bundle using resumable
+        producer/checker calls and the shared usage tracker.
+    21. Reconcile completed judgments into final direct claims.
+    22. Mint deterministic LP relationships and their provenance.
+    23. Validate and persist standalone LP artifacts, retaining failed diagnostics.
+    24. Compile and validate the additive AS+LC+LP bundle and flat projections.
 
     Parameters
     ----------
@@ -123,6 +136,11 @@ def build_kgs(
     -------
     Path
         The path to the persisted `kg_run_manifest.json` artifact.
+
+    Raises
+    ------
+    ValueError
+        If runtime validation reports contain errors.
     """
 
     # 1.
@@ -290,7 +308,7 @@ def build_kgs(
     )
 
     # 19.
-    compile_as_lc_kg(
+    as_lc_bundle = compile_as_lc_kg(
         academic_standards_bundle=final_bundle,
         kg_dirs=kg_dirs,
         lc_generation_summary=lc_generation_summary,
@@ -298,6 +316,68 @@ def build_kgs(
         overwrite=config.overwrite,
         supports_edges=lc_supports_edges,
     )
+
+    if (
+        not as_lc_bundle.validation_report.passed
+        or as_lc_bundle.validation_report.errors
+    ):
+        raise ValueError("LP requires a passed, error-free AS+LC validation report.")
+
+    # 20.
+    generate_learning_progressions(
+        as_lc_bundle=as_lc_bundle,
+        doc_key=kg_run_inputs.document_ir.doc_key,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+        overwrite=config.overwrite,
+        usage_tracker=usage_tracker,
+    )
+
+    # 21.
+    finalize_learning_progressions(
+        as_lc_bundle=as_lc_bundle,
+        doc_key=kg_run_inputs.document_ir.doc_key,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+    )
+
+    # 22.
+    lp_relationships = build_lp_relationships(
+        as_lc_bundle=as_lc_bundle,
+        doc_key=kg_run_inputs.document_ir.doc_key,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+    )
+
+    # 23.
+    lp_artifacts = write_lp_artifacts(
+        as_lc_bundle=as_lc_bundle,
+        doc_key=kg_run_inputs.document_ir.doc_key,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+        relationships=lp_relationships,
+    )
+
+    # Failed standalone validation returns diagnostic artifacts rather than raising.
+    if (
+        not lp_artifacts.validation_report.passed
+        or lp_artifacts.validation_report.errors
+    ):
+        raise ValueError("LP validation failed; inspect lp_validation_report.json.")
+
+    # 24.
+    as_lc_lp_bundle = compile_as_lc_lp_kg(
+        as_lc_bundle=as_lc_bundle,
+        doc_key=kg_run_inputs.document_ir.doc_key,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+    )
+
+    if (
+        not as_lc_lp_bundle.validation_report.passed
+        or as_lc_lp_bundle.validation_report.errors
+    ):
+        raise ValueError("AS+LC+LP validation failed; inspect as_lc_lp_kg_bundle.json.")
 
     return kg_run_manifest_fp
 
@@ -321,7 +401,8 @@ def create(
     1. Load the global run config and resolve KG, extraction, and stitching paths.
     2. Cross-check stitching run results.
     3. Persist KG run metadata.
-    4. Create a usage tracker to accumulate token costs for extracting SFIs.
+    4. Create a shared usage tracker for Academic Standards, Learning Components, and
+        Learning Progressions producer/checker calls.
     5. Build the knowledge graphs.
 
     Parameters
