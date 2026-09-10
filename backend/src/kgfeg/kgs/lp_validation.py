@@ -30,6 +30,7 @@ from kgfeg.kgs.lp_finalization import (
     LPFinalizationCycleError,
     LPRelationshipProvenance,
     LPRelationships,
+    strong_components,
     validate_lp_final_claims_artifact,
 )
 from kgfeg.kgs.schemas import AcademicStandardsLCKGBundle, Relationship
@@ -373,7 +374,7 @@ def _cycle_diagnostics(
 
     components = []
 
-    for members in _strong_components(forward=forward, reverse=reverse):
+    for members in strong_components(forward=forward, reverse=reverse):
         if len(members) == 1 and (members[0], members[0]) not in endpoint_edges:
             continue
 
@@ -557,46 +558,6 @@ def _expected_relationship(
     return relationship, provenance
 
 
-def _finishing_order(forward: Mapping[UUID, Sequence[UUID]]) -> list[UUID]:
-    """Compute deterministic iterative depth-first finishing order.
-
-    Parameters
-    ----------
-    forward
-        UUID-ordered directed adjacency.
-
-    Returns
-    -------
-    list[UUID]
-        Every graph node once in depth-first postorder.
-    """
-
-    finished: list[UUID] = []
-    seen: set[UUID] = set()
-
-    for start in forward:
-        if start in seen:
-            continue
-
-        stack = [(start, False)]
-
-        while stack:
-            node, expanded = stack.pop()
-
-            if expanded:
-                finished.append(node)
-            elif node not in seen:
-                seen.add(node)
-                stack.append((node, True))
-                stack.extend(
-                    (target, False)
-                    for target in reversed(forward[node])
-                    if target not in seen
-                )
-
-    return finished
-
-
 def _identifier_collisions(
     *, as_lc_bundle: AcademicStandardsLCKGBundle, relationships: Sequence[Relationship]
 ) -> tuple[str, ...]:
@@ -715,50 +676,6 @@ def _representative_cycle(
                 queue.append(target)
 
     raise ValueError("LP cyclic component has no representative return path.")
-
-
-def _strong_components(
-    *, forward: dict[UUID, list[UUID]], reverse: dict[UUID, list[UUID]]
-) -> tuple[tuple[UUID, ...], ...]:
-    """Partition a directed graph using iterative two-pass traversal.
-
-    Parameters
-    ----------
-    forward
-        Deterministically ordered outgoing adjacency.
-    reverse
-        Deterministically ordered incoming adjacency over the same nodes.
-
-    Returns
-    -------
-    tuple[tuple[UUID, ...], ...]
-        Every strongly connected component in canonical UUID order.
-    """
-
-    finished = _finishing_order(forward)
-    components = []
-    seen: set[UUID] = set()
-
-    for start in reversed(finished):
-        if start in seen:
-            continue
-
-        members = []
-        pending = [start]
-        seen.add(start)
-
-        while pending:
-            node = pending.pop()
-            members.append(node)
-
-            for target in reverse[node]:
-                if target not in seen:
-                    seen.add(target)
-                    pending.append(target)
-
-        components.append(tuple(sorted(members, key=str)))
-
-    return tuple(sorted(components, key=lambda members: tuple(map(str, members))))
 
 
 def _validate_checkpoint_completion(

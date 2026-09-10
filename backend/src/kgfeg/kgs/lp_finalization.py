@@ -16,7 +16,7 @@ import tempfile
 
 from collections import deque
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Mapping, Sequence
 from uuid import UUID, uuid5
 
 # Third Party Library
@@ -367,7 +367,7 @@ def _cycle_diagnostics(claims: tuple[LPFinalClaim, ...]) -> LPCycleDiagnostics:
 
     components = []
 
-    for members in _strong_components(forward=forward, reverse=reverse):
+    for members in strong_components(forward=forward, reverse=reverse):
         if len(members) == 1 and (members[0], members[0]) not in edges:
             continue
 
@@ -427,7 +427,7 @@ def _decision_counts(claims: tuple[LPFinalClaim, ...]) -> dict[str, int]:
     return counts
 
 
-def _finishing_order(forward: dict[UUID, list[UUID]]) -> list[UUID]:
+def _finishing_order(forward: Mapping[UUID, Sequence[UUID]]) -> list[UUID]:
     """Compute iterative depth-first postorder for the component partition.
 
     Parameters
@@ -686,50 +686,6 @@ def _representative_cycle(
     raise ValueError("LP cyclic component has no representative return path.")
 
 
-def _strong_components(
-    *, forward: dict[UUID, list[UUID]], reverse: dict[UUID, list[UUID]]
-) -> tuple[tuple[UUID, ...], ...]:
-    """Partition the direct graph with iterative two-pass depth-first traversal.
-
-    Parameters
-    ----------
-    forward
-        Deterministically ordered outgoing adjacency.
-    reverse
-        Deterministically ordered incoming adjacency over the same nodes.
-
-    Returns
-    -------
-    tuple[tuple[UUID, ...], ...]
-        Every strongly connected component in canonical UUID order.
-    """
-
-    finished = _finishing_order(forward)
-    seen: set[UUID] = set()
-    components = []
-
-    for start in reversed(finished):
-        if start in seen:
-            continue
-
-        members = []
-        pending = [start]
-        seen.add(start)
-
-        while pending:
-            node = pending.pop()
-            members.append(node)
-
-            for target in reverse[node]:
-                if target not in seen:
-                    seen.add(target)
-                    pending.append(target)
-
-        components.append(tuple(sorted(members, key=str)))
-
-    return tuple(sorted(components, key=lambda members: tuple(map(str, members))))
-
-
 def _write_claims(*, artifact: LPFinalClaims, path: Path) -> None:
     """Atomically replace one generated artifact using canonical complete JSON.
 
@@ -971,6 +927,50 @@ def finalize_learning_progressions(
             raise LPFinalizationCycleError(artifact)
 
         return artifact
+
+
+def strong_components(
+    *, forward: dict[UUID, list[UUID]], reverse: dict[UUID, list[UUID]]
+) -> tuple[tuple[UUID, ...], ...]:
+    """Partition the direct graph with iterative two-pass depth-first traversal.
+
+    Parameters
+    ----------
+    forward
+        Deterministically ordered outgoing adjacency.
+    reverse
+        Deterministically ordered incoming adjacency over the same nodes.
+
+    Returns
+    -------
+    tuple[tuple[UUID, ...], ...]
+        Every strongly connected component in canonical UUID order.
+    """
+
+    components = []
+    finished = _finishing_order(forward)
+    seen: set[UUID] = set()
+
+    for start in reversed(finished):
+        if start in seen:
+            continue
+
+        members = []
+        pending = [start]
+        seen.add(start)
+
+        while pending:
+            node = pending.pop()
+            members.append(node)
+
+            for target in reverse[node]:
+                if target not in seen:
+                    seen.add(target)
+                    pending.append(target)
+
+        components.append(tuple(sorted(members, key=str)))
+
+    return tuple(sorted(components, key=lambda members: tuple(map(str, members))))
 
 
 def validate_lp_final_claims_artifact(
