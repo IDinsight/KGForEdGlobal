@@ -143,8 +143,13 @@ def _json(path: Path) -> Any:
     argnames="action", argvalues=["delete", "direction", "insert", "relation"]
 )
 @pytest.mark.parametrize(argnames="operation", argvalues=["compile", "reuse"])
+@pytest.mark.parametrize(argnames="surface", argvalues=["combined", "standalone"])
 def test_audit_cannot_authorize_generated_bundle_edits(
-    action: str, monkeypatch: pytest.MonkeyPatch, operation: str, tmp_path: Path
+    action: str,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    surface: str,
+    tmp_path: Path,
 ) -> None:
     """Reject every forced semantic edit without silently repairing the saved graph.
 
@@ -156,6 +161,8 @@ def test_audit_cannot_authorize_generated_bundle_edits(
         Offline producer/checker seam.
     operation
         Public compilation or saved-release reuse boundary.
+    surface
+        Combined bundle or standalone relationship rows under attack.
     tmp_path
         Isolated release whose bytes are deliberately corrupted only in this test.
     """
@@ -185,7 +192,17 @@ def test_audit_cannot_authorize_generated_bundle_edits(
         row = builds.pop()
         row["relationship_type"] = "relatesTo"
         payload["relationships_relates_to"].append(row)
-    path.write_bytes(_artifacts._bytes(payload))
+    if surface == "combined":
+        path.write_bytes(_artifacts._bytes(payload))
+    else:
+        for key, name in (
+            ("relationships_builds_towards", "lp_relationships_builds_towards.jsonl"),
+            ("relationships_relates_to", "lp_relationships_relates_to.jsonl"),
+        ):
+            (tmp_path / name).write_bytes(
+                b"".join(_artifacts._bytes(row) for row in payload[key])
+            )
+        _artifacts._reseal(tmp_path)
     _reuse._assert_rejected(harness=harness, operation=operation)
 
 
@@ -336,6 +353,51 @@ def test_failure_after_ambiguity_blocks_until_real_processing_recovers(
     )
     assert failures[0]["resolved_run_number"] is None
     assert failures[0]["exhausted"] is True
+
+
+@pytest.mark.parametrize(argnames="count", argvalues=[1, 12])
+def test_needs_review_population_size_does_not_create_a_release_threshold(
+    count: int, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Release empty or entirely ambiguous populations without sample-size gates.
+
+    Parameters
+    ----------
+    count
+        Synthetic cohort size; nomination recall is not measured by this test.
+    monkeypatch
+        Offline producer/checker seam.
+    tmp_path
+        Isolated release with no independent semantic review inputs.
+    """
+    harness = _claims._Harness(count=count, root=tmp_path)
+    harness.default_decision = "needs_review"
+    result = _reuse._publish(harness=harness, monkeypatch=monkeypatch)
+    candidates = _artifacts._rows(tmp_path / "lp_candidate_pairs.jsonl")
+    pair_ids = {row["pair_id"] for row in candidates}
+    assert len(pair_ids) == len(candidates)
+    if count == 1:
+        assert not pair_ids
+        assert not harness.calls
+    else:
+        assert len(pair_ids) > 3
+        assert {stage for stage, _ in harness.calls} == {"draft", "verdict"}
+    unresolved = _json(tmp_path / "lp_unresolved_items.json")
+    assert {row["judgment"]["pair_id"] for row in unresolved["claims"]} == pair_ids
+    assert unresolved["total_needs_review"] == len(pair_ids)
+    counts = result.summary.learning_progressions["object_counts"]
+    assert counts["candidate_pairs"] == counts["needs_review_claims"] == len(pair_ids)
+    assert counts["accepted_claims"] == counts["no_relation_claims"] == 0
+    assert counts["unresolved_failed_pairs"] == 0
+    assert not result.relationships_builds_towards
+    assert not result.relationships_relates_to
+    assert result.validation_report.passed
+    assert result.validation_report.semantic_validation_performed is False
+    assert result.validation_report.pedagogical_correctness_established is False
+    assert result.unresolved_items.learning_progressions == unresolved
+    calls = list(harness.calls)
+    assert _reuse._invoke(harness=harness) == result
+    assert harness.calls == calls
 
 
 @pytest.mark.parametrize(argnames="corrected", argvalues=[False, True])
@@ -489,6 +551,77 @@ def test_optional_audit_is_nonblocking_and_cannot_resolve_ambiguity(
         != original.validation_report.input_content_hashes["effective_config"]
     )
     assert (tmp_path / _BUNDLE).read_bytes() == before[_BUNDLE]
+
+
+@pytest.mark.parametrize(argnames="attack", argvalues=["endpoint", "missing_pair"])
+@pytest.mark.parametrize(argnames="stage", argvalues=["draft", "verdict"])
+def test_processing_integrity_failures_cannot_become_needs_review(
+    attack: str, monkeypatch: pytest.MonkeyPatch, stage: str, tmp_path: Path
+) -> None:
+    """Halt on invalid ambiguous proposals instead of laundering them into abstention.
+
+    Parameters
+    ----------
+    attack
+        Out-of-request endpoint or incomplete response coverage.
+    monkeypatch
+        Offline model seam; real generation and run-status checks remain active.
+    stage
+        Producer response or complete checker correction to corrupt.
+    tmp_path
+        Isolated processing and failure evidence.
+    """
+    harness = _entry._Harness(root=tmp_path)
+    harness.proposals.default_decision = "needs_review"
+    harness.proposals.corrections = {}
+    original = harness.proposals._call
+
+    def _invalid_call(**kwargs: Any) -> Any:
+        """Corrupt one synthetic proposal after an earlier valid ambiguous request.
+
+        Parameters
+        ----------
+        kwargs
+            Actual bounded request and optional producer draft.
+
+        Returns
+        -------
+        Any
+            Untrusted proposal requiring deterministic coverage and endpoint checks.
+        """
+        output = original(**kwargs)
+        current_stage = "draft" if kwargs["draft"] is None else "verdict"
+        if kwargs["request"].request_index == 1 and current_stage == stage:
+            response = output if stage == "draft" else output.corrected_response
+            assert response is not None
+            if attack == "missing_pair":
+                response.judgments.pop()
+            else:
+                response.judgments[0].second_sfi_uuid = UUID(int=999999)
+        return output
+
+    monkeypatch.setattr(name="_call", target=harness.proposals, value=_invalid_call)
+    harness._install(monkeypatch=monkeypatch, real_lp=True)
+    with pytest.raises(LPGenerationFailed):
+        create_kgs.create(harness.config_path)
+    _entry._assert_run(error=LPGenerationFailed, harness=harness)
+    requests = _artifacts._rows(harness.root / "lp_generation_requests.jsonl")
+    responses = _artifacts._rows(harness.root / "lp_generation_responses.jsonl")
+    failures = _json(harness.root / "lp_generation_failures.json")
+    assert len(responses) == 1
+    assert responses[0]["payload"]["judgments"][0]["decision"] == "needs_review"
+    assert len(failures) == 1
+    assert failures[0]["stage"] == stage
+    assert failures[0]["pair_ids"] == [row["pair_id"] for row in requests[1]["pairs"]]
+    assert failures[0]["exhausted"] is True
+    assert failures[0]["resolved_run_number"] is None
+    assert harness.proposals.calls == (
+        [("draft", 0), ("verdict", 0), ("draft", 1)]
+        + ([("verdict", 1)] if stage == "verdict" else [])
+    )
+    assert "compile_as_lc_lp_kg" not in harness.calls
+    assert not (harness.root / _BUNDLE).exists()
+    assert not (harness.root / "lp_unresolved_items.json").exists()
 
 
 @pytest.mark.parametrize(
