@@ -248,7 +248,7 @@ def test_all_four_groups_retain_exact_internal_fields_and_upstream_bytes(
         (tmp_path / name).write_bytes(b"opaque prior consumer bytes\r\n")
     before = _export._snapshot(tmp_path)
     upstream = harness.bundle.model_dump(mode="json")
-    result = _export._compile(harness)
+    result = _export._compile(harness=harness)
     _assert_projection(harness=harness, result=result)
     assert harness.bundle.model_dump(mode="json") == upstream
     assert _export._snapshot(tmp_path) == {
@@ -316,7 +316,7 @@ def test_curriculum_context_survives_complete_projections(
     harness.config = _fixtures._config(batch=20, profile=profile)
     harness.default_decision = "relatesTo"
     _export._persist(harness=harness, monkeypatch=monkeypatch)
-    result = _export._compile(harness)
+    result = _export._compile(harness=harness)
     _assert_projection(harness=harness, result=result)
     edges = [
         json.loads(line)
@@ -359,7 +359,7 @@ def test_empty_populations_write_complete_files_without_model_calls(
     """
     harness = _claims._Harness(count=count, root=tmp_path)
     _export._persist(harness=harness, monkeypatch=monkeypatch)
-    result = _export._compile(harness)
+    result = _export._compile(harness=harness)
     _assert_projection(harness=harness, result=result)
     assert not harness.calls
     if count == 0:
@@ -386,7 +386,7 @@ def test_nonpublishing_populations_keep_nodes_and_upstream_relationships(
     harness.decisions = {}
     harness.default_decision = decision
     _export._persist(harness=harness, monkeypatch=monkeypatch)
-    result = _export._compile(harness)
+    result = _export._compile(harness=harness)
     _assert_projection(harness=harness, result=result)
     assert result.summary.total_node_count == 8
     assert result.summary.total_relationship_count == 9
@@ -412,7 +412,7 @@ def test_projection_count_mismatch_fails_before_output_write(
     """
     harness = _rich_harness(tmp_path)
     _export._persist(harness=harness, monkeypatch=monkeypatch)
-    result = _export._compile(harness)
+    result = _export._compile(harness=harness)
     before = _export._snapshot(tmp_path)
     setattr(result.summary, field, getattr(result.summary, field) + 1)
     with pytest.raises(expected_exception=ValueError, match="projection counts"):
@@ -507,7 +507,7 @@ def test_projection_persistence_failures_propagate_through_public_compiler(
         scoped.setattr(name="read_bytes", target=Path, value=_read)
         scoped.setattr(name="_atomic_write", target=lp_export, value=_write)
         with pytest.raises(expected_exception=(OSError, ValueError)):
-            _export._compile(harness)
+            _export._compile(harness=harness)
     assert name in writes
     after = _export._snapshot(tmp_path)
     assert {key: after[key] for key in before} == before
@@ -533,7 +533,7 @@ def test_reordered_bundle_groups_have_identical_projection_bytes(
     """
     harness = _rich_harness(tmp_path)
     _export._persist(harness=harness, monkeypatch=monkeypatch)
-    result = _export._compile(harness)
+    result = _export._compile(harness=harness)
     before = _export._snapshot(tmp_path)
     rows = getattr(result, group)
     assert len(rows) >= 2
@@ -559,7 +559,7 @@ def test_reordered_upstream_fresh_runs_preserve_identical_complete_projections(
     first = _rich_harness(tmp_path / "first")
     first.decisions = {}
     _export._persist(harness=first, monkeypatch=monkeypatch)
-    first_result = _export._compile(first)
+    first_result = _export._compile(harness=first)
     second = _rich_harness(tmp_path / "second")
     second.decisions = {}
     for group in ("items", "learning_components", *_GROUPS[:2]):
@@ -568,7 +568,7 @@ def test_reordered_upstream_fresh_runs_preserve_identical_complete_projections(
         reversed(list(second.bundle.framework.metadata.items()))
     )
     _export._persist(harness=second, monkeypatch=monkeypatch)
-    second_result = _export._compile(second)
+    second_result = _export._compile(harness=second)
     _assert_projection(harness=first, result=first_result)
     _assert_projection(harness=second, result=second_result)
     for name in (_NODES, _RELATIONSHIPS):
@@ -617,4 +617,4 @@ def test_write_time_evidence_mutation_during_projections_rejects_success(
     with pytest.raises(
         expected_exception=ValueError, match="changed during bundle compilation"
     ):
-        _export._compile(harness)
+        _export._compile(harness=harness)

@@ -42,7 +42,7 @@ from kgfeg.kgs.lc_generation import (
 from kgfeg.kgs.lc_selection import select_lc_source_sfis
 from kgfeg.kgs.llm import KGUsageTracker
 from kgfeg.kgs.lp_artifacts import write_lp_artifacts
-from kgfeg.kgs.lp_export import compile_as_lc_lp_kg
+from kgfeg.kgs.lp_export import compile_as_lc_lp_kg, reuse_as_lc_lp_kg
 from kgfeg.kgs.lp_finalization import (
     build_lp_relationships,
     finalize_learning_progressions,
@@ -112,8 +112,9 @@ def build_kgs(
         LC entity provenance.
     19. Merge the AS bundle and the LC layer into the single AS+LC KG
         bundle, with flat node/relationship projections.
-    20. Generate bounded LP judgments from the validated AS+LC bundle using resumable
-        producer/checker calls and the shared usage tracker.
+    20. Reuse an exact current-material-validated final LP bundle when available and
+        overwrite is disabled, rewriting its projections. Otherwise generate bounded LP
+        judgments using resumable producer/checker calls and the shared tracker.
     21. Reconcile completed judgments into final direct claims.
     22. Mint deterministic LP relationships and their provenance.
     23. Validate and persist standalone LP artifacts, retaining failed diagnostics.
@@ -323,6 +324,18 @@ def build_kgs(
     ):
         raise ValueError("LP requires a passed, error-free AS+LC validation report.")
 
+    # Check final reuse before generation can advance its checkpoint run ordinal.
+    if not config.overwrite:
+        reused_bundle = reuse_as_lc_lp_kg(
+            as_lc_bundle=as_lc_bundle,
+            doc_key=kg_run_inputs.document_ir.doc_key,
+            kg_config=kg_run_inputs.kg_config,
+            kg_dirs=kg_dirs,
+        )
+
+        if reused_bundle is not None:
+            return kg_run_manifest_fp
+
     # 20.
     generate_learning_progressions(
         as_lc_bundle=as_lc_bundle,
@@ -371,6 +384,7 @@ def build_kgs(
         doc_key=kg_run_inputs.document_ir.doc_key,
         kg_config=kg_run_inputs.kg_config,
         kg_dirs=kg_dirs,
+        overwrite=config.overwrite,
     )
 
     if (

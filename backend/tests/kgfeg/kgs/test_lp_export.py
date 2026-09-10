@@ -87,13 +87,17 @@ def _bytes(value: Any) -> bytes:
     ).encode("utf-8")
 
 
-def _compile(harness: _claims._Harness) -> AcademicStandardsLCLPKGBundle:
+def _compile(
+    *, harness: _claims._Harness, overwrite: bool = False
+) -> AcademicStandardsLCLPKGBundle:
     """Exercise the public compiler with current upstream and persisted evidence.
 
     Parameters
     ----------
     harness
         Current bundle, configuration, and temporary evidence root.
+    overwrite
+        Explicitly replace a previously saved bundle after validating its inputs.
 
     Returns
     -------
@@ -105,6 +109,7 @@ def _compile(harness: _claims._Harness) -> AcademicStandardsLCLPKGBundle:
         doc_key=_DOC_KEY,
         kg_config=harness.config,
         kg_dirs=KGDirs(root=harness.root),
+        overwrite=overwrite,
     )
 
 
@@ -216,7 +221,7 @@ def test_all_nonpublishing_judgments_remain_successful_without_edges(
     harness = _claims._Harness(root=tmp_path)
     harness.default_decision = decision
     _persist(harness=harness, monkeypatch=monkeypatch)
-    result = _compile(harness)
+    result = _compile(harness=harness)
     counts = result.summary.learning_progressions["object_counts"]
     assert counts["candidate_pairs"] == counts["final_claims"] == 6
     assert counts[f"{decision}_claims"] == 6
@@ -284,7 +289,7 @@ def test_complete_upstream_content_and_standalone_audit_shapes_survive(  # pylin
         (tmp_path / name).write_bytes(b"upstream consumer artifact\n")
     before = _snapshot(tmp_path)
     calls = list(harness.calls)
-    result = _compile(harness)
+    result = _compile(harness=harness)
     material = result.model_dump(mode="json")
     assert harness.calls == calls
     assert harness.bundle.model_dump(mode="json") == upstream
@@ -410,7 +415,7 @@ def test_corrupt_checkpoint_authority_blocks_compilation(
         path.write_bytes(path.read_bytes()[:-9])
     before = _snapshot(tmp_path)
     with pytest.raises(_REJECTIONS):
-        _compile(harness)
+        _compile(harness=harness)
     assert _snapshot(tmp_path) == before
     assert _BUNDLE not in before
 
@@ -432,7 +437,7 @@ def test_empty_candidate_and_relationship_populations_compile_without_calls(
     """
     harness = _claims._Harness(count=count, root=tmp_path)
     _persist(harness=harness, monkeypatch=monkeypatch)
-    result = _compile(harness)
+    result = _compile(harness=harness)
     assert harness.calls == []
     assert result.validation_report.passed
     assert result.summary.total_node_count == 1 + count
@@ -485,7 +490,7 @@ def test_failed_lp_collision_diagnostics_cannot_compile_success(
     with pytest.raises(
         expected_exception=ValueError, match="standalone LP validation failed"
     ):
-        _compile(harness)
+        _compile(harness=harness)
     assert _snapshot(tmp_path) == before
 
 
@@ -504,7 +509,7 @@ def test_hashes_bind_actual_graph_inputs_and_every_evidence_file(
     harness = _artifacts._mixed(tmp_path)
     _persist(harness=harness, monkeypatch=monkeypatch)
     before = _snapshot(tmp_path)
-    result = _compile(harness)
+    result = _compile(harness=harness)
     material = result.model_dump(mode="json")
     report = material.pop("validation_report")
     summary = json.loads(before["lp_generation_summary.json"])
@@ -555,7 +560,7 @@ def test_lock_contention_cannot_write_combined_bundle(
     with (tmp_path / ".lp_generation.lock").open("rb") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         with pytest.raises(BlockingIOError):
-            _compile(harness)
+            _compile(harness=harness)
     assert _snapshot(tmp_path) == before
 
 
@@ -579,7 +584,7 @@ def test_missing_generation_evidence_cannot_be_reinitialized_by_compilation(
     (tmp_path / name).unlink()
     before = _snapshot(tmp_path)
     with pytest.raises(_REJECTIONS):
-        _compile(harness)
+        _compile(harness=harness)
     assert _snapshot(tmp_path) == before
 
 
@@ -614,7 +619,7 @@ def test_missing_malformed_and_noncanonical_standalone_artifacts_fail_closed(
         path.write_bytes(b" " + path.read_bytes())
     before = _snapshot(tmp_path)
     with pytest.raises(_REJECTIONS):
-        _compile(harness)
+        _compile(harness=harness)
     assert _snapshot(tmp_path) == before
 
 
@@ -632,7 +637,7 @@ def test_mixed_outcomes_remain_direct_visible_nonblocking_and_nonsemantic(
     """
     harness = _artifacts._mixed(tmp_path)
     _persist(harness=harness, monkeypatch=monkeypatch)
-    result = _compile(harness)
+    result = _compile(harness=harness)
     counts = result.summary.learning_progressions["object_counts"]
     assert counts["accepted_claims"] == 4
     assert counts["needs_review_claims"] == counts["no_relation_claims"] == 1
@@ -707,7 +712,7 @@ def test_optional_eligibility_appearance_after_authentication_is_rejected(
     relationships = _artifacts._complete(harness=harness, monkeypatch=monkeypatch)
     (tmp_path / name).unlink()
     _artifacts._write(harness=harness, relationships=relationships)
-    _compile(harness)
+    _compile(harness=harness)
     before = (tmp_path / _BUNDLE).read_bytes()
     reader = lp_export.read_lp_artifacts
 
@@ -732,7 +737,7 @@ def test_optional_eligibility_appearance_after_authentication_is_rejected(
     with pytest.raises(
         expected_exception=ValueError, match="input appeared during bundle compilation"
     ):
-        _compile(harness)
+        _compile(harness=harness)
     assert (tmp_path / _BUNDLE).read_bytes() == before
 
 
@@ -759,12 +764,12 @@ def test_processing_failure_blocks_until_real_recovery_and_retains_history(
         harness._run()
     before = _snapshot(tmp_path)
     with pytest.raises(_REJECTIONS):
-        _compile(harness)
+        _compile(harness=harness)
     assert _snapshot(tmp_path) == before
     harness.failure = None
     _persist(harness=harness, monkeypatch=monkeypatch)
     failure_bytes = (tmp_path / "lp_generation_failures.json").read_bytes()
-    result = _compile(harness)
+    result = _compile(harness=harness)
     counts = result.summary.learning_progressions["object_counts"]
     assert (
         counts["generation_failure_attempts"]
@@ -808,7 +813,7 @@ def test_provenance_namespace_collisions_reject_even_empty_or_null_values(
     with pytest.raises(
         expected_exception=ValueError, match="upstream provenance already contains"
     ):
-        _compile(harness)
+        _compile(harness=harness)
     assert _snapshot(tmp_path) == before
     assert harness.bundle.entity_provenance[name] == value
 
@@ -859,7 +864,7 @@ def test_rehashed_standalone_audit_edits_are_not_authenticated(
     _artifacts._reseal(tmp_path)
     before = _snapshot(tmp_path)
     with pytest.raises(_REJECTIONS):
-        _compile(harness)
+        _compile(harness=harness)
     assert _snapshot(tmp_path) == before
 
 
@@ -877,12 +882,12 @@ def test_repeated_compilation_has_identical_bytes_without_rewriting_inputs(
     """
     harness = _artifacts._mixed(tmp_path)
     _persist(harness=harness, monkeypatch=monkeypatch)
-    first = _compile(harness)
+    first = _compile(harness=harness)
     before = _snapshot(tmp_path)
     harness.bundle.entity_provenance = dict(
         reversed(list(harness.bundle.entity_provenance.items()))
     )
-    second = _compile(harness)
+    second = _compile(harness=harness)
     assert first == second
     assert _snapshot(tmp_path) == before
     for name, expected in _projection_bytes(first.model_dump(mode="json")).items():
@@ -923,7 +928,7 @@ def test_stale_material_and_unfinished_generation_cannot_compile(
         (tmp_path / "lp_generation_checkpoint_transaction.json").write_bytes(b"{}\n")
     before = _snapshot(tmp_path)
     with pytest.raises(_REJECTIONS):
-        _compile(harness)
+        _compile(harness=harness)
     assert _snapshot(tmp_path) == before
 
 
@@ -968,7 +973,7 @@ def test_upstream_counts_are_checked_against_actual_populations(
     _persist(harness=harness, monkeypatch=monkeypatch)
     before = _snapshot(tmp_path)
     with pytest.raises(expected_exception=ValueError, match="summary counts differ"):
-        _compile(harness)
+        _compile(harness=harness)
     assert _snapshot(tmp_path) == before
 
 
@@ -997,7 +1002,7 @@ def test_upstream_failed_validation_blocks_before_artifact_reader(
     with pytest.raises(
         expected_exception=ValueError, match="passed, error-free AS\\+LC"
     ):
-        _compile(harness)
+        _compile(harness=harness)
     guard.assert_not_called()
     assert _snapshot(tmp_path) == {}
 
@@ -1021,9 +1026,10 @@ def test_write_errors_and_corrupt_readback_cannot_return_success(
     """
     harness = _artifacts._mixed(tmp_path)
     _persist(harness=harness, monkeypatch=monkeypatch)
-    _compile(harness)
+    _compile(harness=harness, overwrite=True)
     before = _snapshot(tmp_path)
     writer = lp_export._atomic_write
+    writes: list[str] = []
 
     def _write(*, path: Path, payload: bytes) -> None:
         """Inject a write error or an altered, schema-valid on-disk bundle.
@@ -1040,6 +1046,8 @@ def test_write_errors_and_corrupt_readback_cannot_return_success(
         OSError
             When the scripted write failure is requested.
         """
+        writes.append(path.name)
+        assert path.name == _BUNDLE
         if attack == "write_error":
             raise OSError("Synthetic persistence failure")
         material = json.loads(payload)
@@ -1048,7 +1056,8 @@ def test_write_errors_and_corrupt_readback_cannot_return_success(
 
     monkeypatch.setattr(name="_atomic_write", target=lp_export, value=_write)
     with pytest.raises(_REJECTIONS):
-        _compile(harness)
+        _compile(harness=harness, overwrite=True)
+    assert writes == [_BUNDLE]
     after = _snapshot(tmp_path)
     assert {name: value for name, value in after.items() if name != _BUNDLE} == {
         name: value for name, value in before.items() if name != _BUNDLE
@@ -1136,5 +1145,5 @@ def test_write_time_evidence_changes_never_return_success(
         expected_exception=ValueError,
         match="changed during bundle compilation|transaction is unfinished",
     ):
-        _compile(harness)
+        _compile(harness=harness)
     assert (tmp_path / _BUNDLE).exists() is (timing == "after_write")

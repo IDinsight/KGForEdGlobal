@@ -111,6 +111,38 @@ def _combined_counts(material: dict[str, Any]) -> dict[str, int]:
     return counts
 
 
+def _complete_export(
+    *, bundle: AcademicStandardsLCLPKGBundle, root: Path
+) -> AcademicStandardsLCLPKGBundle:
+    """Verify bundle authority, rewrite projections, and recheck locked material.
+
+    Parameters
+    ----------
+    bundle
+        Freshly authenticated expected combined graph.
+    root
+        Artifact directory whose exclusive generation lock the caller holds.
+
+    Returns
+    -------
+    AcademicStandardsLCLPKGBundle
+        Read-back-verified graph after both projections reconcile.
+
+    Raises
+    ------
+    ValueError
+        If evidence, bundle, or projection bytes change or fail reconciliation.
+    """
+
+    hashes = bundle.validation_report.artifact_byte_hashes
+    path = root / _BUNDLE
+    _verify_artifact_bytes(hashes=hashes, root=root)
+    restored = _read_bundle(expected=bundle, path=path)
+    _write_projections(bundle=restored, root=root)
+    _verify_artifact_bytes(hashes=hashes, root=root)
+    return _read_bundle(expected=bundle, path=path)
+
+
 def _merge_material(
     *, artifacts: LPStandaloneArtifacts, upstream: dict[str, Any]
 ) -> dict[str, Any]:
@@ -173,6 +205,151 @@ def _merge_material(
         total_relationship_count=counts["total_relationship_count"],
     )
     return material
+
+
+def _prepare_bundle(
+    *,
+    as_lc_bundle: AcademicStandardsLCKGBundle,
+    doc_key: str,
+    kg_config: CreateKGConfig,
+    kg_dirs: KGDirs,
+) -> AcademicStandardsLCLPKGBundle:
+    """Reconstruct the exact combined authority from current inputs and stored evidence.
+
+    The standalone reader authenticates complete candidate/request populations, aligned
+    producer/checker/response checkpoints, failure dispositions, actual prompt/model
+    material, and finalization inputs before the merge is considered. Stored passed
+    flags and self-consistent hashes alone are insufficient authority.
+
+    Parameters
+    ----------
+    as_lc_bundle
+        Complete authoritative upstream graph.
+    doc_key
+        Current source document identity.
+    kg_config
+        Current effective curriculum configuration.
+    kg_dirs
+        Directory containing complete standalone and generation evidence.
+
+    Returns
+    -------
+    AcademicStandardsLCLPKGBundle
+        Detached, validated expected graph with complete material bindings.
+
+    Raises
+    ------
+    ValueError
+        If upstream, standalone, checkpoint, or combined integrity fails.
+    """
+
+    upstream_bundle = AcademicStandardsLCKGBundle.model_validate_json(
+        as_lc_bundle.model_dump_json()
+    )
+    config = CreateKGConfig.model_validate_json(
+        kg_config.model_dump_json(by_alias=True)
+    )
+    upstream = upstream_bundle.model_dump(mode="json")
+    report = upstream_bundle.validation_report
+
+    if not report.passed or report.errors:
+        raise ValueError("AS+LC+LP merge requires a passed, error-free AS+LC bundle.")
+
+    artifacts = read_lp_artifacts(
+        as_lc_bundle=upstream_bundle, doc_key=doc_key, kg_config=config, kg_dirs=kg_dirs
+    )
+    lp_report = artifacts.validation_report
+
+    if not lp_report.passed or lp_report.errors:
+        raise ValueError(
+            "AS+LC+LP merge: standalone LP validation failed; inspect lp_validation_report.json."
+        )
+
+    if artifacts.summary.object_counts["unresolved_failed_pairs"]:
+        raise ValueError("AS+LC+LP merge: unresolved LP processing failures remain.")
+
+    material = _merge_material(artifacts=artifacts, upstream=upstream)
+    _validate_combined_material(
+        artifacts=artifacts, material=material, upstream=upstream
+    )
+    byte_hashes = _artifact_byte_hashes(artifacts)
+    input_hashes = {
+        **artifacts.summary.input_content_hashes,
+        "combined_graph": content_hash(material),
+        "lp_generation_summary": content_hash(
+            artifacts.summary.model_dump(mode="json")
+        ),
+        "lp_unresolved_items": content_hash(
+            artifacts.unresolved_items.model_dump(mode="json")
+        ),
+        "lp_validation_report": content_hash(lp_report.model_dump(mode="json")),
+    }
+
+    if input_hashes["as_lc_bundle"] != content_hash(upstream) or input_hashes[
+        "effective_config"
+    ] != content_hash(config.model_dump(by_alias=True, mode="json")):
+        raise ValueError(
+            "AS+LC+LP merge: LP input hashes differ from current material."
+        )
+
+    material["validation_report"] = {
+        "as_lc_validation_report": upstream["validation_report"],
+        "artifact_byte_hashes": byte_hashes,
+        "errors": [],
+        "input_content_hashes": input_hashes,
+        "lp_validation_report": lp_report.model_dump(mode="json"),
+        "object_counts": _combined_counts(material),
+        "passed": True,
+        "pedagogical_correctness_established": lp_report.pedagogical_correctness_established,
+        "semantic_scope_notice": lp_report.semantic_scope_notice,
+        "semantic_validation_performed": lp_report.semantic_validation_performed,
+        "validation_checks": list(_VALIDATION_CHECKS),
+        "warnings": list(lp_report.warnings),
+    }
+    bundle = AcademicStandardsLCLPKGBundle.model_validate(material)
+
+    if bundle.model_dump(mode="json") != material:
+        raise ValueError("AS+LC+LP bundle schema changed the compiled material.")
+
+    return bundle
+
+
+def _read_bundle(
+    *, expected: AcademicStandardsLCLPKGBundle, path: Path
+) -> AcademicStandardsLCLPKGBundle:
+    """Require the stored bundle to equal freshly authenticated combined material.
+
+    Parameters
+    ----------
+    expected
+        Current-material-validated graph, counts, provenance, and validation report.
+    path
+        Existing combined bundle, never repaired by this reader.
+
+    Returns
+    -------
+    AcademicStandardsLCLPKGBundle
+        Detached model parsed from the exact canonical saved bytes.
+
+    Raises
+    ------
+    ValueError
+        If the bundle is invalid, noncanonical, stale, or changed during export.
+    """
+
+    observed = path.read_bytes()
+    restored = AcademicStandardsLCLPKGBundle.model_validate_json(observed)
+    payload = (canonical_lp_json(expected.model_dump(mode="json")) + "\n").encode(
+        "utf-8"
+    )
+
+    if observed != payload or restored != expected:
+        raise ValueError(
+            "AS+LC+LP bundle differs from current validated material; "
+            "regenerate affected artifacts before reuse."
+        )
+
+    return restored
 
 
 def _validate_combined_material(
@@ -377,14 +554,15 @@ def compile_as_lc_lp_kg(
     doc_key: str,
     kg_config: CreateKGConfig,
     kg_dirs: KGDirs,
+    overwrite: bool = False,
 ) -> AcademicStandardsLCLPKGBundle:
-    """Compile a validated AS+LC+LP bundle and write its internal projections.
+    """Compile or exactly reuse a validated bundle and rewrite its projections.
 
-    Standalone artifacts are authenticated against current upstream/config material and
-    complete checkpoint authority. Failed graph diagnostics are inspectable in their
-    standalone files but cannot compile successfully. Every invocation compiles from
-    current inputs, atomically replaces each output file, and returns a detached,
-    read-back-verified bundle only after both complete projections are verified.
+    Every invocation authenticates current inputs and complete checkpoint authority.
+    With overwrite disabled, an existing bundle must exactly match that authority;
+    stale or invalid bundles raise without replacing evidence. Explicit overwrite
+    replaces the bundle only after current standalone artifacts validate. Missing
+    bundles are compiled from those same validated artifacts.
 
     Parameters
     ----------
@@ -396,6 +574,8 @@ def compile_as_lc_lp_kg(
         Current effective curriculum configuration.
     kg_dirs
         Existing KG directory containing complete standalone LP artifacts.
+    overwrite
+        Whether to replace an existing final bundle after validating current inputs.
 
     Returns
     -------
@@ -405,96 +585,73 @@ def compile_as_lc_lp_kg(
     Raises
     ------
     ValueError
-        If upstream or LP validation fails, material is inconsistent, or the merge
-        would overwrite provenance or misrepresent counts.
+        If material or validation fails, or an existing bundle is stale or invalid
+        while overwrite is disabled.
     """
 
-    upstream_bundle = AcademicStandardsLCKGBundle.model_validate_json(
-        as_lc_bundle.model_dump_json()
+    if not isinstance(overwrite, bool):
+        raise ValueError("LP overwrite must be an explicit boolean.")
+
+    bundle = _prepare_bundle(
+        as_lc_bundle=as_lc_bundle, doc_key=doc_key, kg_config=kg_config, kg_dirs=kg_dirs
     )
-    config = CreateKGConfig.model_validate_json(
-        kg_config.model_dump_json(by_alias=True)
-    )
-    upstream = upstream_bundle.model_dump(mode="json")
-    report = upstream_bundle.validation_report
-
-    if not report.passed or report.errors:
-        raise ValueError("AS+LC+LP merge requires a passed, error-free AS+LC bundle.")
-
-    artifacts = read_lp_artifacts(
-        as_lc_bundle=upstream_bundle,
-        doc_key=doc_key,
-        kg_config=config,
-        kg_dirs=kg_dirs,
-    )
-    lp_report = artifacts.validation_report
-
-    if not lp_report.passed or lp_report.errors:
-        raise ValueError(
-            "AS+LC+LP merge: standalone LP validation failed; "
-            "inspect lp_validation_report.json."
-        )
-
-    if artifacts.summary.object_counts["unresolved_failed_pairs"]:
-        raise ValueError("AS+LC+LP merge: unresolved LP processing failures remain.")
-
-    material = _merge_material(artifacts=artifacts, upstream=upstream)
-    _validate_combined_material(
-        artifacts=artifacts, material=material, upstream=upstream
-    )
-    byte_hashes = _artifact_byte_hashes(artifacts)
-    input_hashes = {
-        **artifacts.summary.input_content_hashes,
-        "combined_graph": content_hash(material),
-        "lp_generation_summary": content_hash(
-            artifacts.summary.model_dump(mode="json")
-        ),
-        "lp_unresolved_items": content_hash(
-            artifacts.unresolved_items.model_dump(mode="json")
-        ),
-        "lp_validation_report": content_hash(lp_report.model_dump(mode="json")),
-    }
-
-    if input_hashes["as_lc_bundle"] != content_hash(upstream) or input_hashes[
-        "effective_config"
-    ] != content_hash(config.model_dump(by_alias=True, mode="json")):
-        raise ValueError(
-            "AS+LC+LP merge: LP input hashes differ from current material."
-        )
-
-    material["validation_report"] = {
-        "as_lc_validation_report": upstream["validation_report"],
-        "artifact_byte_hashes": byte_hashes,
-        "errors": [],
-        "input_content_hashes": input_hashes,
-        "lp_validation_report": lp_report.model_dump(mode="json"),
-        "object_counts": _combined_counts(material),
-        "passed": True,
-        "pedagogical_correctness_established": lp_report.pedagogical_correctness_established,
-        "semantic_scope_notice": lp_report.semantic_scope_notice,
-        "semantic_validation_performed": lp_report.semantic_validation_performed,
-        "validation_checks": list(_VALIDATION_CHECKS),
-        "warnings": list(lp_report.warnings),
-    }
-    bundle = AcademicStandardsLCLPKGBundle.model_validate(material)
-
-    if bundle.model_dump(mode="json") != material:
-        raise ValueError("AS+LC+LP bundle schema changed the compiled material.")
-
-    payload = (canonical_lp_json(material) + "\n").encode("utf-8")
     path = kg_dirs.root / _BUNDLE
 
     with (kg_dirs.root / ".lp_generation.lock").open("rb") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        _verify_artifact_bytes(hashes=byte_hashes, root=kg_dirs.root)
-        _atomic_write(path=path, payload=payload)
-        observed = path.read_bytes()
-        restored = AcademicStandardsLCLPKGBundle.model_validate_json(observed)
+        _verify_artifact_bytes(
+            hashes=bundle.validation_report.artifact_byte_hashes, root=kg_dirs.root
+        )
 
-        if observed != payload or restored != bundle:
-            raise ValueError("AS+LC+LP bundle round-trip changed compiled material.")
+        if overwrite or not (path.exists() or path.is_symlink()):
+            payload = (canonical_lp_json(bundle.model_dump(mode="json")) + "\n").encode(
+                "utf-8"
+            )
+            _atomic_write(path=path, payload=payload)
 
-        _verify_artifact_bytes(hashes=byte_hashes, root=kg_dirs.root)
-        _write_projections(bundle=restored, root=kg_dirs.root)
-        _verify_artifact_bytes(hashes=byte_hashes, root=kg_dirs.root)
-        return restored
+        return _complete_export(bundle=bundle, root=kg_dirs.root)
+
+
+def reuse_as_lc_lp_kg(
+    *,
+    as_lc_bundle: AcademicStandardsLCKGBundle,
+    doc_key: str,
+    kg_config: CreateKGConfig,
+    kg_dirs: KGDirs,
+) -> AcademicStandardsLCLPKGBundle | None:
+    """Reuse an existing final graph only after complete current-material validation.
+
+    Absence returns None so normal generation may resume. Any existing but invalid,
+    stale, incomplete, or misaligned release fails closed. Reuse does not initialize,
+    recover, or advance checkpoints, and never rewrites the bundle or standalone
+    evidence. Both flat projections are regenerated from the validated saved bundle.
+
+    Parameters
+    ----------
+    as_lc_bundle
+        Authoritative bundle returned by current AS+LC compilation.
+    doc_key
+        Current source document identity.
+    kg_config
+        Current effective configuration, including LP policy and retry counts.
+    kg_dirs
+        Directory holding the final graph and its complete evidence chain.
+
+    Returns
+    -------
+    AcademicStandardsLCLPKGBundle | None
+        Verified saved graph, or None when no final bundle exists.
+    """
+
+    path = kg_dirs.root / _BUNDLE
+
+    if not (path.exists() or path.is_symlink()):
+        return None
+
+    bundle = _prepare_bundle(
+        as_lc_bundle=as_lc_bundle, doc_key=doc_key, kg_config=kg_config, kg_dirs=kg_dirs
+    )
+
+    with (kg_dirs.root / ".lp_generation.lock").open("rb") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return _complete_export(bundle=bundle, root=kg_dirs.root)
