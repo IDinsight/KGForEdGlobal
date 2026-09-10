@@ -1,4 +1,4 @@
-"""Compile an additive AS+LC+LP bundle from authenticated standalone artifacts.
+"""Compile an additive AS+LC+LP bundle and its complete internal JSONL projections.
 
 The compiler preserves upstream content and complete audit payloads. Compilation
 validates structural/process integrity and does not establish pedagogical correctness.
@@ -299,6 +299,78 @@ def _verify_artifact_bytes(*, hashes: dict[str, str], root: Path) -> None:
             raise ValueError(f"LP input appeared during bundle compilation: {name}.")
 
 
+def _write_projections(*, bundle: AcademicStandardsLCLPKGBundle, root: Path) -> None:
+    """Write and read back complete internal projections of a validated bundle.
+
+    Nodes are grouped as framework, standards items, then learning components;
+    relationships as hasChild, supports, buildsTowards, then relatesTo. Each group is
+    sorted by its identifier without changing the authoritative bundle order. Every
+    internal field is retained, including nulls and relationship metadata. The caller
+    holds the artifact lock throughout writing and verification.
+
+    Parameters
+    ----------
+    bundle
+        Successfully compiled and read-back-verified combined graph.
+    root
+        Locked output directory for the two combined JSONL projections.
+
+    Raises
+    ------
+    ValueError
+        If projection counts disagree with the bundle or persisted bytes change.
+    """
+
+    material = bundle.model_dump(mode="json")
+    nodes = [
+        {**material["framework"], "entity_type": "StandardsFramework"},
+        *(
+            {**item, "entity_type": "StandardsFrameworkItem"}
+            for item in sorted(
+                material["items"], key=lambda item: item["case_identifier_uuid"]
+            )
+        ),
+        *(
+            {**component, "entity_type": "LearningComponent"}
+            for component in sorted(
+                material["learning_components"],
+                key=lambda component: component["identifier"],
+            )
+        ),
+    ]
+    relationships = [
+        edge
+        for name in (
+            "relationships_has_child",
+            "relationships_supports",
+            *_LP_PROVENANCE_KEYS,
+        )
+        for edge in sorted(material[name], key=lambda edge: edge["identifier"])
+    ]
+
+    if (
+        len(nodes) != bundle.summary.total_node_count
+        or len(relationships) != bundle.summary.total_relationship_count
+    ):
+        raise ValueError("AS+LC+LP projection counts differ from the bundle.")
+
+    payloads = {
+        "as_lc_lp_nodes.jsonl": "".join(
+            canonical_lp_json(row) + "\n" for row in nodes
+        ).encode("utf-8"),
+        "as_lc_lp_relationships.jsonl": "".join(
+            canonical_lp_json(row) + "\n" for row in relationships
+        ).encode("utf-8"),
+    }
+
+    for name, payload in payloads.items():
+        _atomic_write(path=root / name, payload=payload)
+
+    for name, payload in payloads.items():
+        if (root / name).read_bytes() != payload:
+            raise ValueError(f"AS+LC+LP projection round-trip changed {name}.")
+
+
 def compile_as_lc_lp_kg(
     *,
     as_lc_bundle: AcademicStandardsLCKGBundle,
@@ -306,12 +378,13 @@ def compile_as_lc_lp_kg(
     kg_config: CreateKGConfig,
     kg_dirs: KGDirs,
 ) -> AcademicStandardsLCLPKGBundle:
-    """Compile and atomically write a freshly validated AS+LC+LP bundle.
+    """Compile a validated AS+LC+LP bundle and write its internal projections.
 
     Standalone artifacts are authenticated against current upstream/config material and
     complete checkpoint authority. Failed graph diagnostics are inspectable in their
     standalone files but cannot compile successfully. Every invocation compiles from
-    current inputs and returns a detached, read-back-verified bundle.
+    current inputs, atomically replaces each output file, and returns a detached,
+    read-back-verified bundle only after both complete projections are verified.
 
     Parameters
     ----------
@@ -421,5 +494,7 @@ def compile_as_lc_lp_kg(
         if observed != payload or restored != bundle:
             raise ValueError("AS+LC+LP bundle round-trip changed compiled material.")
 
+        _verify_artifact_bytes(hashes=byte_hashes, root=kg_dirs.root)
+        _write_projections(bundle=restored, root=kg_dirs.root)
         _verify_artifact_bytes(hashes=byte_hashes, root=kg_dirs.root)
         return restored

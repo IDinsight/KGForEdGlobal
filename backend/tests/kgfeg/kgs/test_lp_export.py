@@ -145,6 +145,43 @@ def _persist(
     return _artifacts._write(harness=harness, relationships=relationships)
 
 
+def _projection_bytes(material: dict[str, Any]) -> dict[str, bytes]:
+    """Derive complete ordered internal rows independently from authoritative material.
+
+    Parameters
+    ----------
+    material
+        Upstream node and complete combined relationship payloads.
+
+    Returns
+    -------
+    dict[str, bytes]
+        Exact two-file projection oracle, including nulls and nested metadata.
+    """
+    nodes = [{**material["framework"], "entity_type": "StandardsFramework"}]
+    for group, entity, identifier in (
+        ("items", "StandardsFrameworkItem", "case_identifier_uuid"),
+        ("learning_components", "LearningComponent", "identifier"),
+    ):
+        indexed = {row[identifier]: row for row in material[group]}
+        assert len(indexed) == len(material[group])
+        nodes.extend({**indexed[key], "entity_type": entity} for key in sorted(indexed))
+    relationships: list[dict[str, Any]] = []
+    for group in (
+        "relationships_has_child",
+        "relationships_supports",
+        "relationships_builds_towards",
+        "relationships_relates_to",
+    ):
+        indexed = {row["identifier"]: row for row in material[group]}
+        assert len(indexed) == len(material[group])
+        relationships.extend(indexed[key] for key in sorted(indexed))
+    return {
+        "as_lc_lp_nodes.jsonl": b"".join(_bytes(row) for row in nodes),
+        "as_lc_lp_relationships.jsonl": b"".join(_bytes(row) for row in relationships),
+    }
+
+
 def _snapshot(root: Path) -> dict[str, bytes]:
     """Capture actual immediate files without using stored hash claims.
 
@@ -322,7 +359,11 @@ def test_complete_upstream_content_and_standalone_audit_shapes_survive(  # pylin
         assert max(parents.values()) >= 2
     assert material["learning_components"] and material["relationships_supports"]
     assert standalone.validation_report.passed
-    assert _snapshot(tmp_path) == {**before, _BUNDLE: _bytes(material)}
+    assert _snapshot(tmp_path) == {
+        **before,
+        _BUNDLE: _bytes(material),
+        **_projection_bytes(material),
+    }
     assert AcademicStandardsLCLPKGBundle.model_validate_json(_bytes(material)) == result
     result.entity_provenance["custom_audit"]["nested"].append("caller mutation")
     assert harness.bundle.model_dump(mode="json") == upstream
@@ -844,8 +885,8 @@ def test_repeated_compilation_has_identical_bytes_without_rewriting_inputs(
     second = _compile(harness)
     assert first == second
     assert _snapshot(tmp_path) == before
-    assert "as_lc_lp_nodes.jsonl" not in before
-    assert "as_lc_lp_relationships.jsonl" not in before
+    for name, expected in _projection_bytes(first.model_dump(mode="json")).items():
+        assert before[name] == expected
 
 
 @pytest.mark.parametrize(
