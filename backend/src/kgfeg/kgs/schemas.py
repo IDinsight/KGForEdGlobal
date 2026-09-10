@@ -5686,7 +5686,7 @@ class SFIHasChildValidationVerdict(BaseSchema):
         return self
 
 
-# Schemas for Academic Standards.
+# Schemas for Academic Standards and bundles.
 class AcademicStandardsExportSummary(BaseSchema):
     """Aggregate summary for the final Academic Standards KG export."""
 
@@ -5739,6 +5739,94 @@ class AcademicStandardsLCKGBundle(BaseSchema):
     summary: AcademicStandardsLCExportSummary
     unresolved_items: AcademicStandardsLCUnresolvedItems
     validation_report: AcademicStandardsValidationReport
+
+
+class AcademicStandardsLCLPExportSummary(AcademicStandardsLCExportSummary):
+    """Combined totals and complete summaries for all three graph layers.
+
+    ``as_lc_summary`` retains the upstream totals verbatim while the inherited total
+    fields describe the combined graph. The LP payload preserves the complete
+    standalone summary; the compiler authenticates it against persisted evidence.
+    """
+
+    as_lc_summary: AcademicStandardsLCExportSummary
+    learning_progressions: dict[str, Any]
+
+
+class AcademicStandardsLCLPKGBundle(BaseSchema):
+    """Self-contained AS+LC graph with additive LP relationships and audit material.
+
+    LP summary, unresolved, and validation payloads retain their standalone JSON
+    shapes. Their owning artifact reader validates them before compilation; these JSON
+    mappings avoid coupling the shared schemas to downstream pipeline modules.
+    """
+
+    entity_provenance: dict[str, Any]
+    framework: StandardsFramework
+    items: list[StandardsFrameworkItem]
+    learning_components: list[LearningComponent]
+    relationships_has_child: list[Relationship]
+    relationships_supports: list[Relationship]
+    relationships_builds_towards: list[Relationship]
+    relationships_relates_to: list[Relationship]
+    summary: AcademicStandardsLCLPExportSummary
+    unresolved_items: AcademicStandardsLCLPUnresolvedItems
+    validation_report: AcademicStandardsLCLPValidationReport
+
+
+class AcademicStandardsLCLPUnresolvedItems(BaseSchema):
+    """Verbatim upstream unresolved reports plus complete ambiguous LP claims."""
+
+    academic_standards: AcademicStandardsUnresolvedItems
+    learning_components: LCUnresolvedItems
+    learning_progressions: dict[str, Any]
+
+
+class AcademicStandardsLCLPValidationReport(BaseSchema):
+    """Combined structural/process verdict and complete input-validation evidence."""
+
+    as_lc_validation_report: AcademicStandardsValidationReport
+    artifact_byte_hashes: dict[str, str]
+    errors: list[str]
+    input_content_hashes: dict[str, str]
+    lp_validation_report: dict[str, Any]
+    object_counts: dict[str, int]
+    passed: bool = Field(strict=True)
+    pedagogical_correctness_established: Literal[False]
+    semantic_scope_notice: Literal[
+        "Validation covers structural and process integrity only; it does not establish pedagogical correctness."
+    ]
+    semantic_validation_performed: Literal[False]
+    validation_checks: list[str]
+    warnings: list[str]
+
+    @model_validator(mode="after")
+    def _validate_verdict(self) -> AcademicStandardsLCLPValidationReport:
+        """Reject success that contradicts either input verdict or combined errors.
+
+        Returns
+        -------
+        AcademicStandardsLCLPValidationReport
+            Consistent verdict, pending compiler validation of actual material.
+
+        Raises
+        ------
+        ValueError
+            If success contradicts the recorded validation evidence.
+        """
+
+        upstream = self.as_lc_validation_report
+        lp_report = self.lp_validation_report
+        if self.passed != (
+            not self.errors
+            and upstream.passed
+            and not upstream.errors
+            and lp_report.get("passed") is True
+            and lp_report.get("errors") == []
+        ):
+            raise ValueError("Combined validation verdict contradicts its evidence.")
+
+        return self
 
 
 class AcademicStandardsLCUnresolvedItems(BaseSchema):
