@@ -67,26 +67,26 @@ If a prompt combines incompatible role-owned work, perform only the explicitly s
 
 ## 3. Build-order ownership
 
-The engineering brief defines Steps 0–29. Follow them in order.
+The engineering brief defines Steps 0–29. Follow them in order except for the explicit early Step 27 development allowance in D12.1.1, whose synchronized governance extension was approved by the user on 2026-09-11.
 
-| Step(s) | Primary role                               | Notes                                                                                                                                                                                                                                      |
-|---------|--------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| 0       | coding agent in governance-edit mode       | Record the user's decisions, update the brief consistently, and obtain the user's implementation OK. No production or test implementation begins.                                                                                          |
-| 1       | testing                                    | Establish reduced six-curriculum regression fixtures and fixture validation without changing production behavior.                                                                                                                          |
-| 2–23    | coding, then testing                       | Implement one reviewable production/configuration aspect, then independently red-team it.                                                                                                                                                  |
-| 24–25   | testing                                    | Add D12 release-policy conformance coverage and run the targeted six-curriculum structural/process matrix. Production remains read-only.                                                                                                   |
-| 26      | testing                                    | Former Step 27: run and validate all six complete pipelines after revalidated Step 25 approval. External LLM execution requires explicit authorization.                                                                                    |
-| 27      | coding, then independent testing/execution | Implement the separate LP evaluator after Step 26 reviewer approval; a separate testing task authors tests, validates, and executes with explicit live authorization; independent reviewer gates exact candidate plus evaluation evidence. |
-| 28      | coding, then testing                       | Update project documentation, then verify it against actual artifacts and accepted LIMITs.                                                                                                                                                 |
-| 29      | reviewer                                   | Perform the final comprehensive release review. No implementation is owned by this step.                                                                                                                                                   |
+| Step(s) | Primary role                               | Notes                                                                                                                                                                                                                                                                                                    |
+|---------|--------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 0       | coding agent in governance-edit mode       | Record the user's decisions, update the brief consistently, and obtain the user's implementation OK. No production or test implementation begins.                                                                                                                                                        |
+| 1       | testing                                    | Establish reduced six-curriculum regression fixtures and fixture validation without changing production behavior.                                                                                                                                                                                        |
+| 2–23    | coding, then testing                       | Implement one reviewable production/configuration aspect, then independently red-team it.                                                                                                                                                                                                                |
+| 24–25   | testing                                    | Add D12 release-policy conformance coverage and run the targeted six-curriculum structural/process matrix. Production remains read-only.                                                                                                                                                                 |
+| 26      | testing                                    | Former Step 27: run and validate all six complete pipelines after revalidated Step 25 approval. External LLM execution requires explicit authorization.                                                                                                                                                  |
+| 27      | coding, then independent testing/execution | Under approved D12.1.1, coding and subsequent independent offline testing may start using a validated frozen Madhi snapshot while Step 26 continues. The harness supports N curricula. Live evaluation and final Step 27 approval still require Step 26 reviewer approval and all six project snapshots. |
+| 28      | coding, then testing                       | Update project documentation, then verify it against actual artifacts and accepted LIMITs.                                                                                                                                                                                                               |
+| 29      | reviewer                                   | Perform the final comprehensive release review. No implementation is owned by this step.                                                                                                                                                                                                                 |
 
 When a step contains both production and test obligations, the coding role completes only the production/configuration/documentation surface. The testing role independently creates and runs the required tests afterward.
 
-Do not implement a later step early merely because it would make the current step easier.
+Do not implement a later step early merely because it would make the current step easier. D12.1.1 is a specific exception for early Step 27 coding and subsequent independent offline testing, not permission to skip Step 26 completion or its live-evaluation prerequisite.
 
 ## 4. Step 0 is a hard specification gate
 
-A proposed governance amendment remains a pre-implementation candidate until every decision payload is settled consistently and the user explicitly approves it for implementation. The 2026-09-11 amendment has satisfied this specification gate; its approval is recorded in engineering-brief Section 3.3, and Step 24–25 revalidation is next.
+A proposed governance amendment remains a pre-implementation candidate until every decision payload is settled consistently and the user explicitly approves it for implementation. The original 2026-09-11 D12 amendment satisfied this specification gate, and Step 24–25 reapproval is recorded in engineering-brief Section 3.3. The user explicitly approved the synchronized early-start/N-curriculum extension for implementation on 2026-09-11; the approval is recorded in engineering-brief Section 3.3.
 
 No Step 1–29 build-order work may begin until all of the following are true:
 
@@ -137,6 +137,8 @@ Under the user-approved 2026-09-11 amendment, former Step 27 full runs become St
 
 Coding or testing completion alone never authorizes the next numbered step.
 
+The early-start exception in engineering-brief D12.1.1 permits Step 27 coding and subsequent independent offline testing after revalidated Step 25 approval and approval of that extension, using a complete validated frozen Madhi mathematics development snapshot. The evaluator must accept any selected N >= 1 compatible curricula without hard-coded curriculum names, roster or count. Missing unselected future curricula do not block development; selected missing/stale/invalid inputs fail. Keep development evidence distinct from final completion evidence. Live evaluation and final Step 27 approval still require Step 26 reviewer approval, all six reviewed project snapshots, authorized evaluation, complete reporting and concern dispositions. Preserve active runs and their material inputs.
+
 ### Baseline and review-base SHA
 
 Step 0 governance edits normally occur before this baseline exists and therefore do not require a prior reviewer-approved review-base SHA. The governance-edit agent must still report the observed repository root, branch/detached state, current `HEAD` when one exists, `git status --short`, and pre-existing user changes, and must not describe that observed state as reviewer-approved.
@@ -147,6 +149,7 @@ Every implementation, testing, review, and remediation handoff must carry one ex
 
 - Step 1: the baseline commit;
 - an ordinary later Step 2–28: the previous step's reviewer-approved commit;
+- early Step 27 under D12.1.1: revalidated Step 25 SHA `28d4f1218c71237bc7fda1027a8ac55866bd345f`, retained through its final evaluator review; later Step 26 approval and producer snapshot SHAs are additional evidence, not an automatic review-base replacement;
 - Step 29 final review: the original pre-Step-1 baseline is the review base and the exact Step 28 reviewer-approved SHA is the candidate, so the reviewer examines the complete LP project range;
 - current-step remediation: the same review base used by the rejected candidate;
 - cross-step remediation: the formerly approved frontier commit, unless a user-controlled history rewrite establishes a sanitized replacement.
@@ -275,6 +278,7 @@ The following constraints apply across roles:
 - No single signal—hierarchy, LC overlap, text similarity, code proximity, source order, or local rank—automatically publishes an edge.
 - LLM producer/checker responses are untrusted proposals. Deterministic code owns validation, reconciliation, endpoint containment, IDs, counts, and release status.
 - Step 27 blind classification preserves permitted factual evidence while hiding production conclusions and nomination recommendations. Separate rationale critique uses original bounded production evidence and the operative rationale after the blind answer is frozen; classification and critique have distinct request/cache identities and do not feed answers into each other.
+- Step 27 accepts an explicit positive number N of curriculum snapshots; generic evaluator code, prompts, schemas, sampling and scoring must not hard-code Madhi, the initial six-curriculum roster, or its count. Curriculum semantics come from each validated snapshot/config; populations remain framework-contained.
 - Step 27 independently sampled pairs all use the same bounded-upstream evidence-construction rules without consulting nomination status. Freeze their evidence before joining production outcomes; calculate nomination coverage from the common-condition judge-positive population, keeping production-evidence assessments separate.
 - `no_relation`, `needs_review`, and processing failure remain distinct.
 - `needs_review` remains visible, never publishes, and does not block release; any failed pair after permitted retries/recovery halts LP under D13 with no count/rate tolerance.

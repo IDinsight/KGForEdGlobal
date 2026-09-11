@@ -429,11 +429,15 @@ The user's adoption of the amendment on 2026-09-11 reopens K=24 through F=25, wi
 
 ### 5.15.1 Step 27 evaluator gate
 
+D12.1.1 permits early coding and subsequent independent offline testing after approval of the extension, using a validated frozen Madhi development snapshot while Step 26 continues. Do not reject that start solely because the other snapshots are pending. Verify the fixed revalidated Step 25 evaluator review base and all later candidate changes. A development/readiness assessment is not final Step 27 approval: retain Step 26 reviewer approval, all six reviewed snapshots, authorized live evaluation and full completion evidence for that gate.
+
 Verify coding-authored executable harness support, independently testing-authored tests, and separately authorized execution against the exact candidate and all six reviewed Step 26 snapshots. Read all settled D12 payloads and inspect explicit implementation approval before evaluating implementation. Check S1/R1 defaults and CLI overrides; dedicated `LLM_LP_EVAL_JUDGE_MODEL=anthropic:claude-opus-5` wiring in the template and non-secret local-configuration evidence; shared registry settings; finite per-judgment execution limits; absence of aggregate budget/cost-estimate gates; and A1 concern disposition. Do not inspect or quote unrelated `.env` secrets. The evaluator variable must not become a production prerequisite.
 
 Verify the blind view retains permitted nomination facts while hiding recommendations, and the separate critic receives original bounded production evidence plus the operative rationale after classification is frozen, without the classifier's answer. Reject grounding scores based on the redacted blind view, expanded evidence substituted into original-production critique, cross-view cache reuse, or ablations that leave the removed evidence in derived fields.
 
 Verify every independent-cohort base judgment uses the same reconstructed-upstream construction rules regardless of nomination status, with payloads frozen before the reporting join. Reject nomination-dependent evidence conditions, original production evidence substituted for selected nominated pairs, lost component obligations for overlapping pairs, or coverage denominators mixing incomparable conditions. Verify independent tests vary production status while holding upstream material fixed and preserve evidence/request identity.
+
+Verify generalized operation for any explicitly selected N >= 1 compatible curriculum snapshots. Reject curriculum-specific or fixed-six runtime branches and Madhi-only assumptions; require independent synthetic tests with one, multiple and more-than-six curricula, unfamiliar labels, per-framework isolation and later snapshot addition. Missing unselected curricula may remain pending during development; selected missing/invalid inputs must fail, and subset reports cannot assert full project completion.
 
 Check every component: blind classification before separate production-rationale critique; upstream selection frozen independently of nominations/results; controls, order changes, repetitions, baselines and evidence sensitivity. Inspect actual prompts for leakage and cache identities for complete material binding. Independently reconcile population, sample, schedule, valid output, failure, ambiguity, usage/cost and report counts; test evidence-reference containment, stale inputs, output/input separation and resume. Ensure no real unasserted pair is declared negative, no production label is called truth, and no agreement/coverage statistic is relabeled precision/recall.
 
@@ -683,7 +687,7 @@ List legitimate later-step deferrals and accepted LIMITs. Do not confuse them wi
 
 #### If APPROVED FOR NEXT BUILD STEP
 
-Provide a concise next-step coding or testing task message containing the exact approved SHA and required role files/brief path. After revalidated Step 25 approval, route to testing-owned Step 26 full runs; after Step 26 approval, route to coding-owned Step 27 harness authorship, then separate testing/authorized execution and reviewer gate.
+Provide a concise next-step coding or testing task message containing the exact approved SHA and required role files/brief path. After revalidated Step 25 approval, testing owns Step 26 full runs. The D12.1.1 extension approval is recorded in brief Section 3.3; a separate coding task may also start generalized Step 27 development from the fixed Step 25 review base using a validated frozen Madhi snapshot, followed by independent offline testing. Live evaluation and final Step 27 approval still require Step 26 reviewer approval and all six project snapshots.
 
 #### If APPROVED — LP BUILD ORDER COMPLETE
 
