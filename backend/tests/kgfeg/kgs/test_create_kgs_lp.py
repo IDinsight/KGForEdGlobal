@@ -20,13 +20,14 @@ from pydantic_ai.usage import RunUsage
 
 # Package Library
 from kgfeg.config import Settings
+from kgfeg.document_ir.schemas import DocumentIR, DocumentPageMeta
 from kgfeg.entries import create_kgs
 from kgfeg.kgs import lp_export, lp_generation
 from kgfeg.kgs.llm import KGUsageTracker
 from kgfeg.kgs.lp_finalization import LPFinalizationCycleError, LPRelationships
 from kgfeg.kgs.lp_generation import LPGenerationFailed
 from kgfeg.kgs.schemas import AcademicStandardsLCLPKGBundle
-from kgfeg.kgs.utils import KGDirs
+from kgfeg.kgs.utils import KGDirs, KGInputs
 from kgfeg.schemas import RunCtx
 from tests.kgfeg.kgs import test_lp_finalization as _claims
 from tests.kgfeg.kgs import test_lp_generation as _fixtures
@@ -135,11 +136,31 @@ class _Harness:
         real_lp
             Keep all LP production stages running against scripted proposals.
         """
-        inputs = SimpleNamespace(
-            document_ir=SimpleNamespace(doc_key=_DOC_KEY), kg_config=self.config
+        inputs = KGInputs(
+            code_pattern_match_counts={},
+            document_ir=DocumentIR(
+                coord_space="px",
+                doc_key=_DOC_KEY,
+                dpi=72,
+                page_count=1,
+                pages=[
+                    DocumentPageMeta(
+                        dpi=72, image_height=100, image_width=100, page_index=0
+                    )
+                ],
+                pdf_name="synthetic.pdf",
+                segments=[],
+            ),
+            document_ir_fp=self.document,
+            kg_config=self.config,
+            kg_dirs=KGDirs(root=self.root),
+            observed_languages=["en"],
+            segment_counts={},
+            table_columns_signature_counts={},
+            table_selection_match_counts={},
+            warnings=[],
         )
         for name, result in (
-            ("build_run_manifest", {"doc_key": _DOC_KEY}),
             ("compute_doc_key", _DOC_KEY),
             ("cross_check_stitching_run", self.document),
             ("load_and_validate_inputs", inputs),
@@ -379,7 +400,11 @@ def test_build_preserves_phase_order_bundle_arguments_and_overwrite(
     )
     assert harness.calls == list(_PHASES)
     assert result == harness.root / "kg_run_manifest.json"
-    assert json.loads(result.read_bytes()) == {"doc_key": _DOC_KEY}
+    manifest = json.loads(result.read_bytes())
+    assert manifest["doc_key"] == _DOC_KEY
+    assert manifest["status"] == "prep_complete"
+    assert datetime.fromisoformat(manifest["created_at"]).utcoffset() is not None
+    assert manifest["document_ir_fp"] == str(harness.document)
     for name in _LP_PHASES:
         kwargs = harness.mocks[name].call_args.kwargs
         assert kwargs["as_lc_bundle"] is harness.bundle

@@ -64,6 +64,7 @@ from kgfeg.kgs.utils import (
     cross_check_stitching_run,
     load_and_validate_inputs,
     persist_kg_run,
+    persist_kg_run_manifest,
 )
 from kgfeg.schemas import CreateKGConfig, RunConfig
 from kgfeg.utils.general import open_json_type, write_to_json
@@ -86,7 +87,7 @@ def build_kgs(
     The process is as follows:
 
     1. Load the stitched DocumentIR and validate it against the KG config parameters.
-    2. Build and persist `kg_run_manifest.json`.
+    2. Build `kg_run_manifest.json`, preserving the validated original on resume.
     3. Plan source DocumentIR units for Academic Standards (SFI) extraction windows.
     4. Build LLM-ready extraction windows.
     5. Extract source-grounded SFI candidates from extraction windows using an LLM.
@@ -154,8 +155,11 @@ def build_kgs(
 
     # 2.
     kg_run_manifest = build_run_manifest(kg_run_inputs)
-    kg_run_manifest_fp = kg_dirs.root / "kg_run_manifest.json"
-    write_to_json(fp=kg_run_manifest_fp, json_info=kg_run_manifest)
+    kg_run_manifest_fp = persist_kg_run_manifest(
+        kg_dirs=kg_dirs,
+        manifest=kg_run_manifest,
+        overwrite=config.overwrite,
+    )
 
     # 3.
     plan_items = plan_extraction_windows(

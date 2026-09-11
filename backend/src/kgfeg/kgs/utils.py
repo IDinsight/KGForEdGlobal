@@ -1676,6 +1676,82 @@ def persist_kg_run(
     return kg_dirs, kg_run
 
 
+def persist_kg_run_manifest(
+    *, kg_dirs: KGDirs, manifest: dict[str, Any], overwrite: bool
+) -> Path:
+    """Persist a new prep manifest or retain the validated original during resume.
+
+    Creation time belongs to the original prep material. Keeping that material
+    unchanged preserves its downstream provenance and content hashes; execution timing
+    is recorded separately in `kg_run.json`. Manifest compatibility does not replace
+    downstream validation of complete inputs, artifacts, or checkpoints.
+
+    Parameters
+    ----------
+    kg_dirs
+        Directories containing the KG manifest and downstream artifacts.
+    manifest
+        Fresh manifest derived from the current validated KG inputs.
+    overwrite
+        Whether to write a fresh manifest instead of validating an existing one.
+
+    Returns
+    -------
+    Path
+        Persisted manifest path, left byte-for-byte unchanged on valid resume.
+
+    Raises
+    ------
+    ValueError
+        If a saved manifest is malformed, differs from the current prep material, or is
+        missing while downstream LP artifacts already exist.
+    """
+
+    manifest_fp = kg_dirs.root / "kg_run_manifest.json"
+
+    if not overwrite and manifest_fp.exists():
+        saved_manifest = open_json_type(manifest_fp)
+
+        if not isinstance(saved_manifest, dict):
+            raise ValueError("Saved KG run manifest must be a JSON object.")
+
+        created_at = saved_manifest.get("created_at")
+
+        if not isinstance(created_at, str):
+            raise ValueError("Saved KG run manifest requires a valid created_at.")
+
+        try:
+            timestamp = datetime.fromisoformat(created_at)
+        except ValueError as error:
+            raise ValueError(
+                "Saved KG run manifest requires a valid created_at."
+            ) from error
+
+        if timestamp.utcoffset() is None:
+            raise ValueError("Saved KG run manifest created_at requires a timezone.")
+
+        # Only the newly generated clock value is incidental to this comparison. The
+        # original timestamp remains present in every provenance hash.
+        current_material = {**manifest, "created_at": created_at}
+
+        if json.dumps(
+            allow_nan=False, obj=saved_manifest, sort_keys=True
+        ) != json.dumps(allow_nan=False, obj=current_material, sort_keys=True):
+            raise ValueError(
+                "Saved KG run manifest differs from current prep material."
+            )
+
+        return manifest_fp
+
+    if not overwrite and (
+        any(kg_dirs.root.glob("lp_*")) or any(kg_dirs.root.glob("as_lc_lp_*"))
+    ):
+        raise ValueError("Cannot recreate a missing KG run manifest for LP resume.")
+
+    write_to_json(fp=manifest_fp, json_info=manifest)
+    return manifest_fp
+
+
 def reset_output_files(output_fps: Sequence[Path]) -> None:
     """Remove stale output artifacts and initialize empty JSONL artifacts.
 

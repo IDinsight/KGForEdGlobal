@@ -456,7 +456,7 @@ def test_entry_exact_reuse_skips_lp_stages_preserves_checkpoints_and_records_zer
     assert harness.calls == list(_entry._PHASES[:-5])
     assert harness.proposals.calls == []
     after = _state(harness.root)
-    stable = set(before) - {*_PROJECTIONS, "kg_run.json", "kg_run_manifest.json"}
+    stable = set(before) - {*_PROJECTIONS, "kg_run.json"}
     assert {name: after[name] for name in stable} == {
         name: before[name] for name in stable
     }
@@ -503,7 +503,7 @@ def test_entry_invalid_saved_release_records_error_without_advancing_lp(
     assert harness.calls == list(_entry._PHASES[:-5])
     assert harness.proposals.calls == []
     after = _state(harness.root)
-    stable = set(before) - {"kg_run.json", "kg_run_manifest.json"}
+    stable = set(before) - {"kg_run.json"}
     assert {name: after[name] for name in stable} == {
         name: before[name] for name in stable
     }
