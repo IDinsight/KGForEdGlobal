@@ -42,7 +42,7 @@ Use this precedence:
 
 The implementation is not correct merely because code and tests agree. Both can encode the same wrong assumption.
 
-Under settled D12, v1 has no independent pre-release semantic/gold-set gate. A candidate is not semantically correct merely because structural/process checks pass or producer/checker agree; review must enforce that limitation and reject invented semantic metrics as well as unsupported pedagogical claims.
+Under amended D12, production success has no evaluator-score or human gold-set prerequisite; separate Step 27 evaluator execution/reporting is required for project completion without an automatic semantic score threshold. Neither judge outputs nor structural/process checks nor producer/checker agreement establish pedagogical correctness. Review must enforce both completion and interpretation boundaries. The user explicitly approved the synchronized 2026-09-11 amendment for implementation; the approval is recorded in engineering-brief Section 3.3. This does not constitute independent reviewer approval of any implementation or revalidated step.
 
 Do not replace the brief with Learning Commons defaults, general educational theory, personal design preference, one curriculum's structure, or what seems elegant.
 
@@ -301,7 +301,7 @@ Inspect:
 
 No feature may directly publish an edge.
 
-Review that candidate blocking is bounded, deterministic, and disclosed as an unmeasured recall ceiling. D12 does not authorize a pre-release recall metric, so reject both hidden omission claims and an invented semantic gate.
+Review that candidate blocking is bounded, deterministic, and disclosed as an unmeasured recall ceiling. D12 authorizes sample-conditioned judge-positive nomination coverage, not an unqualified curriculum-wide recall metric; reject hidden omission claims and invented automatic semantic gates.
 
 ### 5.9 Request, producer, checker, and orchestration integrity
 
@@ -406,13 +406,13 @@ Confirm no duplicate nodes/relationships, stable serialization, exact bundle par
 
 ### 5.15 D12 release policy and six-curriculum evidence
 
-For Step 24, Step 25, Step 27, and Step 29, verify:
+For Steps 24–29 as applicable, verify:
 
-- no code, config, test, script, documentation, or release checklist requires a semantic gold set, sample, audit cadence, metric, numeric threshold, or human semantic approval;
+- production success requires no evaluator artifact/score, human gold set, human sample/cadence or semantic approval; separate Step 27 sample/metric/report obligations are required for project completion without an automatic semantic score threshold;
 - `needs_review` is visible and count-reconciled, never publishes, and does not itself block release;
 - D13 processing failures remain distinct and any failed pair blocks success;
 - structural/process validation and producer/checker agreement are never presented as pedagogical correctness;
-- the absence of independent pre-release semantic validation is disclosed as the accepted D12 LIMIT;
+- required judge diagnostics are disclosed as fallible, sample/evidence-conditioned assessments without empirical truth, curriculum-wide recall, or human gold-set guarantees;
 - optional post-release audits, when present, record their actual reviewed population/sampling, reviewer/time, findings/rationale, affected IDs, and released artifact/effective-config content hashes; and
 - findings follow D12/D14 earliest-stage remediation and rerun rather than hand-edited graphs.
 
@@ -425,7 +425,19 @@ Step 24 must test that release-policy contract with deterministic fixtures/fakes
 - Rwanda noisy generic LC reuse; and
 - Ghana English recurrence versus developmental extension.
 
-Step 26 is explicitly deferred and creates no implementation, candidate, or reviewer gate; confirmed Step 25 defects return to the earliest owner. Full-run validation must record the exact candidate code SHA plus config/source content hashes and use the approved `LLM_KG_MODEL` setup while retaining every structural, provenance, count, collision, checkpoint, and D13 requirement.
+The user's adoption of the amendment on 2026-09-11 reopens K=24 through F=25, with former frontier/review base `540ea950378ce54b54da1c7a93491b525609b574`, because Step 24's former global prohibition on required samples/metrics changes. Require independent reassessment and revalidation of the affected chain before Step 26; do not call this entirely prospective. Earlier production obligations remain unchanged unless evidence identifies an earlier owner requiring explicit reopening. Step 26 is former Step 27 full-run validation and must record exact candidate code SHA plus config/source/artifact hashes, use the approved `LLM_KG_MODEL`, and retain every structural, provenance, count, collision, checkpoint, and D13 requirement.
+
+### 5.15.1 Step 27 evaluator gate
+
+Verify coding-authored executable harness support, independently testing-authored tests, and separately authorized execution against the exact candidate and all six reviewed Step 26 snapshots. Read all settled D12 payloads and inspect explicit implementation approval before evaluating implementation. Check S1/R1 defaults and CLI overrides; dedicated `LLM_LP_EVAL_JUDGE_MODEL=anthropic:claude-opus-5` wiring in the template and non-secret local-configuration evidence; shared registry settings; finite per-judgment execution limits; absence of aggregate budget/cost-estimate gates; and A1 concern disposition. Do not inspect or quote unrelated `.env` secrets. The evaluator variable must not become a production prerequisite.
+
+Verify the blind view retains permitted nomination facts while hiding recommendations, and the separate critic receives original bounded production evidence plus the operative rationale after classification is frozen, without the classifier's answer. Reject grounding scores based on the redacted blind view, expanded evidence substituted into original-production critique, cross-view cache reuse, or ablations that leave the removed evidence in derived fields.
+
+Verify every independent-cohort base judgment uses the same reconstructed-upstream construction rules regardless of nomination status, with payloads frozen before the reporting join. Reject nomination-dependent evidence conditions, original production evidence substituted for selected nominated pairs, lost component obligations for overlapping pairs, or coverage denominators mixing incomparable conditions. Verify independent tests vary production status while holding upstream material fixed and preserve evidence/request identity.
+
+Check every component: blind classification before separate production-rationale critique; upstream selection frozen independently of nominations/results; controls, order changes, repetitions, baselines and evidence sensitivity. Inspect actual prompts for leakage and cache identities for complete material binding. Independently reconcile population, sample, schedule, valid output, failure, ambiguity, usage/cost and report counts; test evidence-reference containment, stale inputs, output/input separation and resume. Ensure no real unasserted pair is declared negative, no production label is called truth, and no agreement/coverage statistic is relabeled precision/recall.
+
+Require complete execution/reporting with no unresolved execution failures, full disagreement/denominator evidence, honest empty/shortfall accounting and D12-A concern dispositions. No low score automatically fails a semantic threshold and no favorable score establishes pedagogy. Deterministic defects or misrepresented evidence still fail engineering review. Reports are separate artifacts and may not rewrite production success status, graphs, prompts, or policy. Confirmed defects return to the earliest owner under D14.
 
 ### 5.16 Documentation
 
@@ -580,7 +592,7 @@ Bind the verdict to the exact approved commit SHA.
 
 Use only for a passing Step 29 comprehensive review.
 
-This closes the engineering brief's numbered LP build order at the exact Step 28 candidate/approved SHA after a full baseline-to-candidate review and review of the six-curriculum evidence. It does not claim empirical prerequisite truth, cross-framework support, LC-to-LC progression, or production deployment approval beyond the brief.
+This closes the engineering brief's numbered LP build order at the exact Step 28 candidate/approved SHA after a full baseline-to-candidate review and review of the six-curriculum production and separate required evaluator evidence. It does not claim empirical prerequisite truth, cross-framework support, LC-to-LC progression, or production deployment approval beyond the brief.
 
 ### CHANGES REQUIRED
 
@@ -649,7 +661,7 @@ Do not include speculative style observations as findings.
 
 ### 4. Requirement-by-requirement completion audit
 
-Account for current-step obligations, relevant decisions, invariants, tests, artifacts, and release-policy gates. D12 supplies no pre-release semantic-evaluation gate.
+Account for current-step obligations, relevant decisions, invariants, tests, artifacts, and release-policy gates. D12 requires separate evaluator execution/reporting for Step 27/29 completion, with no automatic semantic score gate or human gold-set prerequisite.
 
 ### 5. Code/config/documentation review summary
 
@@ -657,7 +669,7 @@ Summarize correctness, architecture, curriculum-neutrality, determinism, compati
 
 ### 6. Test and D12 release-policy review summary
 
-Summarize oracle quality, red-team strength, fixture diversity, D12 conformance, and unexecuted gaps without claiming measured semantic quality.
+Summarize oracle quality, red-team strength, fixture diversity, D12 conformance, and unexecuted gaps while distinguishing reported judge-based quality assessments from proven pedagogical correctness.
 
 ### 7. Commands and validation results
 
@@ -671,7 +683,7 @@ List legitimate later-step deferrals and accepted LIMITs. Do not confuse them wi
 
 #### If APPROVED FOR NEXT BUILD STEP
 
-Provide a concise next-step coding or testing task message containing the exact approved SHA and required role files/brief path. After Step 25 approval, skip the explicitly deferred Step 26 and route directly to Step 27.
+Provide a concise next-step coding or testing task message containing the exact approved SHA and required role files/brief path. After revalidated Step 25 approval, route to testing-owned Step 26 full runs; after Step 26 approval, route to coding-owned Step 27 harness authorship, then separate testing/authorized execution and reviewer gate.
 
 #### If APPROVED — LP BUILD ORDER COMPLETE
 

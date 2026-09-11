@@ -1,7 +1,8 @@
 """Exercise release policy with synthetic proposals, never pedagogical truth labels.
 
-Candidate recall and independent semantic quality remain unmeasured. An optional
-human finding is evidence for upstream remediation and rerun, never an edge override.
+These production checks do not measure candidate recall or semantic quality.
+Separate evaluation artifacts and reports may exist without becoming production
+prerequisites. Findings require upstream remediation and rerun, never edge overrides.
 """
 
 # Future Library
@@ -33,6 +34,7 @@ from tests.kgfeg.kgs import test_create_kgs_lp as _entry
 from tests.kgfeg.kgs import test_lp_artifacts as _artifacts
 from tests.kgfeg.kgs import test_lp_candidates as _candidates
 from tests.kgfeg.kgs import test_lp_finalization as _claims
+from tests.kgfeg.kgs import test_lp_generation as _fixtures
 from tests.kgfeg.kgs import test_lp_reuse as _reuse
 
 _BUNDLE = "as_lc_lp_kg_bundle.json"
@@ -41,6 +43,9 @@ _SCOPE = (
     "pedagogical correctness."
 )
 _UNSUPPORTED = (
+    ("evaluation_artifacts", "separate-evaluation/"),
+    ("evaluation_required", True),
+    ("evaluation_score", 1.0),
     ("semantic_gold_set", "synthetic-gold.json"),
     ("semantic_metric", "precision"),
     ("semantic_threshold", 0.99),
@@ -239,6 +244,97 @@ def test_config_rejects_semantic_prerequisites_overrides_and_failure_tolerances(
     )
 
 
+@pytest.mark.parametrize(argnames="initial_report", argvalues=[False, True])
+@pytest.mark.parametrize(argnames="profile", argvalues=_claims._PROFILES)
+def test_evaluation_artifacts_cannot_gate_production_or_invalidate_reuse(
+    initial_report: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    profile: str,
+    tmp_path: Path,
+) -> None:
+    """Keep separate evaluation state inert across production success and reuse.
+
+    Parameters
+    ----------
+    initial_report
+        Whether unfavorable diagnostic evidence exists before the first release.
+    monkeypatch
+        Offline producer/checker and upstream phase substitutions.
+    profile
+        Reduced curriculum retaining its distinctive structural evidence.
+    tmp_path
+        Isolated production inputs, outputs, and disjoint diagnostic directory.
+    """
+    harness = _entry._Harness(root=tmp_path)
+    harness.bundle = _fixtures._expanded_fixture(profile)
+    harness.config = _fixtures._config(batch=20, profile=profile)
+    harness.config.overwrite = False
+    harness.proposals.bundle = harness.bundle
+    harness.proposals.config = harness.config
+    harness.proposals.default_decision = "needs_review"
+    harness.results["compile_as_lc_kg"] = harness.bundle
+    harness._save_config()
+    evaluation = tmp_path / "separate-evaluation"
+    evaluation.mkdir()
+    report = evaluation / "lp_eval_report.json"
+    # Adversarial opaque sidecars, not an evaluator schema or semantic truth labels.
+    unfavorable = b'{"execution_complete": false, "score": 0, "approved": false}'
+    if initial_report:
+        report.write_bytes(unfavorable)
+    harness._install(monkeypatch=monkeypatch, real_lp=True)
+    create_kgs.create(harness.config_path)
+    _entry._assert_run(error=None, harness=harness)
+    assert harness.proposals.calls
+    bundle = _json(harness.root / _BUNDLE)
+    counts = bundle["summary"]["learning_progressions"]["object_counts"]
+    assert counts["candidate_pairs"] > 0
+    assert counts["needs_review_claims"] == counts["candidate_pairs"]
+    assert counts["unresolved_failed_pairs"] == 0
+    assert not bundle["relationships_builds_towards"]
+    assert not bundle["relationships_relates_to"]
+    assert (
+        bundle["unresolved_items"]["learning_progressions"]["total_needs_review"]
+        == counts["candidate_pairs"]
+    )
+    saved = {
+        name: value[0]
+        for name, value in _reuse._state(harness.root).items()
+        if name != "kg_run.json"
+    }
+    for payload in (
+        unfavorable,
+        b'{"execution_complete": true, "score": 1, "approved": true}',
+        b'{"incomplete":',
+        None,
+    ):
+        if payload is None:
+            report.unlink()
+        else:
+            report.write_bytes(payload)
+        _reuse._reset_entry(harness)
+        create_kgs.create(harness.config_path)
+        _entry._assert_run(error=None, harness=harness)
+        assert not harness.proposals.calls
+        assert saved == {
+            name: value[0]
+            for name, value in _reuse._state(harness.root).items()
+            if name != "kg_run.json"
+        }
+        assert (
+            report.read_bytes() == payload
+            if payload is not None
+            else not report.exists()
+        )
+    for validation in (
+        _json(harness.root / "lp_validation_report.json"),
+        bundle["validation_report"],
+    ):
+        assert validation["passed"] is True
+        assert validation["semantic_validation_performed"] is False
+        assert validation["pedagogical_correctness_established"] is False
+        assert validation["semantic_scope_notice"] == _SCOPE
+
+
 def test_exclusion_negative_ambiguity_and_failure_counts_are_distinct(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -309,6 +405,11 @@ def test_failure_after_ambiguity_blocks_until_real_processing_recovers(
     harness = _entry._Harness(root=tmp_path)
     harness.proposals.default_decision = "needs_review"
     harness.proposals.failure = (stage, 1)
+    evaluation = tmp_path / "separate-evaluation"
+    evaluation.mkdir()
+    report = evaluation / "lp_eval_report.json"
+    favorable = b'{"execution_complete": true, "score": 1, "approved": true}'
+    report.write_bytes(favorable)
     harness._install(monkeypatch=monkeypatch, real_lp=True)
     with pytest.raises(LPGenerationFailed):
         create_kgs.create(harness.config_path)
@@ -353,6 +454,7 @@ def test_failure_after_ambiguity_blocks_until_real_processing_recovers(
     )
     assert failures[0]["resolved_run_number"] is None
     assert failures[0]["exhausted"] is True
+    assert report.read_bytes() == favorable
 
 
 @pytest.mark.parametrize(argnames="count", argvalues=[1, 12])

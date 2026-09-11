@@ -12,8 +12,8 @@ A selected role file may add or narrow behavior for that role, but it may not si
 
 The required role files are:
 
-- production/configuration/documentation implementation: `artifacts/instructions/coding_agent.md`
-- automated testing, regression fixtures, evaluation harnesses, and pipeline validation: `artifacts/instructions/testing_agent.md`
+- production/configuration/documentation and executable evaluation-harness implementation: `artifacts/instructions/coding_agent.md`
+- automated testing, regression fixtures, independent harness validation/execution, and pipeline validation: `artifacts/instructions/testing_agent.md`
 - independent final gate review: `artifacts/instructions/reviewer_agent.md`
 - read-only architecture/code/test/artifact explanation: `artifacts/instructions/explainer_agent.md`
 
@@ -49,8 +49,8 @@ If the selected role file or canonical brief is missing, unreadable, or ambiguou
 
 Each task/thread has one primary role. Do not silently substitute one role for another.
 
-- A request to implement production code, runtime config, pipeline integration, exporters, validators, or project documentation uses the **coding role**.
-- A request to create or modify automated tests, reduced regression fixtures, test helpers, D12 release-policy conformance coverage, or to execute/red-team a completed step uses the **testing role**. A future semantic-evaluation harness requires a separately approved governance change.
+- A request to implement production code, runtime config, pipeline integration, exporters, validators, project documentation, or the Step 27 executable evaluation harness/configuration uses the **coding role**.
+- A request to create or modify automated tests, reduced regression fixtures, test helpers, D12 release-policy conformance coverage, or to execute/red-team a completed step uses the **testing role**. Step 27 harness tests, independent validation, and authorized evaluation execution also use the testing role; executable harness source remains coding-owned. The 2026-09-11 amendment has complete settled D12 policies, including CLI-configurable S1/R1, a dedicated LP evaluator model and no aggregate evaluation budget ceilings, and was explicitly approved for implementation by the user on 2026-09-11. The recorded approval reopens Steps 24–25; it does not bypass later reviewer or live-execution gates.
 - A request for the final quality gate after implementation and testing uses the **reviewer role**.
 - A request for a walkthrough, explanation, comparison, ELI5, or interpretation of the brief/code/tests/artifacts uses the **explainer role**.
 - A request to change this file, a role instruction file, or the engineering brief is a **governance-only edit task**. Route it through `artifacts/instructions/coding_agent.md` in governance-edit mode unless the user explicitly selects another governance workflow. Only governance files may be edited, and the task must not be combined with production implementation or test authorship in the same thread.
@@ -75,8 +75,8 @@ The engineering brief defines Steps 0–29. Follow them in order.
 | 1       | testing                              | Establish reduced six-curriculum regression fixtures and fixture validation without changing production behavior.                                  |
 | 2–23    | coding, then testing                 | Implement one reviewable production/configuration aspect, then independently red-team it.                                                          |
 | 24–25   | testing                              | Add D12 release-policy conformance coverage and run the targeted six-curriculum structural/process matrix. Production remains read-only.           |
-| 26      | deferred                             | No v1 implementation or tuning work. After Step 25 reviewer approval, proceed directly to Step 27.                                                 |
-| 27      | testing                              | Run and validate all six complete pipelines. External LLM execution requires explicit user authorization.                                          |
+| 26 | testing | Former Step 27: run and validate all six complete pipelines after revalidated Step 25 approval. External LLM execution requires explicit authorization. |
+| 27 | coding, then independent testing/execution | Implement the separate LP evaluator after Step 26 reviewer approval; a separate testing task authors tests, validates, and executes with explicit live authorization; independent reviewer gates exact candidate plus evaluation evidence. |
 | 28      | coding, then testing                 | Update project documentation, then verify it against actual artifacts and accepted LIMITs.                                                         |
 | 29      | reviewer                             | Perform the final comprehensive release review. No implementation is owned by this step.                                                           |
 
@@ -86,7 +86,7 @@ Do not implement a later step early merely because it would make the current ste
 
 ## 4. Step 0 is a hard specification gate
 
-The updated brief remains a pre-implementation governance candidate until every decision payload is settled consistently and the user explicitly approves it for implementation.
+A proposed governance amendment remains a pre-implementation candidate until every decision payload is settled consistently and the user explicitly approves it for implementation. The 2026-09-11 amendment has satisfied this specification gate; its approval is recorded in engineering-brief Section 3.3, and Step 24–25 revalidation is next.
 
 No Step 1–29 build-order work may begin until all of the following are true:
 
@@ -133,7 +133,7 @@ testing/evaluation or pipeline validation
 
 Step 29 is the terminal comprehensive reviewer gate.
 
-Step 26 is an explicit D12 deferral, not a coding/testing deliverable. It creates no candidate commit or reviewer gate. Confirmed Step 25 defects return to the earliest owning step through the ordinary remediation workflow; otherwise the reviewer-approved Step 25 state is the predecessor for Step 27.
+Under the user-approved 2026-09-11 amendment, former Step 27 full runs become Step 26 and a new Step 27 owns the evaluator. Both have ordinary reviewer gates. The user's implementation approval on 2026-09-11 reopens Step 24 through Step 25 with former frontier/review base `540ea950378ce54b54da1c7a93491b525609b574`, because the earlier global no-required-semantic-samples/metrics rule changes. Revalidate that chain before Step 26. The user approved implementation in the amended build order; this does not grant reviewer approval, bypass Step 24–25 revalidation, authorize live calls or Git mutations, or permit changes to active runs.
 
 Coding or testing completion alone never authorizes the next numbered step.
 
@@ -159,6 +159,8 @@ If the review base is missing, ambiguous, unreachable, not an ancestor of the ca
 
 After coding and testing are complete and a meaningful review is possible, the user—not an agent—creates a candidate review commit containing the exact in-scope production, config, documentation, test, fixture, manifest/lockfile, and tracked generated changes. The testing agent may help generate a git commit **message** for the user following the conventional commit style.
 
+For Step 27, the user may establish the exact candidate after coding and independent deterministic testing, before authorized live evaluation execution. Live evidence then binds to that exact SHA and tree. The final reviewer gate occurs only after execution/reporting and concern dispositions are complete. Material repairs require a new user-created candidate and revalidation of affected evidence; no agent may commit or silently relabel earlier working-tree evidence.
+
 The candidate must be a descendant of the review-base SHA.
 
 Agents must not stage or commit unless the user explicitly authorizes that exact operation.
@@ -179,6 +181,10 @@ Full curriculum result directories are not committed. When generated outputs are
 - checksums or a reproducible manifest for the artifacts under review.
 
 Do not present untracked generated artifacts as though they are part of the candidate commit.
+
+### Evaluation evidence
+
+Step 27 keeps immutable evaluation artifacts separate from production artifacts and automated test fixtures. Record the production snapshot SHA/hashes, evaluator candidate SHA, evaluator config, complete sample/request/condition/replicate manifests, judge model/settings/prompt/schema hashes, validated judgments and separate failures, usage/cost evidence, report hashes, and concern dispositions. Missing evaluation completion evidence blocks the Step 27/29 gate; scores do not automatically impose a semantic release threshold. Evaluation never changes production success reports or graphs.
 
 ### Approval binding
 
@@ -268,11 +274,13 @@ The following constraints apply across roles:
 - Integrity and reuse use hashes/identifiers derived from actual material inputs and artifacts, not manually maintained candidate-policy versions or configurable fingerprint-input lists.
 - No single signal—hierarchy, LC overlap, text similarity, code proximity, source order, or local rank—automatically publishes an edge.
 - LLM producer/checker responses are untrusted proposals. Deterministic code owns validation, reconciliation, endpoint containment, IDs, counts, and release status.
+- Step 27 blind classification preserves permitted factual evidence while hiding production conclusions and nomination recommendations. Separate rationale critique uses original bounded production evidence and the operative rationale after the blind answer is frozen; classification and critique have distinct request/cache identities and do not feed answers into each other.
+- Step 27 independently sampled pairs all use the same bounded-upstream evidence-construction rules without consulting nomination status. Freeze their evidence before joining production outcomes; calculate nomination coverage from the common-condition judge-positive population, keeping production-evidence assessments separate.
 - `no_relation`, `needs_review`, and processing failure remain distinct.
 - `needs_review` remains visible, never publishes, and does not block release; any failed pair after permitted retries/recovery halts LP under D13 with no count/rate tolerance.
 - Existing AS-only and AS+LC artifact schemas remain intact; AS+LC+LP outputs are additive.
 - Never hand-edit a generated final graph to make a run pass. Fix the earliest incorrect config, candidate, prompt, judgment, finalization, or validation stage and rerun.
-- V1 has no independent pre-release semantic/gold-set gate. Structural/process validity and producer/checker agreement must never be described as pedagogical correctness, and the accepted D12/D14 limitations must remain visible.
+- Production success has no evaluator-score or human gold-set prerequisite. The amended Step 27 requires separate LLM evaluation execution and reporting for build-order completion, initially without an automatic semantic score threshold. Judge outputs, structural/process validity, and producer/checker agreement do not establish pedagogical correctness. Preserve D12/D14 limitations and separate execution failure, ambiguity, and quality concerns.
 
 ## 10. Scope discipline
 
@@ -329,10 +337,12 @@ Do not invoke paid or externally hosted LLM APIs, upload curriculum text, or run
 
 Automated tests should use deterministic fixtures, fakes, or recorded synthetic responses by default. They must not make live LLM calls.
 
+Step 27 evaluator execution requires its own explicit user authorization, settled D12 model/execution/disposition policy, and a fixed-input manifest. It uses the dedicated `LLM_LP_EVAL_JUDGE_MODEL` setting, initially `anthropic:claude-opus-5`, with the existing shared model-registry settings. Step 27 coding adds this assignment to `.template.env` and local `.env`; this governance task does not edit those files. Sampling/repetition defaults are CLI-configurable. The user removed aggregate evaluation budget ceilings and cost-estimate approval gates; retain actual usage/available-cost reporting and finite retry behavior. Automated tests remain offline. The evaluator setting must not become a production startup/config requirement or change the production model contract below.
+
 When live pipeline execution is authorized:
 
 - use the existing configured `LLM_KG_MODEL`;
-- do not introduce a new LP model environment variable;
+- do not introduce a new production LP model environment variable; the separate Step 27 evaluator-only setting above is permitted;
 - report the command, config, model identifier available from the run, usage/cost evidence, output directory, and failures;
 - do not log or expose API keys; and
 - do not silently retry an unexpectedly expensive full run.

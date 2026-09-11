@@ -30,7 +30,7 @@ The testing role owns two kinds of work.
 
 ### Independent testing after coding-owned steps
 
-After Steps 2–23 and 28 are implemented, independently add/run the automated tests and validation required by the brief. Step 26 is explicitly deferred and has no implementation to test.
+After Steps 2–23, 27, and 28 are implemented, independently add/run the automated tests and validation required by the brief. Step 27 executable harness source/configuration remains coding-owned; a separate testing task must independently test it and perform the approved evaluation execution. Do not repair harness source or prompts.
 
 ### Testing-primary steps
 
@@ -39,7 +39,7 @@ The testing role is the primary write/validation role for:
 - **Step 1** — reduced six-curriculum regression fixtures and fixture validation;
 - **Step 24** — deterministic D12 release-policy conformance coverage, with no semantic gold set or pre-release metric harness;
 - **Step 25** — targeted six-curriculum structural/process matrix execution and analysis; and
-- **Step 27** — complete six-curriculum pipeline execution and validation.
+- **Step 26** — complete six-curriculum pipeline execution and validation (formerly Step 27).
 
 Step 0 is governance-only and is routed through the coding agent's governance-edit mode. Step 29 is reviewer-only.
 
@@ -51,7 +51,7 @@ A testing task may use one or more modes:
 
 - **initial red-team mode** — independently test a newly completed coding-owned step;
 - **testing-primary implementation mode** — create reduced fixtures owned by Step 1 or D12 release-policy conformance support owned by Step 24;
-- **testing-primary execution mode** — execute and assess Steps 25 or 27;
+- **testing-primary execution mode** — execute and assess Steps 25 or 26; Step 27 evaluation execution follows independent harness testing;
 - **production-remediation verification mode** — verify production/config/documentation fixes after testing/reviewer findings;
 - **cross-step revalidation mode** — revalidate a reopened earlier step and all affected contracts through the former approved frontier; and
 - **reviewer-remediation mode** — correct test/test-support/evaluation-oracle defects identified by review or independently reassess a disputed test oracle.
@@ -523,7 +523,7 @@ Verify:
 - LP does not run after failed upstream validation;
 - LP failure propagates;
 - usage buckets serialize;
-- no new LP model environment variable is required;
+- production LP requires no additional model environment variable; the separate Step 27 evaluator setting is not a production startup/config prerequisite;
 - `kg_run.json` records error/traceback/completion/usage appropriately;
 - success is impossible after LP/combined validation failure; and
 - overwrite/resume flags flow correctly.
@@ -554,12 +554,12 @@ Step 24 uses deterministic fixtures/fakes to prove the settled v1 release contra
 - `needs_review` never publishes an edge and does not itself block successful release;
 - `no_relation`, `needs_review`, D10 policy exclusion, and D13 processing failure remain distinct;
 - any actual processing failure still halts LP under D13;
-- no semantic gold set, human-review sample, audit cadence, semantic metric, numeric threshold, or human semantic approval is required by code, config, tests, release scripts, or documentation;
+- production success does not require evaluator artifacts, semantic scores/thresholds, a gold set, human-review sample/cadence, or human semantic approval; keep these out of production config and structural-only validation reports. The separate Step 27 sample/metric/report obligation must not be prohibited by repository-wide test assertions;
 - structural/process validation and producer/checker agreement are not labeled pedagogical correctness;
 - optional post-release audit findings retain reviewer/time/population-or-sampling/findings/rationale/affected IDs/released-artifact and effective-config content hashes when an audit is actually recorded; and
 - audit findings and D14 findings route to earliest-stage remediation and rerun rather than directly editing generated relationships.
 
-Do not invent a semantic oracle to strengthen this step. The absence of independent pre-release semantic validation is an accepted D12 LIMIT that must be disclosed, not a missing test to fill.
+Do not invent ground-truth labels or implement the later harness in Step 24. The user approved the amendment for implementation on 2026-09-11, as recorded in engineering-brief Section 3.3. Reassess Step 24's former global prohibition on required samples/metrics, preserve its production non-gate checks, and rerun affected Step 25 obligations before reviewer reapproval. K=24, F=25, review base `540ea950378ce54b54da1c7a93491b525609b574`; if evidence identifies an earlier affected owner, stop and explicitly reopen it. Separate Step 27 judge reports remain fallible diagnostics.
 
 ### 7.19 Targeted six-curriculum structural/process matrix
 
@@ -574,11 +574,11 @@ Step 25 exercises the earliest deterministic artifact where each distinctive pro
 
 Validate policy, warning/provenance propagation, identities, counts, collisions, candidate/request materialization, checkpoint prefixes, failures, artifacts, and combined projections. This matrix does not issue or imply a semantic-quality pass/fail judgment. Do not patch final JSONL; route defects to the earliest owning config/code/prompt/judgment/finalization/validation stage.
 
-Step 26 is explicitly deferred. Do not tune config, instructions, prompts, semantic thresholds, or generic code under that step. A confirmed Step 25 defect follows ordinary earliest-owner remediation and review.
+Step 26 now owns full pipeline execution; Step 27 owns the separately implemented and independently tested evaluator. Neither authorizes production tuning. A confirmed Step 25 defect follows ordinary earliest-owner remediation and review.
 
 ### 7.20 Complete six-curriculum runs
 
-Step 27 requires explicit user authorization for external LLM calls.
+Step 26 requires explicit user authorization for external LLM calls.
 
 For each run record:
 
@@ -596,11 +596,29 @@ For each run record:
 - validated producer/checker/reconciled deterministic-prefix checkpoint state; and
 - visible `needs_review` and unresolved-warning counts.
 
-Validate every final LP edge and structural/process contract, exact D11 metadata/provenance, counts, collisions, standalone/combined projection parity, and stale-reuse behavior. Every pair must have successful D13 producer/checker coverage; one failed pair blocks success. `needs_review` remains visible, nonpublishing, and nonblocking. No D12 semantic/gold-set pass is required or may be inferred from these results.
+Validate every final LP edge and structural/process contract, exact D11 metadata/provenance, counts, collisions, standalone/combined projection parity, and stale-reuse behavior. Every pair must have successful D13 producer/checker coverage; one failed pair blocks success. `needs_review` remains visible, nonpublishing, and nonblocking. No semantic score/gold-set pass is required for production success or may be inferred from these results. Freeze these exact six reviewed snapshots for the separate Step 27 evaluation obligation.
 
 Do not rerun unexpectedly expensive jobs silently.
 
-### 7.21 Documentation validation
+### 7.21 Independent evaluator validation and execution (Step 27)
+
+Begin only after Step 26 reviewer approval, coding completion, the recorded settled D12-S/J/R/B/A policies and explicit amendment implementation approval. Independently derive tests for all D12 components and invariants 59–65; the coding handoff and the LC evaluator are not oracles. Executable evaluator source/config/prompts are read-only to testing.
+
+Use deterministic fakes and independent reduced synthetic fixtures to challenge: label/rationale leakage into blind classification; critique contamination; separate support/grounding outcomes; upstream sampling dependence on nominations; outcome/correction/rank/text/LC/DAG/unresolved/truncation strata; empty/exhausted cells and cohort overlap; reproducibility and sampling probabilities; order remapping and repeated-call identities; exact/reconstructed/expanded/removed evidence conditions; synthetic-control expectations and real-pair nonnegative assumptions; baselines; stale/tampered/gapped/duplicate/extra cache outputs; malformed schema/IDs/endpoints/evidence references; interrupted resume; finite per-judgment retries and usage accounting without aggregate budget gates; output/input aliasing; incomplete reports; disagreement/ambiguity preservation; and denominator-zero behavior. Verify production artifacts and success semantics remain unchanged.
+
+Independently test the two evidence views with a synthetic request containing both factual nomination values and recommendation metadata. Prove blindness hides recommendations without dropping permitted facts, critique receives original bounded evidence plus the operative rationale only after classification is frozen, the classifier's answer never reaches the critic, and critique cannot overwrite classification. Include a rationale supported by original nomination facts so redaction cannot create a false grounding defect; include an unsupported claim that expanded evidence must not rescue in original-production scoring. Verify distinct view/request/cache identities and complete removal of ablated evidence from derived counts/references as well as primary context.
+
+Verify S1/R1 CLI defaults and nondefault values, invalid-value rejection, complete effective-config recording, sample/repetition schedule changes and cache identity behavior. Verify the dedicated `LLM_LP_EVAL_JUDGE_MODEL` binding resolves independently of production and LC settings, uses shared registry settings, and fails on missing/unavailable evaluator configuration without fallback. Absence of the evaluator variable must not affect production startup or `LLM_KG_MODEL` resolution. Do not read or expose the actual local `.env` as a test fixture; use synthetic environments. Verify no aggregate dollar/token/call budget or required cost-estimate gate was introduced.
+
+Independently test common upstream evidence construction with both nominated and never-nominated sampled pairs. Changing only nomination/adjudication/publication metadata must leave selection, rendered evidence, scheduled judge requests, and existing judgments unchanged; only the reporting join and resulting production-comparison metrics may change. Prove production requests/nomination records cannot enter the common constructor, overlapping cohorts retain their distinct required judgments, and coverage reconciles to nominated judge-positive pairs divided by all judge-positive pairs in the same common condition. Challenge variant comparability and reject nomination-dependent condition splitting or mixed-condition pooling.
+
+Independently recompute counts and diagnostic metrics. A production assertion is never a test semantic truth label; nomination coverage among sampled judge-positive pairs is not curriculum-wide recall. Test concern disposition under the approved D12-A policy separately from execution failure. Review the evaluator's synthetic controls for construction validity; weak control performance is a reported concern, while a broken control contract is a harness defect.
+
+Only after deterministic validation, present the exact fixed-input manifest, resolved dedicated-judge/shared-model settings and materialized schedule for explicit live-run authorization. No expenditure ceiling or cost-estimate approval is required. Execute all three components for the six reviewed snapshots with the approved finite per-judgment retry/timeout/concurrency settings, retaining all requests/judgments/failures/usage and separate reproducible reports. Required unresolved execution failures block completion; valid ambiguity and low scores are reported with no automatic semantic threshold. Do not silently shrink samples, change model/settings, tune production, or restart active production runs.
+
+Handoff the exact evaluator candidate SHA, tests, production snapshot SHAs/hashes, evaluator config and schedule hashes, commands, usage/cost/failure evidence, artifact directory/checksums, concern dispositions and independent test results to the reviewer. A user-created material candidate commit precedes live evidence claimed against that exact SHA; earlier working-tree smoke evidence must be identified as such and is not silently relabeled. Reuse identical candidate SHAs for evidence-only reruns.
+
+### 7.22 Documentation validation
 
 For Step 28 verify documentation against actual code/config/output:
 
@@ -611,7 +629,8 @@ For Step 28 verify documentation against actual code/config/output:
 - relationship semantics;
 - failure/resume/reuse behavior;
 - six-curriculum examples; and
-- every accepted LIMIT.
+- every accepted LIMIT;
+- Step 26 production versus Step 27 evaluation artifact/status boundaries, commands, sampling/conditions, cache/usage controls, reported denominators, ambiguity/concerns, and absence of automatic semantic thresholds or human gold-set prerequisites.
 
 A doc snapshot should not become the only schema test.
 
@@ -778,7 +797,7 @@ Also run applicable:
 
 Automated tests must not make live LLM calls.
 
-Steps 25 and 27 may invoke the real pipeline only with explicit user authorization and correctly configured environment. Report usage/cost evidence without exposing secrets.
+Step 26 may invoke the full real pipeline only with explicit user authorization and correctly configured environment. Step 25 remains deterministic matrix execution; Step 27 separately requires explicit authorization for the evaluator's fixed manifest and execution; there is no aggregate budget approval gate. Report usage/cost evidence without exposing secrets.
 
 Record exact commands, exit status, and relevant result summaries.
 
@@ -871,7 +890,7 @@ List test/test-support/evaluation changes and why. Separately list any test-only
 
 ### 6. Commands and results
 
-Report exact commands and results, including D12 conformance outcomes and full-run manifests where applicable. V1 has no required semantic metrics.
+Report exact commands and results, including D12 conformance outcomes and full-run manifests where applicable. Step 27 requires diagnostic evaluation metrics with explicit denominators; production Step 24–26 evidence does not claim pedagogical correctness.
 
 ### 7. Existing-test changes
 
@@ -933,7 +952,7 @@ State the exact decision, repository state, environment, artifact, or authorizat
 
 ## 18. Working principle
 
-Write tests and validation that catch plausible wrong LP implementations—not tests that merely restate current code—while preserving enough six-curriculum diversity to prevent a simple Madhi-shaped solution from masquerading as a general international curriculum pipeline. Enforce the D12 non-gate faithfully: do not manufacture a semantic oracle or claim pedagogical correctness from structural/process evidence.
+Write tests and validation that catch plausible wrong LP implementations—not tests that merely restate current code—while preserving enough six-curriculum diversity to prevent a simple Madhi-shaped solution from masquerading as a general international curriculum pipeline. Enforce the D12 production non-gate and separate required evaluation workflow faithfully: do not manufacture ground truth, automatic semantic thresholds, or pedagogical-correctness claims from process checks or judge outputs.
 
 Ensure all test classes/functions/methods have named arguments in alphabetical order (unless the function/method has exactly one argument, then positional argument is allowed).
 Ensure all test functions, classes, and methods are listed in alphabetical order within each file unless it will introduce coding errors (e.g, Pydantic schema validators are sometimes executed in a logical order rather than an alphabetical order).

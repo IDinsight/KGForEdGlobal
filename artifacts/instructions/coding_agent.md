@@ -27,11 +27,12 @@ Your ordinary write domain is **production/support code, runtime configuration, 
 The coding role ordinarily owns:
 
 - Steps 2–23;
+- Step 27 executable evaluation-harness support (not its automated tests or independent execution verdict);
 - Step 28.
 
 The coding role also performs **Step 0 governance-edit mode** only when the user explicitly asks it to record decisions or update governance files. In that mode, edit only the requested brief/instruction files; do not modify production code, runtime configs, tests, fixtures, or generated pipeline outputs.
 
-Steps 1, 24, 25, and 27 are testing-primary. Step 26 is explicitly deferred from v1 and owns no implementation or tuning work. Step 29 is reviewer-only.
+Steps 1, 24, 25, and 26 are testing-primary. Step 27 harness source/configuration is coding-owned, followed by a separate testing task for independent tests, validation, and authorized execution. Step 29 is reviewer-only. D12-S/J/R/B/A are settled, and the user explicitly approved the synchronized amendment for implementation on 2026-09-11. Step 24–25 revalidation and reviewer reapproval are required before progression; Step 27 harness implementation still follows Step 26 reviewer approval.
 
 Do not implement a testing-primary or reviewer-only step under this role. When a coding-owned step completes, hand it to the testing role; do not authorize progression yourself.
 
@@ -399,7 +400,17 @@ Do not collapse:
 
 Each state must remain visible and count-reconciled.
 
-Under D12, `needs_review` never publishes and does not block release. V1 has no independent pre-release semantic/gold-set gate, and implementation or documentation must not represent structural/process validity or producer/checker agreement as pedagogical correctness. Under D13, any actual failed pair after permitted retries/recovery halts LP with no rate/count tolerance.
+Under D12, `needs_review` never publishes and does not block production success. Separate Step 27 evaluation execution/reporting is required for project completion, with no automatic semantic score threshold or human gold-set prerequisite. Neither judge assessments nor structural/process validity nor producer/checker agreement proves pedagogical correctness. Under D13, any actual production failed pair after permitted retries/recovery halts LP with no rate/count tolerance.
+
+### 6.11 Step 27 evaluator authorship
+
+After Step 26 reviewer approval and explicit approval of all D12 policy payloads, author `entries/evaluate_lps.py` and `evals/lp_eval/{schemas,sampling,prompts,judge,scoring}.py` as separate executable evaluation support. Read D12 in full and consume fixed reviewed production snapshots without changing their contracts. Keep evaluation configuration outside `kgs.lp`; add the evaluator-only `LLM_LP_EVAL_JUDGE_MODEL=anthropic:claude-opus-5` assignment to `.template.env` and local `.env`, plus the minimal settings/registry binding, preserving unrelated values and all secrets. Reuse the existing shared model-registry settings; the evaluator variable is required only when resolving an evaluation judge, never for production startup. Add the S1/R1 CLI controls and record effective defaults/overrides in material-bound schedules and reports. No aggregate budget caps, cost-reservation mechanism, or mandatory cost-estimate gate is authorized. Implement all three components, blind classification before separate rationale critique, independent upstream sampling, exact versus expanded evidence conditions, strict material-bound cache/output validation, failure/ambiguity/concern separation, bounded usage and complete reports. Keep all module/model settings generic.
+
+Build separate blind-classification and original-production critique views under D12.3. Retain permitted facts from nomination context in the blind view while hiding recommendations/conclusions; the critic receives the original bounded request/policy and operative rationale after the blind judgment is frozen, without that classifier's answer. Hash each rendered view separately and prevent cross-view cache reuse. Expanded or evidence-removal conditions cannot substitute for original-production grounding, and ablations must remove the selected signal from derived fields too.
+
+For every independently sampled pair, construct and freeze the common `reconstructed_bounded_upstream` evidence condition from upstream inputs and fixed policy alone, without reading production requests or nomination/results metadata. Apply the same construction rules to nominated and never-nominated pairs and their diagnostic variants. Join production outcomes only after payloads are frozen, and compute coverage using the common-condition judge-positive denominator. Retain separate required component/condition judgments for pairs selected in both cohorts.
+
+Control definitions and evaluator rubrics are executable harness support; testing independently validates them and owns separate test fixtures. Do not author automated tests, execute live evaluation as routine coding validation, or certify your own work as independently validated. Hand off injectable offline seams and a preflight-capable CLI to a separate testing task. Evaluation findings cannot authorize production prompt/config/candidate-policy changes under Step 27.
 
 ## 7. Remediation modes
 
@@ -438,7 +449,7 @@ At completion, account for every routed finding as:
 You may choose an implementation detail only when:
 
 - the brief explicitly delegates it to the current step;
-- it does not alter ontology semantics, allowed candidate population/signal technology, relation choice, direction, cycle/transitivity behavior, attribution, release gates, public artifact schemas, or another settled contract; numerical nomination budgets are permitted only when the approved brief explicitly delegates them to the current step and they remain explicit, included in the effective-config content hash, and reviewable; Step 26 authorizes no tuning; and
+- it does not alter ontology semantics, allowed candidate population/signal technology, relation choice, direction, cycle/transitivity behavior, attribution, release gates, public artifact schemas, or another settled contract; numerical nomination budgets are permitted only when the approved brief explicitly delegates them to the current step and they remain explicit, included in the effective-config content hash, and reviewable; Steps 26–27 authorize no production tuning; and
 - it does not consume an open decision.
 
 For legitimate implementation details, prefer:
@@ -459,7 +470,7 @@ Record consequential build-time choices in the completion report.
 
 Do not create, edit, weaken, delete, skip, or expand automated test files, test fixtures, test helpers, or D12 release-policy conformance assertions.
 
-The testing role owns them, including testing-primary Steps 1, 24, 25, and 27. Step 24 does not own a semantic gold set or pre-release semantic metric harness under settled D12.
+The testing role owns them, including testing-primary Steps 1, 24, 25, and 26 and independent tests/validation/execution for coding-owned Step 27. Step 24 preserves production release-policy conformance; the new executable evaluator is authored only in Step 27.
 
 You may run existing tests as regression evidence. Do not modify them merely to make implementation pass.
 
@@ -558,7 +569,7 @@ A blocker report must state:
 
 ### If governance-edit mode completed
 
-Report the repository/Git state, exact governance files changed, the user decisions or requested instruction changes recorded, every required concrete decision payload added, consistency updates made elsewhere in the brief/instructions, and validation performed. Confirm that no implementation-governing placeholder remains and that rejected alternatives were not recorded as selected options. Do not provide a testing-agent implementation handoff and do not begin dependent code. Ask the user to review the updated governance files and explicitly approve the engineering brief for implementation.
+Report the repository/Git state, exact governance files changed, the user decisions or requested instruction changes recorded, every required concrete decision payload added, consistency updates made elsewhere in the brief/instructions, and validation performed. If all payloads are complete, confirm no implementation-governing placeholder remains and request explicit implementation approval. If policy choices remain, identify every DECIDE, present concrete proposals as unselected, and request the missing decisions; do not claim the amendment is implementation-ready. Report approval impact and a conditional next-role handoff when requested, but do not start dependent code/tests/execution or represent that future handoff as authorization.
 
 ### If the coding scope completed without a user-input blocker
 

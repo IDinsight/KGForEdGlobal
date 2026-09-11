@@ -10,7 +10,7 @@ Your job is to help the user understand:
 - runtime configuration and Pydantic schemas;
 - graph entities and relationship semantics;
 - candidate generation, LLM adjudication, deterministic finalization, validation, resume, and export;
-- automated tests, D12 release-policy conformance, and structural/process validation;
+- automated tests, D12 production release-policy conformance, structural/process validation, and separate LLM-judge evaluation;
 - generated artifacts from the six curricula; and
 - discrepancies among specification, implementation, tests, configs, and outputs.
 
@@ -354,7 +354,7 @@ When explaining `kgs.lp`, distinguish:
 - generic defaults that are actually approved; and
 - concrete schema fields/literals legitimately deferred to Steps 2–3.
 
-Do not invent final field names from Section 2.13's settled semantic contract. D1–D14 are settled, but Step 3 still owns the concrete `kgs.lp` field names and literal representation.
+Do not invent final field names from Section 2.13's settled semantic contract. D1–D11, D13 and D14 production semantics remain settled; the D12 amendment has complete settled policies and received explicit user implementation approval on 2026-09-11. Step 3 owns the concrete production `kgs.lp` field names; Step 27 evaluation config remains separate.
 
 When the final schema exists, inspect the actual Pydantic models and validators before explaining accepted values, defaults, aliases, or error behavior.
 
@@ -501,7 +501,15 @@ Important LP test categories include:
 - AS/AS+LC backward compatibility; and
 - D12 release-policy conformance and the six-curriculum structural/process matrix.
 
-A passing unit suite, structural matrix, or six-pipeline validation does not prove semantic quality. Settled D12 deliberately has no independent pre-release gold-set/human semantic gate, sample, cadence, metric, or numeric threshold. Explain that `needs_review` is visible/nonpublishing/nonblocking, D13 failures remain release-blocking, and the absence of pre-release semantic validation is an accepted LIMIT.
+A passing unit suite, structural matrix, six-pipeline validation, or judge assessment does not prove pedagogical correctness. The user-approved D12 amendment requires separate LLM evaluation execution/reporting, initially with no automatic semantic score threshold or human gold-set prerequisite. The user selected S1/R1 as CLI-configurable defaults, the dedicated `LLM_LP_EVAL_JUDGE_MODEL=anthropic:claude-opus-5` setting with shared model-registry settings, no aggregate evaluation budget ceilings, finite operational retries/timeouts/concurrency, and A1 user disposition of concerns. Explain these as user-approved specification choices whose implementation must follow the amended build order; approval alone does not mean the capabilities exist. Usage reporting remains required; missing pricing is not a budget gate. Explain production `needs_review` as visible/nonpublishing/nonblocking; production D13 failures block production success, and evaluator execution failures separately block evaluator completion. Semantic ambiguity is a valid judge outcome; reported quality concerns retain accountable disposition.
+
+Explain the two evidence views: blind classification hides production conclusions and nomination recommendations while retaining permitted facts; later rationale critique uses original bounded production evidence and the operative rationale, without the classifier's answer. A fact omitted from a blind view is not automatically unsupported in production, and expanded evidence cannot retroactively ground a production explanation.
+
+Explain that every independently sampled pair receives evidence constructed by the same bounded-upstream rules, whether production nominated it or not. Production status is joined afterwards for coverage reporting; original-production assessments remain separate. Coverage compares nominated judge-positive pairs with all judge-positive pairs under that common condition, not groups whose evidence condition was chosen by nomination status.
+
+Describe blind classification and later rationale critique separately, independent upstream sampling separately from production strata, and exact production evidence separately from reconstructed or expanded upstream evidence. Pipeline assertions are not truth labels; unasserted real pairs are not automatic negatives; agreement is not semantic precision/recall; sampled judge-positive nomination coverage is not automatically curriculum-wide recall. Preserve disagreement, denominators, evidence limits and judge-bias limitations in explanations.
+
+The amended order is revalidated Steps 24–25, Step 26 six complete pipelines, Step 27 coding-authored harness followed by independent testing and authorized evaluation execution, Step 28 documentation, Step 29 comprehensive review. The global no-required-sample/metric rule changed at Step 24, so the user's adoption on 2026-09-11 reopens Steps 24–25 at review base `540ea950378ce54b54da1c7a93491b525609b574`; distinguish the recorded user specification approval from independent reviewer approval of code or steps, and do not imply it authorizes production tuning, live calls or bypassing progression gates.
 
 ## 11. Explain recurring practice carefully
 

@@ -1,6 +1,10 @@
 # Engineering Brief: Learning Progressions KG Construction
 
-**Status:** Approved for implementation. D1–D14 remain fully recorded as **SETTLED**. The user approved the prior canonical brief—including its accepted LIMITs—for Step 1+ implementation on 2026-09-01, approved the first D3 amendment on 2026-09-02, and explicitly approved this governance simplification amendment on 2026-09-02. The approved amendment removes internal candidate-policy versioning and runtime candidate ranking/tie-breaking configuration, and moves universal single-valued coordinate, candidate-policy, provenance, checkpoint, resume, license-inheritance, and stale-input behavior into code-owned invariants. The reviewer-approved Step 1 state remains the predecessor because Step 1 does not implement or consume these LP configuration fields. Dependent Step 2 production remediation may now resume in a coding-primary task using `345bb517957d90e9bb68793947ec4428bd9f0997` as its review base.
+**Status:** Governance amendment approved for implementation by the user on 2026-09-11, after review of the synchronized amendment and both evidence-condition corrections. D12-S/J/R/B/A are settled: CLI-configurable S1/R1 defaults; dedicated `LLM_LP_EVAL_JUDGE_MODEL=anthropic:claude-opus-5`; no evaluation budget ceilings; the recorded finite execution settings; and A1 concern disposition. The approval record is in Section 3.3. Proceed in the amended build order, beginning with separate testing-role Step 24–25 reassessment and reviewer reapproval. Harness implementation begins only after Step 26 reviewer approval. Live calls/full runs require separate execution authorization; Git mutations and changes to active runs are not authorized by this approval.
+
+**Prior approval and amendment impact:** The supplied former reviewer-approved frontier is Step 25 at `540ea950378ce54b54da1c7a93491b525609b574`; Steps 22–25 were revalidated there. On 2026-09-11 the observed root was `/Users/tzz/Projects/private/idi/KGForEdGlobal`, branch `tz6/lp-kg-build-step-25`, HEAD exactly that SHA, working tree clean, and no later commits. These observations are not a new reviewer approval. Adoption on 2026-09-11 reopens **K=24 through F=25**, retaining that SHA as the cross-step review base: Step 24's former repository-wide prohibition on required semantic samples/metrics in tests, scripts, and documentation is narrowed to the production pipeline, while required downstream evaluation is introduced. That is an approval-affecting change to the earlier release-policy conformance scope, not a purely prospective renumbering. Steps 24–25 need independent testing reassessment and reviewer reapproval before Step 26. Earlier production obligations, including Step 18's structural-only validation report and Steps 22–23 orchestration/reuse, remain unchanged; no evaluation field or prerequisite is added to those artifacts. If reassessment finds an earlier affected contract, stop and explicitly reopen that earliest owner rather than silently extending this range.
+
+**Historical implementation approval (superseded only where the 2026-09-11 amendment changes it):** D1–D14 were fully recorded as **SETTLED** in that prior version. The user approved the prior canonical brief—including its accepted LIMITs—for Step 1+ implementation on 2026-09-01, approved the first D3 amendment on 2026-09-02, and explicitly approved this governance simplification amendment on 2026-09-02. The approved amendment removes internal candidate-policy versioning and runtime candidate ranking/tie-breaking configuration, and moves universal single-valued coordinate, candidate-policy, provenance, checkpoint, resume, license-inheritance, and stale-input behavior into code-owned invariants. At that time, the reviewer-approved Step 1 state remained the predecessor because Step 1 did not implement or consume these LP configuration fields. That historical Step 2 handoff used `345bb517957d90e9bb68793947ec4428bd9f0997`; it is not the review base for this amendment.
 
 **Repository area:** `backend/src/kgfeg/`
 
@@ -143,7 +147,7 @@ Examples of code-owned behavior:
 
 **SETTLED — LP uses the existing `LLM_KG_MODEL`.**
 
-No LP-specific model environment variable is required. The model registry already accepts the `"learning_progressions"` model-settings type. LP will add its own agents, prompts, retry behavior, and usage buckets while using the same configured KG model as AS and LC.
+No additional model environment variable is required for production LP. The model registry already accepts the `"learning_progressions"` model-settings type. Production LP adds its own agents, prompts, retry behavior, and usage buckets while using the same configured KG model as AS and LC. The separate Step 27 evaluator uses `LLM_LP_EVAL_JUDGE_MODEL` under D12-J; that variable must not become a requirement for production startup or AS/LC/LP execution.
 
 ## 1.5 Schemas
 
@@ -222,6 +226,14 @@ The AS-only and AS+LC artifacts remain valid integration boundaries. The new AS+
 
 Like `as_lc_nodes.jsonl` and `as_lc_relationships.jsonl`, the new combined files will use snake_case internal models, retain internal relationship metadata, and include `entity_type` on node rows. They are not interchangeable with the slim Learning Commons-shaped `as_nodes.jsonl` / `as_relationships.jsonl` contract.
 
+### Separate evaluation artifacts (Step 27)
+
+The evaluator reads fixed, validated production snapshots and writes only to an explicitly selected evaluation directory disjoint from all production input/output directories. It does not add fields to `kgs.lp`, `kg_run.json`, LP validation reports, bundles, projections, or production provenance. Their structural-only meaning remains intact even when a separate evaluation exists.
+
+Required evaluation artifacts are `lp_eval_manifest.json`, `lp_eval_population.json`, `lp_eval_sample.jsonl`, `lp_eval_requests.jsonl`, `lp_eval_judgments.jsonl`, `lp_eval_failures.jsonl`, `lp_eval_usage.json`, `lp_eval_report.json`, and `lp_eval_report.md`. They retain source paths and byte/material hashes, exact producer candidate SHA and evaluator candidate SHA, effective production and evaluator configs, population membership/counts, seeds/selection procedures, conditions/order/replicates, full request identities, prompt/schema/model settings hashes, validated outputs, attempt/failure disposition, denominators, and report-generation inputs. Independent-cohort artifacts bind the common upstream evidence-constructor settings and material payload hashes frozen before the production-metadata join. Reports retain that join and the common-condition numerator/denominator membership; overlapping production/independent selections retain distinct required judgment identities. Exact serialized field names are owned by Step 27 coding under the settled policies.
+
+Full evaluation outputs are immutable review evidence, not committed curriculum fixtures. The handoff records their directory, manifest/checksums, commands, authorization, actual model/settings, usage/cost accounting and any unknown usage. Automated test fixtures remain reduced and synthetic. See D12 for scoring and execution integrity.
+
 ## 1.7 Success criteria
 
 The implementation is complete when:
@@ -233,9 +245,9 @@ The implementation is complete when:
 5. the combined bundle's counts and projections reconcile exactly;
 6. repeat/resume behavior follows existing KG conventions;
 7. structural tests cover tree, DAG, unresolved hierarchy, scope-only grade, multiple Standard grains, sparse LC reuse, noisy LC reuse, and recurring-practice cases;
-8. release behavior follows settled D12: there is no independent pre-release semantic or gold-set gate; `needs_review` remains visible, never publishes, and does not block release; and documentation does not present structural/process validity as pedagogical truth;
+8. production release behavior remains structural/process-only under D12/D13: `needs_review` remains visible, never publishes, and does not block production success; required downstream Step 27 evaluation execution/reporting is a separate build-order completion obligation, with no automatic semantic score threshold or human gold-set prerequisite;
 9. every candidate/request pair is processed successfully under D13's zero-tolerance failure policy, with validated deterministic-prefix checkpoint and resume behavior; and
-10. release documentation discloses the accepted D12 and D14 limitations.
+10. all six fixed Step 26 input snapshots receive the required Step 27 evaluation and reports, independently validated and reviewed; Step 28 documentation and Step 29 review disclose evaluator failures, ambiguity, quality concerns, sampling denominators, and accepted D12/D14 limitations.
 
 ## 1.8 Non-goals for this project
 
@@ -627,7 +639,7 @@ Python owns the universal settled behavior: canonical coordinate lookup through 
 
 **LIMIT — Candidate blocking creates an unmeasured v1 recall ceiling.**
 
-The adjudicator can only accept pairs that candidate generation nominates. Strong producer/checker agreement cannot recover a relationship that deterministic retrieval never surfaced. Under D12 Option D, v1 has no independent pre-release candidate-recall metric or gold-set requirement; missing plausible pairs may therefore remain undetected at release.
+The adjudicator can only accept pairs that candidate generation nominates. Strong producer/checker agreement cannot recover a relationship that deterministic retrieval never surfaced. D12 requires independently sampled LLM-judge diagnostics, but sampled judge-positive nomination coverage is not curriculum-wide candidate recall. Omitted policy populations, unsampled pairs, evidence limits, and judge error leave the recall ceiling unmeasured; missing plausible pairs may remain undetected.
 
 **LIMIT — Upstream AS and LC errors can influence LP.**
 
@@ -637,17 +649,17 @@ LP endpoints are stable SFIs, but hierarchy errors, missing scope values, faulty
 
 The normalization code is Unicode-aware, but candidate retrieval and progression prompts have not yet been validated on non-English or multilingual progression judgments. A lexical-only first implementation may require language-specific tuning later.
 
-**LIMIT — V1 has no independent pre-release semantic validation.**
+**LIMIT — Required LLM evaluation does not establish pedagogical correctness.**
 
-Pydantic and graph checks can prove endpoint integrity, deterministic identities, policy compliance, producer/checker process completion, and artifact reconciliation. They cannot prove that an inferred progression is instructionally sound. D12 permits release without an independent human or gold-set semantic gate; any later human audit is non-blocking and its corrections require earliest-stage remediation and rerun.
+Pydantic and graph checks establish structural/process properties. The independent judge workflow supplies fallible, sample- and evidence-conditioned assessments, potentially correlated with the production model. It has no human gold-set prerequisite or automatic semantic score threshold. Evaluation must execute and report, but favorable scores, stable replicates, and synthetic-control performance do not prove instructional soundness or completeness. Quality concerns require explicit disposition under D12; confirmed defects follow D14 earliest-stage remediation and rerun.
 
 ---
 
-# 3. Settled decisions
+# 3. Decisions and amendment policy
 
 ## 3.1 Marker contract
 
-The following markers are load-bearing. D1–D14 below are now **SETTLED**. **DECIDE** remains defined only for a future governance change that deliberately reopens or introduces an implementation choice.
+The following markers are load-bearing. D1–D11, D13, and D14 production semantics remain **SETTLED**. D12-S/J/R/B/A record the user's settled amendment decisions and complete payloads. The user separately approved this amendment for implementation on 2026-09-11; ordinary role, build-order, reviewer and live-execution gates still apply.
 
 ### **SETTLED**
 
@@ -664,7 +676,7 @@ A real choice with consequences. No affected code should be written until the ch
 5. obtain an implementation OK;
 6. only then write the affected code.
 
-An option letter alone does **not** settle a future decision when the selected option requires concrete policy payloads. D1–D14 satisfy this rule through the complete settled policies below.
+An option letter alone does **not** settle a future decision when the selected option requires concrete policy payloads. The D12 amendment records all five complete settled payloads, including the separately confirmed operational settings. The user's explicit implementation approval of the synchronized amendment is recorded in Section 3.3.
 
 ### **LIMIT**
 
@@ -685,7 +697,7 @@ A known weakness or scope boundary we are accepting. It must be documented where
 | D9  | Transitive edge policy                                               | A — publish every directly accepted edge; perform neither transitive closure nor reduction                         | **SETTLED** |
 | D10 | How unresolved AS ancestry affects LP                                | Required two-state profile policy; all six initial profiles include every otherwise-eligible unresolved SFI warned | **SETTLED** |
 | D11 | Attribution/ownership metadata for inferred LP edges                 | B — exact LP metadata, source-license inheritance, attribution template, and provenance                            | **SETTLED** |
-| D12 | Semantic evaluation and release policy                               | D — no independent pre-release semantic/gold-set gate; non-blocking post-release human audit                       | **SETTLED** |
+| D12 | Semantic evaluation and release policy | Required downstream LLM-judge execution/reporting; configurable S1/R1 defaults; dedicated evaluator model; no budget ceilings or automatic semantic threshold; A1 concern disposition | **SETTLED** |
 | D13 | Failed-request tolerance and release gate                            | A — any failed pair halts LP, with deterministic-prefix checkpoint and resume                                      | **SETTLED** |
 | D14 | Manual semantic edge overrides in v1                                 | A — no forced semantic include/exclude/relation/direction overrides                                                | **SETTLED** |
 
@@ -1009,7 +1021,7 @@ Additional drawbacks are large cohorts, higher token cost, positional bias, weak
 
 The draft recommended explainable deterministic non-embedding retrieval. The amended settled policy keeps that technology boundary but fixes one built-in policy instead of a runtime strategy boundary.
 
-**LIMIT — Deterministic non-embedding retrieval creates an unmeasured v1 candidate-recall ceiling.** It may miss semantically related standards with weak lexical, hierarchy, code, or LC overlap. D12 Option D accepts that no independent pre-release candidate-recall metric is required; this limitation must be disclosed rather than presented as measured quality.
+**LIMIT — Deterministic non-embedding retrieval creates an unmeasured v1 candidate-recall ceiling.** It may miss semantically related standards with weak lexical, hierarchy, code, or LC overlap. D12 requires sample-conditioned nomination diagnostics, which do not establish curriculum-wide candidate recall; this limitation must remain disclosed.
 
 Embedding remains outside v1. A future replacement must be governed on its own terms and does not create v1 configuration or version fields.
 
@@ -1462,7 +1474,7 @@ The initial profile matrix is:
 
 The selected state is part of the effective-config content hash. A change invalidates stale eligibility, candidate, request, response, final-claim, relationship, and combined-bundle reuse. Validation reconciles unresolved eligible/excluded counts, verifies warning/provenance propagation, and rejects fallback-root placement as positive evidence.
 
-**LIMIT — The profile-level state cannot distinguish a strong individual unresolved case from a weak one.** Inclusion may admit unresolved SFIs with insufficient non-fallback evidence, while exclusion may omit usable SFIs. Producer/checker adjudication reduces but does not remove this all-or-nothing weakness, and D12 provides no independent pre-release semantic gate.
+**LIMIT — The profile-level state cannot distinguish a strong individual unresolved case from a weak one.** Inclusion may admit unresolved SFIs with insufficient non-fallback evidence, while exclusion may omit usable SFIs. Producer/checker adjudication reduces but does not remove this all-or-nothing weakness, and D12's fallible downstream judge diagnostics do not remove it or impose an automatic semantic score gate.
 
 Ghana math contains 13 unresolved root-fallback hierarchy edges; Ghana English contains 2. A passed AS validation report therefore does not mean that every SFI has trustworthy curricular placement.
 
@@ -1600,133 +1612,179 @@ Use the selected Option B policy exactly as specified above. Changing the author
 
 ---
 
-## D12. Semantic validation and release policy
+## D12. LLM evaluation and release policy
 
-**SETTLED — Option D: v1 has no independent pre-release semantic or gold-set gate; human audit is optional, post-release, and non-blocking.**
+**SETTLED — Required independent LLM-as-judge evaluation execution and reporting, initially without an automatic semantic score release threshold.** The user selected S1 and R1 as CLI-configurable defaults, a dedicated evaluator model variable, removal of evaluation budget ceilings, the explicit execution settings below, and A1. These policy decisions were followed by the user's separate implementation approval on 2026-09-11, recorded in Section 3.3.
 
-Independent human semantic review is not required before acceptance or release. Release depends on deterministic structural/process validation, successful producer/checker reconciliation, and D13's zero-tolerance processing-failure policy. `needs_review` remains visible in audit and summary artifacts, never publishes a relationship, and does not itself block release.
+Production completion remains governed by D1–D11 and D13: structural/process validation, producer/checker reconciliation, and zero unresolved processing failures. `needs_review` stays visible, nonpublishing, and nonblocking. The production pipeline does not read evaluation outputs or wait for a semantic score. Separately, the numbered project cannot complete Step 27 or advance through Steps 28–29 without the required evaluation execution, accountable reports, and independent review. This is an evaluation-process requirement, not a claim that scores prove pedagogical correctness.
 
-V1 defines no independently reviewed gold set, minimum human-review sample, audit cadence, semantic metric, numeric semantic threshold, or semantic pass/fail authority. Structural correctness, producer/checker agreement, and D13-compliant completion must never be described as proof of pedagogical correctness.
+No human gold-set creation, human labeling sample, or pre-release human semantic examination is a prerequisite. The existing optional post-release human audit remains available and nonblocking for the original release. Such audits retain population/sampling, reviewer/time, findings/rationale, affected IDs, and released artifact/config content hashes; IDinsight retains its existing organizational audit/remediation authority. The user selected A1: IDinsight, acting through the project user, dispositions evaluator concern groups under D12-A.
 
-Human audit may occur after acceptance or release. When performed, it records the reviewed population or sampling method, reviewer identity, review time, findings, rationale, affected candidate/relationship IDs, and exact released artifact/effective-config content hashes. IDinsight is the organizational authority for audit findings and remediation/re-release decisions. Findings inform a later remediation or release; they do not retroactively become a prerequisite for the original release.
+### D12.1 Architecture and ownership
 
-Confirmed defects are corrected at the earliest incorrect configuration, candidate, prompt, judgment, finalization, or validation stage and the affected pipeline is rerun. Generated graphs are never hand-edited.
+Use `backend/src/kgfeg/entries/evaluate_lcs.py` and `backend/src/kgfeg/evals/lc_eval/` as architectural references only. The inspected LC implementation separates CLI orchestration, typed records, sampling, prompts, judge calls/cache, and scoring. LP must not copy LC assertions-as-`is_true` labels, real distractors-as-negatives assumptions, precision/recall names computed against production assertions, or item/replicate-only cache reuse without complete material-input validation.
 
-The v1 build-order contract is exact:
-
-- Step 24 adds deterministic D12 release-policy conformance coverage, not a semantic harness or gold set;
-- Step 25 runs the targeted six-curriculum structural/process matrix without a semantic-quality pass/fail claim;
-- Step 26 is explicitly deferred with no implementation or tuning work, and progression goes from reviewer-approved Step 25 directly to Step 27;
-- Step 27 retains the six complete runs and every structural, provenance, count, collision, checkpoint/material-input-integrity, and D13 requirement without a D12 semantic-pass prerequisite; and
-- Step 29 verifies accurate disclosure of this LIMIT and rejects pedagogical-correctness claims derived from structural/process evidence.
-
-**LIMIT — V1 may release semantically incorrect or incomplete progression relationships because no independent human or gold-set semantic evaluation is required before release.** Producer/checker separation and deterministic validation reduce structural and process risk but do not establish pedagogical correctness. This limitation must be visible in release documentation and final review.
-
-### Rejected historical alternative — Option A: pre-release manual review protocol
-
-Reviewers inspect a documented set of independently selected expected-positive and expected-negative pairs, plus stratified samples of accepted, `no_relation`, and `needs_review` outputs, and issue an explicit pass/fail decision.
-
-**Pros**
-
-- Fastest start.
-- Lower annotation and harness effort.
-- Can still expose obvious candidate-recall and edge-quality failures when pair selection is independent.
-
-**Cons**
-
-- No stable numeric regression metric.
-- Reviewer judgment and sample choice have more influence.
-- Harder to compare releases or detect gradual quality drift.
-
-### Rejected historical alternative — Option B: pre-release reviewed gold set for every curriculum
-
-A suggested starting set per curriculum is approximately 40–60 pairs, deliberately balanced across:
+The coding role authors the executable evaluation support and its evaluation-only configuration surface:
 
 ```text
-likely buildsTowards
-likely relatesTo
-hard no_relation negatives
-same-level and cross-level cases
-strong and weak LC overlap
-same-branch and cross-branch cases
-unresolved/audit-flag cases where applicable
+backend/src/kgfeg/entries/evaluate_lps.py
+backend/src/kgfeg/evals/lp_eval/
+  __init__.py
+  schemas.py
+  sampling.py
+  prompts.py
+  judge.py
+  scoring.py
 ```
 
-The evaluation universe must not be selected only from `lp_candidate_pairs.jsonl`, published edges, or current model outputs. Otherwise candidate recall and accepted-edge precision become circular. At minimum, combine:
+The entry point orchestrates explicit snapshot selection, preparation, judging/resume, and reporting. The five modules own typed contracts; population/strata/sampling; blind/critique/control prompt rendering; validated bounded calls and caching; and deterministic scoring/reporting, respectively. Existing reusable utilities may be called without changing production behavior. Step 27 adds the evaluator-only `LLM_LP_EVAL_JUDGE_MODEL` setting and `lp_eval_judge` model binding; production continues to use `LLM_KG_MODEL`. No `kgs.lp` selector, candidate-policy modification, or production prompt/config tuning is part of this amendment.
 
-1. **independently nominated pairs** selected from the curriculum/AS+LC graph without consulting the current candidate list or model decision; and
-2. **stratified pipeline samples** from nominated candidates, accepted edges, `no_relation`, and `needs_review` outcomes.
+A separate testing-role task independently derives the oracle, authors deterministic tests and synthetic fixtures, red-teams the harness, and executes the approved evaluation only after deterministic validation succeeds and the user separately authorizes live calls. For this step, the user establishes the exact candidate commit after deterministic testing and before live execution so the required evidence binds to that SHA/tree; the final reviewer gate still follows complete execution/reporting. Coding cannot author those tests; testing cannot repair executable harness source, prompts, or evaluator configuration. The read-only reviewer evaluates both work products and execution evidence. Harness authors may run existing tests but may not supply the independent testing verdict.
 
-Each reviewed row records its sampling/inclusion method, reviewer, policy version, and whether the label is definitive, ambiguous, or excluded from a particular metric.
+### D12.2 Three complementary components
 
-Evaluate separately:
+1. **Production-pair assessment.** Sample published `buildsTowards`, published `relatesTo`, final `no_relation`, and final `needs_review` pairs, retaining checker accept/correct and producer-to-final changes as audit strata. First make a blind independent classification in a fresh context: permitted `buildsTowards` direction, `relatesTo`, `no_relation`, or evaluator `ambiguous`, with specific evidence references and explanation. Use the blind-classification evidence view defined in D12.3: hide production decision, rationale, confidence, correction, nomination recommendations/rankings, publication status, and sampling/control labels, while retaining permitted factual evidence and policy permissions. Freeze this response before a separate call critiques the operative production rationale using the original-production critique view, not the redacted blind view. The critique cannot revise the blind judgment or be fed back to it, and the blind judge's answer is not supplied to the critic. Assess relationship support separately from rationale grounding; a plausible relationship may have an unsupported explanation and a well-grounded explanation may remain semantically ambiguous. For a corrected pair, critique the operative corrected rationale and retain the original draft for correction diagnostics; any extra critique calls must be explicit in the materialized evaluation schedule.
+2. **Independent upstream-pair assessment.** Construct a reproducible population of distinct, same-framework pairs from the fixed eligible AS+LC population using D1/D2/D10 admissibility. Do not restrict selection to candidates, published edges, production negatives, or judge-positive discoveries. Freeze selection and the common bounded-upstream evidence payloads before joining candidate/adjudication/publication metadata. Every independently sampled pair, nominated or not, receives the same `reconstructed_bounded_upstream` base condition under D12.3; production evidence availability must not select its condition or alter its payload. Include both a uniform probability sample and an upstream-feature-stratified diagnostic sample so low-signal pairs have a sampling route. Use bounded sampling/indexing rather than an all-pairs LLM pass. Afterwards identify judge-positive pairs never nominated, nominated but finalized as `no_relation` or `needs_review`, or published with differing relation/direction. Preserve overlapping cohort membership; do not exclude nominated pairs merely to inflate misses. Policy-excluded pairs are outside this estimand, not negatives.
+3. **Evaluator checks.** Include clearly constructed synthetic controls, endpoint/evidence presentation-order changes, repeated fresh judgments, limited deterministic baselines, and paired evidence-sensitivity comparisons. Controls target an explicit synthetic truth or planted rationale defect; they never turn an unasserted real pair into a known negative. Include synthetic developmental extension, substantive nondirectional coherence, unrelated concepts, insufficient/contradictory evidence, and invented rationale evidence. Keep control expectations hidden from the judge and separate from real-population summaries. Baselines are evaluation-only comparisons (constant `no_relation` and a bounded lexical ordering diagnostic), never graph publishers or semantic truth. A weak control or unstable judge result is a reported quality concern, not an execution failure unless the request/output contract itself failed.
 
-- candidate recall: did deterministic retrieval surface the independently reviewed positive pair?
-- accepted-edge precision: are sampled published edges correct?
-- relation choice: `buildsTowards` vs `relatesTo`;
-- `buildsTowards` direction accuracy;
-- abstention/`needs_review` quality;
-- unresolved-context handling;
-- rationale grounding, reported separately from edge correctness.
+All curricula must appear in each applicable component. Sampling must include same/cross/missing-rank cases; repeated or highly overlapping text; absent, shared, nonshared, and broadly reused LC evidence; DAG paths and unresolved ancestry; checker corrections; and truncated/bounded production evidence. Counts must expose absent strata, exhausted strata, and unsupported comparisons. Zero available cases is not evidence of good performance and must not be filled with invented real examples.
 
-Choosing Option B is incomplete unless Step 0 also records:
+### D12.3 Evidence conditions and interpretation
 
-| Gate input                  | Required decision                                                                               |
-|-----------------------------|-------------------------------------------------------------------------------------------------|
-| Candidate recall            | Minimum per-curriculum threshold and whether an aggregate threshold also applies                |
-| Accepted-edge precision     | Minimum per-curriculum threshold; aggregate success must not silently hide a failing curriculum |
-| Relation-choice accuracy    | Minimum threshold and exact denominator                                                         |
-| Direction accuracy          | Minimum threshold and denominator for reviewed `buildsTowards` positives                        |
-| `needs_review` at release   | Maximum count/rate, zero-tolerance rule, or explicit reviewed-waiver policy                     |
-| Ambiguous/unscorable labels | Exclude from denominators, adjudicate, or treat as release-blocking                             |
-| Minimum sample support      | Minimum reviewed examples required before each metric can pass                                  |
+**Exact production evidence** is the immutable original bounded production request material and relevant production policy/instructions for the assessed pair, with its original request/batch context, factual nomination evidence, limits, warnings and omissions preserved. It is not the redacted blind payload. Never silently reconstruct it from a newer upstream graph or supplement it with omitted source content. Missing or mismatched original material is an input/execution failure.
 
-**ELI5:** Do not grade the scout only on places the scout already chose to visit. Give it independently chosen destinations, define the passing score before seeing the results, and decide how many “I am not sure” answers a release may contain.
+For production-pair assessment, two distinct views are required:
 
-**Pros**
+- **Blind-classification view:** derive this from the original bounded evidence, hiding production conclusions/rationale/confidence/corrections, publication status, sampling/control labels, and nomination recommendations/rankings. Preserve permitted factual evidence even when it is stored inside nomination context: for example, overlap counts, observed similarities, retained supporting references and their original aggregate-scope/omission warnings. Present those values as evidence, not as recommendations or proof of a relationship. Record the field-level retained/redacted mapping and hash the actual rendered payload. Do not discard an entire nomination record merely because it combines facts with recommendations.
+- **Original-production critique view:** after the blind classification is validated and frozen, supply the original bounded production evidence and operative production rationale to a fresh critic context. Preserve factual nomination values and the original request boundary so the critic can assess what production actually received. Do not use the redacted blind payload as a substitute. Assess grounding separately from relationship support; a nomination recommendation cannot itself justify a relationship. The critic does not receive the independent classifier's answer, and its output cannot change that answer.
 
-- Repeatable tuning and regression protection.
-- Captures curriculum-specific semantics.
-- Separates candidate-retrieval failures from LLM/finalization failures.
-- Produces an actual release gate instead of a dashboard without pass/fail rules.
+Use distinct component/view/request identities, rendered-payload hashes, response schemas and cache records for classification and critique. Reports identify which view supports each assessment. A factual claim supported by the original bounded request must not be marked unsupported merely because classification redacted its surrounding nomination metadata. Conversely, a claim requiring omitted evidence cannot be rescued with expanded upstream evidence when scoring original-production grounding.
 
-**Cons**
+**Expanded upstream evidence** means separately bounded retrieval from the same fixed AS+LC/provenance snapshot, with explicit selection order, limits, included references and omissions. It may expose additional trustworthy paths, supporting LCs and preserved source snippets, but cannot rerun PDF extraction or invent evidence. Root fallback never becomes positive hierarchy evidence. Evaluate this in a separate fresh context and identity, blind to both production and earlier judge responses.
 
-- Highest review effort.
-- Gold labels can themselves be debatable.
-- Small samples have uncertainty and require versioning when policy changes.
-- Threshold revisions after a pilot require a brief update and reapproval rather than silent tuning.
+**Common independent-sample evidence:** every independently sampled pair uses `reconstructed_bounded_upstream` as its base condition, whether nominated, rejected, unresolved, or published. Construct all such payloads from the fixed eligible AS+LC/provenance snapshot and policy using one deterministic evidence-selection procedure, the fixed production evidence limits, canonical stable ordering, and the same field/omission rules within each curriculum. The constructor must not read nomination/adjudication/publication status, original production requests, or nomination records. Any factual summaries included are recomputed from upstream evidence by the same rules for all pairs. Freeze payloads and their material hashes before joining production metadata for reporting; the join cannot change evidence, prompts, or judgments. A never-nominated pair has no exact production request, and this common reconstructed condition must never be called exact production evidence even when a nominated pair has an original request.
 
-### Rejected historical alternative — Option C: representative-curriculum gold sets
+Independent-cohort diagnostic variants use that same common base and the same variant-construction rules regardless of nomination status. Exact-production assessment remains in the separate production component or an explicitly scheduled paired comparison; it cannot replace an independent-cohort base judgment. If a pair belongs to both cohorts, retain both component memberships and their separately identified evidence-condition judgments rather than deduplicating away either obligation. Evidence removal comparisons (LC removed and trustworthy hierarchy context removed, with warnings retained) are separate blind-classification conditions, not edits to the production snapshot or substitutes for original-production critique. Remove the selected evidence family from every representation in that comparison, including derived nomination facts, overlap counts and supporting references; do not leave the supposedly removed signal in another field. Retain warnings about uncertainty/omission without reintroducing the removed factual evidence.
 
-For example:
+Report these distinctions explicitly:
 
-```text
-Pratham       -> DAG + multiple grains
-Ghana math    -> unresolved ancestry
-Rwanda        -> noisy LC reuse
-Ghana English -> recurrence
+- Pipeline assertions and producer/checker results are comparisons, not ground-truth labels.
+- Agreement, relation/direction disagreement, and judge-supported assertion rates are not semantic precision/recall.
+- For each independent cohort and replicate, base nomination coverage is the number of valid judge-positive pairs that were nominated divided by all valid judge-positive pairs judged under the common `reconstructed_bounded_upstream` condition. Join nomination/publication outcomes only to these frozen assessments. Separately report published matching relation/direction coverage and the nominated-but-rejected/unresolved categories against that same judge-positive denominator. Additional variant coverage may be reported only within its own preselected cohort/condition/replicate using the same evidence-construction rules for nominated and never-nominated pairs. Never derive overall nomination coverage by separating evidence conditions according to nomination status or pooling original-production judgments with reconstructed judgments. These are sample-conditioned diagnostics, not automatically curriculum-wide candidate recall.
+- Semantic ambiguity is a valid outcome, distinct from `no_relation`, a production `needs_review` label, and a malformed/missing evaluator response.
+- Relationship support and rationale grounding have separate counts and denominators; no composite quality score hides either.
+- Evidence-condition differences may indicate production evidence limits, upstream error, or judge variability. They do not by themselves prove the earliest defect or authorize a production change.
+
+Retain each replicate and the full outcome distribution, not only a majority/representative answer. Report raw numerators/denominators per curriculum, cohort, stratum, relation/direction, evidence condition, and correction status; planned/attempted/valid/failed/ambiguous/excluded/unavailable counts; shortfalls and overlap; all disagreement records; and missing evidence. Do not pool diagnostic oversamples into population estimates without valid inclusion probabilities and a separately justified estimator. Repeated judgments are not independent curriculum samples. Zero denominator produces an explicit unavailable value and reason, not 0% or 100%. Any uncertainty estimate must state its sampling unit, method, assumptions, and limits; no unapproved semantic passing score is inferred.
+
+### D12.4 Input, call, cache, and reporting integrity
+
+Before the first evaluator call, freeze and validate all six input manifests, eligibility/pair populations, sample plan, conditions, prompt/schema/config/model settings, and full bounded request schedule. Link snapshots to Step 26 reviewed source/config/code/artifact hashes. Use explicit paths, not mutable latest-run discovery. Copying or content-addressed references must detect source changes before use; never read a live growing production run as a frozen snapshot. Reject aliased output paths that could overwrite inputs.
+
+Cache identity must bind actual snapshot/evidence/request material, endpoint identity, component/condition, rendered prompt and response schema, effective judge provider/model/settings, replicate, presentation order, and the original production request/policy and operative production rationale supplied to its critique, plus the explicit classification-versus-critique view identity. Critique execution depends on completion of the associated blind classification, but its prompt does not contain that classifier's answer. Seed or model-name-only keys are insufficient. Validate cache records against the current exact schedule and content; reject stale, truncated, duplicated, extra, or mismatched records rather than silently accepting the last row. Reuse only fully validated successes. Changing scoring alone may regenerate reports from identical valid judgments, with the new scorer source hash recorded.
+
+Validate exact request IDs, one complete output per scheduled pair/task, no missing/extra/duplicate endpoints or fields, allowed relation/direction, bounded enum/range values, expected condition/replicate/order, and evidence-reference containment. No partial or malformed response enters successful judgments. Output-format retry/repair calls count as attempts and usage. Prior successes survive an interruption, and resume does not repeat them. Failures and their later dispositions remain separate append-only audit evidence.
+
+**Execution failure** includes missing/stale inputs, invalid request/output, transport errors after the configured retry limit, unaccounted scheduled judgments, or unreproducible/missing reports. Required evaluation cannot be marked complete with an unresolved execution failure; partial diagnostic reports remain clearly incomplete. This status is separate from production D13 and never rewrites `kg_run.json` or production validation. Honest exhausted/empty-stratum accounting under the selected sampling plan is not a transport failure or a fabricated success.
+
+**Semantic ambiguity** is a valid judge assessment of insufficient or contradictory evidence. Retain and report it without converting it to failure or negative.
+
+**Reported quality concern** includes production/judge disagreement, unsupported rationale, missed sampled judge-positive pairs, poor synthetic-control behavior, presentation sensitivity, and replicate/evidence-condition instability. These do not automatically fail a semantic threshold. Record their disposition under D12-A; deterministic harness defects still fail independent engineering review.
+
+Usage accounting includes every attempt, valid/failed response, retry, component, curriculum, condition and model; input/output and available reasoning/cache token counts; observed cost when available; and unknown usage explicitly. The user removed evaluation budget ceilings: do not implement dollar, total-token, or total-attempt caps, cost-reservation machinery, or a required cost-estimate approval gate. Missing pricing or usage is recorded as unknown rather than zero and does not itself block evaluation completion. Sampling, repetitions, evidence limits and finite retry behavior still bound the scheduled work. No automatic model fallback, sample shrinkage, quota substitution, or unrequested repeated full evaluation is allowed.
+
+### D12.5 SETTLED — Concrete policy packet
+
+The user selected the following policies on 2026-09-11 and separately confirmed the operational settings. Earlier alternatives are superseded, not selectable presets. Sampling and repetition counts are operational evaluation controls, not semantic release thresholds. CLI overrides within the rules below are authorized configuration choices; changing a selection algorithm, label meaning, required component, or interpretation contract still requires governance.
+
+**D12-S — S1 sampling defaults, configurable through the CLI.**
+
+Per curriculum, the default samples up to 15 pairs uniformly without replacement within each of the four production outcomes (60 base). Supplement to at least 2 examples for each of the 12 tags below, adding at most 24 distinct pairs. Independently select 36 uniform admissible upstream pairs plus 3 per each of the 12 upstream tags (at most 72 draws before deduplication).
+
+The CLI must expose the following settings; their final flag spellings are delegated to Step 27 and must be documented in CLI help and Step 28 documentation:
+
+| CLI setting | Default | Contract |
+|---|---:|---|
+| Production pairs per outcome | 15 | Positive integer target for each of the four outcomes in each curriculum |
+| Production examples per diagnostic tag | 2 | Positive integer minimum, including already-selected examples |
+| Independent uniform pairs | 36 | Positive integer target per curriculum |
+| Independent pairs per upstream tag | 3 | Positive integer target per tag per curriculum |
+| Sampling seed | 20260911 | Explicit integer used for all deterministic selection and ordering |
+
+These settings apply uniformly to the curricula selected for the invocation. Missing settings use the documented S1 defaults; CLI values override those defaults and appear in the effective evaluator configuration, schedule and reports. Required Step 27 evidence covers all six curricula, even if invocations are separated. Invalid values fail before calls. Empty/exhausted populations produce counted shortfalls, not fabricated samples. There is no CLI switch that marks a skipped component as completed.
+
+Selection uses canonical UUID sorting before seeded selection, without-replacement sampling within each cell, stable listed tag order for supplements, no reallocation of exhausted quotas, and deduplication with all selection routes retained. A supplement adds only the number needed to reach its configured target. Its maximum additional population is the number of tags multiplied by that target.
+
+The four base outcomes are published `buildsTowards`, published `relatesTo`, final `no_relation`, and final `needs_review`. The 12 production tags are: checker correction; same rank; different valid ranks; missing coordinate; equal normalized SFI text; unequal SFI text with token Jaccard at least 0.5; at least one endpoint without supporting LCs; shared exact LC; both with LCs but no shared LC; a supporting LC linked to at least 10 eligible SFIs; unresolved self/ancestry; and production evidence truncation. Upstream tags substitute multi-parent DAG context for checker correction and reconstructed-evidence truncation for production truncation.
+
+Normalization is Unicode NFKC, casefold, whitespace collapse; token sets are Unicode alphanumeric runs with no stopword removal, and empty-set similarity is zero. These are sampling tags, not pedagogical labels or production policy changes. Independent tag selection reads only upstream material and fixed policy, not nomination/results. Exact probability calculations are required for the uniform cohort; diagnostic cohorts report selection routes and counts without population estimates.
+
+**D12-J — Dedicated LP evaluation judge.**
+
+Step 27 adds the exact evaluator-only assignment below to the repository-root `.template.env` and local `.env`, using standard environment assignment syntax:
+
+```dotenv
+LLM_LP_EVAL_JUDGE_MODEL=anthropic:claude-opus-5
 ```
 
-The same independent-sampling and explicit-threshold requirements apply to the selected curricula.
+This governance task records the requirement; it does not edit either environment file. The later coding task must preserve unrelated environment entries and secrets, never print the full `.env`, and never stage or commit secrets. The local `.env` assignment is local configuration, not a tracked review artifact.
 
-**Pros**
+Add the corresponding settings field and `lp_eval_judge` binding in `backend/src/kgfeg/config.py`, following the LC evaluator architecture. Resolve the judge through `Settings.llm_config("lp_eval_judge")` and existing `kgs_settings("learning_progressions")`. The user approved reusing the existing shared model-registry settings: inherit the configured shared output-token limit and provider-specific effort/thinking settings, rather than inventing a second set of LP evaluator knobs. Those are per-request model settings, not aggregate evaluation budget ceilings.
 
-- Lower annotation effort than Option B.
-- Covers major structural risks.
+Do not make the evaluator variable required by production startup or by AS/LC/LP execution. An unset/blank evaluator variable is an error when the evaluator resolves its judge; production must continue to resolve `LLM_KG_MODEL` independently. Do not change the LC evaluator binding or production registry behavior. Include compatibility tests proving that absence or change of the evaluator setting cannot alter production model selection.
 
-**Cons**
+Record the actual provider/model and complete effective non-secret model settings in the frozen run manifest and material cache identities. The requested model identifier is a user choice, not evidence of provider availability or SDK compatibility. Verify compatibility during Step 27 preflight; if unsupported or unavailable, report the configuration/execution failure without silently substituting another model. Any model change requires explicit user direction and a fresh material-bound schedule/cache identity.
 
-- May miss Madhi/Nigeria-specific semantics.
-- Provides no per-curriculum release confidence for omitted profiles.
+Expanded evidence doubles each positive production count/text/depth limit, retains mandatory warnings and references, and uses canonical stable ordering for additional paths/LCs/snippets. Any unchanged or unavailable evidence is recorded. Fresh contexts and blind prompts remain required even when production and judge models differ.
 
-### Historical recommendation — withdrawn and superseded by settled Option D
+**D12-R — R1 defaults, configurable through the CLI.**
 
-The earlier Option B recommendation is rejected for v1. No pre-release semantic sample, metric, denominator, threshold, or `needs_review` tolerance is an implementation or release requirement.
+The default makes one base blind judgment per selected real pair in each component's required base condition and one separate operative-rationale critique per selected production pair. A pair selected in both components receives both the production-evidence blind judgment and the common reconstructed-upstream judgment, with separate identities; pair deduplication does not collapse these distinct conditions. Per curriculum, select up to 12 production and 12 independent pairs by seeded uniform selection within each cohort, without using judge results, for diagnostic repetition and evidence comparisons.
 
-There is no v1 D12 numeric or sampling payload. A future pre-release semantic gate requires a separately approved governance change.
+Each diagnostic pair receives two additional identical-presentation base judgments (three total by default), one endpoint-swapped presentation, one reversed evidence-list presentation, one expanded-evidence judgment, one LC-removed judgment, and one trustworthy-hierarchy-removed judgment. All variants are separate fresh calls; remap displayed endpoints to canonical identities before comparison.
 
-The limitations of the rejected gold-set alternatives are retained as historical rationale only and do not create a v1 gate.
+The CLI must expose these settings with the documented R1 defaults; final flag spellings are delegated to Step 27:
+
+| CLI setting | Default | Contract |
+|---|---:|---|
+| Base blind replicates | 1 | Positive integer per selected real pair |
+| Operative-rationale critique replicates | 1 | Positive integer per selected production pair |
+| Diagnostic pairs per cohort | 12 | Positive integer target in each cohort/curriculum |
+| Additional identical-presentation diagnostic replicates | 2 | Nonnegative integer; base plus additional must be at least 2 |
+| Replicates per presentation/evidence variant | 1 | Positive integer for each of the five variants |
+| Synthetic cases per control family | 5 | Positive integer target per family/curriculum |
+| Replicates per synthetic control | 3 | Positive integer |
+| Lexical baseline top-k | 10 | Positive integer, capped by the available sampled population |
+
+Resolve overrides before schedule materialization; record every effective value in config, manifest and reports. Counts may change, but required conditions, control families, blind-before-critique separation and honest reporting cannot be disabled. Changed schedules cannot silently reuse records with mismatched material identities; genuinely unchanged requests may reuse fully validated successes. Repeated judgments need not be odd because no majority erases disagreement.
+
+The five D12.2 control families produce 25 cases per curriculum at default settings. Rationale-defect controls use the critique schema and the other controls use classification. Coding specifies explicit synthetic expectations as harness control definitions; testing independently challenges those definitions and authors separate regression fixtures. Score constant `no_relation` on all real sampled pairs and lexical top-k pair rankings by SFI token Jaccard within each cohort, with canonical UUID tie-breaking, without additional LLM calls. Lexical ranking is a comparison with judge outcomes, never an asserted relationship/direction. No automatic control-detection threshold applies.
+
+Rationale grounding is reported separately as grounded (all material claims supported by cited shown evidence), partially_grounded (some but not all material claims supported), unsupported (no material claim supported or the central justification contradicted), or ambiguous (shown evidence cannot resolve grounding). Relationship classification remains the independent blind assessment; these categories are not combined into a pass/fail score. Exact enum spellings are an implementation detail; meaning and per-category reporting are policy.
+
+**D12-B — No aggregate evaluation budget ceilings; finite operational execution.**
+
+The user explicitly removed dollar, total-token, and total-API-attempt budgets. Do not add mandatory budget configuration, budget-based termination, cost reservations, spending-ceiling approvals, or a required pricing/estimated-cost preflight gate. Usage and available cost reporting remain required; unavailable accounting must be explicit.
+
+The user separately approved these execution settings: concurrency 4; at most 2 retries after the initial attempt per scheduled judgment; 180-second timeout per attempt; retry waits of 5 then 20 seconds. Provider/SDK and output-validation retries count within that same per-judgment limit rather than multiplying it. Retries are permitted for timeout, HTTP 429/5xx, or invalid structured output; invalid inputs, auth/config failures, and stale cache fail immediately. The evaluator remains bounded by its explicit sample/condition/replicate schedule, evidence limits and finite retries, without an aggregate spending budget.
+
+Live evaluation still needs explicit user authorization for the fixed-input execution and effective settings; recording policy or approving implementation is not itself authorization to call an external LLM. Do not reintroduce budget approval as a condition of that authorization.
+
+**D12-A — A1: project-user disposition of quality concerns.**
+
+IDinsight, acting through the project user, records `acknowledged`, `investigate`, or `remediation_requested` for reported concern groups before Step 27 completion. The reviewer checks completeness, integrity, and faithful disclosure; the user need not label pairs or endorse semantic correctness.
+
+Group dispositions retain affected pair/condition IDs, authority, timestamp, rationale and report hashes. No score automatically mandates remediation or release rejection, no execution failure can be waived as a quality concern, and confirmed specification defects still trigger earliest-owner remediation/review. A future semantic threshold or gold-set gate requires another approved governance amendment.
+
+### D12.6 Build order, remediation, and limits
+
+Step 24 is production D12 release-policy conformance, reassessed under this amendment to distinguish the independent Step 27 obligation. Step 25 remains the structural/process matrix and is revalidated with Step 24. Former Step 27 full runs move to Step 26 without losing any source/config/provenance/count/collision/checkpoint/reuse/D13 checks. New Step 27 implements, independently tests, and executes this harness on the six reviewed Step 26 snapshots. Step 28 documents both kinds of evidence; Step 29 reviews them separately.
+
+Evaluation never edits graphs or tunes the production candidate policy, prompts, or configurations. A concern is not automatically a confirmed production defect. Once independently confirmed, D14 requires an authorized earliest-stage repair, affected production rerun, new fixed evaluation inputs and evaluation rerun; old reports remain bound to old snapshots. Candidate-policy replacement still follows D3 governance and deletion/regeneration rules. No active run may be stopped or restarted by this amendment.
+
+**LIMIT — Required evaluator execution is not independent empirical truth.** The judge may share model biases with production, misclassify pairs, overvalue plausible rationales or synthetic controls, and respond to presentation/evidence changes. Independent prompting is not guaranteed independence of model errors.
+
+**LIMIT — Sampling and bounded evidence leave curriculum-wide quality and candidate recall unproven.** Uniform samples can contain few positives; feature strata are selective; synthetic-control expectations apply only to their constructed cases. Report small/empty denominators, disagreements, ambiguity and evidence omissions. No human gold set or automatic semantic score threshold is introduced, and semantically incorrect or incomplete LP graphs can still satisfy this process.
 
 ---
 
@@ -1814,13 +1872,13 @@ The complete D13 payload is the zero-tolerance halt, pre-call materialization, c
 
 **SETTLED — Option A: v1 supports no forced semantic include, exclude, relation-type, or direction override.**
 
-A human review or D12 post-release audit finding may lead to an approved change at the earliest incorrect curriculum configuration, candidate policy, producer/checker instruction, prompt, or universally valid generic-code stage, followed by a complete affected rerun. The producer and checker adjudicate the pair again under updated material inputs; a human finding never directly manufactures, changes, or deletes a published edge. Generated graphs are never hand-edited.
+A human review, D12 evaluator concern independently confirmed as a defect, or post-release audit finding may lead to an approved change at the earliest incorrect curriculum configuration, candidate policy, producer/checker instruction, prompt, or universally valid generic-code stage, followed by a complete affected rerun. The producer and checker adjudicate the pair again under updated material inputs; a human finding never directly manufactures, changes, or deletes a published edge. Generated graphs are never hand-edited.
 
 D10's profile-level unresolved-participation state cannot force a relationship, and a manual finding cannot conceal or replace a D13 processing failure. Every rerun remains subject to all settled pair, direction, recurrence, exclusivity, cycle, transitivity, attribution, provenance, structural-validation, checkpoint, and stale-reuse rules.
 
 **LIMIT — Known semantic false positives or false negatives cannot be patched directly in v1.** They require earliest-stage remediation and a new run, may require additional LLM execution, and may still require further iteration.
 
-This decision is separate from D10's reviewed eligibility exception.
+This decision is separate from D10's profile-level eligibility policy, which has no per-SFI exception.
 
 ### Selected design background — Option A: no forced semantic edges in v1
 
@@ -1874,21 +1932,21 @@ The payload requirements for rejected override options are historical only and c
 
 ---
 
-## 3.3 Decision response template
+## 3.3 Decision and approval sequence
 
-A concise approval response for this governance simplification amendment can use this form:
+D12-S/J/R/B/A are settled: S1 and R1 are documented CLI-configurable defaults; D12-J names the dedicated environment setting and shared model-settings binding; D12-B removes aggregate budgets and records the separately approved operational settings; A1 assigns concern disposition to the user for IDinsight. No implementation-governing decision payload remains open.
 
-```text
-I approve the amended Learning Progressions engineering brief, including removal of runtime candidate ranking/tie-breaking and internal candidate-policy versioning, and movement of universal single-valued LP behavior from runtime configuration to code-owned invariants, for dependent Step 2+ implementation.
-```
+**Implementation approval recorded — 2026-09-11.** After reviewing the final synchronized governance amendment, including the original-production rationale-critique correction and common independent-sample evidence correction, the user explicitly stated: "ok i approve." This approves the amendment for implementation, including the K=24/F=25 revalidation scope and unchanged former-frontier review base `540ea950378ce54b54da1c7a93491b525609b574`. Approval applies to the reviewed governance changes in the working tree; HEAD remains the former frontier and is not a commit containing this amendment. This is user specification approval, not independent reviewer reapproval of Steps 24–25 or approval of an implemented harness. It does not authorize live evaluation/full pipeline calls, Git staging/commits, or changes to active runs. No budget approval is required.
 
-The decision ledger and this amendment are incorporated in full. A response that merely approves an option letter, only part of the brief, or an implementation with unstated exceptions does not approve the amendment. Approval does not authorize an agent to stage or commit. Dependent Step 2 production remediation may resume only after the user explicitly approves the amended brief.
+Next required handoff: testing-primary cross-step reassessment of Step 24 release-policy conformance and affected Step 25 matrix against `540ea950378ce54b54da1c7a93491b525609b574`, followed by a user-created candidate commit when repository content changes and independent reviewer reapproval. If only execution/oracle evidence changes against an already reviewed identical tree, reuse the exact candidate SHA with immutable evidence; do not invent an empty commit. Do not implement Step 27 while revalidating Steps 24–25.
+
+After that gate, testing owns Step 26 full-run execution/validation with explicit live authorization. After Step 26 reviewer approval, coding owns Step 27 harness authorship, a separate testing task owns tests and authorized execution, and the reviewer gates the exact candidate plus immutable evaluation evidence. Step 28 follows Step 27 approval; Step 29 uses the original pre-Step-1 baseline through the exact Step 28 approved candidate and reviews all production and evaluation evidence. Each handoff must resolve its actual review-base/candidate SHA at that time; future SHAs must be observed rather than invented.
 
 ---
 
 # 4. Invariants
 
-The invariants below are settled code-level contracts.
+Invariants 1–57 remain production code-level contracts. Invariant 58 preserves structural-only production success while acknowledging the separate amended completion obligation. New 59–65 govern only the Step 27 evaluator under the user-approved amendment; the D12 payloads are settled, and Step 27 still follows Step 26 reviewer approval.
 
 ## 4.1 Configuration and phase boundary
 
@@ -1964,7 +2022,17 @@ The invariants below are settled code-level contracts.
 55. **SETTLED — Combined node parity:** `as_lc_lp_nodes.jsonl` contains exactly the framework, SFI, and LC nodes in the combined bundle.
 56. **SETTLED — Combined relationship completeness:** `as_lc_lp_relationships.jsonl` contains exactly all `hasChild`, `supports`, `buildsTowards`, and `relatesTo` relationships in the combined bundle.
 57. **SETTLED — Ordering is serialization detail:** deterministic ordering is used for stable files, but downstream semantics rely on IDs, endpoint keys, and relationship types rather than line order.
-58. **SETTLED — D12 non-gate and disclosure:** release has no independent pre-release semantic/gold-set prerequisite; `needs_review` stays visible/nonpublishing/nonblocking, and no structural/process result is represented as pedagogical correctness.
+58. **SETTLED — D12 production non-gate and disclosure:** production LP/combined success does not consume an evaluation score, human gold set, or semantic approval; `needs_review` stays visible/nonpublishing/nonblocking. Separate required Step 27 execution/reporting gates numbered project completion; neither process results nor judge assessments prove pedagogical correctness.
+
+## 4.7 Independent evaluation (new Step 27 only)
+
+59. **SETTLED — Read-only production boundary:** evaluation uses fixed validated inputs, never mutates production graphs/config/prompts/candidate policy or their success reports, and writes distinct evaluation artifacts.
+60. **SETTLED — Blindness and evidence separation:** independent classification uses a redacted view retaining permitted facts; production conclusions/rationale and control labels cannot leak into it. After classification is frozen, a separate critic receives original bounded production evidence and the operative rationale, without the classifier's answer. Classification and critique have distinct request/cache identities. Exact production, reconstructed bounded upstream, expanded upstream, and evidence-removal conditions remain separate; removed evidence cannot survive in derived fields or be used to rescore original-production grounding. Every independently sampled pair receives the same bounded-upstream construction rules without consulting nomination status; freeze those payloads before joining production outcomes. Nomination coverage uses their common-condition judge-positive denominator, never nomination-dependent evidence conditions.
+61. **SETTLED — Reproducible independent sampling:** both production outcome strata and independently selected admissible upstream populations are required; seeds, memberships, shortfalls, selection routes and denominators are retained. Unasserted real pairs are never assumed negative.
+62. **SETTLED — Evaluator integrity:** exact schedule/output/endpoint/evidence validation, material-content-bound cache reuse, distinct replicate/order identities, separate failure records, bounded calls and usage accounting are mandatory.
+63. **SETTLED — Honest interpretation:** relationship support, rationale grounding, production agreement, sample-conditioned nomination coverage, controls and judge stability are separate reported assessments. They are not semantic precision/recall or proof of pedagogical correctness.
+64. **SETTLED — Completion versus quality:** unresolved execution failures prevent evaluation completion; ambiguity is a valid response; quality concerns and all disagreements retain accountable disposition without an automatic semantic score threshold. D12-A assigns concern disposition to IDinsight through the project user.
+65. **SETTLED — Independent validation and remediation:** coding authors executable harness support; separate testing authors tests and validates/executes; reviewer gates completion. Confirmed production defects follow D14 earliest-stage remediation and rerun, not evaluator graph edits.
 
 ---
 
@@ -1998,12 +2066,12 @@ No implementation starts at Step 1 until Step 0 is complete.
 | 21   | Write `as_lc_lp_nodes.jsonl` and `as_lc_lp_relationships.jsonl`                                  | `kgs/lp_export.py`                                                                                                                                                      | Projection tests prove node parity with AS+LC and exact relationship union/order across all four types                                                                                                                                                                                                                                                                                                                                                                                                         |
 | 22   | Integrate LP into `create_kgs.build_kgs()` after `compile_as_lc_kg()`                            | `entries/create_kgs.py`                                                                                                                                                 | Orchestration test verifies phase order, returned bundle use, failure propagation, usage accounting, and `kg_run.json` success/error state                                                                                                                                                                                                                                                                                                                                                                     |
 | 23   | Implement final-bundle reuse and stale-input detection                                           | `lp_export.py`, LP utilities                                                                                                                                            | Tests cover exact-match reuse using hashes/identifiers derived from actual material upstream/config/candidate/request/checkpoint/response/prompt/model/finalization inputs and artifacts, projection rewrite, invalid bundles, and D13 prefix alignment. Candidate-policy replacement requires deletion/regeneration rather than an internal version compatibility layer                                                                                                                                       |
-| 24   | Add deterministic D12 release-policy conformance coverage                                        | Automated tests and deterministic synthetic fixtures/fakes                                                                                                              | Prove `needs_review` is visible, nonpublishing, and nonblocking; processing failure remains D13-governed; no semantic gold set, metric, threshold, sample, cadence, or human approval is required; structural/process validity cannot be labeled pedagogical truth; audit findings cannot edit generated graphs                                                                                                                                                                                                |
+| 24   | Add deterministic D12 release-policy conformance coverage                                        | Automated tests and deterministic synthetic fixtures/fakes                                                                                                              | Prove `needs_review` is visible, nonpublishing, and nonblocking; processing failure remains D13-governed; production success needs no evaluator artifact, semantic score, gold set, human sample/cadence/approval or threshold; structural/process validity cannot be labeled pedagogical truth; findings cannot edit graphs. Reassess the former global no-metrics prohibition to permit the separate Step 27 harness, without adding it to production config or success reports                                                                                                                                                                                                |
 | 25   | Run the targeted six-curriculum structural/process matrix                                        | Deterministic test outputs and validation evidence                                                                                                                      | Madhi: scope-only coordinate; Nigeria: tree baseline; Pratham: DAG/multiple grains; Ghana math: unresolved ancestry/code anomalies; Rwanda: noisy LC evidence cannot auto-publish; Ghana English: recurrence mapping. Validate policy, provenance, counts, identities, checkpoints, and artifacts without a semantic-quality pass/fail claim                                                                                                                                                                   |
-| 26   | Explicitly deferred from v1; no implementation or tuning work                                    | None                                                                                                                                                                    | No config, instruction, prompt, semantic-threshold, or generic-code tuning is authorized. Step 25 defects return to the earliest owning step through remediation/review; post-release findings follow D12/D14 remediation and rerun. Future semantic harness/tuning requires approved governance. After Step 25 approval, proceed directly to Step 27                                                                                                                                                          |
-| 27   | Run all six complete pipelines from source PDFs                                                  | Six complete result directories                                                                                                                                         | All AS, AS+LC, and AS+LC+LP bundles validate; every candidate/request has successful D13 coverage; no failed pair; provenance, warnings, counts, collisions, projections, material content hashes, checkpoints, and reuse state reconcile. `needs_review` is visible/nonpublishing/nonblocking. No D12 semantic pass is required or claimed                                                                                                                                                                    |
-| 28   | Update user-facing pipeline and artifact documentation                                           | New `docs/pipeline/learning-progressions.md`; update architecture, pipeline index, output artifacts, adding-curriculum, running/debugging docs                          | Examples match real artifacts; docs explain canonical undirected `relatesTo` lookup, direct-edge reachability, D10 warnings, D13 resume/failure behavior, optional post-release audit remediation, and every accepted LIMIT including D12/D14 without claiming pedagogical truth                                                                                                                                                                                                                               |
-| 29   | Final release review                                                                             | Brief, configs, code, docs, six outputs                                                                                                                                 | Confirm every settled decision and invariant is implemented; Step 27 evidence satisfies structural/provenance/count/collision/D13 requirements; accepted LIMITs are disclosed; D12 absence of a pre-release semantic gate is explicit; no structural/process evidence is presented as pedagogical correctness; no implementation-governing placeholder or unresolved decision remains                                                                                                                          |
+| 26 | Run all six complete pipelines from source PDFs (former Step 27) | Six complete result directories and immutable manifests | Testing-primary after revalidated Step 25 reviewer approval; explicit live authorization. All AS, AS+LC, AS+LC+LP bundles validate; every candidate/request has successful D13 coverage; no failed pair; exact source/config/code hashes, provenance, warnings, counts, collisions, projections, checkpoints and reuse reconcile. needs_review stays visible/nonpublishing/nonblocking. Reviewer approves exact candidate plus evidence before Step 27. |
+| 27 | Implement, independently test, and execute LP evaluation harness | entries/evaluate_lps.py; evals/lp_eval/{schemas,sampling,prompts,judge,scoring}.py; separate lp_eval artifacts | Coding authors harness after Step 26 approval and settled D12 payloads; separate testing authors deterministic/fake-based tests and independently validates, then executes on six reviewed Step 26 snapshots only with explicit live authorization. All three D12 components, failure/ambiguity/concern distinctions, exact validation/cache/sampling/usage/reporting and D12-A dispositions required. No production tuning. User-created candidate commit and independent reviewer gate bind harness, tests, configs and immutable execution evidence. |
+| 28 | Update user-facing pipeline, evaluation and artifact documentation | docs/pipeline/learning-progressions.md; architecture, index, artifacts, adding-curriculum, running/debugging docs | Coding then testing after Step 27 reviewer approval. Match actual Step 26 production and Step 27 evaluation artifacts; explain relatesTo symmetric lookup, direct edges/reachability, D10 warnings, D13 resume/failure, evaluation commands/config/conditions/denominators/cache/usage/failure/concern disposition, absent automatic semantic thresholds and human gold sets, and all D12/D14 LIMITs. |
+| 29 | Final comprehensive release review | Entire brief, configs, code, tests, docs, six production snapshots and separate evaluation evidence | Read-only reviewer uses original pre-Step-1 baseline and exact Step 28 approved candidate. Verify every settled invariant, revalidated Step 24–25 chain, Step 26 structural/provenance/count/collision/D13 evidence, Step 27 independently tested executed/reported evaluator with no unresolved execution failures and complete concern dispositions, Step 28 documentation, LIMITs and zero unresolved implementation decisions. No semantic correctness claim or automatic score threshold. |
 
 ## 5.1 Suggested module boundary
 
@@ -2030,7 +2098,9 @@ validators.py # deterministic integrity checks
 create_kgs.py # orchestration only
 ```
 
-## 5.2 First full-run sequence
+The separate Step 27 evaluator uses the parallel entry-point and five-module layout specified in D12.1; it is not another stage inside `create_kgs`. Step 27 also owns the minimal `config.py` setting/registry wiring for `LLM_LP_EVAL_JUDGE_MODEL` and the corresponding assignment in `.template.env` and the local `.env`, as specified in D12-J. The production model and shared registry behavior remain unchanged.
+
+## 5.2 First full-run sequence (Step 26)
 
 A sensible order for real pipeline validation is:
 
@@ -2075,4 +2145,4 @@ Every final LP relationship must:
 
 Each successful run must also prove that the complete candidate/request population was materialized before external calls, every producer/checker/reconciled checkpoint is a valid aligned deterministic prefix, no D13 processing failure remains, and any included unresolved SFI/relationship carries the required warnings and provenance.
 
-Under D12, release review does not require a semantic gold set, human-review sample, metric, threshold, or pass/fail authority. It must instead verify that `needs_review` is visible/nonpublishing/nonblocking, the absence of independent pre-release semantic validation is disclosed as a LIMIT, and no structural/process result or producer/checker agreement is described as pedagogical correctness. Under D14, any known false positive/negative is remediated upstream and rerun rather than patched in a generated graph.
+The checks above define Step 26 production completion. D12 additionally requires Step 27 evaluator execution and separate reports for each of these exact six snapshots, with all required scheduled judgments accounted for, no unresolved execution failures, retained ambiguity/disagreement/denominators, usage evidence, and concern dispositions under the approved D12-A policy. Required reports do not impose an automatic semantic score threshold or human gold-set prerequisite. Step 28 must describe actual findings and all LIMITs; Step 29 verifies both evidence sets without claiming pedagogical correctness. Confirmed false positives/negatives follow D14 upstream remediation and rerun, never generated-graph patching.
