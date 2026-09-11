@@ -15,6 +15,9 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
+# Third Party Library
+from loguru import logger
+
 # Package Library
 from kgfeg.config import Settings
 from kgfeg.kgs import prompts
@@ -100,6 +103,12 @@ def _finish_lp_request(
             )
 
             try:
+                logger.info(
+                    f"LP attempt started: request={request_index + 1}/{len(population.requests)}; "
+                    f"request_id={request.request_id}; stage={stage}; "
+                    f"attempt={attempt}/{maximum + 1}; pairs={len(request.pairs)}"
+                )
+
                 output = generate_learning_progressions_for_request(
                     draft=draft,
                     kg_config=kg_config,
@@ -152,6 +161,12 @@ def _finish_lp_request(
                     ) from None
 
                 continue
+            finally:
+                logger.info(
+                    f"LP attempt finished: request={request_index + 1}/{len(population.requests)}; "
+                    f"request_id={request.request_id}; stage={stage}; "
+                    f"attempt={attempt}/{maximum + 1}"
+                )
 
             _verify_execution_material(
                 kg_config=kg_config, population=population, store=store

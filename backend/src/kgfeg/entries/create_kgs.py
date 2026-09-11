@@ -324,7 +324,6 @@ def build_kgs(
     ):
         raise ValueError("LP requires a passed, error-free AS+LC validation report.")
 
-    # Check final reuse before generation can advance its checkpoint run ordinal.
     if not config.overwrite:
         reused_bundle = reuse_as_lc_lp_kg(
             as_lc_bundle=as_lc_bundle,
@@ -371,7 +370,6 @@ def build_kgs(
         relationships=lp_relationships,
     )
 
-    # Failed standalone validation returns diagnostic artifacts rather than raising.
     if (
         not lp_artifacts.validation_report.passed
         or lp_artifacts.validation_report.errors
