@@ -6,9 +6,9 @@
 		"languages": [
 			"en"
 		],
-		"output_dir": "/Users/mustafa/IDinsight/KGForEdGlobal/results/india/pratham",
+		"output_dir": "/Users/tzz/Projects/private/idi/KGForEdGlobal/results/kg_for_ed",
 		"overwrite": false,
-		"pdf_fp": "/Users/mustafa/IDinsight/KGForEdGlobal/data/india/pratham/learning_standards_science.pdf",
+		"pdf_fp": "/Users/tzz/Projects/private/idi/KGForEdGlobal/data/india/pratham/learning_standards_science.pdf",
 		"start_page": 0,
 		"use_extracted_hints": true,
 		"year": 2025
@@ -630,7 +630,7 @@
 				"max_ancestor_path_depth": 8,
 				"max_ancestor_paths_per_sfi": 4,
 				"max_learning_components_per_sfi": 8,
-				"max_source_evidence_characters_per_sfi": 2000,
+				"max_source_evidence_characters_per_sfi": 3000,
 				"max_source_evidence_items_per_sfi": 4
 			},
 			"producer_instructions": "Judge NCERT Learning Outcome pairs, Content Domain Specific Learning Outcome pairs, and Indicator pairs only within the same statement-type grain. Use the configured Class IX to Class X sequence for developmental direction and consider every trustworthy parent path in the framework's DAG. Shared Chapter, Content Domain, wording, or Learning Components can support a judgment but does not establish one by itself.",
