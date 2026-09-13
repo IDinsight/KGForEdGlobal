@@ -1,19 +1,24 @@
-"""Resume bounded LP adjudication with validated checkpoints and failure evidence.
+"""Resume bounded concurrent LP requests with sole-writer durable stage evidence.
 
-The complete request population is reconciled before calls are delegated to the LLM
-layer. Sequential execution validates independent producer/checker stages and retains
-failed attempts for safe resume. Processing completion is not semantic validation.
+A bounded window supplies backpressure even when the earliest request stalls. Workers
+return untrusted outcomes and local usage; only the coordinator writes checkpoint,
+pending completion, failure and usage state.
 """
 
 # Future Library
 from __future__ import annotations
 
 # Standard Library
+import asyncio
 import fcntl
 import hashlib
+import os
 
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, Literal
 
 # Third Party Library
 from loguru import logger
@@ -27,6 +32,11 @@ from kgfeg.kgs.lp_checkpoints import (
     archive_lp_generation_artifacts,
     content_hash,
     reconciled_response,
+)
+from kgfeg.kgs.lp_dispatch import (
+    LPDispatchClosed,
+    LPDispatchGate,
+    LPDispatchIntegrityError,
 )
 from kgfeg.kgs.lp_requests import (
     MANIFEST_FILENAME,
@@ -50,140 +60,599 @@ from kgfeg.schemas import CreateKGConfig
 
 
 class LPGenerationFailed(RuntimeError):
-    """A request exhausted its stage retries; LP processing cannot report success."""
+    """A stage exhausted its retries; LP processing cannot report success."""
 
 
-def _finish_lp_request(
+@dataclass
+class _LPAttemptOutcome:
+    """A worker's observed result and isolated usage, without shared file writes."""
+
+    error: BaseException | None
+    payload: LPGenerationResponse | LPGenerationValidationVerdict | None
+    usage_tracker: KGUsageTracker
+
+
+class _LPDirectoryOwnership:
+    """Retain the original lock descriptor, inode and directory identity."""
+
+    def __init__(self, *, lock: BinaryIO, root: Path) -> None:
+        """Capture the exclusively locked directory identity.
+
+        Parameters
+        ----------
+        lock
+            Already exclusively locked open file description.
+        root
+            Generation directory containing that lock.
+        """
+
+        self.lock = lock
+        self.root = root
+        self.directory_identity = self._identity(root.stat())
+        self.lock_identity = self._identity(os.fstat(lock.fileno()))
+
+    @staticmethod
+    def _identity(stat: os.stat_result) -> tuple[int, int]:
+        """Return a filesystem identity without content or timestamp heuristics.
+
+        Parameters
+        ----------
+        stat
+            Captured file or directory stat.
+
+        Returns
+        -------
+        tuple[int, int]
+            Device and inode identifiers.
+        """
+
+        return stat.st_dev, stat.st_ino
+
+    def verify(self) -> None:
+        """Fail closed on a replaced, closed, or no-longer-exclusive lock.
+
+        Raises
+        ------
+        ValueError
+            If the directory or lock identity has changed, or if the exclusive lock is
+            no longer held.
+        """
+
+        path = self.root / ".lp_generation.lock"
+
+        if (
+            self._identity(self.root.stat()) != self.directory_identity
+            or self._identity(os.fstat(self.lock.fileno())) != self.lock_identity
+            or self._identity(path.stat()) != self.lock_identity
+        ):
+            raise ValueError("LP generation directory ownership was lost.")
+
+        with path.open("rb") as probe:
+            try:
+                fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return
+
+            fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+
+        raise ValueError("LP generation exclusive lock is no longer held.")
+
+
+def _admit_lp_requests(
     *,
+    active: dict[Future[_LPAttemptOutcome], tuple[int, int]],
+    executor: ThreadPoolExecutor,
+    gate: LPDispatchGate,
+    kg_config: CreateKGConfig,
+    model_config: ModelConfig,
+    population: LPRequestPopulation,
+    store: LPGenerationCheckpoints,
+) -> None:
+    """Admit eligible stages in deterministic order within a bounded request window.
+
+    Parameters
+    ----------
+    active
+        Bounded calls awaiting coordinator observation.
+    executor
+        Fixed worker pool with at most one submitted call per admitted request.
+    gate
+        Per-run dispatch permission.
+    kg_config
+        Frozen curriculum configuration.
+    model_config
+        Frozen shared KG model.
+    population
+        Complete materialized request population.
+    store
+        Sole checkpoint writer and durable stage authority.
+    """
+
+    _verify_execution_material(kg_config=kg_config, population=population, store=store)
+    start = len(store.rows["response"])
+    active_indices = {index for index, _ in active.values()}
+
+    # Completed suffixes keep their place in this bounded window until the earliest
+    # hole closes. No population-sized future queue exists.
+    for index in range(start, min(start + store.capacity, len(population.requests))):
+        if index in active_indices:
+            continue
+
+        _reconcile_lp_request(request_index=index, store=store)
+
+        if store.get_row(request_index=index, stage="response") is not None:
+            continue
+
+        # A worker may have returned while its peer was being persisted.
+        if any(future.done() for future in active):
+            break
+
+        _verify_execution_material(
+            kg_config=kg_config, population=population, store=store
+        )
+        draft_row = store.get_row(request_index=index, stage="draft")
+        draft = (
+            None
+            if draft_row is None
+            else LPGenerationResponse.model_validate(draft_row.payload)
+        )
+        stage = "draft" if draft is None else "verdict"
+        attempt_index = store.record_dispatch(request_index=index, stage=stage)
+        logger.info(
+            f"LP attempt dispatched: request={index + 1}/{len(population.requests)}; "
+            f"stage={stage}; attempt={store.attempts[attempt_index].attempt}; "
+            f"capacity={store.capacity}"
+        )
+        future = executor.submit(
+            _execute_lp_attempt,
+            draft=draft,
+            gate=gate,
+            kg_config=kg_config,
+            model_config=model_config,
+            population=population,
+            request_index=index,
+        )
+        active[future] = (index, attempt_index)
+
+
+def _drain_lp_outcomes(
+    *,
+    active: dict[Future[_LPAttemptOutcome], tuple[int, int]],
+    integrity_error: BaseException | None,
+    kg_config: CreateKGConfig,
+    population: LPRequestPopulation,
+    store: LPGenerationCheckpoints,
+    usage_tracker: KGUsageTracker,
+) -> BaseException | None:
+    """Drain active calls while forbidding writes after persistence or ownership loss.
+
+    Parameters
+    ----------
+    active
+        Bounded call set admitted before dispatch closed.
+    integrity_error
+        Prior persistence, input, or ownership failure, if any.
+    kg_config
+        Frozen effective policy.
+    population
+        Complete materialized request population.
+    store
+        Sole durable writer, usable only while its integrity remains established.
+    usage_tracker
+        Invocation-local counters retain observed usage even if persistence fails.
+
+    Returns
+    -------
+    BaseException or None
+        First integrity failure, without manufacturing reusable successful evidence.
+    """
+
+    for future, (_, attempt_index) in list(active.items()):
+        outcome = future.result()
+
+        if integrity_error is None:
+            try:
+                _retain_lp_outcome(
+                    attempt_index=attempt_index,
+                    kg_config=kg_config,
+                    outcome=outcome,
+                    population=population,
+                    store=store,
+                    usage_tracker=usage_tracker,
+                )
+                _reconcile_lp_request(
+                    request_index=store.attempts[attempt_index].request_index,
+                    store=store,
+                )
+            except BaseException as error:  # pylint: disable=broad-exception-caught
+                integrity_error = error
+        else:
+            _merge_lp_usage(outcome=outcome, target=usage_tracker)
+
+    return integrity_error
+
+
+def _execute_lp_attempt(
+    *,
+    draft: LPGenerationResponse | None,
+    gate: LPDispatchGate,
     kg_config: CreateKGConfig,
     model_config: ModelConfig,
     population: LPRequestPopulation,
     request_index: int,
+) -> _LPAttemptOutcome:
+    """Return one stage outcome and local accounting without mutating shared state.
+
+    Parameters
+    ----------
+    draft
+        This request's durably validated producer result, if checking.
+    gate
+        Run-wide dispatch gate shared with the sole writer.
+    kg_config
+        Frozen effective curriculum policy.
+    model_config
+        Frozen shared KG model configuration.
+    population
+        Complete validated pre-call request population.
+    request_index
+        Admitted request position within the bounded window.
+
+    Returns
+    -------
+    _LPAttemptOutcome
+        Validated result or observed exception, plus isolated available usage.
+    """
+
+    tracker = KGUsageTracker()
+    request = population.requests[request_index]
+
+    try:
+        gate.check()
+
+        # Each bounded worker owns an event loop and HTTP client. The public
+        # synchronous call boundary remains injectable for independent
+        # barrier-controlled tests.
+        with asyncio.Runner() as runner:
+            runner.get_loop()
+            output = generate_learning_progressions_for_request(
+                dispatch_guard=gate.check,
+                draft=draft,
+                kg_config=kg_config.model_copy(deep=True),
+                model_config=model_config.model_copy(deep=True),
+                request=request.model_copy(deep=True),
+                usage_tracker=tracker,
+            )
+
+        if draft is None:
+            payload = LPGenerationResponse.model_validate(
+                output.model_dump(mode="python")
+            )
+            verify_lp_generation_response_integrity(
+                lp_generation_request=request, lp_generation_response=payload
+            )
+        else:
+            payload = LPGenerationValidationVerdict.model_validate(
+                output.model_dump(mode="python")
+            )
+            verify_lp_generation_validation_integrity(
+                draft_response=draft,
+                lp_generation_request=request,
+                validation_verdict=payload,
+            )
+
+        return _LPAttemptOutcome(error=None, payload=payload, usage_tracker=tracker)
+    except BaseException as error:  # pylint: disable=broad-exception-caught
+        return _LPAttemptOutcome(error=error, payload=None, usage_tracker=tracker)
+
+
+def _finish_lp_requests(  # pylint: disable=too-complex
+    *,
+    kg_config: CreateKGConfig,
+    model_config: ModelConfig,
+    population: LPRequestPopulation,
     store: LPGenerationCheckpoints,
     usage_tracker: KGUsageTracker,
 ) -> None:
-    """Resume one request at its earliest unfinished validated stage.
+    """Coordinate bounded stage dispatch, durable outcomes, and active-call shutdown.
 
     Parameters
     ----------
     kg_config
-        Captured effective policy and independent stage retry counts.
+        Frozen policy and retry limits.
     model_config
-        Captured shared KG model configuration.
+        Frozen shared production model.
     population
-        Complete materialized request sequence.
-    request_index
-        First incomplete request position.
+        Fully materialized request population.
     store
-        Validated locked checkpoint store.
+        Sole writer of all durable execution state.
     usage_tracker
-        Existing LP token accounting buckets.
+        Run-local aggregate updated only by this coordinator.
     """
 
-    request = population.requests[request_index]
-    retries = kg_config.learning_progressions.retry
+    gate = LPDispatchGate(
+        check_material=partial(
+            _verify_execution_material,
+            kg_config=kg_config,
+            population=population,
+            store=store,
+        )
+    )
+    active: dict[Future[_LPAttemptOutcome], tuple[int, int]] = {}
+    stopped: BaseException | None = None
+    integrity_error: BaseException | None = None
+    capacity = kg_config.learning_progressions.max_concurrent_requests
+    usage_tracker.lp_max_concurrent_requests = capacity
 
-    for stage, maximum in (
-        ("draft", retries.producer_max_retries),
-        ("verdict", retries.checker_max_retries),
+    with ThreadPoolExecutor(
+        max_workers=capacity, thread_name_prefix="lp-request"
+    ) as executor:
+        try:
+            while True:
+                with gate.coordinate():
+                    # Observe every already-returned result before launching a
+                    # follow-up. One exhausted outcome closes transport dispatch before
+                    # any slow disk I/O.
+                    ready = [future for future in active if future.done()]
+                    outcomes = [(future, future.result()) for future in ready]
+                    stopped = _observe_lp_failures(
+                        active=active,
+                        gate=gate,
+                        outcomes=outcomes,
+                        population=population,
+                        stopped=stopped,
+                        store=store,
+                    )
+
+                    for future, outcome in outcomes:
+                        index, attempt_index = active.pop(future)
+                        _retain_lp_outcome(
+                            attempt_index=attempt_index,
+                            kg_config=kg_config,
+                            outcome=outcome,
+                            population=population,
+                            store=store,
+                            usage_tracker=usage_tracker,
+                        )
+                        _reconcile_lp_request(request_index=index, store=store)
+
+                    if stopped is not None:
+                        if not active:
+                            break
+                    else:
+                        _admit_lp_requests(
+                            active=active,
+                            executor=executor,
+                            gate=gate,
+                            kg_config=kg_config,
+                            model_config=model_config,
+                            population=population,
+                            store=store,
+                        )
+                        if not active and len(store.rows["response"]) == len(
+                            population.requests
+                        ):
+                            break
+
+                if active:
+                    wait(fs=active, return_when=FIRST_COMPLETED)
+        except BaseException as error:  # pylint: disable=broad-exception-caught
+            # Integrity or persistence loss forbids any further publication. Durable
+            # dispatch identities explicitly remain unknown on recovery.
+            gate.close()
+            integrity_error = error
+        finally:
+            gate.close()
+            integrity_error = _drain_lp_outcomes(
+                active=active,
+                integrity_error=integrity_error,
+                kg_config=kg_config,
+                population=population,
+                store=store,
+                usage_tracker=usage_tracker,
+            )
+
+    if integrity_error is not None:
+        raise integrity_error
+
+    if stopped is not None:
+        raise stopped
+
+
+def _merge_lp_usage(*, outcome: _LPAttemptOutcome, target: KGUsageTracker) -> None:
+    """Aggregate one isolated worker's observed usage exactly once on the writer.
+
+    Parameters
+    ----------
+    outcome
+        Per-attempt counters and outcome with no shared mutation.
+    target
+        Invocation-local KG usage buckets.
+    """
+
+    source = outcome.usage_tracker
+
+    if (
+        not source.lp_generation.requests
+        and not source.lp_generation_validation.requests
+        and not isinstance(outcome.error, (LPDispatchClosed, LPDispatchIntegrityError))
     ):
-        if request_index < len(store.rows[stage]):
-            continue
+        target.lp_unknown_usage_attempts += 1
 
-        for attempt in range(1, maximum + 2):
-            _verify_execution_material(
-                kg_config=kg_config, population=population, store=store
+    for name in ("lp_generation", "lp_generation_validation"):
+        incoming = getattr(source, name)
+        aggregate = getattr(target, name)
+
+        for field in (
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "input_tokens",
+            "output_tokens",
+            "requests",
+            "runs",
+        ):
+            setattr(
+                aggregate, field, getattr(aggregate, field) + getattr(incoming, field)
             )
-            draft = (
-                None
-                if stage == "draft"
-                else LPGenerationResponse.model_validate(
-                    store.rows["draft"][request_index].payload
-                )
-            )
 
-            try:
-                logger.info(
-                    f"LP attempt started: request={request_index + 1}/{len(population.requests)}; "
-                    f"request_id={request.request_id}; stage={stage}; "
-                    f"attempt={attempt}/{maximum + 1}; pairs={len(request.pairs)}"
-                )
 
-                output = generate_learning_progressions_for_request(
-                    draft=draft,
-                    kg_config=kg_config,
-                    model_config=model_config,
-                    request=request.model_copy(deep=True),
-                    usage_tracker=usage_tracker,
-                )
+def _observe_lp_failures(
+    *,
+    active: dict[Future[_LPAttemptOutcome], tuple[int, int]],
+    gate: LPDispatchGate,
+    outcomes: list[tuple[Future[_LPAttemptOutcome], _LPAttemptOutcome]],
+    population: LPRequestPopulation,
+    stopped: BaseException | None,
+    store: LPGenerationCheckpoints,
+) -> BaseException | None:
+    """Close dispatch before saving any member of a returned result batch.
 
-                if stage == "draft":
-                    response = LPGenerationResponse.model_validate(
-                        output.model_dump(mode="python")
+    Parameters
+    ----------
+    active
+        Bounded outstanding call identities.
+    gate
+        Shutdown boundary shared with transport dispatch.
+    outcomes
+        All already-returned outcomes observed in this coordinator iteration.
+    population
+        Authoritative request identities.
+    stopped
+        First terminal failure already observed, if any.
+    store
+        Durable attempt identities and immutable retry budgets.
+
+    Returns
+    -------
+    BaseException or None
+        First terminal failure, preserving interruption separately from model failure.
+    """
+
+    for future, outcome in outcomes:
+        index, attempt_index = active[future]
+        attempt = store.attempts[attempt_index]
+
+        if outcome.error is not None and (
+            not isinstance(outcome.error, Exception)
+            or isinstance(outcome.error, LPDispatchIntegrityError)
+            or attempt.attempt == store.material["retry_limits"][attempt.stage] + 1
+        ):
+            gate.close()
+
+            if stopped is None:
+                stopped = (
+                    outcome.error
+                    if not isinstance(outcome.error, Exception)
+                    or isinstance(outcome.error, LPDispatchIntegrityError)
+                    else LPGenerationFailed(
+                        f"LP {attempt.stage} failed for request "
+                        f"{population.requests[index].request_id}; processing halted."
                     )
-                    verify_lp_generation_response_integrity(
-                        lp_generation_request=request, lp_generation_response=response
-                    )
-                    validated: LPGenerationResponse | LPGenerationValidationVerdict = (
-                        response
-                    )
-                else:
-                    if draft is None:
-                        raise ValueError("LP checker execution requires a valid draft.")
-
-                    verdict = LPGenerationValidationVerdict.model_validate(
-                        output.model_dump(mode="python")
-                    )
-                    verify_lp_generation_validation_integrity(
-                        draft_response=draft,
-                        lp_generation_request=request,
-                        validation_verdict=verdict,
-                    )
-                    validated = verdict
-            except Exception as error:  # pylint: disable=broad-exception-caught
-                _verify_execution_material(
-                    kg_config=kg_config, population=population, store=store
-                )
-                exhausted = attempt == maximum + 1
-                store.record_failure(
-                    attempt=attempt,
-                    error=error,
-                    exhausted=exhausted,
-                    request_index=request_index,
-                    stage=stage,
                 )
 
-                if exhausted:
-                    raise LPGenerationFailed(
-                        f"LP {stage} failed for request {request.request_id} after "
-                        f"{attempt} attempts; processing halted. Inspect "
-                        f"lp_generation_failures.json."
-                    ) from None
+    return stopped
 
-                continue
-            finally:
-                logger.info(
-                    f"LP attempt finished: request={request_index + 1}/{len(population.requests)}; "
-                    f"request_id={request.request_id}; stage={stage}; "
-                    f"attempt={attempt}/{maximum + 1}"
-                )
 
-            _verify_execution_material(
-                kg_config=kg_config, population=population, store=store
-            )
-            store.append(payload=validated, request_index=request_index, stage=stage)
-            break
+def _reconcile_lp_request(
+    *, request_index: int, store: LPGenerationCheckpoints
+) -> None:
+    """Finish a saved checker locally without requiring another external call.
 
-    draft = LPGenerationResponse.model_validate(
-        store.rows["draft"][request_index].payload
+    Parameters
+    ----------
+    request_index
+        Request whose durable dependencies may now be complete.
+    store
+        Sole checkpoint writer.
+    """
+
+    draft = store.get_row(request_index=request_index, stage="draft")
+    verdict = store.get_row(request_index=request_index, stage="verdict")
+
+    if (
+        draft is not None
+        and verdict is not None
+        and store.get_row(request_index=request_index, stage="response") is None
+    ):
+        store.append(
+            payload=reconciled_response(
+                draft=LPGenerationResponse.model_validate(draft.payload),
+                verdict=LPGenerationValidationVerdict.model_validate(verdict.payload),
+            ),
+            request_index=request_index,
+            stage="response",
+        )
+
+
+def _retain_lp_outcome(
+    *,
+    attempt_index: int,
+    kg_config: CreateKGConfig,
+    outcome: _LPAttemptOutcome,
+    population: LPRequestPopulation,
+    store: LPGenerationCheckpoints,
+    usage_tracker: KGUsageTracker,
+) -> None:
+    """Persist validated post-call material and all observed accounting atomically.
+
+    Parameters
+    ----------
+    attempt_index
+        Durable dispatch identity within the usage journal.
+    kg_config
+        Frozen effective policy.
+    outcome
+        Worker's isolated observed result.
+    population
+        Complete materialized request authority.
+    store
+        Sole durable writer.
+    usage_tracker
+        Invocation aggregate for existing KG reports.
+    """
+
+    _merge_lp_usage(outcome=outcome, target=usage_tracker)
+
+    if isinstance(outcome.error, LPDispatchIntegrityError):
+        raise outcome.error
+
+    _verify_execution_material(kg_config=kg_config, population=population, store=store)
+    attempt = store.attempts[attempt_index]
+    bucket = (
+        outcome.usage_tracker.lp_generation
+        if attempt.stage == "draft"
+        else outcome.usage_tracker.lp_generation_validation
     )
-    verdict = LPGenerationValidationVerdict.model_validate(
-        store.rows["verdict"][request_index].payload
+    usage = (
+        {
+            field: getattr(bucket, field)
+            for field in (
+                "cache_read_tokens",
+                "cache_write_tokens",
+                "input_tokens",
+                "output_tokens",
+                "requests",
+                "runs",
+            )
+        }
+        if bucket.requests or isinstance(outcome.error, LPDispatchClosed)
+        else None
     )
-    store.append(
-        payload=reconciled_response(draft=draft, verdict=verdict),
-        request_index=request_index,
-        stage="response",
+    status: Literal["succeeded", "failed", "unknown", "cancelled"] = (
+        "succeeded"
+        if outcome.error is None
+        else (
+            "cancelled"
+            if isinstance(outcome.error, LPDispatchClosed)
+            else "failed" if isinstance(outcome.error, Exception) else "unknown"
+        )
+    )
+    store.complete_attempt(
+        attempt_index=attempt_index,
+        error=outcome.error,
+        payload=outcome.payload,
+        status=status,
+        usage=usage,
     )
 
 
@@ -192,33 +661,65 @@ def _verify_execution_material(
     kg_config: CreateKGConfig,
     population: LPRequestPopulation,
     store: LPGenerationCheckpoints,
+    verify_checkpoints: bool = True,
 ) -> None:
-    """Reconcile population and checkpoint material immediately around every call.
+    """Reconcile all population and checkpoint material around each dispatched call.
 
     Parameters
     ----------
     kg_config
-        Captured effective configuration.
+        Frozen effective configuration.
     population
         Complete authoritative request population.
     store
-        Current validated checkpoint state and execution material.
+        Current validated checkpoint state and directory owner.
+    verify_checkpoints
+        Include mutable checkpoint bytes. Transport checks share the coordinator gate,
+        so they can validate a stable snapshot without racing publication.
+    """
+
+    store.verify_ownership()
+    _verify_lp_inputs(
+        kg_config=kg_config,
+        material=store.material,
+        population=population,
+        root=store.root,
+    )
+
+    if verify_checkpoints:
+        store.verify_bytes()
+
+
+def _verify_lp_inputs(
+    *,
+    kg_config: CreateKGConfig,
+    material: dict[str, Any],
+    population: LPRequestPopulation,
+    root: Path,
+) -> None:
+    """Reject changed immutable request or model inputs before calls and publication.
+
+    Parameters
+    ----------
+    kg_config
+        Frozen effective policy.
+    material
+        Captured execution identity.
+    population
+        Complete materialized candidate and request population.
+    root
+        Generation directory containing the immutable population artifacts.
 
     Raises
     ------
     ValueError
-        If the LP prompt, model, or material changed during execution.
+        If the LP prompt, model, or configuration has changed since the last dispatch.
     """
 
-    read_lp_request_population(expected=population, root=store.root)
+    read_lp_request_population(expected=population, root=root)
 
-    if (
-        lp_execution_material(kg_config=kg_config, population=population)
-        != store.material
-    ):
+    if lp_execution_material(kg_config=kg_config, population=population) != material:
         raise ValueError("LP prompt or model material changed during execution.")
-
-    store.verify_bytes()
 
 
 def generate_learning_progressions(
@@ -230,12 +731,7 @@ def generate_learning_progressions(
     overwrite: bool,
     usage_tracker: KGUsageTracker,
 ) -> tuple[LPGenerationResponse, ...]:
-    """Materialize, execute, and resume bounded LP producer/checker adjudication.
-
-    Each request finishes before another starts. Valid completed calls are reused; a
-    saved draft survives checker failure. Every failed attempt is retained outside
-    successful prefixes, with later completion linked to the resumed run ordinal. No
-    relationship finalization, graph validation, or release status is performed.
+    """Materialize, execute, and resume bounded independent production LP requests.
 
     Parameters
     ----------
@@ -244,29 +740,26 @@ def generate_learning_progressions(
     doc_key
         Authoritative document identity.
     kg_config
-        Effective curriculum policy, evidence bounds, and stage retry counts.
+        Effective curriculum policy, evidence bounds, retries, and capacity.
     kg_dirs
         Directory receiving the complete request and checkpoint artifacts.
     overwrite
         Explicit regeneration archives prior evidence before replacing affected files.
-        False requires exact current material and validated stage-prefix reuse.
     usage_tracker
-        Existing LP producer/checker token accounting buckets.
+        Existing run-local LP usage buckets, aggregated by the sole writer.
 
     Returns
     -------
     tuple[LPGenerationResponse, ...]
-        Complete ordered accepted/corrected responses, including normal negative and
-        ambiguous judgments. Processing completion does not establish semantic truth.
+        Complete ordered accepted/corrected responses, including negative and ambiguous
+        judgments. Processing completion does not establish pedagogical truth.
 
     Raises
     ------
     LPGenerationFailed
-        If any request exhausts producer or checker retries; no partial success returns.
+        If any exhausted stage failure remains; no partial success returns.
     ValueError
-        If persisted material is malformed, stale, truncated, or misaligned.
-    OSError
-        If the directory is locked by another writer or persistence fails.
+        If material, checkpoints, pending completions, or ownership are invalid.
     """
 
     if not isinstance(overwrite, bool):
@@ -278,8 +771,6 @@ def generate_learning_progressions(
     config = CreateKGConfig.model_validate_json(
         kg_config.model_dump_json(by_alias=True)
     )
-
-    # Complete deterministic construction must succeed before replacing any evidence.
     expected = build_lp_generation_requests(
         as_lc_bundle=bundle, doc_key=doc_key, kg_config=config
     )
@@ -287,6 +778,8 @@ def generate_learning_progressions(
 
     with (kg_dirs.root / ".lp_generation.lock").open("a+b") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        ownership = _LPDirectoryOwnership(lock=lock, root=kg_dirs.root)
+        ownership.verify()
 
         if overwrite:
             archive_lp_generation_artifacts(kg_dirs.root)
@@ -299,6 +792,8 @@ def generate_learning_progressions(
             "lp_generation_draft_responses.jsonl",
             "lp_generation_validation_verdicts.jsonl",
             "lp_generation_responses.jsonl",
+            "lp_generation_pending_completions.json",
+            "lp_generation_usage.json",
         )
 
         if any(
@@ -314,25 +809,34 @@ def generate_learning_progressions(
 
         material = lp_execution_material(kg_config=config, population=population)
         store = LPGenerationCheckpoints(
-            material=material, population=population, root=kg_dirs.root
+            execution_check=partial(
+                _verify_lp_inputs,
+                kg_config=config,
+                material=material,
+                population=population,
+                root=kg_dirs.root,
+            ),
+            material=material,
+            ownership_check=ownership.verify,
+            population=population,
+            root=kg_dirs.root,
         )
         store.begin_run()
-        model = ModelConfig.model_validate(material["model_config"])
-
-        for index in range(len(store.rows["response"]), len(population.requests)):
-            _finish_lp_request(
-                kg_config=config,
-                model_config=model,
-                population=population,
-                request_index=index,
-                store=store,
-                usage_tracker=usage_tracker,
-            )
-
+        _finish_lp_requests(
+            kg_config=config,
+            model_config=ModelConfig.model_validate(material["model_config"]),
+            population=population,
+            store=store,
+            usage_tracker=usage_tracker,
+        )
         _verify_execution_material(kg_config=config, population=population, store=store)
 
-        if any(failure.resolved_run_number is None for failure in store.failures):
-            raise LPGenerationFailed("LP processing failures remain unresolved.")
+        if any(
+            failure.resolved_run_number is None for failure in store.failures
+        ) or len(store.rows["response"]) != len(population.requests):
+            raise LPGenerationFailed(
+                "LP processing failures or unfinished requests remain."
+            )
 
         return tuple(
             LPGenerationResponse.model_validate(row.payload)
@@ -348,14 +852,14 @@ def lp_execution_material(
     Parameters
     ----------
     kg_config
-        Complete effective KG configuration, including LP retry budgets.
+        Complete effective KG configuration, including LP retry budgets and capacity.
     population
         Reconciled upstream, candidate, and request content identities.
 
     Returns
     -------
     dict[str, Any]
-        Code-owned execution fingerprint inputs, with no manual version selectors.
+        Actual material identities, with no manual compatibility-policy selectors.
     """
 
     model = Settings.llm_config("kgs")
@@ -364,6 +868,7 @@ def lp_execution_material(
         "config_content_hash": content_hash(
             kg_config.model_dump(by_alias=True, mode="json")
         ),
+        "max_concurrent_requests": kg_config.learning_progressions.max_concurrent_requests,
         "model_config": model.model_dump(mode="json"),
         "model_settings": dict(model.kgs_settings("learning_progressions")),
         "producer_instructions": kg_config.learning_progressions.producer_instructions,

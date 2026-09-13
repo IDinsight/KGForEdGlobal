@@ -2961,6 +2961,12 @@ class _CreateKGLearningProgressionsConfig(BaseSchema):
     checker_instructions: _LPNonEmptyStr
     developmental_coordinate: _CreateKGLearningProgressionsDevelopmentalCoordinatePolicy
     evidence_limits: _CreateKGLearningProgressionsEvidenceLimits
+    max_concurrent_requests: int = Field(
+        default=4,
+        description="Maximum admitted LP request batches, including retry waits.",
+        ge=1,
+        strict=True,
+    )
     producer_instructions: _LPNonEmptyStr
     relates_to: _CreateKGLearningProgressionsRelatesToPolicy
     relationship_metadata: _CreateKGLearningProgressionsRelationshipMetadataPolicy

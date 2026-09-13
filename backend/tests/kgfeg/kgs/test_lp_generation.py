@@ -52,6 +52,25 @@ _PROFILES = (
 _NAMESPACE = UUID("3f6b9f2a-7d8a-5d85-a9c3-9f3b8d3c3f4b")
 
 
+def _integration_profiles(profiles: tuple[str, ...]) -> list[Any]:
+    """Mark large checkpoint matrices while retaining every reduced fixture.
+
+    Use only for full generation-through-publication/reuse tests. Selection,
+    nomination, request-building, and small-fixture regressions remain default.
+    Ghana English and Rwanda produce 56 and 100 pairs in these matrices; their
+    repeated real checkpoint validation dominates measured suite time.
+    """
+    return [
+        pytest.param(
+            profile,
+            marks=(
+                pytest.mark.slow if profile in {"ghana_english", "rwanda_math"} else ()
+            ),
+        )
+        for profile in profiles
+    ]
+
+
 @pytest.fixture(autouse=True)
 def _block_network(monkeypatch: pytest.MonkeyPatch) -> None:
     """Forbid external execution in every request test.
@@ -1879,18 +1898,7 @@ def test_unresolved_and_audit_warnings_remain_available_without_fallback_evidenc
 
 @pytest.mark.parametrize(
     argnames="defect",
-    argvalues=[
-        "failed",
-        "errors",
-        "duplicate_sfi",
-        "missing_endpoint",
-        pytest.param(
-            "collision",
-            marks=pytest.mark.skip(
-                reason="Cross-entity release collision checks belong to standalone/combined graph validation."
-            ),
-        ),
-    ],
+    argvalues=["failed", "errors", "duplicate_sfi", "missing_endpoint"],
 )
 def test_upstream_integrity_failures_block_request_materialization(
     defect: str, tmp_path: Path
@@ -1911,12 +1919,10 @@ def test_upstream_integrity_failures_block_request_materialization(
         bundle.validation_report.errors.append("synthetic upstream error")
     elif defect == "duplicate_sfi":
         bundle.items.append(bundle.items[0])
-    elif defect == "missing_endpoint":
-        bundle.relationships_has_child[0].target_entity_value = str(UUID(int=999))
     else:
-        bundle.relationships_has_child[0].identifier = bundle.items[
-            0
-        ].case_identifier_uuid
+        # Cross-entity identifier collisions are exercised at their release
+        # boundary by test_lp_export, including populations with no LP edges.
+        bundle.relationships_has_child[0].target_entity_value = str(UUID(int=999))
     with pytest.raises(ValueError):
         write_lp_generation_request_artifacts(
             as_lc_bundle=bundle,

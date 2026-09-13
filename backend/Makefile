@@ -24,6 +24,7 @@ VENV ?= .venv
 PYTHON = $(VENV)/bin/python
 UV = uv
 UV_PIP = $(UV) pip
+TEST_ARGS ?=
 
 export-test-env = set -a && source ./tests/test.env && set +a &&
 
@@ -136,8 +137,8 @@ clean-docker-container = \
 	docker system prune -f
 
 ########## TEST SETUP ##########
-test: run-tests  ## Run backend tests
+test: run-tests  ## Run focused tests; TEST_ARGS=--run-slow includes all integration matrices
 
 run-tests:
 	@$(export-test-env) \
-	$(UV) run pytest -n auto -rsPQ -m "not alembic" --cov-report term-missing --cov-config=./pyproject.toml --cov=. tests
+	$(UV) run pytest -n auto -rsPQ -m "not alembic" --cov-report term-missing --cov-config=./pyproject.toml --cov=. tests $(TEST_ARGS)

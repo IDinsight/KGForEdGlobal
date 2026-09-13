@@ -53,7 +53,12 @@ _INPUTS = (
     "lp_generation_responses.jsonl",
     "lp_generation_validation_verdicts.jsonl",
 )
-_OPTIONAL_INPUTS = ("lp_eligibility_report.json", "lp_eligible_sfis.json")
+_OPTIONAL_INPUTS = (
+    "lp_eligibility_report.json",
+    "lp_eligible_sfis.json",
+    "lp_generation_pending_completions.json",
+    "lp_generation_usage.json",
+)
 _PROVENANCE = "lp_relationship_provenance.json"
 _RELATES = "lp_relationships_relates_to.jsonl"
 _REPORT = "lp_validation_report.json"

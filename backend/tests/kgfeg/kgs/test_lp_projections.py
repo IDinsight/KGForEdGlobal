@@ -296,7 +296,10 @@ def test_all_four_groups_retain_exact_internal_fields_and_upstream_bytes(
     )
 
 
-@pytest.mark.parametrize(argnames="profile", argvalues=_export._PROFILES)
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    argnames="profile", argvalues=_fixtures._integration_profiles(_export._PROFILES)
+)
 def test_curriculum_context_survives_complete_projections(
     monkeypatch: pytest.MonkeyPatch, profile: str, tmp_path: Path
 ) -> None:
@@ -367,6 +370,7 @@ def test_empty_populations_write_complete_files_without_model_calls(
         assert len((tmp_path / _NODES).read_bytes().splitlines()) == 1
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="decision", argvalues=["needs_review", "no_relation"])
 def test_nonpublishing_populations_keep_nodes_and_upstream_relationships(
     decision: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -393,6 +397,7 @@ def test_nonpublishing_populations_keep_nodes_and_upstream_relationships(
     assert result.relationships_builds_towards == result.relationships_relates_to == []
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="field", argvalues=["total_node_count", "total_relationship_count"]
 )
@@ -420,6 +425,7 @@ def test_projection_count_mismatch_fails_before_output_write(
     assert _export._snapshot(tmp_path) == before
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="name", argvalues=[_NODES, _RELATIONSHIPS])
 @pytest.mark.parametrize(
     argnames="attack",
@@ -514,6 +520,7 @@ def test_projection_persistence_failures_propagate_through_public_compiler(
     assert set(after) <= set(before) | {_export._BUNDLE, _NODES, _RELATIONSHIPS}
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="group", argvalues=["items", "learning_components", *_GROUPS]
 )
@@ -544,6 +551,7 @@ def test_reordered_bundle_groups_have_identical_projection_bytes(
     assert _export._snapshot(tmp_path) == before
 
 
+@pytest.mark.slow
 def test_reordered_upstream_fresh_runs_preserve_identical_complete_projections(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -579,6 +587,7 @@ def test_reordered_upstream_fresh_runs_preserve_identical_complete_projections(
     )
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="name", argvalues=[_NODES, _RELATIONSHIPS])
 def test_write_time_evidence_mutation_during_projections_rejects_success(
     monkeypatch: pytest.MonkeyPatch, name: str, tmp_path: Path

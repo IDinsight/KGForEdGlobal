@@ -424,6 +424,7 @@ def test_completed_run_with_resolved_failure_history_passes(
     assert report.passed
 
 
+@pytest.mark.slow
 def test_cycle_diagnostics_cover_every_component_node_edge_and_reference(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -620,6 +621,7 @@ def test_direct_claim_alignment_and_logical_pair_exclusivity_are_enforced(
         )
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="attack",
     argvalues=[
@@ -1035,6 +1037,7 @@ def test_report_rejects_false_pass_semantic_proof_and_independent_semantic_check
             LPValidationReport.model_validate(payload)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="filename",
     argvalues=[

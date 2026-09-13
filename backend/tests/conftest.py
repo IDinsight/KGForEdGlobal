@@ -37,6 +37,8 @@ from kgfeg.utils import logging_  # noqa: E402
 from tests.constants import FIXTURES_DIR  # noqa: E402
 from tests.types_ import InstallLoguruMock, LogCall  # noqa: E402
 
+pytest_plugins = ["tests.pytest_slow"]
+
 
 # Fixtures.
 @pytest.fixture(scope="function")

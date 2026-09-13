@@ -120,7 +120,6 @@ class _Harness:
             Actual tracker supplied by entry-point orchestration.
         """
         self.charges.append(bucket)
-        self.trackers.append(tracker)
         input_tokens, output_tokens = _CHARGES[bucket]
         getattr(tracker, bucket).add_run_usage(
             RunUsage(input_tokens=input_tokens, output_tokens=output_tokens, requests=1)
@@ -243,7 +242,7 @@ class _Harness:
         Parameters
         ----------
         kwargs
-            Bounded production request, draft, model, and shared tracker.
+            Bounded production request, draft, model, and per-attempt tracker.
 
         Returns
         -------
@@ -469,6 +468,9 @@ def test_create_real_failed_pair_halts_and_resumes_at_unfinished_stage(
         Isolated run directory.
     """
     harness = _Harness(root=tmp_path)
+    # This scenario requires a completed prefix before the next request fails.
+    harness.config.learning_progressions.max_concurrent_requests = 1
+    harness._save_config()
     harness.proposals.failure = (stage, 1)
     harness._install(monkeypatch=monkeypatch, real_lp=True)
     with pytest.raises(LPGenerationFailed):

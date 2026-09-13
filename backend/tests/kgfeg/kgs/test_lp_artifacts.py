@@ -542,6 +542,7 @@ def test_incomplete_processing_cannot_write_standalone_success(
         assert failures[0]["resolved_run_number"] is None
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="operation", argvalues=["read", "write"])
 @pytest.mark.parametrize(
     argnames="race", argvalues=["eligibility", "failure", "transaction"]
@@ -606,6 +607,7 @@ def test_input_changes_after_validation_fail_before_artifact_access(
     }
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="existing", argvalues=[False, True])
 @pytest.mark.parametrize(argnames="filename", argvalues=list(_FILES))
 def test_interrupted_replacements_never_publish_a_mixed_success(
@@ -700,6 +702,7 @@ def test_lock_contention_fails_without_mutating_any_artifact(
     assert _read(harness).validation_report.passed
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="filename", argvalues=list(_FILES))
 @pytest.mark.parametrize(
     argnames="mutation", argvalues=["missing", "truncated", "whitespace"]
@@ -791,10 +794,13 @@ def test_policy_exclusions_are_not_unresolved_judgments_or_failures(
     assert _read(harness) == result
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="decision", argvalues=["needs_review", "no_relation", "relatesTo"]
 )
-@pytest.mark.parametrize(argnames="profile", argvalues=list(_PROFILES))
+@pytest.mark.parametrize(
+    argnames="profile", argvalues=_fixtures._integration_profiles(_PROFILES)
+)
 def test_profiles_preserve_dag_warnings_exclusions_and_non_gating_outcomes(
     decision: str, monkeypatch: pytest.MonkeyPatch, profile: str, tmp_path: Path
 ) -> None:
@@ -894,6 +900,7 @@ def test_profiles_preserve_dag_warnings_exclusions_and_non_gating_outcomes(
     assert result.validation_report.pedagogical_correctness_established is False
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="attack",
     argvalues=[
@@ -1006,6 +1013,7 @@ def test_recovered_failure_history_is_exact_and_does_not_become_ambiguity(
     assert _read(harness) == result
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="filename", argvalues=list(_INPUTS))
 def test_stale_material_inputs_are_rejected_without_rewriting_outputs(
     filename: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -1045,6 +1053,7 @@ def test_stale_material_inputs_are_rejected_without_rewriting_outputs(
         assert _validation._snapshot(tmp_path) == before
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="attack", argvalues=["config", "model", "upstream"])
 def test_stale_runtime_inputs_cannot_reuse_a_passed_report(
     attack: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -1119,6 +1128,7 @@ def test_unresolved_schema_rejects_negative_duplicate_and_miscounted_claims(
             LPUnresolvedItems.model_validate(payload)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="counter",
     argvalues=["candidate_pairs", "generation_failure_attempts", "relationships"],

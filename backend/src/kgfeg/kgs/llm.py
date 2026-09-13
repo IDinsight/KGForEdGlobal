@@ -9,7 +9,7 @@ returns a complete corrected result.
 
 # Standard Library
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 # Third Party Library
 from loguru import logger
@@ -30,6 +30,7 @@ from kgfeg.kgs.agents import (
     create_sfi_has_child_agent,
     create_sfi_has_child_validation_agent,
 )
+from kgfeg.kgs.lp_dispatch import run_lp_agent_attempt
 from kgfeg.kgs.lp_requests import LPGenerationRequest, validate_lp_request_artifacts
 from kgfeg.kgs.prompts import (
     build_lc_dedup_prompt,
@@ -109,6 +110,8 @@ class KGUsageTracker:
     lc_generation_validation: AgentUsageBucket
     lp_generation: AgentUsageBucket
     lp_generation_validation: AgentUsageBucket
+    lp_max_concurrent_requests: int | None
+    lp_unknown_usage_attempts: int
     sfi_dedup: AgentUsageBucket
     sfi_dedup_validation: AgentUsageBucket
     sfi_extraction: AgentUsageBucket
@@ -128,6 +131,8 @@ class KGUsageTracker:
         self.lp_generation_validation = AgentUsageBucket(
             agent_name="lp_generation_validation"
         )
+        self.lp_max_concurrent_requests = None
+        self.lp_unknown_usage_attempts = 0
         self.sfi_dedup = AgentUsageBucket(agent_name="sfi_dedup")
         self.sfi_dedup_validation = AgentUsageBucket(agent_name="sfi_dedup_validation")
         self.sfi_extraction = AgentUsageBucket(agent_name="sfi_extraction")
@@ -181,7 +186,17 @@ class KGUsageTracker:
                 for bucket in agent_buckets.values()
             ),
         }
+        execution = {}
+
+        if self.lp_max_concurrent_requests is not None:
+            execution["lp_execution"] = {
+                "available_cost": None,
+                "max_concurrent_requests": self.lp_max_concurrent_requests,
+                "unknown_usage_attempts": self.lp_unknown_usage_attempts,
+            }
+
         return {
+            **execution,
             "agents": {
                 agent_name: bucket.to_dict()
                 for agent_name, bucket in agent_buckets.items()
@@ -631,6 +646,7 @@ def generate_learning_components_for_request(
 
 def generate_learning_progressions_for_request(
     *,
+    dispatch_guard: Callable[[], None] | None = None,
     draft: LPGenerationResponse | None,
     kg_config: CreateKGConfig,
     model_config: ModelConfig,
@@ -641,6 +657,8 @@ def generate_learning_progressions_for_request(
 
     Parameters
     ----------
+    dispatch_guard
+        Run-wide gate checked before each actual transport dispatch.
     draft
         Validated draft for checker execution, absent for a producer attempt.
     kg_config
@@ -689,7 +707,12 @@ def generate_learning_progressions_for_request(
     usage = RunUsage()
 
     try:
-        run = agent.run_sync(usage=usage, user_prompt=prompt.user_message)
+        run = run_lp_agent_attempt(
+            agent=agent,
+            dispatch_guard=dispatch_guard,
+            usage=usage,
+            user_prompt=prompt.user_message,
+        )
         return run.output
     finally:
         bucket.add_run_usage(usage)

@@ -233,7 +233,10 @@ def test_all_nonpublishing_judgments_remain_successful_without_edges(
     )
 
 
-@pytest.mark.parametrize(argnames="profile", argvalues=_PROFILES)
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    argnames="profile", argvalues=_fixtures._integration_profiles(_PROFILES)
+)
 def test_complete_upstream_content_and_standalone_audit_shapes_survive(  # pylint: disable=R0915
     monkeypatch: pytest.MonkeyPatch, profile: str, tmp_path: Path
 ) -> None:
@@ -375,6 +378,7 @@ def test_complete_upstream_content_and_standalone_audit_shapes_survive(  # pylin
     assert (tmp_path / _BUNDLE).read_bytes() == _bytes(material)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="attack", argvalues=["duplicate", "gap", "reorder", "stale_id", "truncate"]
 )
@@ -494,6 +498,39 @@ def test_failed_lp_collision_diagnostics_cannot_compile_success(
     assert _snapshot(tmp_path) == before
 
 
+@pytest.mark.parametrize(argnames="decision", argvalues=["no_relation", "relatesTo"])
+def test_upstream_cross_entity_collision_blocks_release_even_without_lp_edges(
+    decision: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Reject an SFI/hasChild identifier collision at the complete graph boundary.
+
+    This replaces the skipped request-materialization collision case: requests
+    contain SFI endpoints, while release validation owns cross-entity uniqueness.
+    Exercise both empty and nonempty LP relationship populations so detection
+    cannot depend on an LP edge participating in the collision.
+    """
+    harness = _claims._Harness(count=2, root=tmp_path)
+    identifier = harness.bundle.items[0].case_identifier_uuid
+    harness.bundle.relationships_has_child[0].identifier = identifier
+    harness.default_decision = decision
+    relationships = _artifacts._complete(harness=harness, monkeypatch=monkeypatch)
+    artifacts = _artifacts._write(harness=harness, relationships=relationships)
+    assert artifacts.validation_report.passed is False
+    assert artifacts.summary.validation_report_passed is False
+    assert artifacts.summary.object_counts["identifier_collisions"] == 1
+    assert any(
+        "identifier collisions" in error and str(identifier) in error
+        for error in artifacts.validation_report.errors
+    )
+    assert bool(relationships.relationships_relates_to) == (decision == "relatesTo")
+    before = _snapshot(tmp_path)
+    calls = list(harness.calls)
+    with pytest.raises(ValueError, match="standalone LP validation failed"):
+        _compile(harness=harness)
+    assert _snapshot(tmp_path) == before
+    assert harness.calls == calls
+
+
 def test_hashes_bind_actual_graph_inputs_and_every_evidence_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -564,6 +601,7 @@ def test_lock_contention_cannot_write_combined_bundle(
     assert _snapshot(tmp_path) == before
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="name", argvalues=_artifacts._INPUTS)
 def test_missing_generation_evidence_cannot_be_reinitialized_by_compilation(
     monkeypatch: pytest.MonkeyPatch, name: str, tmp_path: Path
@@ -588,6 +626,7 @@ def test_missing_generation_evidence_cannot_be_reinitialized_by_compilation(
     assert _snapshot(tmp_path) == before
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="attack", argvalues=["malformed", "missing", "noncanonical"]
 )
@@ -785,6 +824,7 @@ def test_processing_failure_blocks_until_real_recovery_and_retains_history(
     assert failure["resolved_response_content_hash"]
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="name", argvalues=_LP_KEYS)
 @pytest.mark.parametrize(
     argnames="value",
@@ -818,6 +858,7 @@ def test_provenance_namespace_collisions_reject_even_empty_or_null_values(
     assert harness.bundle.entity_provenance[name] == value
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="attack", argvalues=["counts", "provenance", "unresolved", "validation"]
 )
@@ -894,6 +935,7 @@ def test_repeated_compilation_has_identical_bytes_without_rewriting_inputs(
         assert before[name] == expected
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="attack",
     argvalues=["config", "doc_key", "model", "upstream", "unfinished_transaction"],
@@ -932,6 +974,7 @@ def test_stale_material_and_unfinished_generation_cannot_compile(
     assert _snapshot(tmp_path) == before
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="location",
     argvalues=[
@@ -1066,6 +1109,7 @@ def test_write_errors_and_corrupt_readback_cannot_return_success(
         assert after == before
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="name",
     argvalues=[

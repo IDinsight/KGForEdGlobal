@@ -280,7 +280,7 @@ def test_lp_config_accepts_complete_valid_nested_shape() -> None:
 
     parsed = _CreateKGLearningProgressionsConfig.model_validate(payload)
 
-    assert parsed.model_dump() == payload
+    assert parsed.model_dump() == {**payload, "max_concurrent_requests": 4}
 
 
 def test_lp_config_accepts_integer_boundaries() -> None:
@@ -317,8 +317,17 @@ def test_lp_config_defines_exact_required_field_inventories(
         Intrinsic LP model under inspection.
     """
 
-    assert set(model_type.model_fields) == expected_fields
-    assert all(field.is_required() for field in model_type.model_fields.values())
+    optional_fields = (
+        {"max_concurrent_requests"}
+        if model_type is _CreateKGLearningProgressionsConfig
+        else set()
+    )
+    assert set(model_type.model_fields) == expected_fields | optional_fields
+    assert {
+        name for name, field in model_type.model_fields.items() if field.is_required()
+    } == expected_fields
+    if optional_fields:
+        assert model_type.model_fields["max_concurrent_requests"].default == 4
 
 
 def test_lp_config_preserves_distinct_reverse_directional_pairs() -> None:

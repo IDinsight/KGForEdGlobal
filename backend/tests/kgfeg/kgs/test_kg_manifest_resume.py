@@ -307,6 +307,7 @@ def _json(path: Path) -> Any:
     return json.loads(path.read_bytes())
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="change",
     argvalues=[
@@ -391,7 +392,10 @@ def test_changed_inputs_after_failure_reject_before_calls_and_keep_failure_evide
     assert (harness.root / "lp_generation_failures.json").read_bytes() == failure
 
 
-@pytest.mark.parametrize(argnames="profile", argvalues=_fixtures._PROFILES)
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    argnames="profile", argvalues=_fixtures._integration_profiles(_fixtures._PROFILES)
+)
 def test_final_reuse_keeps_manifest_bound_across_six_curriculum_merges(
     manifest_clock: Mock, monkeypatch: pytest.MonkeyPatch, profile: str, tmp_path: Path
 ) -> None:
@@ -507,8 +511,10 @@ def test_missing_prep_manifest_before_lp_still_initializes(
         assert _reuse._state(tmp_path)[name] == state
 
 
+@pytest.mark.parametrize(argnames="capacity", argvalues=[1, 4])
 @pytest.mark.parametrize(argnames="overwrite", argvalues=[False, True])
 def test_new_and_overwrite_runs_bind_the_complete_effective_config(
+    capacity: int,
     manifest_clock: Mock,
     monkeypatch: pytest.MonkeyPatch,
     overwrite: bool,
@@ -518,6 +524,8 @@ def test_new_and_overwrite_runs_bind_the_complete_effective_config(
 
     Parameters
     ----------
+    capacity
+        Serial or concurrent execution with the same manifest identity obligations.
     manifest_clock
         Deterministic creation times for fresh and overwritten runs.
     monkeypatch
@@ -528,6 +536,8 @@ def test_new_and_overwrite_runs_bind_the_complete_effective_config(
         Isolated synthetic workspace.
     """
     harness = _Harness(root=tmp_path)
+    harness.config.learning_progressions.max_concurrent_requests = capacity
+    harness._save_config()
     harness._install(monkeypatch=monkeypatch)
     create_kgs.create(harness.config_path)
     first = _json(harness.root / _MANIFEST)
@@ -542,12 +552,19 @@ def test_new_and_overwrite_runs_bind_the_complete_effective_config(
         create_kgs.create(harness.config_path)
         _entry._assert_run(error=None, harness=harness)
         assert _json(harness.root / _MANIFEST)["created_at"] == _LATER.isoformat()
-        assert harness.proposals.calls == [
+        expected = [
             ("draft", 0),
             ("verdict", 0),
             ("draft", 1),
             ("verdict", 1),
         ]
+        assert sorted(harness.proposals.calls) == sorted(expected)
+        for index in range(2):
+            assert [
+                stage for stage, owner in harness.proposals.calls if owner == index
+            ] == ["draft", "verdict"]
+        if capacity == 1:
+            assert harness.proposals.calls == expected
         harness.config.overwrite = False
         harness._save_config()
     _assert_bound(harness)
@@ -601,24 +618,33 @@ def test_overwrite_can_replace_missing_or_invalid_prep_material(
     )
 
 
+@pytest.mark.parametrize(argnames="capacity", argvalues=[1, 4])
 @pytest.mark.parametrize(argnames="stage", argvalues=["draft", "verdict"])
 def test_restart_uses_earliest_unfinished_stage_with_real_prep_provenance(
-    manifest_clock: Mock, monkeypatch: pytest.MonkeyPatch, stage: str, tmp_path: Path
+    capacity: int,
+    manifest_clock: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    tmp_path: Path,
 ) -> None:
     """Retain completed calls and original failure facts when the prep clock advances.
 
     Parameters
     ----------
+    capacity
+        Serial prefix-only or concurrent prefix-and-journal recovery.
     manifest_clock
         Clock advanced by ten days before restart.
     monkeypatch
         Offline upstream and external-call substitutions.
     stage
-        Producer or checker failure after one complete request.
+        Producer or checker failure on the second request.
     tmp_path
         Isolated synthetic workspace.
     """
     harness = _Harness(root=tmp_path)
+    harness.config.learning_progressions.max_concurrent_requests = capacity
+    harness._save_config()
     harness.proposals.failure = (stage, 1)
     harness._install(monkeypatch=monkeypatch)
     with pytest.raises(LPGenerationFailed):
@@ -627,16 +653,40 @@ def test_restart_uses_earliest_unfinished_stage_with_real_prep_provenance(
     _assert_bound(harness)
     before = _reuse._state(harness.root)
     failures = _json(harness.root / "lp_generation_failures.json")
+    pending = _json(harness.root / "lp_generation_pending_completions.json")
+    retained = {}
+    for saved_stage, name in zip(("draft", "verdict"), _reuse._STAGES[:2], strict=True):
+        for row in [*_storage._rows(harness.root / name), *pending[saved_stage]]:
+            key = (saved_stage, row["request_index"])
+            assert key not in retained
+            retained[key] = row
+    # Every successful controlled return must be durable, even beyond a prefix gap.
+    assert len(harness.proposals.calls) == len(set(harness.proposals.calls))
+    assert set(retained) == set(harness.proposals.calls) - {(stage, 1)}
+    expected = [
+        (next_stage, index)
+        for index in range(3)
+        for next_stage in ("draft", "verdict")
+        if (next_stage, index) not in retained
+    ]
     manifest_clock.return_value = _LATER
     _reuse._reset_entry(harness)
     harness.proposals.failure = None
     create_kgs.create(harness.config_path)
     _entry._assert_run(error=None, harness=harness)
     _assert_bound(harness)
-    assert harness.proposals.calls == (
-        ([("draft", 1)] if stage == "draft" else [])
-        + [("verdict", 1), ("draft", 2), ("verdict", 2)]
-    )
+    assert sorted(harness.proposals.calls) == sorted(expected)
+    for index in range(3):
+        assert [call for call in harness.proposals.calls if call[1] == index] == [
+            call for call in expected if call[1] == index
+        ]
+    if capacity == 1:
+        assert harness.proposals.calls == expected
+    for saved_stage, name in zip(("draft", "verdict"), _reuse._STAGES[:2], strict=True):
+        for row in _storage._rows(harness.root / name):
+            key = (saved_stage, row["request_index"])
+            if key in retained:
+                assert row == retained[key]
     after = _reuse._state(harness.root)
     for name in (_MANIFEST, *_storage._INPUTS, "as_lc_kg_bundle.json"):
         assert after[name] == before[name]

@@ -221,7 +221,13 @@ def _expected_lp_policy(profile_name: str) -> dict[str, Any]:
             "ordered_values": list(coordinate_values),
             "statement_type": coordinate_statement_type,
         },
-        "evidence_limits": deepcopy(_COMMON_EVIDENCE_LIMITS),
+        "evidence_limits": {
+            **deepcopy(_COMMON_EVIDENCE_LIMITS),
+            "max_source_evidence_characters_per_sfi": (
+                3000 if profile_name == "pratham_science" else 2000
+            ),
+        },
+        "max_concurrent_requests": 4,
         "producer_instructions": producer_instructions,
         "relates_to": {
             "allowed_statement_type_pairs": [

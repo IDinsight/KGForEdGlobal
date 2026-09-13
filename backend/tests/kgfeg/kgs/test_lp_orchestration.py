@@ -78,6 +78,8 @@ class _Harness:
         self.bundle = _fixtures._bundle(count)
         self.calls: list[tuple[str, int]] = []
         self.config = _fixtures._config(batch=batch)
+        # These prefix-stage scenarios explicitly exercise the serial configuration.
+        self.config.learning_progressions.max_concurrent_requests = 1
         self.config.learning_progressions.retry.producer_max_retries = 0
         self.config.learning_progressions.retry.checker_max_retries = 0
         self.corrects = False
@@ -350,6 +352,46 @@ def _snapshot(root: Path) -> dict[str, bytes]:
     }
 
 
+# pylint: disable-next=too-many-return-statements
+def _transaction_phase(payload: bytes) -> str:
+    """Identify a durable transition by its contents rather than write ordinal.
+
+    Parameters
+    ----------
+    payload
+        Complete proposed transaction bytes.
+
+    Returns
+    -------
+    str
+        Semantic execution transition represented by the intended snapshot.
+    """
+    snapshot = json.loads(payload)["next_payloads"]
+    receipt = json.loads(snapshot[_RECEIPT])
+    if receipt["run_number"] == 0:
+        return "initialize"
+    usage = json.loads(snapshot["lp_generation_usage.json"])
+    if not usage["attempts"]:
+        return "begin"
+    if json.loads(snapshot[_FAILURE]):
+        return "failure"
+    pending = json.loads(snapshot["lp_generation_pending_completions.json"])
+    if pending["verdict"]:
+        return "verdict"
+    if pending["draft"]:
+        return "draft"
+    if receipt["stage_counts"]["response"]:
+        return "response"
+    if receipt["stage_counts"]["verdict"]:
+        return "verdict_promotion"
+    if (
+        receipt["stage_counts"]["draft"]
+        and usage["attempts"][-1]["status"] == "succeeded"
+    ):
+        return "draft_promotion"
+    return "dispatch"
+
+
 @pytest.mark.parametrize(argnames="stage", argvalues=["draft", "verdict"])
 @pytest.mark.parametrize(argnames="retries", argvalues=[0, 2])
 @pytest.mark.parametrize(argnames="succeeds", argvalues=[False, True])
@@ -504,6 +546,7 @@ def test_actual_agents_keep_independent_evidence_exact_retries_and_usage(
         assert harness.tracker.to_dict() == before_usage
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="after", argvalues=[False, True])
 @pytest.mark.parametrize(argnames="name", argvalues=[_JOURNAL, *_STORED])
 def test_atomic_rename_interruptions_preserve_durable_draft_without_repeated_call(
@@ -525,7 +568,7 @@ def test_atomic_rename_interruptions_preserve_durable_draft_without_repeated_cal
     harness = _Harness(count=2, root=tmp_path)
     _install(harness=harness, monkeypatch=monkeypatch)
     original = lp_checkpoints.os.replace
-    transaction = 0
+    transaction = ""
 
     def _replace(*, dst: Path, src: str) -> None:
         """Interrupt one rename while retaining the real atomic write implementation.
@@ -539,8 +582,8 @@ def test_atomic_rename_interruptions_preserve_durable_draft_without_repeated_cal
         """
         nonlocal transaction
         if dst.name == _JOURNAL:
-            transaction += 1
-        hit = transaction == 3 and dst.name == name
+            transaction = _transaction_phase(Path(src).read_bytes())
+        hit = transaction == "draft" and dst.name == name
         if hit and not after:
             raise _Interruption()
         original(dst=dst, src=src)
@@ -619,6 +662,7 @@ def test_complete_adjudication_preserves_decisions_corrections_and_zero_call_reu
     assert saved == {name: (tmp_path / name).read_bytes() for name in saved}
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="name", argvalues=[*_INPUTS, *_STORED])
 @pytest.mark.parametrize(
     argnames="attack",
@@ -781,6 +825,7 @@ def test_failure_budgets_halt_and_preserve_history_with_resumed_dispositions(
     assert json.loads((tmp_path / _RECEIPT).read_bytes())["status"] == "completed"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="field,value",
     argvalues=[
@@ -848,7 +893,7 @@ def test_failure_journal_removal_interruption_keeps_exhaustion_and_later_disposi
     harness.script[("verdict", 0)] = [TimeoutError("synthetic")]
     _install(harness=harness, monkeypatch=monkeypatch)
     original = Path.unlink
-    observed = 0
+    observed = ""
 
     def _unlink(self: Path, missing_ok: bool = False) -> None:
         """Follow the filesystem protocol and interrupt the failure journal removal.
@@ -862,8 +907,8 @@ def test_failure_journal_removal_interruption_keeps_exhaustion_and_later_disposi
         """
         nonlocal observed
         if self.name == _JOURNAL:
-            observed += 1
-        hit = self.name == _JOURNAL and observed == 4
+            observed = _transaction_phase(self.read_bytes())
+        hit = self.name == _JOURNAL and observed == "failure"
         if hit and not after:
             raise _Interruption()
         original(missing_ok=missing_ok, self=self)
@@ -884,6 +929,7 @@ def test_failure_journal_removal_interruption_keeps_exhaustion_and_later_disposi
     assert history[0]["resolved_run_number"] == 2
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="stage", argvalues=["draft", "verdict"])
 @pytest.mark.parametrize(
     argnames="attack",
@@ -940,10 +986,13 @@ def test_invalid_model_proposals_never_enter_success_prefixes(
     assert all(index == 0 for _, index in harness.calls)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="after", argvalues=[False, True])
-@pytest.mark.parametrize(argnames="phase", argvalues=[1, 2, 3, 4, 5])
+@pytest.mark.parametrize(
+    argnames="phase", argvalues=["initialize", "begin", "draft", "verdict", "response"]
+)
 def test_journal_removal_interruption_preserves_all_completed_calls(
-    after: bool, monkeypatch: pytest.MonkeyPatch, phase: int, tmp_path: Path
+    after: bool, monkeypatch: pytest.MonkeyPatch, phase: str, tmp_path: Path
 ) -> None:
     """Reuse committed progress whether interruption precedes or follows journal removal.
 
@@ -954,14 +1003,14 @@ def test_journal_removal_interruption_preserves_all_completed_calls(
     monkeypatch
         Restoring unlink fault injector.
     phase
-        Initialization, run, draft, verdict, or response transaction ordinal.
+        Initialization, run, draft, verdict, or response transaction contents.
     tmp_path
         Isolated artifact directory.
     """
     harness = _Harness(count=2, root=tmp_path)
     _install(harness=harness, monkeypatch=monkeypatch)
     original = Path.unlink
-    observed = 0
+    observed = ""
 
     def _unlink(self: Path, missing_ok: bool = False) -> None:
         """Interrupt a selected journal removal while preserving ordinary cleanup.
@@ -975,7 +1024,7 @@ def test_journal_removal_interruption_preserves_all_completed_calls(
         """
         nonlocal observed
         if self.name == _JOURNAL:
-            observed += 1
+            observed = _transaction_phase(self.read_bytes())
             if observed == phase and not after:
                 raise _Interruption()
         original(missing_ok=missing_ok, self=self)
@@ -990,11 +1039,12 @@ def test_journal_removal_interruption_preserves_all_completed_calls(
     harness._run()
     assert harness.calls == (
         [("draft", 0), ("verdict", 0)]
-        if phase < 3
-        else [("verdict", 0)] if phase == 3 else []
+        if phase in {"initialize", "begin"}
+        else [("verdict", 0)] if phase == "draft" else []
     )
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="after", argvalues=[False, True])
 @pytest.mark.parametrize(
     argnames="phase",
@@ -1024,15 +1074,7 @@ def test_journaled_transactions_resume_at_every_artifact_write_boundary(
         harness.script[("verdict", 0)] = [TimeoutError("synthetic")]
     _install(harness=harness, monkeypatch=monkeypatch)
     original = lp_checkpoints._atomic_write
-    transaction = 0
-    target = {
-        "initialize": 1,
-        "begin": 2,
-        "draft": 3,
-        "verdict": 4,
-        "response": 5,
-        "failure": 4,
-    }[phase]
+    transaction = ""
     fired = False
 
     def _write(*, path: Path, payload: bytes) -> None:
@@ -1047,8 +1089,8 @@ def test_journaled_transactions_resume_at_every_artifact_write_boundary(
         """
         nonlocal fired, transaction
         if path.name == _JOURNAL:
-            transaction += 1
-        hit = not fired and transaction == target and path.name == name
+            transaction = _transaction_phase(payload)
+        hit = not fired and transaction == phase and path.name == name
         if hit and not after:
             fired = True
             raise _Interruption()
@@ -1086,6 +1128,7 @@ def test_journaled_transactions_resume_at_every_artifact_write_boundary(
         assert history[0]["resolved_run_number"] == 2
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="failed", argvalues=[False, True])
 @pytest.mark.parametrize(
     argnames="name", argvalues=[_INPUTS[0], _INPUTS[2], _DRAFT, _FAILURE, _RECEIPT]
@@ -1149,6 +1192,7 @@ def test_material_corruption_during_call_is_not_retried_or_recorded_as_model_fai
     assert _snapshot(tmp_path) == damaged
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="first_module",
     argvalues=[
@@ -1410,6 +1454,7 @@ def test_required_warning_loss_halts_before_success_checkpoint(
         else _checker._verdict(correction=response, request=request)
     )
     harness.script[(stage, request.request_index)] = [proposal]
+    harness.config.learning_progressions.max_concurrent_requests = 1
     _install(harness=harness, monkeypatch=monkeypatch)
     with pytest.raises(expected_exception=LPGenerationFailed):
         harness._run()
@@ -1417,6 +1462,7 @@ def test_required_warning_loss_halts_before_success_checkpoint(
     assert harness.calls[-1] == (stage, request.request_index)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="name", argvalues=[_DRAFT, _VERDICT, _RESPONSE])
 @pytest.mark.parametrize(
     argnames="attack",
@@ -1480,8 +1526,23 @@ def test_resealed_success_prefix_attacks_reach_structural_validation(
     assert _snapshot(tmp_path) == before
 
 
-@pytest.mark.parametrize(argnames="empty", argvalues=[False, True])
-@pytest.mark.parametrize(argnames="profile", argvalues=_PROFILES)
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    argnames="profile,empty",
+    argvalues=[
+        pytest.param(
+            profile,
+            empty,
+            marks=(
+                pytest.mark.slow
+                if not empty and profile in {"ghana_english", "rwanda_math"}
+                else ()
+            ),
+        )
+        for profile in _PROFILES
+        for empty in (False, True)
+    ],
+)
 def test_six_curriculum_execution_retains_dag_warnings_bounds_identity_and_compatibility(
     empty: bool, monkeypatch: pytest.MonkeyPatch, profile: str, tmp_path: Path
 ) -> None:
@@ -1581,6 +1642,7 @@ def test_six_curriculum_execution_retains_dag_warnings_bounds_identity_and_compa
     assert json.loads((tmp_path / _RECEIPT).read_bytes())["status"] == "completed"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="stage", argvalues=["draft", "verdict"])
 @pytest.mark.parametrize(argnames="index", argvalues=[0, 1, 2])
 def test_stage_interruptions_resume_earliest_unfinished_call(
@@ -1613,6 +1675,7 @@ def test_stage_interruptions_resume_earliest_unfinished_call(
     assert json.loads((tmp_path / _FAILURE).read_bytes()) == []
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="change",
     argvalues=[

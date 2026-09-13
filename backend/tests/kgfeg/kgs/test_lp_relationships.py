@@ -534,7 +534,9 @@ def test_missing_source_ownership_never_gets_a_fallback(
     assert _storage._snapshot(tmp_path) == before
 
 
-@pytest.mark.parametrize(argnames="profile", argvalues=_PROFILES)
+@pytest.mark.parametrize(
+    argnames="profile", argvalues=_fixtures._integration_profiles(_PROFILES)
+)
 def test_profile_source_and_warning_provenance_survive_minting(
     monkeypatch: pytest.MonkeyPatch, profile: str, tmp_path: Path
 ) -> None:

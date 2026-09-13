@@ -144,6 +144,7 @@ def _json(path: Path) -> Any:
     return json.loads(path.read_bytes())
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="action", argvalues=["delete", "direction", "insert", "relation"]
 )
@@ -244,8 +245,11 @@ def test_config_rejects_semantic_prerequisites_overrides_and_failure_tolerances(
     )
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="initial_report", argvalues=[False, True])
-@pytest.mark.parametrize(argnames="profile", argvalues=_claims._PROFILES)
+@pytest.mark.parametrize(
+    argnames="profile", argvalues=_fixtures._integration_profiles(_claims._PROFILES)
+)
 def test_evaluation_artifacts_cannot_gate_production_or_invalidate_reuse(
     initial_report: bool,
     monkeypatch: pytest.MonkeyPatch,
@@ -387,6 +391,7 @@ def test_exclusion_negative_ambiguity_and_failure_counts_are_distinct(
     assert not bundle.relationships_builds_towards
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="stage", argvalues=["draft", "verdict"])
 def test_failure_after_ambiguity_blocks_until_real_processing_recovers(
     monkeypatch: pytest.MonkeyPatch, stage: str, tmp_path: Path
@@ -403,6 +408,9 @@ def test_failure_after_ambiguity_blocks_until_real_processing_recovers(
         Isolated status, checkpoints, and eventual graph.
     """
     harness = _entry._Harness(root=tmp_path)
+    # This scenario requires a completed prefix before the next request fails.
+    harness.config.learning_progressions.max_concurrent_requests = 1
+    harness._save_config()
     harness.proposals.default_decision = "needs_review"
     harness.proposals.failure = (stage, 1)
     evaluation = tmp_path / "separate-evaluation"
@@ -457,6 +465,7 @@ def test_failure_after_ambiguity_blocks_until_real_processing_recovers(
     assert report.read_bytes() == favorable
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="count", argvalues=[1, 12])
 def test_needs_review_population_size_does_not_create_a_release_threshold(
     count: int, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -472,7 +481,8 @@ def test_needs_review_population_size_does_not_create_a_release_threshold(
     tmp_path
         Isolated release with no independent semantic review inputs.
     """
-    harness = _claims._Harness(count=count, root=tmp_path)
+    # Preserve all 66 candidate pairs while avoiding 22 tiny checkpoint batches.
+    harness = _claims._Harness(batch=20, count=count, root=tmp_path)
     harness.default_decision = "needs_review"
     result = _reuse._publish(harness=harness, monkeypatch=monkeypatch)
     candidates = _artifacts._rows(tmp_path / "lp_candidate_pairs.jsonl")
@@ -655,6 +665,7 @@ def test_optional_audit_is_nonblocking_and_cannot_resolve_ambiguity(
     assert (tmp_path / _BUNDLE).read_bytes() == before[_BUNDLE]
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="attack", argvalues=["endpoint", "missing_pair"])
 @pytest.mark.parametrize(argnames="stage", argvalues=["draft", "verdict"])
 def test_processing_integrity_failures_cannot_become_needs_review(
@@ -674,6 +685,9 @@ def test_processing_integrity_failures_cannot_become_needs_review(
         Isolated processing and failure evidence.
     """
     harness = _entry._Harness(root=tmp_path)
+    # This scenario requires a completed prefix before the next request fails.
+    harness.config.learning_progressions.max_concurrent_requests = 1
+    harness._save_config()
     harness.proposals.default_decision = "needs_review"
     harness.proposals.corrections = {}
     original = harness.proposals._call
@@ -726,6 +740,7 @@ def test_processing_integrity_failures_cannot_become_needs_review(
     assert not (harness.root / "lp_unresolved_items.json").exists()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="claim", argvalues=["pedagogical", "scope", "semantic", "semantic_gate"]
 )

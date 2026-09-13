@@ -361,6 +361,7 @@ def _rewrite_stage(*, name: str, root: Path, rows: list[dict[str, Any]]) -> None
     _storage._reseal(name=name, root=root)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="attack",
     argvalues=[
@@ -472,6 +473,7 @@ def test_artifact_edits_rejected_even_after_own_hash_is_recomputed(
     assert harness._finalize() == original
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="first",
     argvalues=["buildsTowards", "relatesTo", "no_relation", "needs_review"],
@@ -536,6 +538,7 @@ def test_complete_checker_corrections_replace_all_draft_interpretations(
     assert harness._finalize(validate=True) == artifact
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="attack",
     argvalues=[
@@ -690,6 +693,7 @@ def test_empty_populations_require_completed_execution_and_round_trip(
     assert not harness.calls
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="attack",
     argvalues=[
@@ -757,6 +761,7 @@ def test_forged_complete_checker_corrections_cannot_bypass_pair_integrity(
         assert _storage._snapshot(tmp_path) == before
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="cyclic", argvalues=[False, True])
 def test_long_graph_traversal_exceeds_recursive_depth_without_losing_edges(
     cyclic: bool,
@@ -818,6 +823,7 @@ def test_long_graph_traversal_exceeds_recursive_depth_without_losing_edges(
         sys.setrecursionlimit(previous_limit)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="name",
     argvalues=[
@@ -858,7 +864,10 @@ def test_missing_evidence_is_never_reinitialized_by_finalization(
         assert _storage._snapshot(tmp_path) == before
 
 
-@pytest.mark.parametrize(argnames="batch", argvalues=[1, 5])
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    argnames="batch", argvalues=[pytest.param(1, marks=pytest.mark.slow), 5]
+)
 def test_multiple_sccs_exclude_bridges_and_retain_every_direct_claim(
     batch: int,
     monkeypatch: pytest.MonkeyPatch,
@@ -966,6 +975,7 @@ def test_multiple_sccs_exclude_bridges_and_retain_every_direct_claim(
     } == upstream
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="coordinate", argvalues=["forward", "missing", "reverse", "same"]
 )
@@ -1029,10 +1039,13 @@ def test_permissions_follow_local_coordinates_and_relation_specific_matrices(
         assert _published(artifact) == set()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="decision", argvalues=["no_relation", "needs_review", "relatesTo"]
 )
-@pytest.mark.parametrize(argnames="profile", argvalues=_PROFILES)
+@pytest.mark.parametrize(
+    argnames="profile", argvalues=_fixtures._integration_profiles(_PROFILES)
+)
 def test_profile_warnings_evidence_and_provenance_survive_finalization(
     decision: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -1139,6 +1152,7 @@ def test_provenance_binds_each_pair_to_its_own_mixed_checker_outcome(
     _assert_provenance(artifact=harness._finalize(validate=True), root=tmp_path)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="stage", argvalues=["draft", "verdict"])
 def test_resumed_failures_require_actual_completed_dispositions(
     monkeypatch: pytest.MonkeyPatch,
@@ -1184,6 +1198,7 @@ def test_resumed_failures_require_actual_completed_dispositions(
         harness._finalize()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="attack",
     argvalues=[

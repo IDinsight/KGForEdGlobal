@@ -28,7 +28,12 @@ from kgfeg.schemas import CreateKGConfig
 
 _BUNDLE = "as_lc_lp_kg_bundle.json"
 _LP_PROVENANCE_KEYS = ("relationships_builds_towards", "relationships_relates_to")
-_OPTIONAL_INPUTS = ("lp_eligibility_report.json", "lp_eligible_sfis.json")
+_OPTIONAL_INPUTS = (
+    "lp_eligibility_report.json",
+    "lp_eligible_sfis.json",
+    "lp_generation_pending_completions.json",
+    "lp_generation_usage.json",
+)
 _VALIDATION_CHECKS = [
     "as_lc_validation_gate",
     "authenticated_standalone_lp_artifacts",

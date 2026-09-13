@@ -168,6 +168,7 @@ def _state(root: Path) -> dict[str, tuple[bytes, int, int]]:
     }
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="operation", argvalues=["compile", "reuse"])
 @pytest.mark.parametrize(
     argnames="change",
@@ -260,6 +261,7 @@ def test_changed_definition_material_rejects_without_touching_production(
     _assert_rejected(harness=harness)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="attack",
     argvalues=[
@@ -341,6 +343,7 @@ def test_changed_stored_material_rejects_well_formed_edits_and_recomputed_hashes
     _assert_rejected(harness=harness)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="attack",
     argvalues=["duplicate", "empty", "gap", "reorder", "stale_id", "truncate"],
@@ -454,7 +457,7 @@ def test_entry_exact_reuse_skips_lp_stages_preserves_checkpoints_and_records_zer
     create_kgs.create(harness.config_path)
     _entry._assert_run(error=None, harness=harness)
     assert harness.calls == list(_entry._PHASES[:-5])
-    assert harness.proposals.calls == []
+    assert not harness.proposals.calls
     after = _state(harness.root)
     stable = set(before) - {*_PROJECTIONS, "kg_run.json"}
     assert {name: after[name] for name in stable} == {
@@ -465,6 +468,7 @@ def test_entry_exact_reuse_skips_lp_stages_preserves_checkpoints_and_records_zer
     assert expected["validation_report"]["pedagogical_correctness_established"] is False
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="attack", argvalues=["config", "invalid_bundle", "prefix", "transaction"]
 )
@@ -501,7 +505,7 @@ def test_entry_invalid_saved_release_records_error_without_advancing_lp(
         create_kgs.create(harness.config_path)
     _entry._assert_run(error=type(error.value), harness=harness)
     assert harness.calls == list(_entry._PHASES[:-5])
-    assert harness.proposals.calls == []
+    assert not harness.proposals.calls
     after = _state(harness.root)
     stable = set(before) - {"kg_run.json"}
     assert {name: after[name] for name in stable} == {
@@ -532,12 +536,16 @@ def test_entry_overwrite_regenerates_changed_material_and_then_reuses_it(
     create_kgs.create(harness.config_path)
     _entry._assert_run(error=None, harness=harness)
     assert harness.calls == list(_entry._PHASES)
-    assert harness.proposals.calls == [
+    assert sorted(harness.proposals.calls) == [
         ("draft", 0),
-        ("verdict", 0),
         ("draft", 1),
+        ("verdict", 0),
         ("verdict", 1),
     ]
+    for index in range(2):
+        assert harness.proposals.calls.index(("draft", index)) < (
+            harness.proposals.calls.index(("verdict", index))
+        )
     assert harness.mocks["compile_as_lc_lp_kg"].call_args.kwargs["overwrite"] is True
     assert (harness.root / _BUNDLE).read_bytes() != original
     before = _state(harness.root)
@@ -549,6 +557,7 @@ def test_entry_overwrite_regenerates_changed_material_and_then_reuses_it(
     assert _state(harness.root)[_RECEIPT] == before[_RECEIPT]
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="name", argvalues=_PROJECTIONS)
 def test_entry_projection_failure_on_reuse_records_error_and_can_retry_without_calls(
     monkeypatch: pytest.MonkeyPatch, name: str, tmp_path: Path
@@ -600,8 +609,11 @@ def test_entry_projection_failure_on_reuse_records_error_and_can_retry_without_c
         assert after[key] == before[key]
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="operation", argvalues=["compile", "reuse"])
-@pytest.mark.parametrize(argnames="profile", argvalues=_export._PROFILES)
+@pytest.mark.parametrize(
+    argnames="profile", argvalues=_fixtures._integration_profiles(_export._PROFILES)
+)
 def test_exact_reuse_preserves_full_curriculum_content_and_only_rewrites_projections(
     monkeypatch: pytest.MonkeyPatch, operation: str, profile: str, tmp_path: Path
 ) -> None:
@@ -716,6 +728,7 @@ def test_explicit_overwrite_replaces_only_validated_export_and_preserves_checkpo
     assert after[_BUNDLE][0] == _export._bytes(expected.model_dump(mode="json"))
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="attack",
     argvalues=["config", "failed_upstream", "missing_checkpoint", "transaction"],
@@ -750,6 +763,7 @@ def test_explicit_overwrite_still_rejects_invalid_or_stale_evidence(
     assert _state(tmp_path) == before
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="name",
     argvalues=["algorithm_version", "fingerprint_inputs", "ranking", "strategies"],
@@ -778,6 +792,7 @@ def test_forbidden_candidate_compatibility_selectors_cannot_authorize_reuse(
     assert _state(tmp_path) == before
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     argnames="attack",
     argvalues=[
@@ -835,6 +850,7 @@ def test_invalid_saved_bundle_never_repairs_itself_under_reuse(
     _assert_rejected(harness=harness, operation="compile")
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="attack", argvalues=["corrupt", "missing"])
 @pytest.mark.parametrize(
     argnames="name",
@@ -896,6 +912,7 @@ def test_missing_release_does_not_initialize_any_generation_artifacts(
     assert _state(tmp_path) == {}
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="attack", argvalues=["corrupt", "missing", "stale"])
 @pytest.mark.parametrize(argnames="name", argvalues=_PROJECTIONS)
 def test_projection_repair_uses_saved_authority_and_keeps_all_evidence_untouched(
@@ -1009,6 +1026,7 @@ def test_semantic_and_per_sfi_overrides_remain_forbidden_config_inputs(
         CreateKGConfig.model_validate(payload)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="after", argvalues=[False, True])
 def test_transaction_recovery_requires_generation_and_revalidation_before_reuse(
     after: bool, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -1072,6 +1090,7 @@ def test_transaction_recovery_requires_generation_and_revalidation_before_reuse(
     assert harness.calls == calls
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(argnames="name", argvalues=[_BUNDLE, _RECEIPT, _TRANSACTION])
 def test_write_time_changes_during_projection_repair_cannot_return_success(
     monkeypatch: pytest.MonkeyPatch, name: str, tmp_path: Path
