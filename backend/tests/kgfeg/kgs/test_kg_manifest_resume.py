@@ -22,7 +22,7 @@ import pytest
 # Package Library
 from kgfeg.config import Settings
 from kgfeg.entries import create_kgs
-from kgfeg.kgs import lc_export, prompts, sfi_export, utils
+from kgfeg.kgs import lc_export, lp_checkpoints, prompts, sfi_export, utils
 from kgfeg.kgs.lp_generation import LPGenerationFailed
 from kgfeg.kgs.schemas import AcademicStandardsKGBundle, AcademicStandardsLCKGBundle
 from kgfeg.kgs.utils import KGDirs, persist_kg_run_manifest
@@ -383,7 +383,12 @@ def test_changed_inputs_after_failure_reject_before_calls_and_keep_failure_evide
     harness.proposals.failure = None
     with pytest.raises(ValueError) as caught:
         create_kgs.create(harness.config_path)
-    _entry._assert_run(error=type(caught.value), harness=harness)
+    if change == "artifact":
+        assert "incompatible" in str(caught.value)
+        assert not harness.calls
+        assert _reuse._state(harness.root) == before
+    else:
+        _entry._assert_run(error=type(caught.value), harness=harness)
     assert not harness.proposals.calls
     after = _reuse._state(harness.root)
     for name in before:
@@ -632,7 +637,7 @@ def test_restart_uses_earliest_unfinished_stage_with_real_prep_provenance(
     Parameters
     ----------
     capacity
-        Serial prefix-only or concurrent prefix-and-journal recovery.
+        Serial or concurrent recovery with complete journal-backed evidence.
     manifest_clock
         Clock advanced by ten days before restart.
     monkeypatch
@@ -747,10 +752,14 @@ def test_saved_manifest_corruption_fails_closed_before_upstream_work(
         Isolated synthetic workspace.
     """
     harness = _entry._Harness(root=tmp_path)
-    harness.failure = "plan_extraction_windows"
-    harness._install(monkeypatch=monkeypatch, real_lp=False)
-    with pytest.raises(RuntimeError):
+    harness.config.learning_progressions.max_concurrent_requests = 1
+    harness._save_config()
+    harness.proposals.failure = ("verdict", 0)
+    harness._install(monkeypatch=monkeypatch, real_lp=True)
+    with pytest.raises(LPGenerationFailed):
         create_kgs.create(harness.config_path)
+    lp_checkpoints.validate_lp_checkpoint_format(harness.root)
+    assert _json(harness.root / "lp_generation_failures.json")
     manifest = _json(harness.root / _MANIFEST)
     timestamps = {
         "blank_timestamp": "",
@@ -778,14 +787,14 @@ def test_saved_manifest_corruption_fails_closed_before_upstream_work(
     elif attack == "not_object":
         payload = "[]"
     (harness.root / _MANIFEST).write_text(payload)
-    (harness.root / "lp_generation_failures.json").write_text(
-        "retained failure evidence"
-    )
+    # The independent prep corruption must remain reachable past format preflight.
+    lp_checkpoints.validate_lp_checkpoint_format(harness.root)
     before = _reuse._state(harness.root)
     manifest_clock.return_value = _LATER
     _reuse._reset_entry(harness)
     with pytest.raises(ValueError) as caught:
         create_kgs.create(harness.config_path)
+    assert "LP checkpoint evidence is incompatible" not in str(caught.value)
     _entry._assert_run(error=type(caught.value), harness=harness)
     assert not harness.calls
     assert not harness.proposals.calls

@@ -42,6 +42,7 @@ from kgfeg.kgs.lc_generation import (
 from kgfeg.kgs.lc_selection import select_lc_source_sfis
 from kgfeg.kgs.llm import KGUsageTracker
 from kgfeg.kgs.lp_artifacts import write_lp_artifacts
+from kgfeg.kgs.lp_checkpoints import validate_lp_checkpoint_format
 from kgfeg.kgs.lp_export import compile_as_lc_lp_kg, reuse_as_lc_lp_kg
 from kgfeg.kgs.lp_finalization import (
     build_lp_relationships,
@@ -144,6 +145,8 @@ def build_kgs(
     ValueError
         If runtime validation reports contain errors.
     """
+
+    validate_lp_checkpoint_format(kg_dirs.root)
 
     # 1.
     kg_run_inputs = load_and_validate_inputs(
@@ -456,6 +459,7 @@ def create(
 
     # 3.
     kg_results_dir = extraction_config.output_dir / computed_doc_key / "kgs"
+    validate_lp_checkpoint_format(kg_results_dir)
     kg_dirs, kg_run = persist_kg_run(config=config, output_dir=kg_results_dir)
 
     # 4.

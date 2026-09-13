@@ -32,6 +32,7 @@ from kgfeg.kgs.lp_checkpoints import (
     archive_lp_generation_artifacts,
     content_hash,
     reconciled_response,
+    validate_lp_checkpoint_format,
 )
 from kgfeg.kgs.lp_dispatch import (
     LPDispatchClosed,
@@ -765,6 +766,7 @@ def generate_learning_progressions(
     if not isinstance(overwrite, bool):
         raise ValueError("LP overwrite must be an explicit boolean.")
 
+    validate_lp_checkpoint_format(kg_dirs.root)
     bundle = AcademicStandardsLCKGBundle.model_validate_json(
         as_lc_bundle.model_dump_json()
     )
@@ -780,6 +782,7 @@ def generate_learning_progressions(
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         ownership = _LPDirectoryOwnership(lock=lock, root=kg_dirs.root)
         ownership.verify()
+        validate_lp_checkpoint_format(kg_dirs.root)
 
         if overwrite:
             archive_lp_generation_artifacts(kg_dirs.root)

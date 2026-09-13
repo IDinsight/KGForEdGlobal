@@ -24,7 +24,11 @@ from pydantic import Field, model_validator
 
 # Package Library
 from kgfeg.config import Settings
-from kgfeg.kgs.lp_checkpoints import LPGenerationCheckpoints, content_hash
+from kgfeg.kgs.lp_checkpoints import (
+    LPGenerationCheckpoints,
+    content_hash,
+    validate_lp_checkpoint_format,
+)
 from kgfeg.kgs.lp_generation import LPGenerationFailed, lp_execution_material
 from kgfeg.kgs.lp_requests import (
     LPRequestManifest,
@@ -520,6 +524,7 @@ def _load_final_claims(
     store = LPGenerationCheckpoints(
         material=lp_execution_material(kg_config=config, population=population),
         population=population,
+        read_only=True,
         root=kg_dirs.root,
     )
 
@@ -913,6 +918,8 @@ def finalize_learning_progressions(
         If the whole direct developmental graph contains any cycle.
     """
 
+    validate_lp_checkpoint_format(kg_dirs.root)
+
     with (kg_dirs.root / ".lp_generation.lock").open("rb") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         artifact = _load_final_claims(
@@ -1008,6 +1015,8 @@ def validate_lp_final_claims_artifact(
     ValueError
         If claims or upstream artifacts are inconsistent, edited, or stale.
     """
+
+    validate_lp_checkpoint_format(kg_dirs.root)
 
     with (kg_dirs.root / ".lp_generation.lock").open("rb") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)

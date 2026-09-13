@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 
 from pathlib import Path
@@ -21,12 +22,24 @@ from typing import Any, Callable, Literal
 from pydantic import Field
 
 # Package Library
-from kgfeg.kgs.lp_requests import LPGenerationRequest, LPRequestPopulation
+from kgfeg.kgs.lp_candidates import LPCandidatePopulation
+from kgfeg.kgs.lp_requests import (
+    MANIFEST_FILENAME,
+    LPGenerationRequest,
+    LPRequestManifest,
+    LPRequestPopulation,
+    read_lp_request_population,
+)
 from kgfeg.kgs.prompts import (
     build_lp_generation_prompt,
     validate_lp_generation_response,
 )
-from kgfeg.kgs.schemas import LPGenerationResponse, LPGenerationValidationVerdict
+from kgfeg.kgs.schemas import (
+    LPCandidatePair,
+    LPCandidateSummary,
+    LPGenerationResponse,
+    LPGenerationValidationVerdict,
+)
 from kgfeg.kgs.validators import (
     verify_lp_generation_response_integrity,
     verify_lp_generation_validation_integrity,
@@ -43,6 +56,7 @@ _PENDING = "lp_generation_pending_completions.json"
 _USAGE = "lp_generation_usage.json"
 _RECEIPT = "lp_generation_checkpoint_manifest.json"
 _TRANSACTION = "lp_generation_checkpoint_transaction.json"
+_CHECKPOINT_NAMES = {*_FILENAMES.values(), _FAILURES, _PENDING, _USAGE, _RECEIPT}
 
 
 class _LPAttempt(BaseSchema):
@@ -111,6 +125,7 @@ class LPGenerationCheckpoints:
         material: dict[str, Any],
         ownership_check: Callable[[], None] | None = None,
         population: LPRequestPopulation,
+        read_only: bool = False,
         root: Path,
     ) -> None:
         """Load current execution evidence or initialize an empty checkpoint set.
@@ -125,19 +140,18 @@ class LPGenerationCheckpoints:
             Optional live directory-ownership assertion for the generation writer.
         population
             Fully reconciled on-disk candidate and request population.
+        read_only
+            Validate existing evidence without initializing or recovering files.
         root
             Locked generation directory.
         """
 
         self.execution_check = execution_check
         self.ownership_check = ownership_check
-        self.extended = True
         self.pending: dict[str, dict[int, _LPCheckpoint]] = {
             stage: {} for stage in _FILENAMES
         }
         self.attempts: list[_LPAttempt] = []
-        self.legacy_counts = dict.fromkeys(_FILENAMES, 0)
-        self.legacy_failure_count = 0
         self.material = material
         self.population = population
         self.root = root
@@ -157,8 +171,10 @@ class LPGenerationCheckpoints:
             )
         ]
 
-        if any(path.exists() for path in paths):
-            self._load()
+        if any(path.exists() or path.is_symlink() for path in paths):
+            self._load(read_only=read_only)
+        elif read_only:
+            raise ValueError("LP checkpoint evidence is missing.")
         else:
             self._save()
 
@@ -180,8 +196,13 @@ class LPGenerationCheckpoints:
         (self.root / _TRANSACTION).unlink()
         _sync_directory(self.root)
 
-    def _load(self) -> None:
+    def _load(self, *, read_only: bool) -> None:
         """Recover a proven interrupted commit, then validate every persisted byte.
+
+        Parameters
+        ----------
+        read_only
+            Validate a transaction without repairing or retiring it.
 
         Raises
         ------
@@ -191,21 +212,14 @@ class LPGenerationCheckpoints:
             are misaligned.
         """
 
-        if (self.root / _TRANSACTION).exists():
-            self._recover()
+        if (self.root / _TRANSACTION).exists() or (
+            self.root / _TRANSACTION
+        ).is_symlink():
+            self._recover(read_only=read_only)
+            return
 
         receipt_bytes = (self.root / _RECEIPT).read_bytes()
-        receipt = json.loads(receipt_bytes)
-        names = {*_FILENAMES.values(), _FAILURES}
-
-        if (
-            not isinstance(receipt, dict)
-            or not isinstance(receipt.get("artifact_byte_hashes"), dict)
-            or set(receipt["artifact_byte_hashes"])
-            not in (names, names | {_PENDING, _USAGE})
-            or receipt_bytes != _canonical_bytes(receipt)
-        ):
-            raise ValueError("LP checkpoint receipt has invalid artifact coverage.")
+        receipt = _read_receipt(receipt_bytes)
 
         self._load_snapshot(
             {
@@ -213,11 +227,6 @@ class LPGenerationCheckpoints:
                 for name in (*receipt["artifact_byte_hashes"], _RECEIPT)
             }
         )
-
-        if not self.extended and any(
-            (self.root / name).exists() for name in (_PENDING, _USAGE)
-        ):
-            raise ValueError("LP has unreceipted pending or usage evidence.")
 
         self.verify_bytes()
 
@@ -232,29 +241,17 @@ class LPGenerationCheckpoints:
         Raises
         ------
         ValueError
-            If material, schemas, hashes, prefixes, or dispositions are invalid,
-            or artifact bytes are not canonical and complete.
-        QualityError
-            If a stored draft, verdict, or correction fails request integrity.
+            If material, schemas, hashes, prefixes, or dispositions are invalid, or
+            artifact bytes are not canonical and complete.
         """
 
-        receipt = json.loads(payloads[_RECEIPT])
-        expected_keys = {
-            "artifact_byte_hashes",
-            "execution_content_hash",
-            "material",
-            "run_number",
-            "status",
-            "stage_counts",
-            "failed_pair_ids",
-        }
-
-        if not isinstance(receipt, dict) or set(receipt) != expected_keys:
-            raise ValueError("LP checkpoint receipt has invalid fields.")
+        receipt = _read_receipt(payloads[_RECEIPT])
 
         if (
             receipt["material"] != self.material
             or receipt["execution_content_hash"] != self.execution_hash
+            or self.material["request_manifest"]
+            != self.population.manifest.model_dump(mode="json")
         ):
             raise ValueError("LP execution material changed; regenerate before reuse.")
 
@@ -267,13 +264,7 @@ class LPGenerationCheckpoints:
         ):
             raise ValueError("LP checkpoint run number is invalid.")
 
-        names = {*_FILENAMES.values(), _FAILURES}
-        observed_names = set(receipt["artifact_byte_hashes"])
-        self.extended = observed_names == names | {_PENDING, _USAGE}
-        if self.extended:
-            names |= {_PENDING, _USAGE}
-
-        if observed_names != names or set(payloads) != names | {_RECEIPT}:
+        if set(payloads) != _CHECKPOINT_NAMES:
             raise ValueError("LP checkpoint receipt has incomplete artifact coverage.")
 
         self._parse_artifacts(payloads=payloads, receipt=receipt)
@@ -281,13 +272,12 @@ class LPGenerationCheckpoints:
 
         # Canonical byte equality also rejects duplicate JSON keys, non-finite values,
         # blank lines, missing terminal newlines, and schema-normalized alterations.
-        if self._receipt(self._payloads()) != receipt:
+        expected_payloads = self._payloads()
+
+        if payloads[_RECEIPT] != _canonical_bytes(self._receipt(expected_payloads)):
             raise ValueError("LP checkpoint receipt counts or disposition differ.")
 
-        if payloads[_RECEIPT] != _canonical_bytes(receipt):
-            raise ValueError("LP checkpoint receipt is not canonical complete JSON.")
-
-        for name, expected in self._payloads().items():
+        for name, expected in expected_payloads.items():
             if payloads[name] != expected:
                 raise ValueError(f"LP checkpoint material is not canonical: {name}.")
 
@@ -329,17 +319,7 @@ class LPGenerationCheckpoints:
             elif name == _PENDING:
                 self._parse_pending(payload)
             elif name == _USAGE:
-                raw = json.loads(payload)
-                if set(raw) != {
-                    "attempts",
-                    "legacy_stage_counts",
-                    "legacy_failure_count",
-                    "max_concurrent_requests",
-                    "available_cost",
-                    "request_states",
-                    "unknown_usage_attempts",
-                }:
-                    raise ValueError("LP usage journal has invalid fields.")
+                raw = _read_usage(payload)
                 if raw["max_concurrent_requests"] != self.capacity:
                     raise ValueError(
                         "LP usage capacity differs from execution material."
@@ -347,8 +327,6 @@ class LPGenerationCheckpoints:
                 self.attempts = [
                     _LPAttempt.model_validate(row) for row in raw["attempts"]
                 ]
-                self.legacy_counts = raw["legacy_stage_counts"]
-                self.legacy_failure_count = raw["legacy_failure_count"]
             else:
                 stage = next(key for key, value in _FILENAMES.items() if value == name)
                 self.rows[stage] = [
@@ -396,37 +374,28 @@ class LPGenerationCheckpoints:
             Exact artifact payloads covered by the commit receipt.
         """
 
-        extra = {}
-
-        if self.extended:
-            extra = {
-                _PENDING: _canonical_bytes(
-                    {
-                        stage: [
-                            rows[index].model_dump(mode="json")
-                            for index in sorted(rows)
-                        ]
-                        for stage, rows in self.pending.items()
-                    }
-                ),
-                _USAGE: _canonical_bytes(
-                    {
-                        "attempts": [
-                            attempt.model_dump(mode="json") for attempt in self.attempts
-                        ],
-                        "legacy_stage_counts": self.legacy_counts,
-                        "legacy_failure_count": self.legacy_failure_count,
-                        "max_concurrent_requests": self.capacity,
-                        "available_cost": None,
-                        "request_states": self._request_states(),
-                        "unknown_usage_attempts": sum(
-                            attempt.usage is None for attempt in self.attempts
-                        ),
-                    }
-                ),
-            }
         return {
-            **extra,
+            _PENDING: _canonical_bytes(
+                {
+                    stage: [
+                        rows[index].model_dump(mode="json") for index in sorted(rows)
+                    ]
+                    for stage, rows in self.pending.items()
+                }
+            ),
+            _USAGE: _canonical_bytes(
+                {
+                    "attempts": [
+                        attempt.model_dump(mode="json") for attempt in self.attempts
+                    ],
+                    "max_concurrent_requests": self.capacity,
+                    "available_cost": None,
+                    "request_states": self._request_states(),
+                    "unknown_usage_attempts": sum(
+                        attempt.usage is None for attempt in self.attempts
+                    ),
+                }
+            ),
             **{
                 filename: b"".join(
                     _canonical_bytes(row.model_dump(mode="json"))
@@ -463,16 +432,8 @@ class LPGenerationCheckpoints:
             return dict.fromkeys(names)
 
         receipt_bytes = (self.root / _RECEIPT).read_bytes()
-        receipt = json.loads(receipt_bytes)
-
-        recorded = set(receipt["artifact_byte_hashes"])
-        expected = set(names) - {_RECEIPT}
-
-        if receipt_bytes != _canonical_bytes(receipt) or recorded not in (
-            expected,
-            expected - {_PENDING, _USAGE},
-        ):
-            raise ValueError("LP checkpoint predecessor receipt is invalid.")
+        receipt = _read_receipt(receipt_bytes)
+        _read_usage((self.root / _USAGE).read_bytes())
 
         hashes: dict[str, str | None] = {
             _RECEIPT: hashlib.sha256(receipt_bytes).hexdigest()
@@ -485,12 +446,6 @@ class LPGenerationCheckpoints:
                 raise ValueError(f"LP checkpoint predecessor changed: {name}.")
 
             hashes[name] = actual
-
-        for name in expected - recorded:
-            if (self.root / name).exists():
-                raise ValueError("LP extension has unexplained predecessor evidence.")
-
-            hashes[name] = None
 
         return hashes
 
@@ -513,7 +468,6 @@ class LPGenerationCheckpoints:
                 pair_id
                 for failure in self.failures
                 if failure.resolved_run_number is None
-                and (self.extended or failure.exhausted)
                 for pair_id in failure.pair_ids
             }
         )
@@ -538,8 +492,13 @@ class LPGenerationCheckpoints:
             ),
         }
 
-    def _recover(self) -> None:
+    def _recover(self, *, read_only: bool) -> None:
         """Roll forward only a validated transaction with exact old/new file states.
+
+        Parameters
+        ----------
+        read_only
+            Validate the complete recovery state without writing it.
 
         Raises
         ------
@@ -548,28 +507,9 @@ class LPGenerationCheckpoints:
             matches neither its recorded previous nor next state.
         """
 
-        raw = (self.root / _TRANSACTION).read_bytes()
-        transaction = _LPCheckpointTransaction.model_validate_json(raw)
+        transaction = _read_transaction(self.root)
         names = set(transaction.next_payloads)
-        base_names = {*_FILENAMES.values(), _FAILURES, _RECEIPT}
         previous = transaction.previous_byte_hashes
-
-        if (
-            raw != _canonical_bytes(transaction.model_dump(mode="json"))
-            or names not in (base_names, base_names | {_PENDING, _USAGE})
-            or set(previous) != names
-            or (
-                any(previous[name] is None for name in base_names)
-                and not all(previous[name] is None for name in base_names)
-            )
-            or (
-                any(value is None for value in previous.values())
-                and not all(value is None for value in previous.values())
-                and {name for name, value in previous.items() if value is None}
-                != {_PENDING, _USAGE}
-            )
-        ):
-            raise ValueError("LP checkpoint transaction is incomplete or noncanonical.")
 
         payloads = {
             name: payload.encode("utf-8")
@@ -584,7 +524,9 @@ class LPGenerationCheckpoints:
         for name in sorted(names):
             path = self.root / name
             actual = (
-                hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+                hashlib.sha256(path.read_bytes()).hexdigest()
+                if path.exists() or path.is_symlink()
+                else None
             )
             following = hashlib.sha256(payloads[name]).hexdigest()
 
@@ -593,7 +535,8 @@ class LPGenerationCheckpoints:
                     f"LP interrupted checkpoint has unexplained material: {name}."
                 )
 
-        self._commit(payloads)
+        if not read_only:
+            self._commit(payloads)
 
     def _request_states(self) -> list[dict[str, Any]]:
         """Describe unfinished, unknown, cancelled and unstarted work explicitly.
@@ -906,29 +849,11 @@ class LPGenerationCheckpoints:
             If an LP result is invalid.
         """
 
-        if not self.extended:
-            return
-
-        if set(self.legacy_counts) != set(_FILENAMES) or any(
-            isinstance(value, bool)
-            or not isinstance(value, int)
-            or not 0 <= value <= len(self.rows[stage])
-            for stage, value in self.legacy_counts.items()
-        ):
-            raise ValueError("LP legacy usage boundary is invalid.")
-
         if (
             sum(attempt.status == "dispatched" for attempt in self.attempts)
             > self.capacity
         ):
             raise ValueError("LP active dispatch records exceed capacity.")
-
-        if (
-            isinstance(self.legacy_failure_count, bool)
-            or not isinstance(self.legacy_failure_count, int)
-            or not 0 <= self.legacy_failure_count <= len(self.failures)
-        ):
-            raise ValueError("LP legacy failure boundary is invalid.")
 
         seen: dict[tuple[int, int, str, int], str] = {}
         successful: set[tuple[int, str]] = set()
@@ -939,7 +864,6 @@ class LPGenerationCheckpoints:
 
             if (
                 key in seen
-                or index < self.legacy_counts[attempt.stage]
                 or (
                     attempt.stage == "verdict"
                     and self.get_row(request_index=index, stage="draft") is None
@@ -962,9 +886,7 @@ class LPGenerationCheckpoints:
             self._validate_attempt_completion(attempt=attempt, successful=successful)
 
         for stage in ("draft", "verdict"):
-            indices = set(
-                range(self.legacy_counts[stage], len(self.rows[stage]))
-            ) | set(self.pending[stage])
+            indices = set(range(len(self.rows[stage]))) | set(self.pending[stage])
 
             if any((index, stage) not in successful for index in indices):
                 raise ValueError("LP completion lacks durable attempt accounting.")
@@ -979,7 +901,7 @@ class LPGenerationCheckpoints:
                 )
             )
             != "failed"
-            for failure in self.failures[self.legacy_failure_count :]
+            for failure in self.failures
         ):
             raise ValueError(
                 "LP failure lacks its durable dispatch and outcome record."
@@ -1197,11 +1119,6 @@ class LPGenerationCheckpoints:
 
         self.verify_bytes()
 
-        if not self.extended:
-            self.legacy_counts = {stage: len(rows) for stage, rows in self.rows.items()}
-            self.legacy_failure_count = len(self.failures)
-            self.extended = True
-
         for attempt in self.attempts:
             if attempt.status == "dispatched":
                 attempt.status = "unknown"
@@ -1213,7 +1130,12 @@ class LPGenerationCheckpoints:
     def capacity(self) -> int:
         """Return the immutable effective capacity captured for this execution."""
 
-        return self.material.get("max_concurrent_requests", 4)
+        capacity = self.material.get("max_concurrent_requests")
+
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
+            raise ValueError("LP execution material lacks a valid captured capacity.")
+
+        return capacity
 
     def complete_attempt(
         self,
@@ -1476,6 +1398,182 @@ def _canonical_bytes(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+def _read_receipt(payload: bytes) -> dict[str, Any]:
+    """Require a canonical receipt authenticating the complete journal-bearing store.
+
+    Parameters
+    ----------
+    payload
+        Captured receipt bytes from disk or a transaction.
+
+    Returns
+    -------
+    dict[str, Any]
+        Receipt with exact artifact coverage and captured execution capacity.
+
+    Raises
+    ------
+    ValueError
+        If the receipt format or recorded material is unsupported.
+    """
+
+    receipt = json.loads(payload)
+
+    if not isinstance(receipt, dict) or set(receipt) != {
+        "artifact_byte_hashes",
+        "execution_content_hash",
+        "failed_pair_ids",
+        "material",
+        "run_number",
+        "stage_counts",
+        "status",
+    }:
+        raise ValueError("LP checkpoint receipt has invalid fields.")
+
+    hashes = receipt["artifact_byte_hashes"]
+
+    if (
+        not isinstance(hashes, dict)
+        or set(hashes) != _CHECKPOINT_NAMES - {_RECEIPT}
+        or payload != _canonical_bytes(receipt)
+        or any(
+            not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+            for value in hashes.values()
+        )
+    ):
+        raise ValueError(
+            "LP checkpoint receipt requires complete authenticated journals."
+        )
+
+    material = receipt["material"]
+
+    if not isinstance(material, dict) or set(material) != {
+        "checker_instructions",
+        "config_content_hash",
+        "max_concurrent_requests",
+        "model_config",
+        "model_settings",
+        "producer_instructions",
+        "prompt_definitions_content_hash",
+        "request_manifest",
+        "response_schema_content_hash",
+        "retry_limits",
+        "verdict_schema_content_hash",
+    }:
+        raise ValueError(
+            "LP checkpoint execution material has incomplete or unknown fields."
+        )
+
+    capacity = material["max_concurrent_requests"]
+
+    if (
+        isinstance(capacity, bool)
+        or not isinstance(capacity, int)
+        or capacity < 1
+        or receipt["execution_content_hash"] != content_hash(material)
+    ):
+        raise ValueError(
+            "LP checkpoint material lacks a valid captured capacity or identity."
+        )
+
+    return receipt
+
+
+def _read_transaction(root: Path) -> _LPCheckpointTransaction:
+    """Read only complete native initialization or update transactions.
+
+    Parameters
+    ----------
+    root
+        Existing execution directory, which remains unchanged.
+
+    Returns
+    -------
+    _LPCheckpointTransaction
+        Canonical complete transaction pending semantic and old/new byte validation.
+
+    Raises
+    ------
+    ValueError
+        If coverage, predecessor hashes, or visible receipt/usage formats are
+        unsupported.
+    """
+
+    raw = (root / _TRANSACTION).read_bytes()
+    transaction = _LPCheckpointTransaction.model_validate_json(raw)
+    previous = transaction.previous_byte_hashes
+
+    if (
+        raw != _canonical_bytes(transaction.model_dump(mode="json"))
+        or set(transaction.next_payloads) != _CHECKPOINT_NAMES
+        or set(previous) != _CHECKPOINT_NAMES
+        or (
+            any(value is None for value in previous.values())
+            and not all(value is None for value in previous.values())
+        )
+        or any(
+            value is not None and re.fullmatch(r"[0-9a-f]{64}", value) is None
+            for value in previous.values()
+        )
+    ):
+        raise ValueError("LP checkpoint transaction is incomplete or noncanonical.")
+
+    # Visible predecessor evidence cannot be upgraded by a transaction's next state.
+    for name, reader in ((_RECEIPT, _read_receipt), (_USAGE, _read_usage)):
+        path = root / name
+
+        if path.exists() or path.is_symlink():
+            reader(path.read_bytes())
+
+    return transaction
+
+
+def _read_usage(payload: bytes) -> dict[str, Any]:
+    """Require explicit canonical attempt evidence without compatibility counters.
+
+    Parameters
+    ----------
+    payload
+        Usage journal bytes from a committed or interrupted checkpoint.
+
+    Returns
+    -------
+    dict[str, Any]
+        Current usage record, pending receipt and attempt validation.
+
+    Raises
+    ------
+    ValueError
+        If fields, capacity, or canonical encoding are unsupported.
+    """
+
+    raw = json.loads(payload)
+
+    if not isinstance(raw, dict) or set(raw) != {
+        "attempts",
+        "available_cost",
+        "max_concurrent_requests",
+        "request_states",
+        "unknown_usage_attempts",
+    }:
+        raise ValueError(
+            "LP usage journal has invalid fields; compatibility counters are unsupported."
+        )
+
+    capacity = raw["max_concurrent_requests"]
+
+    if (
+        isinstance(capacity, bool)
+        or not isinstance(capacity, int)
+        or capacity < 1
+        or not isinstance(raw["attempts"], list)
+        or payload != _canonical_bytes(raw)
+    ):
+        raise ValueError("LP usage journal is invalid or noncanonical.")
+
+    return raw
+
+
 def _stage_prompt_hash(
     *,
     draft: LPGenerationResponse | None,
@@ -1560,6 +1658,7 @@ def archive_lp_generation_artifacts(root: Path) -> None:
         evidence fails byte reconciliation.
     """
 
+    validate_lp_checkpoint_format(root)
     names = (
         *_FILENAMES.values(),
         _FAILURES,
@@ -1665,3 +1764,84 @@ def reconciled_response(
         raise ValueError("LP correction must replace the complete response.")
 
     return LPGenerationResponse.model_validate(response.model_dump(mode="python"))
+
+
+def validate_lp_checkpoint_format(root: Path) -> None:
+    """Reject unsupported execution evidence without calls, locks, or file changes.
+
+    This preflight authenticates stored execution against its recorded population.
+    Generation and finalization additionally compare it with current runtime inputs. A
+    valid interrupted native transaction is inspected without repairing its files.
+
+    Parameters
+    ----------
+    root
+        Prospective generation directory; absence permits fresh initialization.
+
+    Raises
+    ------
+    ValueError
+        If existing evidence is unsupported, incomplete, unauthenticated, or invalid.
+    """
+
+    evidence_names = _CHECKPOINT_NAMES | {
+        _TRANSACTION,
+        "as_lc_lp_kg_bundle.json",
+        "as_lc_lp_nodes.jsonl",
+        "as_lc_lp_relationships.jsonl",
+        "lp_final_claims.json",
+        "lp_generation_summary.json",
+        "lp_relationship_provenance.json",
+        "lp_relationships_builds_towards.jsonl",
+        "lp_relationships_relates_to.jsonl",
+        "lp_unresolved_items.json",
+        "lp_validation_report.json",
+    }
+
+    if not any(
+        (root / name).exists() or (root / name).is_symlink() for name in evidence_names
+    ):
+        return
+
+    try:
+        if (root / _TRANSACTION).exists() or (root / _TRANSACTION).is_symlink():
+            transaction = _read_transaction(root)
+            receipt = _read_receipt(transaction.next_payloads[_RECEIPT].encode("utf-8"))
+            _read_usage(transaction.next_payloads[_USAGE].encode("utf-8"))
+        else:
+            receipt = _read_receipt((root / _RECEIPT).read_bytes())
+            _read_usage((root / _USAGE).read_bytes())
+
+        population = LPRequestPopulation(
+            candidates=LPCandidatePopulation(
+                candidates=tuple(
+                    LPCandidatePair.model_validate_json(line)
+                    for line in (root / "lp_candidate_pairs.jsonl")
+                    .read_bytes()
+                    .splitlines()
+                ),
+                summary=LPCandidateSummary.model_validate_json(
+                    (root / "lp_candidate_summary.json").read_bytes()
+                ),
+            ),
+            manifest=LPRequestManifest.model_validate_json(
+                (root / MANIFEST_FILENAME).read_bytes()
+            ),
+            requests=tuple(
+                LPGenerationRequest.model_validate_json(line)
+                for line in (root / "lp_generation_requests.jsonl")
+                .read_bytes()
+                .splitlines()
+            ),
+        )
+        population = read_lp_request_population(expected=population, root=root)
+        LPGenerationCheckpoints(
+            material=receipt["material"],
+            population=population,
+            read_only=True,
+            root=root,
+        )
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        raise ValueError(
+            f"LP checkpoint evidence is incompatible at {root}: {error}"
+        ) from error

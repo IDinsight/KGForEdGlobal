@@ -17,7 +17,7 @@ from kgfeg.kgs.lp_artifacts import (
     _atomic_write,
     read_lp_artifacts,
 )
-from kgfeg.kgs.lp_checkpoints import content_hash
+from kgfeg.kgs.lp_checkpoints import content_hash, validate_lp_checkpoint_format
 from kgfeg.kgs.lp_requests import canonical_lp_json
 from kgfeg.kgs.schemas import (
     AcademicStandardsLCKGBundle,
@@ -28,12 +28,7 @@ from kgfeg.schemas import CreateKGConfig
 
 _BUNDLE = "as_lc_lp_kg_bundle.json"
 _LP_PROVENANCE_KEYS = ("relationships_builds_towards", "relationships_relates_to")
-_OPTIONAL_INPUTS = (
-    "lp_eligibility_report.json",
-    "lp_eligible_sfis.json",
-    "lp_generation_pending_completions.json",
-    "lp_generation_usage.json",
-)
+_OPTIONAL_INPUTS = ("lp_eligibility_report.json", "lp_eligible_sfis.json")
 _VALIDATION_CHECKS = [
     "as_lc_validation_gate",
     "authenticated_standalone_lp_artifacts",
@@ -597,6 +592,7 @@ def compile_as_lc_lp_kg(
     if not isinstance(overwrite, bool):
         raise ValueError("LP overwrite must be an explicit boolean.")
 
+    validate_lp_checkpoint_format(kg_dirs.root)
     bundle = _prepare_bundle(
         as_lc_bundle=as_lc_bundle, doc_key=doc_key, kg_config=kg_config, kg_dirs=kg_dirs
     )
@@ -648,6 +644,7 @@ def reuse_as_lc_lp_kg(
         Verified saved graph, or None when no final bundle exists.
     """
 
+    validate_lp_checkpoint_format(kg_dirs.root)
     path = kg_dirs.root / _BUNDLE
 
     if not (path.exists() or path.is_symlink()):

@@ -1050,7 +1050,15 @@ def test_journal_removal_interruption_preserves_all_completed_calls(
     argnames="phase",
     argvalues=["initialize", "begin", "draft", "verdict", "response", "failure"],
 )
-@pytest.mark.parametrize(argnames="name", argvalues=[_JOURNAL, *_STORED])
+@pytest.mark.parametrize(
+    argnames="name",
+    argvalues=[
+        _JOURNAL,
+        *_STORED,
+        "lp_generation_pending_completions.json",
+        "lp_generation_usage.json",
+    ],
+)
 def test_journaled_transactions_resume_at_every_artifact_write_boundary(
     after: bool, monkeypatch: pytest.MonkeyPatch, name: str, phase: str, tmp_path: Path
 ) -> None:

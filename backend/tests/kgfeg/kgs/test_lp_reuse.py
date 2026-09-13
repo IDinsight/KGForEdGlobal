@@ -472,10 +472,10 @@ def test_entry_exact_reuse_skips_lp_stages_preserves_checkpoints_and_records_zer
 @pytest.mark.parametrize(
     argnames="attack", argvalues=["config", "invalid_bundle", "prefix", "transaction"]
 )
-def test_entry_invalid_saved_release_records_error_without_advancing_lp(
+def test_entry_invalid_saved_release_respects_preflight_and_runtime_error_boundaries(
     attack: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Propagate reuse integrity failures to durable run status without LP calls.
+    """Preserve rejected checkpoint evidence and report later reuse failures honestly.
 
     Parameters
     ----------
@@ -503,8 +503,13 @@ def test_entry_invalid_saved_release_records_error_without_advancing_lp(
     _reset_entry(harness)
     with pytest.raises(_export._REJECTIONS) as error:
         create_kgs.create(harness.config_path)
-    _entry._assert_run(error=type(error.value), harness=harness)
-    assert harness.calls == list(_entry._PHASES[:-5])
+    if attack in {"prefix", "transaction"}:
+        assert "incompatible" in str(error.value)
+        assert not harness.calls
+        assert _state(harness.root) == before
+    else:
+        _entry._assert_run(error=type(error.value), harness=harness)
+        assert harness.calls == list(_entry._PHASES[:-5])
     assert not harness.proposals.calls
     after = _state(harness.root)
     stable = set(before) - {"kg_run.json"}
@@ -862,6 +867,8 @@ def test_invalid_saved_bundle_never_repairs_itself_under_reuse(
         _RECEIPT,
         *_STAGES,
         "lp_generation_failures.json",
+        "lp_generation_pending_completions.json",
+        "lp_generation_usage.json",
         "lp_final_claims.json",
         "lp_relationship_provenance.json",
         "lp_generation_summary.json",

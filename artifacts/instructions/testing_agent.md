@@ -41,6 +41,14 @@ Live Step 28 evaluation and final evaluator completion retain Step 27 reviewer a
 
 Concurrency is a prospective enhancement, not evidence of an earlier defect. Serial execution alone establishes no violation. If evidence proves an earlier approved-state defect or retroactive contract change, identify earliest owner K, former frontier F and its fixed review base, then explicitly reopen and revalidate the affected chain. No earlier approval is automatically reopened by this amendment.
 
+## Checkpoint-format removal amendment — implementation approval recorded (2026-09-13)
+
+The user explicitly approved the prospective Step 26 checkpoint-format removal on 2026-09-13, stating: "ok in that case, i approve of the edits", after clarification that completed historical artifacts remain usable downstream while the new production pipeline cannot resume or reuse their unsupported checkpoints. D13-C3, settled D13-C3-Z and Section 3.3.3 record complete journal-bearing evidence and removal of prefix-only loading, recovery, upgrading and compatibility-only bookkeeping. The approved removal boundary rejects either legacy counter field even when zero; no transitional native zero-counter reader remains. This is specification approval for a separate coding task, not reviewer approval of implemented Step 26 or authorization for code/tests in this governance task.
+
+Unsupported evidence must fail before API dispatch or artifact changes, including recovery, overwrite/archive, final reuse/projection writes and run-manifest updates. Preserve evidence and report incompatibility; do not migrate receipts, retrofit concurrency defaults, rewrite hashes or automatically regenerate results. Preserve current-format recovery, durable pending completions, sole-writer transactions, strict material identity, bounded concurrency, active-call drain, truthful accounting, capacity 1, local-model test support and all repaired actual-transport/R1/R2 protections. Do not restore the unused checker wrapper or its removed tests.
+
+This requirement applies to new Step 26 production, not historical snapshot validity. Preserve historical Madhi evidence identified in Section 3.3.3 and validation/use through compatible historical code/schema subject to existing D12 integrity requirements. An absent exact producing SHA remains absent; no Step 27/28 completion is certified. Concurrency or format removal alone requires no Madhi regeneration and grants no relabeling as concurrency execution evidence. Earlier approvals, independent early Step 28 work and its fixed base remain intact; Step 27 remains gated. Preserve Pratham's committed 3000-character limit and unrelated work. Handoffs remain in chat.
+
 ## 1. Testing-owned build-order scope
 
 The testing role owns two kinds of work.
@@ -438,7 +446,7 @@ Test interrupted JSONL prefixes at:
 
 Verify:
 
-- only a valid deterministic prefix resumes;
+- only valid deterministic prefixes with the supported checkpoint evidence required prospectively by Step 26/D13-C3 resume;
 - retry scope is correct;
 - `no_relation` is not a failure;
 - `needs_review` is not silently counted as accepted or processing failure;
@@ -452,7 +460,13 @@ Verify:
 
 ### 7.11a New Step 26 concurrency tests
 
-After coding completion and D13.1/amendment approval, independently derive the complete Section 5.4 matrix. Challenge bounded admission/backpressure, checker dependencies, reverse completion, failed prefix holes/durable suffix reuse, sole-writer crash recovery, ownership loss, stale identities/legacy compatibility, optional capacity default 4, active-calls-only shutdown (no new producer/checker/retry API calls), strict journal compatibility and concurrent accounting. Use offline controllable fakes/barriers; production scheduler/journal remain read-only. These new tests and affected earlier regressions belong to Step 26 without automatically reopening Step 25. No live benchmark is required.
+After coding completion and approval of the complete applicable D13-C3 packet, including settled D13-C3-Z rejection of compatibility fields even when zero and the recorded Section 3.3.3 amendment, independently derive the complete Section 5.4 matrix. Challenge bounded admission/backpressure, checker dependencies, reverse completion, failed prefix holes/durable suffix reuse, sole-writer current-format crash recovery, ownership loss, stale identities, optional capacity default 4, capacity 1, active-calls-only shutdown (no new producer/checker/retry API calls) and concurrent accounting.
+
+Remove obsolete prefix-only acceptance/recovery/upgrade expectations, including the acceptance branch of `test_legacy_prefix_only_reuse_requires_exact_actual_material`. Test unsupported prefix-only, partial/missing journal, old/mixed transaction and previously upgraded legacy evidence, plus the exact approved zero-counter boundary. Prove unchanged evidence bytes/directory membership and zero actual dispatch across generation/resume/recovery/overwrite, finalization/export/reuse/projection and pipeline entry; include no AS/LC dispatch or `kg_run.json` rewrite. Test that complete valid current-format initial/update transactions still recover from their authenticated old/new byte mixtures. Do not require deleting historical Madhi evidence or modifying results to build these cases.
+
+Preserve and rerun current-format recovery/integrity coverage and all R1/R2 protections: actual-transport eager-start coordination, hook-return races, native SDK default/mounted/proxy routing, asynchronous overlap/drain and cleanup, finite retries, local-model support, accurate known-zero versus dispatched-unknown accounting and preserved observed usage. Rerun affected SDK, shutdown, accounting, generation/reuse/orchestration, six-curriculum, AS/AS+LC and D12 regressions. Full-suite validation must include `--run-slow`, for example `make test TEST_ARGS=--run-slow` from `backend/`; report counts, skips and deselections. Do not restore removed unused-checker-wrapper tests.
+
+Use offline controllable fakes/barriers; production source/config remains read-only. These new obligations and affected earlier regressions belong to Step 26 without automatically reopening Step 25. No live benchmark or full curriculum rerun is authorized.
 
 ### 7.12 Final pair reconciliation
 
@@ -599,7 +613,7 @@ Step 27 now owns full pipeline execution; Step 28 owns the separately implemente
 
 ### 7.20 Complete six-curriculum runs
 
-Step 27 requires new Step 26 reviewer approval and that exact SHA as review base, plus explicit authorization for external LLM calls. Preserve previous run evidence under its actual candidate; brief Section 3.3.2 governs retained snapshots and affected fresh evidence.
+Step 27 requires new Step 26 reviewer approval and that exact SHA as review base, plus explicit authorization for external LLM calls. Preserve previous run evidence under its actual recorded bindings; brief Sections 3.3.2–3.3.3 govern retained snapshots and affected fresh evidence. Validate historical formats using compatible historical code/schema, without modifying their receipts or relabeling them as concurrency execution. Missing producing SHA remains unknown and subject to the existing input/review gate; do not invent it or require Madhi regeneration solely because of the format change.
 
 For each run record:
 

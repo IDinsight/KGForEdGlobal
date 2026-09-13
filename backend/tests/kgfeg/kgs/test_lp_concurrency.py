@@ -381,10 +381,10 @@ def test_empty_singleton_and_small_populations_account_every_call(
 
 
 @pytest.mark.parametrize(argnames="changed", argvalues=[False, True])
-def test_legacy_prefix_only_reuse_requires_exact_actual_material(
+def test_legacy_prefix_only_reuse_rejects_even_matching_actual_material(
     changed: bool, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Absent journals mean no pending work and grant no material identity exemption.
+    """Absent journals remain unsupported even when all captured material matches.
 
     Parameters
     ----------
@@ -407,17 +407,9 @@ def test_legacy_prefix_only_reuse_requires_exact_actual_material(
     (tmp_path / _old._RECEIPT).write_bytes(_old._bytes(receipt))
     before = _old._snapshot(tmp_path)
     harness.calls.clear()
-    if changed:
-        with pytest.raises(expected_exception=ValueError):
-            harness._run()
-        assert _old._snapshot(tmp_path) == before
-    else:
+    with pytest.raises(expected_exception=ValueError, match="incompatible"):
         harness._run()
-        assert _read(tmp_path / _USAGE)["legacy_stage_counts"] == {
-            "draft": 1,
-            "verdict": 1,
-            "response": 1,
-        }
+    assert _old._snapshot(tmp_path) == before
     assert not harness.calls
 
 

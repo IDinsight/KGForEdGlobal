@@ -23,7 +23,7 @@ from typing import Any
 from pydantic import Field, model_validator
 
 # Package Library
-from kgfeg.kgs.lp_checkpoints import content_hash
+from kgfeg.kgs.lp_checkpoints import content_hash, validate_lp_checkpoint_format
 from kgfeg.kgs.lp_finalization import (
     LPFinalClaim,
     LPFinalClaims,
@@ -48,16 +48,16 @@ _INPUTS = (
     "lp_generation_checkpoint_manifest.json",
     "lp_generation_draft_responses.jsonl",
     _FAILURES,
+    "lp_generation_pending_completions.json",
     "lp_generation_requests.jsonl",
     "lp_generation_requests_manifest.json",
     "lp_generation_responses.jsonl",
+    "lp_generation_usage.json",
     "lp_generation_validation_verdicts.jsonl",
 )
 _OPTIONAL_INPUTS = (
     "lp_eligibility_report.json",
     "lp_eligible_sfis.json",
-    "lp_generation_pending_completions.json",
-    "lp_generation_usage.json",
 )
 _PROVENANCE = "lp_relationship_provenance.json"
 _RELATES = "lp_relationships_relates_to.jsonl"
@@ -357,6 +357,7 @@ def _prepare_artifacts(
         If material is stale, inconsistent, incomplete, or changes during validation.
     """
 
+    validate_lp_checkpoint_format(kg_dirs.root)
     inputs = _input_snapshot(kg_dirs.root)
     bundle = AcademicStandardsLCKGBundle.model_validate_json(
         as_lc_bundle.model_dump_json()

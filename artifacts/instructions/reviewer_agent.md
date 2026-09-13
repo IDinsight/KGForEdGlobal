@@ -47,6 +47,14 @@ Live Step 28 evaluation and final evaluator completion retain Step 27 reviewer a
 
 Concurrency is a prospective enhancement, not evidence of an earlier defect. Serial execution alone establishes no violation. If evidence proves an earlier approved-state defect or retroactive contract change, identify earliest owner K, former frontier F and its fixed review base, then explicitly reopen and revalidate the affected chain. No earlier approval is automatically reopened by this amendment.
 
+## Checkpoint-format removal amendment — implementation approval recorded (2026-09-13)
+
+The user explicitly approved the prospective Step 26 checkpoint-format removal on 2026-09-13, stating: "ok in that case, i approve of the edits", after clarification that completed historical artifacts remain usable downstream while the new production pipeline cannot resume or reuse their unsupported checkpoints. D13-C3, settled D13-C3-Z and Section 3.3.3 record complete journal-bearing evidence and removal of prefix-only loading, recovery, upgrading and compatibility-only bookkeeping. The approved removal boundary rejects either legacy counter field even when zero; no transitional native zero-counter reader remains. This is specification approval for a separate coding task, not reviewer approval of implemented Step 26 or authorization for code/tests in this governance task.
+
+Unsupported evidence must fail before API dispatch or artifact changes, including recovery, overwrite/archive, final reuse/projection writes and run-manifest updates. Preserve evidence and report incompatibility; do not migrate receipts, retrofit concurrency defaults, rewrite hashes or automatically regenerate results. Preserve current-format recovery, durable pending completions, sole-writer transactions, strict material identity, bounded concurrency, active-call drain, truthful accounting, capacity 1, local-model test support and all repaired actual-transport/R1/R2 protections. Do not restore the unused checker wrapper or its removed tests.
+
+This requirement applies to new Step 26 production, not historical snapshot validity. Preserve historical Madhi evidence identified in Section 3.3.3 and validation/use through compatible historical code/schema subject to existing D12 integrity requirements. An absent exact producing SHA remains absent; no Step 27/28 completion is certified. Concurrency or format removal alone requires no Madhi regeneration and grants no relabeling as concurrency execution evidence. Earlier approvals, independent early Step 28 work and its fixed base remain intact; Step 27 remains gated. Preserve Pratham's committed 3000-character limit and unrelated work. Handoffs remain in chat.
+
 ## 1. Source of truth and review authority
 
 Use this precedence:
@@ -340,7 +348,13 @@ Do not treat structured model output as trusted merely because Pydantic parsed i
 
 ### 5.9a New Step 26 concurrency gate
 
-Require complete settled D13-C1/C2/C3, explicit amendment approval, coding-owned changes, independent Section 5.4 testing and an exact candidate against fixed Step 25 base. Verify bounded work/buffers, per-request checker dependency, durable out-of-order completion with contiguous successful prefixes, sole-writer crash recovery, material/legacy compatibility, optional capacity default 4, active-calls-only shutdown without new producer/checker/retry API calls, and race-safe complete accounting. Confirm unchanged candidate, graph, prompt and model behavior. Serial pre-Step-26 execution is not an earlier defect. Demonstrated earlier violations require earliest-owner reopening. Step 27 progression requires new Step 26 reviewer approval.
+Require complete settled D13-C1/C2/C3, settled D13-C3-Z rejection of compatibility fields even when zero and the recorded separate Section 3.3.3 implementation approval for format removal, coding-owned changes, independent Section 5.4 testing and an exact user-created candidate against fixed Step 25 base. Verify bounded work/buffers, per-request checker dependency, durable out-of-order completion with contiguous successful prefixes, sole-writer current-format crash recovery, strict material identity, optional capacity default 4/capacity 1, active-calls-only shutdown and race-safe accounting.
+
+Verify unsupported prefix-only/previously upgraded formats and old/mixed transactions fail before calls or artifact changes across pipeline entry, generation/recovery/overwrite, finalization and final reuse/projections. Reject missing-journal-as-empty behavior and receipt/default/hash migration. Existing evidence, including `kg_run.json`, must remain unchanged. Preserve valid interrupted current-format initialization and update recovery. Confirm obsolete old-format acceptance expectations were removed and retained current-format integrity tests remain meaningful.
+
+Require affected SDK, shutdown, accounting, six-curriculum and D12 regression evidence plus full-suite `--run-slow`. Preserve local-model support, the actual-transport dispatch gate and all R1/R2 routing/retry/drain/cleanup and zero-versus-unknown-usage protections. Do not restore the unused checker wrapper or its removed tests. Confirm unchanged candidate, graph, prompt and model semantics.
+
+Serial or prefix-only historical execution is not an earlier defect. Preserve Madhi validation/use with compatible historical code/schema, disclose the absent producing SHA and apply existing input/completion gates; do not infer Step 27/28 completion or require regeneration solely because concurrency/format rules changed. Earlier-owner defects need explicit reopening. Step 27 progression still requires exact Step 26 reviewer approval; early independent Step 28 work keeps its fixed base.
 
 ### 5.10 Finalization and semantic policy
 
@@ -394,7 +408,7 @@ A report saying `passed=true` is not enough. Inspect the validator and independe
 
 ### 5.13 Resume, reuse, and run status
 
-Verify code-owned prefix-safe resume and stale-input rejection without runtime checkpoint, resume, fingerprint-selection, or mismatch-policy fields.
+Verify code-owned prefix-safe resume and stale-input rejection without runtime checkpoint, resume, fingerprint-selection, or mismatch-policy fields. New Step 26 production requires the approved supported-format gate under D13-C3 before recovery, reuse, overwrite or any artifact/run-manifest mutation. Keep historical read-only schema validation distinct from new-production reuse.
 
 Test/review changes to:
 
