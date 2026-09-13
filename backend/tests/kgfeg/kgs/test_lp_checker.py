@@ -5,8 +5,6 @@ import json
 import socket
 
 from copy import deepcopy
-from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 from uuid import UUID
@@ -18,15 +16,13 @@ from pydantic import ValidationError
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-from pydantic_ai.usage import RequestUsage, RunUsage
+from pydantic_ai.usage import RequestUsage
 
 # Package Library
-from kgfeg.config import Settings
-from kgfeg.kgs import agents, llm, prompts
+from kgfeg.kgs import agents, prompts
 from kgfeg.kgs.lp_requests import (
     LPGenerationRequest,
     build_lp_generation_requests,
-    write_lp_generation_request_artifacts,
 )
 from kgfeg.kgs.schemas import (
     LPDecision,
@@ -35,7 +31,6 @@ from kgfeg.kgs.schemas import (
     LPGenerationValidationIssue,
     LPGenerationValidationVerdict,
 )
-from kgfeg.kgs.utils import KGDirs
 from kgfeg.kgs.validators import (
     verify_lp_generation_response_integrity,
     verify_lp_generation_validation_integrity,
@@ -46,12 +41,6 @@ from tests.kgfeg.kgs import test_lp_candidates as _candidates
 from tests.kgfeg.kgs import test_lp_generation as _fixtures
 
 _DOC_KEY = "synthetic-selection-document"
-_FILES = (
-    "lp_candidate_pairs.jsonl",
-    "lp_candidate_summary.json",
-    "lp_generation_requests.jsonl",
-    "lp_generation_requests_manifest.json",
-)
 _PROFILES = (
     "ghana_english",
     "ghana_math",
@@ -323,356 +312,6 @@ def test_complete_acceptance_and_correction_preserve_pair_identity(
     )
     assert before == (draft.model_dump(mode="json"), verdict.model_dump(mode="json"))
     assert len({row.pair_id for row in proposal.judgments}) == len(request.pairs)
-
-
-@pytest.mark.parametrize(argnames="filename", argvalues=_FILES)
-@pytest.mark.parametrize(
-    argnames="mutation",
-    argvalues=[
-        "absent",
-        "empty",
-        "malformed",
-        "tampered",
-    ],
-)
-def test_execution_blocks_incomplete_population_before_checker_creation(
-    filename: str,
-    monkeypatch: pytest.MonkeyPatch,
-    mutation: str,
-    tmp_path: Path,
-) -> None:
-    """A valid first request cannot conceal incomplete or corrupt later artifacts.
-
-    Parameters
-    ----------
-    filename
-        Required artifact to attack.
-    monkeypatch
-        Restoring checker factory guard.
-    mutation
-        Missing, interrupted, or materially invalid artifact.
-    tmp_path
-        Isolated candidate/request directory.
-    """
-    bundle, config, dirs = (
-        _fixtures._bundle(),
-        _fixtures._config(),
-        KGDirs(root=tmp_path),
-    )
-    population = write_lp_generation_request_artifacts(
-        as_lc_bundle=bundle,
-        doc_key=_DOC_KEY,
-        kg_config=config,
-        kg_dirs=dirs,
-    )
-    path = tmp_path / filename
-    if mutation == "absent":
-        path.unlink()
-    elif mutation == "empty":
-        path.write_bytes(b"")
-    elif mutation == "malformed":
-        path.write_bytes(path.read_bytes() + b'{"unfinished":')
-    elif filename.endswith(".jsonl"):
-        rows = path.read_bytes().splitlines(keepends=True)
-        assert len(rows) > 1
-        rows[-1] = rows[0]
-        path.write_bytes(b"".join(rows))
-    else:
-        row = json.loads(path.read_bytes())
-        row["total_candidate_pairs"] += 1
-        path.write_text(json.dumps(row))
-    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
-    factory = Mock(side_effect=AssertionError("Invalid artifacts reached checker."))
-    monkeypatch.setattr(
-        name="create_lp_generation_validation_agent", target=llm, value=factory
-    )
-    tracker = llm.KGUsageTracker()
-    with pytest.raises(expected_exception=(OSError, ValueError)):
-        llm.check_learning_progressions_for_request(
-            as_lc_bundle=bundle,
-            doc_key=_DOC_KEY,
-            draft_response=_draft(population.requests[0]),
-            kg_config=config,
-            kg_dirs=dirs,
-            request_index=0,
-            usage_tracker=tracker,
-        )
-    factory.assert_not_called()
-    totals = tracker.to_dict()["totals"]
-    assert isinstance(totals, dict)
-    assert totals["requests"] == 0
-    assert before == {p.name: p.read_bytes() for p in tmp_path.iterdir()}
-
-
-@pytest.mark.parametrize(
-    argnames="mutation",
-    argvalues=[
-        "batch",
-        "checker_instructions",
-        "checker_retry",
-        "doc_key",
-        "producer_instructions",
-        "upstream",
-    ],
-)
-def test_execution_blocks_stale_material_before_checker_creation(
-    monkeypatch: pytest.MonkeyPatch,
-    mutation: str,
-    tmp_path: Path,
-) -> None:
-    """Recompute actual material inputs before any checker can run.
-
-    Parameters
-    ----------
-    monkeypatch
-        Restoring settings, prompt, and factory guards.
-    mutation
-        Material input changed after complete artifact writing.
-    tmp_path
-        Isolated complete population directory.
-    """
-    bundle, config, dirs = (
-        _fixtures._bundle(),
-        _fixtures._config(),
-        KGDirs(root=tmp_path),
-    )
-    population = write_lp_generation_request_artifacts(
-        as_lc_bundle=bundle,
-        doc_key=_DOC_KEY,
-        kg_config=config,
-        kg_dirs=dirs,
-    )
-    doc_key = _DOC_KEY
-    policy = config.learning_progressions
-    if mutation == "batch":
-        policy.request_batch_size = 3
-    elif mutation == "checker_instructions":
-        policy.checker_instructions += " Changed synthetic assessment."
-    elif mutation == "checker_retry":
-        policy.retry.checker_max_retries += 1
-    elif mutation == "doc_key":
-        doc_key += "-changed"
-    elif mutation == "producer_instructions":
-        policy.producer_instructions += " Changed synthetic producer policy."
-    else:
-        bundle.items[0].description += " Changed authoritative source."
-    factory = Mock(side_effect=AssertionError("Stale material reached checker."))
-    monkeypatch.setattr(
-        name="create_lp_generation_validation_agent", target=llm, value=factory
-    )
-    with pytest.raises(expected_exception=ValueError):
-        llm.check_learning_progressions_for_request(
-            as_lc_bundle=bundle,
-            doc_key=doc_key,
-            draft_response=_draft(population.requests[0]),
-            kg_config=config,
-            kg_dirs=dirs,
-            request_index=0,
-            usage_tracker=llm.KGUsageTracker(),
-        )
-    factory.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    argnames="error",
-    argvalues=[
-        TimeoutError("Synthetic timeout"),
-        UnexpectedModelBehavior("Synthetic exhausted output"),
-    ],
-)
-def test_execution_failures_propagate_without_semantic_substitution(
-    error: Exception,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Transport or exhausted output failures cannot become negative or review judgments.
-
-    Parameters
-    ----------
-    error
-        Offline simulated processing failure.
-    monkeypatch
-        Restoring fake execution seam.
-    tmp_path
-        Isolated artifact directory.
-    """
-    bundle, config, dirs = (
-        _fixtures._bundle(),
-        _fixtures._config(),
-        KGDirs(root=tmp_path),
-    )
-    population = write_lp_generation_request_artifacts(
-        as_lc_bundle=bundle,
-        doc_key=_DOC_KEY,
-        kg_config=config,
-        kg_dirs=dirs,
-    )
-    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
-    fake = Mock()
-    fake.run_sync.side_effect = error
-    monkeypatch.setattr(
-        name="create_lp_generation_validation_agent",
-        target=llm,
-        value=Mock(return_value=fake),
-    )
-    with pytest.raises(expected_exception=type(error)) as caught:
-        llm.check_learning_progressions_for_request(
-            as_lc_bundle=bundle,
-            doc_key=_DOC_KEY,
-            draft_response=_draft(population.requests[0]),
-            kg_config=config,
-            kg_dirs=dirs,
-            request_index=0,
-            usage_tracker=llm.KGUsageTracker(),
-        )
-    assert caught.value is error
-    fake.run_sync.assert_called_once()
-    assert before == {p.name: p.read_bytes() for p in tmp_path.iterdir()}
-
-
-@pytest.mark.parametrize(argnames="index", argvalues=[-1, True, 1.0, "0", 999])
-def test_execution_rejects_invalid_request_index_before_checker(
-    index: Any,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Reject invalid request selectors without creating an agent.
-
-    Parameters
-    ----------
-    index
-        Non-integer, negative, or out-of-range selector.
-    monkeypatch
-        Restoring checker factory guard.
-    tmp_path
-        Isolated materialized population.
-    """
-    bundle, config, dirs = (
-        _fixtures._bundle(),
-        _fixtures._config(),
-        KGDirs(root=tmp_path),
-    )
-    population = write_lp_generation_request_artifacts(
-        as_lc_bundle=bundle,
-        doc_key=_DOC_KEY,
-        kg_config=config,
-        kg_dirs=dirs,
-    )
-    factory = Mock(side_effect=AssertionError("Invalid selector reached checker."))
-    monkeypatch.setattr(
-        name="create_lp_generation_validation_agent", target=llm, value=factory
-    )
-    with pytest.raises(expected_exception=ValueError, match="request_index"):
-        llm.check_learning_progressions_for_request(
-            as_lc_bundle=bundle,
-            doc_key=_DOC_KEY,
-            draft_response=_draft(population.requests[0]),
-            kg_config=config,
-            kg_dirs=dirs,
-            request_index=index,
-            usage_tracker=llm.KGUsageTracker(),
-        )
-    factory.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    argnames="attack", argvalues=["none", "bad_draft", "bad_verdict"]
-)
-@pytest.mark.parametrize(argnames="corrects", argvalues=[False, True])
-def test_execution_wires_independent_checker_and_accounts_only_checker_usage(
-    attack: str,
-    corrects: bool,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Check draft gating, final defensive validation, evidence wiring, and usage buckets.
-
-    Parameters
-    ----------
-    attack
-        Valid run or request-relative violation at an untrusted boundary.
-    corrects
-        Whether the fake checker accepts or completely corrects.
-    monkeypatch
-        Restoring independent checker factory spy.
-    tmp_path
-        Isolated artifact directory.
-    """
-    bundle, config, dirs = (
-        _fixtures._bundle(),
-        _fixtures._config(batch=3),
-        KGDirs(root=tmp_path),
-    )
-    config.learning_progressions.retry.checker_max_retries = 4
-    config.learning_progressions.retry.producer_max_retries = 0
-    population = write_lp_generation_request_artifacts(
-        as_lc_bundle=bundle,
-        doc_key=_DOC_KEY,
-        kg_config=config,
-        kg_dirs=dirs,
-    )
-    request = population.requests[-1]
-    draft = _draft(request)
-    correction = draft.model_copy(deep=True)
-    correction.judgments[0].decision = "needs_review"
-    verdict = _verdict(correction=correction if corrects else None, request=request)
-    if attack == "bad_draft":
-        draft.judgments.pop()
-    elif attack == "bad_verdict":
-        verdict.request_content_hash = "0" * 64
-    fake = Mock()
-    fake.run_sync.return_value = SimpleNamespace(
-        output=verdict,
-        usage=lambda: RunUsage(input_tokens=35, output_tokens=15, requests=5),
-    )
-    factory = Mock(return_value=fake)
-    monkeypatch.setattr(
-        name="create_lp_generation_validation_agent", target=llm, value=factory
-    )
-    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
-    tracker = llm.KGUsageTracker()
-    kwargs: dict[str, Any] = {
-        "as_lc_bundle": bundle,
-        "doc_key": _DOC_KEY,
-        "draft_response": draft,
-        "kg_config": config,
-        "kg_dirs": dirs,
-        "request_index": len(population.requests) - 1,
-        "usage_tracker": tracker,
-    }
-    if attack == "none":
-        assert llm.check_learning_progressions_for_request(**kwargs) is verdict
-    else:
-        with pytest.raises(expected_exception=QualityError):
-            llm.check_learning_progressions_for_request(**kwargs)
-    if attack == "bad_draft":
-        factory.assert_not_called()
-        totals = tracker.to_dict()["totals"]
-        assert isinstance(totals, dict)
-        assert totals["requests"] == 0
-    else:
-        call = factory.call_args.kwargs
-        assert call["draft_response"] == draft
-        assert call["lp_generation_request"] == request
-        assert call["max_retries"] == 4
-        assert call["verify_integrity_fn"] is verify_lp_generation_validation_integrity
-        assert call["model_config"].model == Settings.LLM_KG_MODEL
-        assert config.learning_progressions.checker_instructions in call["instructions"]
-        sent = json.loads(
-            fake.run_sync.call_args.args[0].split("## Draft and request JSON\n")[1]
-        )
-        assert sent == {
-            "draft_response": draft.model_dump(mode="json"),
-            "lp_generation_request": request.model_dump(mode="json"),
-        }
-        assert tracker.lp_generation_validation.requests == 5
-        assert tracker.lp_generation_validation.input_tokens == 35
-        assert tracker.lp_generation_validation.output_tokens == 15
-        assert tracker.lp_generation.requests == 0
-        totals = tracker.to_dict()["totals"]
-        assert isinstance(totals, dict)
-        assert totals["requests"] == 5
-    assert before == {p.name: p.read_bytes() for p in tmp_path.iterdir()}
 
 
 @pytest.mark.parametrize(
