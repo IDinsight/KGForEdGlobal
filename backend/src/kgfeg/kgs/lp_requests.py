@@ -260,19 +260,17 @@ class LPRequestPopulation:
 
 @dataclass(frozen=True, init=False, slots=True)
 class LPRequestPopulationVerifier:
-    """Retain validated bytes for repeated execution-boundary material checks.
+    """Retain validated digests for repeated execution-boundary material checks.
 
-    Canonical artifact bytes retain the full schema, identity, ordering and coverage
-    proof established by the reader. Every verification still reads all actual file
-    bytes. A separate compact serialization checks the entire live population too:
-    frozen dataclasses do not make their nested Pydantic records immutable.
-
-    Snapshots are invocation-local immutable bytes, never a persisted compatibility
-    receipt or a substitute for full validation on a new invocation.
+    The full reader establishes schema, identity, ordering and coverage before any
+    digest is retained. Every verification streams and hashes all actual file bytes,
+    and separately checks every live record including nested mutable material. Proofs
+    are invocation-local, never a persisted compatibility exemption or a substitute for
+    full validation on a new invocation.
     """
 
     _material_hash: str
-    _payloads: tuple[tuple[str, bytes], ...]
+    _artifact_hashes: tuple[tuple[str, bytes], ...]
 
     def __init__(self, *, population: LPRequestPopulation, root: Path) -> None:
         """Fully validate current material before retaining its immutable proof.
@@ -286,15 +284,26 @@ class LPRequestPopulationVerifier:
         """
 
         material_hash = _population_material_hash(population)
-        validated = read_lp_request_population(expected=population, root=root)
-        payloads = _artifact_payloads(
-            candidates=validated.candidates, requests=validated.requests
+
+        # Freeze the caller's claimed bytes before validation. The full reader must
+        # reconcile them with actual artifacts before they can become authority.
+        hashes = tuple(
+            (name, bytes.fromhex(digest))
+            for name, digest in population.manifest.artifact_byte_hashes.items()
+        ) + (
+            (
+                MANIFEST_FILENAME,
+                hashlib.sha256(
+                    (
+                        canonical_lp_json(population.manifest.model_dump(mode="json"))
+                        + "\n"
+                    ).encode("utf-8")
+                ).digest(),
+            ),
         )
-        payloads[MANIFEST_FILENAME] = (
-            canonical_lp_json(validated.manifest.model_dump(mode="json")) + "\n"
-        ).encode("utf-8")
+        read_lp_request_population(expected=population, root=root)
+        object.__setattr__(self, "_artifact_hashes", hashes)
         object.__setattr__(self, "_material_hash", material_hash)
-        object.__setattr__(self, "_payloads", tuple(payloads.items()))
         self.verify(population=population, root=root)
 
     def verify(self, *, population: LPRequestPopulation, root: Path) -> None:
@@ -318,8 +327,11 @@ class LPRequestPopulationVerifier:
                 "LP in-memory request population changed during execution."
             )
 
-        for filename, payload in self._payloads:
-            if (root / filename).read_bytes() != payload:
+        for filename, expected_hash in self._artifact_hashes:
+            with (root / filename).open("rb") as stream:
+                actual_hash = hashlib.file_digest(stream, "sha256").digest()
+
+            if actual_hash != expected_hash:
                 raise ValueError(
                     f"LP pre-call artifact differs from current material: {filename}."
                 )

@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 # Third Party Library
-from pydantic import Field
+from pydantic import Field, JsonValue, TypeAdapter
+from pydantic_core import to_json
 
 # Package Library
 from kgfeg.kgs.lp_candidates import LPCandidatePopulation
@@ -46,6 +47,7 @@ from kgfeg.kgs.validators import (
 )
 from kgfeg.schemas import BaseSchema
 
+_JSON_RECORD = TypeAdapter(dict[str, JsonValue])
 _FAILURES = "lp_generation_failures.json"
 _FILENAMES = {
     "draft": "lp_generation_draft_responses.jsonl",
@@ -144,8 +146,17 @@ class LPGenerationCheckpoints:
             Validate existing evidence without initializing or recovering files.
         root
             Locked generation directory.
+
+        Raises
+        ------
+        ValueError
+            If the LP checkpoint evidence is missing in read only mode.
         """
 
+        # Proofs are private to this invocation and retain only immutable material.
+        self._record_encodings: dict[tuple[str, int], tuple[bytes, bytes]] = {}
+        self._row_proofs: dict[tuple[str, int], tuple[bytes, ...]] = {}
+        self._validated_byte_hashes: tuple[tuple[str, bytes], ...] = ()
         self.execution_check = execution_check
         self.ownership_check = ownership_check
         self.pending: dict[str, dict[int, _LPCheckpoint]] = {
@@ -281,6 +292,10 @@ class LPGenerationCheckpoints:
             if payloads[name] != expected:
                 raise ValueError(f"LP checkpoint material is not canonical: {name}.")
 
+        self._validated_byte_hashes = tuple(
+            (name, hashlib.sha256(payloads[name]).digest()) for name in sorted(payloads)
+        )
+
     def _parse_artifacts(
         self, *, payloads: dict[str, bytes], receipt: dict[str, Any]
     ) -> None:
@@ -374,39 +389,62 @@ class LPGenerationCheckpoints:
             Exact artifact payloads covered by the commit receipt.
         """
 
-        return {
-            _PENDING: _canonical_bytes(
-                {
-                    stage: [
-                        rows[index].model_dump(mode="json") for index in sorted(rows)
-                    ]
-                    for stage, rows in self.pending.items()
-                }
-            ),
-            _USAGE: _canonical_bytes(
-                {
-                    "attempts": [
-                        attempt.model_dump(mode="json") for attempt in self.attempts
-                    ],
-                    "max_concurrent_requests": self.capacity,
-                    "available_cost": None,
-                    "request_states": self._request_states(),
-                    "unknown_usage_attempts": sum(
-                        attempt.usage is None for attempt in self.attempts
-                    ),
-                }
-            ),
+        pending = {
+            stage: b"["
+            + b",".join(
+                self._record_bytes(key=(stage, index), record=rows[index])
+                for index in sorted(rows)
+            )
+            + b"]"
+            for stage, rows in self.pending.items()
+        }
+        attempts = (
+            b"["
+            + b",".join(
+                self._record_bytes(key=("attempt", index), record=attempt)
+                for index, attempt in enumerate(self.attempts)
+            )
+            + b"]"
+        )
+        usage = {
+            "attempts": attempts,
+            "max_concurrent_requests": _canonical_bytes(self.capacity).rstrip(b"\n"),
+            "available_cost": b"null",
+            "request_states": _canonical_bytes(self._request_states()).rstrip(b"\n"),
+            "unknown_usage_attempts": str(
+                sum(attempt.usage is None for attempt in self.attempts)
+            ).encode("ascii"),
+        }
+        payloads = {
+            _PENDING: _encoded_object(pending),
+            _USAGE: _encoded_object(usage),
             **{
                 filename: b"".join(
-                    _canonical_bytes(row.model_dump(mode="json"))
-                    for row in self.rows[stage]
+                    self._record_bytes(key=(stage, index), record=row) + b"\n"
+                    for index, row in enumerate(self.rows[stage])
                 )
                 for stage, filename in _FILENAMES.items()
             },
-            _FAILURES: _canonical_bytes(
-                [failure.model_dump(mode="json") for failure in self.failures]
-            ),
+            _FAILURES: b"["
+            + b",".join(
+                self._record_bytes(key=("failure", index), record=failure)
+                for index, failure in enumerate(self.failures)
+            )
+            + b"]\n",
         }
+
+        # Drop retired/replaced positions; history size, not save count, bounds memory.
+        keys = {
+            (stage, index)
+            for stage in _FILENAMES
+            for index in (*range(len(self.rows[stage])), *self.pending[stage])
+        }
+        keys.update(("attempt", index) for index in range(len(self.attempts)))
+        keys.update(("failure", index) for index in range(len(self.failures)))
+        self._record_encodings = {
+            key: value for key, value in self._record_encodings.items() if key in keys
+        }
+        return payloads
 
     def _previous_hashes(self) -> dict[str, str | None]:
         """Identify the committed predecessor before starting another transaction.
@@ -538,6 +576,39 @@ class LPGenerationCheckpoints:
         if not read_only:
             self._commit(payloads)
 
+    def _record_bytes(self, *, key: tuple[str, int], record: BaseSchema) -> bytes:
+        """Reuse canonical encoding only after checking the complete live record.
+
+        Parameters
+        ----------
+        key
+            Store-local collection and position, never an authority by itself.
+        record
+            Current record, including every nested payload or usage value.
+
+        Returns
+        -------
+        bytes
+            Canonical JSON without its file-level terminal newline.
+        """
+
+        # Validate before JSON-mode coercion: an invalid datetime/tuple/object must not
+        # inherit a prior proof merely by encoding like a valid JSON value.
+        material = _JSON_RECORD.validate_python(
+            record.model_dump(mode="python", warnings="error"), strict=True
+        )
+        live = hashlib.sha256(
+            to_json(inf_nan_mode="constants", value=material)
+        ).digest()
+        previous = self._record_encodings.get(key)
+
+        if previous is not None and previous[0] == live:
+            return previous[1]
+
+        encoded = _canonical_bytes(material)[:-1]
+        self._record_encodings[key] = (live, encoded)
+        return encoded
+
     def _request_states(self) -> list[dict[str, Any]]:
         """Describe unfinished, unknown, cancelled and unstarted work explicitly.
 
@@ -611,6 +682,9 @@ class LPGenerationCheckpoints:
             previous_byte_hashes=self._previous_hashes(),
         )
         self.verify_execution_authority()
+        self._validated_byte_hashes = tuple(
+            (name, hashlib.sha256(payloads[name]).digest()) for name in sorted(payloads)
+        )
         _atomic_write(
             path=self.root / _TRANSACTION,
             payload=_canonical_bytes(transaction.model_dump(mode="json")),
@@ -705,9 +779,27 @@ class LPGenerationCheckpoints:
         ):
             raise ValueError("LP checkpoint stage lengths are misaligned.")
 
+        material = hashlib.sha256(
+            _canonical_bytes(
+                {
+                    "execution_hash": self.execution_hash,
+                    "material": self.material,
+                }
+            )
+        ).digest()
+        requests: dict[int, bytes] = {}
+        proofs: dict[tuple[str, int], tuple[bytes, ...]] = {}
+
         for stage, rows in self.rows.items():
             for index, row in enumerate(rows):
-                self._validate_row(index=index, row=row, stage=stage)
+                self._validate_cached_row(
+                    index=index,
+                    material=material,
+                    proofs=proofs,
+                    requests=requests,
+                    row=row,
+                    stage=stage,
+                )
 
         pending_indices = set()
 
@@ -718,7 +810,14 @@ class LPGenerationCheckpoints:
                         "LP pending completion overlaps a prefix or population boundary."
                     )
 
-                self._validate_row(index=index, row=row, stage=stage)
+                self._validate_cached_row(
+                    index=index,
+                    material=material,
+                    proofs=proofs,
+                    requests=requests,
+                    row=row,
+                    stage=stage,
+                )
                 pending_indices.add(index)
 
         if len(pending_indices) > self.capacity:
@@ -728,6 +827,7 @@ class LPGenerationCheckpoints:
 
         self._validate_failures()
         self._validate_attempts()
+        self._row_proofs = proofs
 
     def _validate_attempt_completion(
         self, *, attempt: _LPAttempt, successful: set[tuple[int, str]]
@@ -906,6 +1006,70 @@ class LPGenerationCheckpoints:
             raise ValueError(
                 "LP failure lacks its durable dispatch and outcome record."
             )
+
+    def _validate_cached_row(
+        self,
+        *,
+        index: int,
+        material: bytes,
+        proofs: dict[tuple[str, int], tuple[bytes, ...]],
+        requests: dict[int, bytes],
+        row: _LPCheckpoint,
+        stage: str,
+    ) -> None:
+        """Revalidate changed rows and every changed semantic dependency.
+
+        Parameters
+        ----------
+        index
+            Expected request position in the prefix or pending journal.
+        material
+            Digest of actual execution material computed for this validation pass.
+        proofs
+            New proof set, installed only after the complete state validates.
+        requests
+            Request digests computed from live records during this pass only.
+        row
+            Current stage payload and receipt identities.
+        stage
+            Expected stage; prefix membership and ordering remain separately checked.
+        """
+
+        if index not in requests:
+            requests[index] = hashlib.sha256(
+                to_json(
+                    inf_nan_mode="constants",
+                    value=self.population.requests[index].model_dump(
+                        mode="json", warnings="error"
+                    ),
+                )
+            ).digest()
+
+        dependencies = []
+
+        for dependency in ("draft", "verdict") if stage != "draft" else ():
+            saved = (
+                row
+                if dependency == stage
+                else self.get_row(request_index=index, stage=dependency)
+            )
+            dependencies.append(
+                b""
+                if saved is None
+                else self._record_bytes(key=(dependency, index), record=saved)
+            )
+        key = (stage, index)
+        proof = (
+            material,
+            requests[index],
+            self._record_bytes(key=key, record=row),
+            *dependencies,
+        )
+
+        if self._row_proofs.get(key) != proof:
+            self._validate_row(index=index, row=row, stage=stage)
+
+        proofs[key] = proof
 
     def _validate_failures(self) -> None:
         """Require ordered bounded attempts and completion-backed dispositions.
@@ -1328,6 +1492,17 @@ class LPGenerationCheckpoints:
         payloads = self._payloads()
         payloads[_RECEIPT] = _canonical_bytes(self._receipt(payloads))
 
+        # Disk and live records cannot jointly replace the last validated snapshot.
+        # Only a fully validated load/save can establish a new byte authority.
+        current = tuple(
+            (name, hashlib.sha256(payloads[name]).digest()) for name in sorted(payloads)
+        )
+
+        if current != self._validated_byte_hashes:
+            raise ValueError(
+                "LP in-memory checkpoint material changed after validation."
+            )
+
         for name, payload in payloads.items():
             if (self.root / name).read_bytes() != payload:
                 raise ValueError(f"LP checkpoint material changed: {name}.")
@@ -1396,6 +1571,29 @@ def _canonical_bytes(value: Any) -> bytes:
         )
         + "\n"
     ).encode("utf-8")
+
+
+def _encoded_object(values: dict[str, bytes]) -> bytes:
+    """Join already canonical JSON values using the existing object byte format.
+
+    Parameters
+    ----------
+    values
+        Field names and canonical JSON values without terminal newlines.
+
+    Returns
+    -------
+    bytes
+        Sorted compact JSON object with its mandatory terminal newline.
+    """
+
+    return (
+        b"{"
+        + b",".join(
+            _canonical_bytes(key)[:-1] + b":" + values[key] for key in sorted(values)
+        )
+        + b"}\n"
+    )
 
 
 def _read_receipt(payload: bytes) -> dict[str, Any]:
