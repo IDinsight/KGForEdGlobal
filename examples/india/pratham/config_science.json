@@ -633,6 +633,7 @@
 				"max_source_evidence_characters_per_sfi": 3000,
 				"max_source_evidence_items_per_sfi": 4
 			},
+			"max_concurrent_requests": 4,
 			"producer_instructions": "Judge NCERT Learning Outcome pairs, Content Domain Specific Learning Outcome pairs, and Indicator pairs only within the same statement-type grain. Use the configured Class IX to Class X sequence for developmental direction and consider every trustworthy parent path in the framework's DAG. Shared Chapter, Content Domain, wording, or Learning Components can support a judgment but does not establish one by itself.",
 			"relates_to": {
 				"allowed_statement_type_pairs": [

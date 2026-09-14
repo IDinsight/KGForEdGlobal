@@ -769,6 +769,7 @@
 				"max_source_evidence_characters_per_sfi": 2000,
 				"max_source_evidence_items_per_sfi": 4
 			},
+			"max_concurrent_requests": 4,
 			"producer_instructions": "Judge Grade Key Competence, Key Unit Competence, Knowledge Objective, Skills Objective, and Attitudes and Values Objective pairs only within the same statement-type grain. Use the configured P1 through P3 sequence for developmental direction while preserving the distinct conceptual, procedural, and disposition meanings. Shared Unit, Topic Area, wording, or Learning Components may nominate but never establishes a relationship by itself.",
 			"relates_to": {
 				"allowed_statement_type_pairs": [

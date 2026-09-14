@@ -448,6 +448,7 @@
 				"max_source_evidence_characters_per_sfi": 2000,
 				"max_source_evidence_items_per_sfi": 4
 			},
+			"max_concurrent_requests": 4,
 			"producer_instructions": "Judge only pairs of Content SFIs. Use the configured Class-1 through Class-5 sequence for developmental direction and use source-backed Curricular Goal, Competency, Content text, and Learning Components as evidence. Distinguish substantive extension from meaningful same-topic recurrence and generic repetition; shared hierarchy or wording alone does not establish either relationship.",
 			"relates_to": {
 				"allowed_statement_type_pairs": [

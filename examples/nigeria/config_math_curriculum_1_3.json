@@ -669,6 +669,7 @@
 				"max_source_evidence_characters_per_sfi": 2000,
 				"max_source_evidence_items_per_sfi": 4
 			},
+			"max_concurrent_requests": 4,
 			"producer_instructions": "Judge only pairs of Performance Objective SFIs. Use the configured PRIMARY ONE through PRIMARY THREE sequence for developmental direction and use source-backed Theme, Sub-Theme, Topic, objective text, and Learning Components as evidence. Similar numbering, source proximity, or shared hierarchy may support consideration but never establishes a relationship by itself.",
 			"relates_to": {
 				"allowed_statement_type_pairs": [
