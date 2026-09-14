@@ -13,12 +13,14 @@ import hashlib
 import json
 
 from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID, uuid5
 
 # Third Party Library
 from pydantic import Field, JsonValue, model_validator
+from pydantic_core import to_json
 
 # Package Library
 from kgfeg.config import Settings
@@ -254,6 +256,73 @@ class LPRequestPopulation:
     candidates: LPCandidatePopulation
     manifest: LPRequestManifest
     requests: tuple[LPGenerationRequest, ...]
+
+
+@dataclass(frozen=True, init=False, slots=True)
+class LPRequestPopulationVerifier:
+    """Retain validated bytes for repeated execution-boundary material checks.
+
+    Canonical artifact bytes retain the full schema, identity, ordering and coverage
+    proof established by the reader. Every verification still reads all actual file
+    bytes. A separate compact serialization checks the entire live population too:
+    frozen dataclasses do not make their nested Pydantic records immutable.
+
+    Snapshots are invocation-local immutable bytes, never a persisted compatibility
+    receipt or a substitute for full validation on a new invocation.
+    """
+
+    _material_hash: str
+    _payloads: tuple[tuple[str, bytes], ...]
+
+    def __init__(self, *, population: LPRequestPopulation, root: Path) -> None:
+        """Fully validate current material before retaining its immutable proof.
+
+        Parameters
+        ----------
+        population
+            Population independently constructed from current authoritative inputs.
+        root
+            Directory containing the complete canonical input artifacts.
+        """
+
+        material_hash = _population_material_hash(population)
+        validated = read_lp_request_population(expected=population, root=root)
+        payloads = _artifact_payloads(
+            candidates=validated.candidates, requests=validated.requests
+        )
+        payloads[MANIFEST_FILENAME] = (
+            canonical_lp_json(validated.manifest.model_dump(mode="json")) + "\n"
+        ).encode("utf-8")
+        object.__setattr__(self, "_material_hash", material_hash)
+        object.__setattr__(self, "_payloads", tuple(payloads.items()))
+        self.verify(population=population, root=root)
+
+    def verify(self, *, population: LPRequestPopulation, root: Path) -> None:
+        """Reject changed in-memory material or any changed canonical artifact byte.
+
+        Parameters
+        ----------
+        population
+            Live candidate, request and manifest records used by execution.
+        root
+            Generation directory whose actual bytes must still match the snapshot.
+
+        Raises
+        ------
+        ValueError
+            If any serialized input material differs from the fully validated snapshot.
+        """
+
+        if _population_material_hash(population) != self._material_hash:
+            raise ValueError(
+                "LP in-memory request population changed during execution."
+            )
+
+        for filename, payload in self._payloads:
+            if (root / filename).read_bytes() != payload:
+                raise ValueError(
+                    f"LP pre-call artifact differs from current material: {filename}."
+                )
 
 
 class LPSourceEvidence(BaseSchema):
@@ -583,6 +652,44 @@ def _nomination_context(
         evidence_types=tuple(evidence.evidence_type for evidence in candidate.evidence),
         references_truncated=truncated,
     )
+
+
+def _population_material_hash(population: LPRequestPopulation) -> str:
+    """Hash every live input record without rebuilding canonical files or models.
+
+    The compact serialization is only an invocation-local mutation check, separate from
+    canonical artifact identities. Serialize one record at a time to bound temporary
+    memory. Non-finite numbers must remain distinct from null so a mutated nested
+    evidence value cannot accidentally match a previously validated snapshot.
+
+    Parameters
+    ----------
+    population
+        Complete candidate, summary, request and manifest material.
+
+    Returns
+    -------
+    str
+        SHA-256 of the ordered compact JSON records, including row delimiters.
+    """
+
+    digest = hashlib.sha256()
+
+    for record in chain(
+        population.candidates.candidates,
+        (population.candidates.summary,),
+        population.requests,
+        (population.manifest,),
+    ):
+        digest.update(
+            to_json(
+                inf_nan_mode="constants",
+                value=record.model_dump(mode="json", warnings="error"),
+            )
+        )
+        digest.update(b"\n")
+
+    return digest.hexdigest()
 
 
 def _request_pair(

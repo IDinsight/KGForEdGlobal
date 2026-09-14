@@ -18,6 +18,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from time import perf_counter
 from typing import Any, BinaryIO, Literal
 
 # Third Party Library
@@ -42,6 +43,7 @@ from kgfeg.kgs.lp_dispatch import (
 from kgfeg.kgs.lp_requests import (
     MANIFEST_FILENAME,
     LPRequestPopulation,
+    LPRequestPopulationVerifier,
     build_lp_generation_requests,
     read_lp_request_population,
     write_lp_generation_request_artifacts,
@@ -198,12 +200,28 @@ def _admit_lp_requests(
             else LPGenerationResponse.model_validate(draft_row.payload)
         )
         stage = "draft" if draft is None else "verdict"
-        attempt_index = store.record_dispatch(request_index=index, stage=stage)
+        started = perf_counter()
+
         logger.info(
-            f"LP attempt dispatched: request={index + 1}/{len(population.requests)}; "
-            f"stage={stage}; attempt={store.attempts[attempt_index].attempt}; "
-            f"capacity={store.capacity}"
+            "LP checkpoint preparation started: request={}/{}; stage={}",
+            index + 1,
+            len(population.requests),
+            stage,
         )
+
+        attempt_index = store.record_dispatch(request_index=index, stage=stage)
+
+        logger.info(
+            "LP attempt scheduled: request={}/{}; stage={}; attempt={}; "
+            "capacity={}; checkpoint_seconds={:.2f}",
+            index + 1,
+            len(population.requests),
+            stage,
+            store.attempts[attempt_index].attempt,
+            store.capacity,
+            perf_counter() - started,
+        )
+
         future = executor.submit(
             _execute_lp_attempt,
             draft=draft,
@@ -307,9 +325,23 @@ def _execute_lp_attempt(
 
     tracker = KGUsageTracker()
     request = population.requests[request_index]
+    stage = "draft" if draft is None else "verdict"
+    started = perf_counter()
+
+    logger.info(
+        "LP worker waiting for gate: request={}; stage={}", request_index + 1, stage
+    )
 
     try:
         gate.check()
+
+        logger.info(
+            "LP worker passed initial gate: request={}; stage={}; seconds={:.2f}",
+            request_index + 1,
+            stage,
+            perf_counter() - started,
+        )
+        call_started = perf_counter()
 
         # Each bounded worker owns an event loop and HTTP client. The public
         # synchronous call boundary remains injectable for independent
@@ -324,6 +356,13 @@ def _execute_lp_attempt(
                 request=request.model_copy(deep=True),
                 usage_tracker=tracker,
             )
+
+        logger.info(
+            "LP stage returned: request={}; stage={}; seconds={:.2f}",
+            request_index + 1,
+            stage,
+            perf_counter() - call_started,
+        )
 
         if draft is None:
             payload = LPGenerationResponse.model_validate(
@@ -344,6 +383,15 @@ def _execute_lp_attempt(
 
         return _LPAttemptOutcome(error=None, payload=payload, usage_tracker=tracker)
     except BaseException as error:  # pylint: disable=broad-exception-caught
+        logger.warning(
+            "LP attempt ended with error: request={}; stage={}; "
+            "elapsed_seconds={:.2f}; error_type={}",
+            request_index + 1,
+            stage,
+            perf_counter() - started,
+            type(error).__name__,
+        )
+
         return _LPAttemptOutcome(error=error, payload=None, usage_tracker=tracker)
 
 
@@ -416,6 +464,27 @@ def _finish_lp_requests(  # pylint: disable=too-complex
                             usage_tracker=usage_tracker,
                         )
                         _reconcile_lp_request(request_index=index, store=store)
+
+                        completed = len(store.rows["response"]) + len(
+                            store.pending["response"]
+                        )
+
+                        logger.info(
+                            "LP progress: completed={}/{}; contiguous={}; "
+                            "completed_out_of_order={}; outstanding_attempts={}; "
+                            "last_request={}; outcome={}",
+                            completed,
+                            len(population.requests),
+                            len(store.rows["response"]),
+                            len(store.pending["response"]),
+                            len(active),
+                            index + 1,
+                            (
+                                "succeeded"
+                                if outcome.error is None
+                                else type(outcome.error).__name__
+                            ),
+                        )
 
                     if stopped is not None:
                         if not active:
@@ -679,13 +748,15 @@ def _verify_execution_material(
         so they can validate a stable snapshot without racing publication.
     """
 
-    store.verify_ownership()
-    _verify_lp_inputs(
-        kg_config=kg_config,
-        material=store.material,
-        population=population,
-        root=store.root,
-    )
+    store.verify_execution_authority()
+
+    if store.execution_check is None:
+        _verify_lp_inputs(
+            kg_config=kg_config,
+            material=store.material,
+            population=population,
+            root=store.root,
+        )
 
     if verify_checkpoints:
         store.verify_bytes()
@@ -697,6 +768,7 @@ def _verify_lp_inputs(
     material: dict[str, Any],
     population: LPRequestPopulation,
     root: Path,
+    verifier: LPRequestPopulationVerifier | None = None,
 ) -> None:
     """Reject changed immutable request or model inputs before calls and publication.
 
@@ -710,6 +782,9 @@ def _verify_lp_inputs(
         Complete materialized candidate and request population.
     root
         Generation directory containing the immutable population artifacts.
+    verifier
+        Invocation-local validated byte snapshot. Without one, perform full population
+        reconciliation; no unvalidated caller can acquire a cached proof.
 
     Raises
     ------
@@ -717,7 +792,10 @@ def _verify_lp_inputs(
         If the LP prompt, model, or configuration has changed since the last dispatch.
     """
 
-    read_lp_request_population(expected=population, root=root)
+    if verifier is None:
+        read_lp_request_population(expected=population, root=root)
+    else:
+        verifier.verify(population=population, root=root)
 
     if lp_execution_material(kg_config=kg_config, population=population) != material:
         raise ValueError("LP prompt or model material changed during execution.")
@@ -810,6 +888,7 @@ def generate_learning_progressions(
                 as_lc_bundle=bundle, doc_key=doc_key, kg_config=config, kg_dirs=kg_dirs
             )
 
+        verifier = LPRequestPopulationVerifier(population=population, root=kg_dirs.root)
         material = lp_execution_material(kg_config=config, population=population)
         store = LPGenerationCheckpoints(
             execution_check=partial(
@@ -818,6 +897,7 @@ def generate_learning_progressions(
                 material=material,
                 population=population,
                 root=kg_dirs.root,
+                verifier=verifier,
             ),
             material=material,
             ownership_check=ownership.verify,
