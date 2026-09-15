@@ -12,12 +12,13 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import stat
 
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from operator import itemgetter
 from pathlib import Path
@@ -44,9 +45,16 @@ from kgfeg.evals.lp_eval.schemas import (
     FrozenInputs,
     FrozenSnapshot,
     SnapshotArtifact,
+    UpstreamEvidenceSource,
+    UpstreamEvidenceView,
     ValidatedSnapshot,
 )
 from kgfeg.kgs.lc_export import _build_learning_component_nodes, _validate_merged_graph
+from kgfeg.kgs.lp_admissibility import (
+    LPCandidateFilter,
+    LPPairAdmissibility,
+    build_lp_pair_filter,
+)
 from kgfeg.kgs.lp_artifacts import (
     LPGenerationSummary,
     LPStandaloneArtifacts,
@@ -67,16 +75,19 @@ from kgfeg.kgs.lp_export import (
     _validate_combined_material,
 )
 from kgfeg.kgs.lp_finalization import LPFinalClaims, LPRelationships
+from kgfeg.kgs.lp_index import LPGraphIndex, build_lp_graph_index
 from kgfeg.kgs.lp_requests import (
     LPGenerationRequest,
     LPRequestPopulation,
     _artifact_payloads,
+    _bounded_text,
+    _request_sfi,
     build_lp_generation_requests,
     build_lp_request_id,
     canonical_lp_json,
     lp_material_content_hash,
 )
-from kgfeg.kgs.lp_selection import build_lp_selection
+from kgfeg.kgs.lp_selection import LPSFIEligibility, build_lp_selection
 from kgfeg.kgs.lp_validation import LPValidationReport
 from kgfeg.kgs.lp_validation import _cycle_diagnostics as _lp_cycle_diagnostics
 from kgfeg.kgs.lp_validation import _expected_relationship
@@ -288,6 +299,108 @@ class LPDiscoveryError(ValueError):
 
 class LPSnapshotError(ValueError):
     """A selected completed run has unavailable, changed or inconsistent evidence."""
+
+
+@dataclass(frozen=True, slots=True)
+class UpstreamEvidenceBuilder:
+    """Construct bounded pair views from a private upstream and policy snapshot.
+
+    Use build_upstream_evidence_builder to validate and isolate the inputs. No
+    production candidates, requests, judgments or nomination state are accessible.
+    """
+
+    _config: _CapturedKGConfig
+    _framework_title: str
+    _graph_index: LPGraphIndex
+    _input_content_hash: str
+    _pair_filter: LPCandidateFilter
+    _records: dict[UUID, LPSFIEligibility]
+    _source: UpstreamEvidenceSource
+
+    def build_pair(
+        self,
+        *,
+        condition: Literal[
+            "reconstructed_bounded_upstream",
+            "expanded_upstream",
+            "lc_removed",
+            "hierarchy_removed",
+        ] = "reconstructed_bounded_upstream",
+        first_sfi_uuid: UUID | str,
+        second_sfi_uuid: UUID | str,
+    ) -> UpstreamEvidenceView:
+        """Freeze one pair's evidence under an explicitly identified condition.
+
+        Parameters
+        ----------
+        condition
+            Common base, doubled upstream limits, or removal of one evidence family.
+        first_sfi_uuid
+            One final eligible SFI within this framework.
+        second_sfi_uuid
+            The other endpoint; presentation order does not affect construction.
+
+        Returns
+        -------
+        UpstreamEvidenceView
+            Canonical evidence bytes, contained references and a separate audit.
+
+        Raises
+        ------
+        ValueError
+            If a condition, endpoint, permission or evidence bound is invalid.
+        """
+
+        if condition not in {
+            "reconstructed_bounded_upstream",
+            "expanded_upstream",
+            "lc_removed",
+            "hierarchy_removed",
+        }:
+            raise ValueError("Unsupported upstream evidence condition.")
+
+        pair = self._pair_filter.filter_pair(
+            first_sfi_uuid=first_sfi_uuid, second_sfi_uuid=second_sfi_uuid
+        )
+
+        if pair is None:
+            raise ValueError("Upstream evidence requires a distinct admissible pair.")
+
+        base = _upstream_pair_payload(builder=self, expanded=False, pair=pair)
+        payload = base
+        removals: list[dict[str, Any]] = []
+
+        if condition == "expanded_upstream":
+            payload = _upstream_pair_payload(builder=self, expanded=True, pair=pair)
+        elif condition == "lc_removed" or condition == "hierarchy_removed":
+            payload, removals = _upstream_remove(condition=condition, payload=base)
+
+        limits = self._config.learning_progressions.evidence_limits.model_dump()
+        effective_limits = {
+            key: value * (2 if condition == "expanded_upstream" else 1)
+            for key, value in limits.items()
+        }
+        audit = {
+            "base_omissions": _upstream_omissions(value=base),
+            "base_payload_sha256": _upstream_payload_hash(base),
+            "base_unavailable_evidence": _upstream_unavailable(base),
+            "changed_paths": _upstream_changed_paths(base=base, value=payload),
+            "effective_limits": effective_limits,
+            "omissions": _upstream_omissions(value=payload),
+            "production_limits": limits,
+            "removals": removals,
+            "selection_order": {
+                "ancestors_and_learning_components": "canonical_uuid",
+                "paths": "canonical_uuid_depth_first",
+                "source_values": "preserved_source_text_first_then_origin_key",
+                "text": "unicode_character_prefix",
+            },
+            "unchanged_from_base": payload == base,
+            "unavailable_evidence": _upstream_unavailable(payload),
+        }
+        return _upstream_freeze_view(
+            audit=audit, builder=self, condition=condition, pair=pair, payload=payload
+        )
 
 
 def _check_checkpoint_row(
@@ -2669,6 +2782,454 @@ def _timestamp(value: Any) -> datetime:
     return result
 
 
+def _upstream_changed_paths(*, base: Any, path: str = "", value: Any) -> list[str]:
+    """Identify changed JSON locations without conflating limit and evidence changes.
+
+    Parameters
+    ----------
+    base
+        Original bounded value.
+    path
+        Current JSON pointer prefix.
+    value
+        Diagnostic-condition value.
+
+    Returns
+    -------
+    list[str]
+        Deterministically ordered changed locations.
+    """
+
+    if base == value:
+        return []
+
+    if not isinstance(base, dict) or not isinstance(value, dict):
+        return [path]
+
+    paths: list[str] = []
+
+    for key in sorted(base.keys() | value.keys()):
+        child = path + "/" + _upstream_pointer_token(key)
+
+        if key not in base or key not in value:
+            paths.append(child)
+        else:
+            paths.extend(
+                _upstream_changed_paths(base=base[key], path=child, value=value[key])
+            )
+
+    return paths
+
+
+def _upstream_drop_field(
+    *, key: str, parent: dict[str, Any], path: str, removals: list[dict[str, Any]]
+) -> None:
+    """Remove a representation while retaining its exact hash outside judge evidence.
+
+    Parameters
+    ----------
+    key
+        Field to remove when present.
+    parent
+        Mutable diagnostic copy.
+    path
+        JSON pointer to the parent.
+    removals
+        Separate construction audit receiving the removed-value identity.
+    """
+
+    if key in parent:
+        value = parent.pop(key)
+        removals.append(
+            {
+                "content_hash": lp_material_content_hash(value),
+                "path": path + "/" + _upstream_pointer_token(key),
+                "reason": "selected_family_or_opaque_copy_cannot_be_separated",
+            }
+        )
+
+
+def _upstream_freeze_view(
+    *,
+    audit: dict[str, Any],
+    builder: UpstreamEvidenceBuilder,
+    condition: Literal[
+        "reconstructed_bounded_upstream",
+        "expanded_upstream",
+        "lc_removed",
+        "hierarchy_removed",
+    ],
+    pair: LPPairAdmissibility,
+    payload: dict[str, Any],
+) -> UpstreamEvidenceView:
+    """Bind one immutable payload to its input, condition and construction audit.
+
+    Parameters
+    ----------
+    audit
+        Construction and omission records, excluded from judge-visible evidence.
+    builder
+        Isolated source and policy owner.
+    condition
+        Explicit evidence condition.
+    pair
+        Canonical admissibility result.
+    payload
+        Bounded evidence and policy, independent of production nomination.
+
+    Returns
+    -------
+    UpstreamEvidenceView
+        Exact canonical strings and hashes suitable for later schedule materialization.
+    """
+
+    payload_json = canonical_lp_json(payload)
+    payload_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+    references = tuple(_upstream_references(path="/sfis", value=payload["sfis"]))
+    audit_json = canonical_lp_json(audit)
+    material = {
+        "audit": audit,
+        "condition": condition,
+        "doc_key": builder._source.doc_key,
+        "endpoint_uuids": [str(pair.first_sfi_uuid), str(pair.second_sfi_uuid)],
+        "framework_uuid": str(builder._source.framework_uuid),
+        "input_content_hash": builder._input_content_hash,
+        "pair_id": pair.pair_id,
+        "payload_sha256": payload_hash,
+        "references": references,
+    }
+    return UpstreamEvidenceView(
+        audit_json=audit_json,
+        condition=condition,
+        doc_key=builder._source.doc_key,
+        endpoint_uuids=(pair.first_sfi_uuid, pair.second_sfi_uuid),
+        framework_uuid=builder._source.framework_uuid,
+        input_content_hash=builder._input_content_hash,
+        material_content_hash=lp_material_content_hash(material),
+        pair_id=pair.pair_id,
+        payload_json=payload_json,
+        payload_sha256=payload_hash,
+        references=references,
+    )
+
+
+def _upstream_omissions(*, path: str = "", value: Any) -> dict[str, Any]:
+    """Collect explicit excerpt and population omissions from bounded evidence.
+
+    Parameters
+    ----------
+    value
+        Bounded JSON value.
+    path
+        Current JSON pointer.
+
+    Returns
+    -------
+    dict[str, Any]
+        Omission counts and truncation flags, including truthful zero values.
+    """
+
+    result: dict[str, Any] = {}
+
+    if isinstance(value, dict):
+        for key, item in sorted(value.items()):
+            child = path + "/" + _upstream_pointer_token(key)
+
+            if key.startswith("omitted_") or key.endswith("truncated"):
+                result[child] = item
+            else:
+                result.update(_upstream_omissions(path=child, value=item))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            result.update(_upstream_omissions(path=f"{path}/{index}", value=item))
+
+    return result
+
+
+def _upstream_pair_payload(
+    *, builder: UpstreamEvidenceBuilder, expanded: bool, pair: LPPairAdmissibility
+) -> dict[str, Any]:
+    """Project upstream endpoints under the captured bounds without nomination.
+
+    Parameters
+    ----------
+    builder
+        Isolated source, graph and policy snapshot.
+    expanded
+        Whether to double every positive count, text and depth limit.
+    pair
+        Admissible pair containing canonical endpoint identities.
+
+    Returns
+    -------
+    dict[str, Any]
+        Same deterministic evidence procedure for every admitted pair.
+
+    Raises
+    ------
+    ValueError
+        If mandatory audit or all bounded DAG branches cannot fit the evidence limits.
+    """
+
+    config = builder._config.model_copy(deep=True)
+
+    if expanded:
+        limits = config.learning_progressions.evidence_limits
+        config.learning_progressions.evidence_limits = type(limits).model_validate(
+            {key: value * 2 for key, value in limits.model_dump().items()}
+        )
+
+    lp_config = config.learning_progressions
+    max_characters = lp_config.evidence_limits.max_source_evidence_characters_per_sfi
+    permissions = [
+        {
+            "decision": (
+                "ambiguous" if item.decision == "needs_review" else item.decision
+            ),
+            "direction": item.direction,
+        }
+        for item in pair.admissible_decisions
+    ]
+    return {
+        "framework_title": _bounded_text(
+            max_characters=max_characters, text=builder._framework_title
+        ).model_dump(mode="json"),
+        "pair": {
+            "admissible_decisions": permissions,
+            "first_sfi_uuid": str(pair.first_sfi_uuid),
+            "second_sfi_uuid": str(pair.second_sfi_uuid),
+        },
+        "policy": {
+            "builds_towards": lp_config.builds_towards.model_dump(mode="json"),
+            "checker_instructions": lp_config.checker_instructions,
+            "developmental_coordinate": lp_config.developmental_coordinate.model_dump(
+                mode="json"
+            ),
+            "producer_instructions": lp_config.producer_instructions,
+            "relates_to": lp_config.relates_to.model_dump(mode="json"),
+            "unresolved_participation": lp_config.unresolved_participation,
+        },
+        "sfis": [
+            _request_sfi(
+                graph_index=builder._graph_index,
+                kg_config=config,
+                records=builder._records,
+                sfi_uuid=sfi_uuid,
+            ).model_dump(mode="json")
+            for sfi_uuid in (pair.first_sfi_uuid, pair.second_sfi_uuid)
+        ],
+    }
+
+
+def _upstream_payload_hash(payload: dict[str, Any]) -> str:
+    """Hash the exact canonical UTF-8 judge-visible evidence bytes.
+
+    Parameters
+    ----------
+    payload
+        Evidence payload.
+
+    Returns
+    -------
+    str
+        SHA-256 of canonical JSON without an added newline.
+    """
+
+    return hashlib.sha256(canonical_lp_json(payload).encode("utf-8")).hexdigest()
+
+
+def _upstream_pointer_token(value: str) -> str:
+    """Escape a JSON object key as one JSON pointer token.
+
+    Parameters
+    ----------
+    value
+        Original object key.
+
+    Returns
+    -------
+    str
+        Escaped token preserving slash and tilde characters.
+    """
+
+    return value.replace("~", "~0").replace("/", "~1")
+
+
+def _upstream_references(*, path: str, value: Any) -> list[str]:
+    """Enumerate shown evidence locations without treating hashes as evidence.
+
+    Parameters
+    ----------
+    path
+        JSON pointer to the value.
+    value
+        Bounded evidence value.
+
+    Returns
+    -------
+    list[str]
+        Ordered pointers to excerpts, scalar facts, warnings and explicit absences.
+    """
+
+    if isinstance(value, dict):
+        if {"text", "truncated", "content_hash"} <= value.keys():
+            return [path]
+
+        return [
+            reference
+            for key, item in sorted(value.items())
+            if not key.endswith("content_hash")
+            for reference in _upstream_references(
+                path=path + "/" + _upstream_pointer_token(key), value=item
+            )
+        ]
+
+    if isinstance(value, list):
+        return [
+            reference
+            for index, item in enumerate(value)
+            for reference in _upstream_references(path=f"{path}/{index}", value=item)
+        ] or [path]
+
+    return [path]
+
+
+def _upstream_remove(
+    *, condition: Literal["lc_removed", "hierarchy_removed"], payload: dict[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Remove the selected family and opaque alternate copies from a fresh payload.
+
+    Source/audit metadata and coordinate-origin strings are untyped and may duplicate
+    LC or hierarchy evidence. Withhold those fields in either ablation and record the
+    collateral omissions. Intrinsic SFI text, resolved coordinate semantics, policy
+    permissions and uncertainty warnings remain. Hierarchy removal also withholds LC
+    metadata, which can copy hierarchy context, while retaining intrinsic LC text.
+
+    Parameters
+    ----------
+    condition
+        Selected evidence family to remove.
+    payload
+        Common reconstructed base evidence.
+
+    Returns
+    -------
+    tuple[dict[str, Any], list[dict[str, Any]]]
+        Independent payload copy and field-level removed-value hashes.
+    """
+
+    result = json.loads(canonical_lp_json(payload))
+    removals: list[dict[str, Any]] = []
+
+    for index, endpoint in enumerate(result["sfis"]):
+        path = f"/sfis/{index}"
+
+        for key in (
+            "source_evidence",
+            "source_evidence_content_hash",
+            "omitted_source_evidence_count",
+        ):
+            _upstream_drop_field(key=key, parent=endpoint, path=path, removals=removals)
+
+        for key in (
+            "source_fields",
+            "source_fields_content_hash",
+            "omitted_source_field_count",
+        ):
+            _upstream_drop_field(
+                key=key,
+                parent=endpoint["coordinate"],
+                path=path + "/coordinate",
+                removals=removals,
+            )
+
+        contexts = [(path + "/context", endpoint["context"])]
+        contexts.extend(
+            (f"{path}/ancestors/{offset}", ancestor)
+            for offset, ancestor in enumerate(endpoint["ancestors"])
+        )
+
+        for context_path, context in contexts:
+            for key in ("audit_context", "upstream_sfi_content_hash"):
+                _upstream_drop_field(
+                    key=key, parent=context, path=context_path, removals=removals
+                )
+
+        _upstream_remove_family(
+            condition=condition, endpoint=endpoint, path=path, removals=removals
+        )
+        endpoint["warnings"].append(
+            "Evidence has been deliberately withheld. Opaque source/audit metadata "
+            "and coordinate origins were also withheld to prevent duplicate evidence; "
+            "this comparison can therefore remove additional context."
+        )
+
+    if condition == "hierarchy_removed":
+        _upstream_withhold_warning_identifiers(
+            endpoint_uuids={
+                result["pair"]["first_sfi_uuid"],
+                result["pair"]["second_sfi_uuid"],
+            },
+            path="",
+            removals=removals,
+            value=result,
+        )
+
+    return result, sorted(removals, key=lambda item: item["path"])
+
+
+def _upstream_remove_family(
+    *,
+    condition: Literal["lc_removed", "hierarchy_removed"],
+    endpoint: dict[str, Any],
+    path: str,
+    removals: list[dict[str, Any]],
+) -> None:
+    """Remove explicit family records and every associated aggregate representation.
+
+    Parameters
+    ----------
+    condition
+        Family being withheld.
+    endpoint
+        Mutable endpoint evidence.
+    path
+        Endpoint JSON pointer.
+    removals
+        Separate field-level audit.
+    """
+
+    keys = (
+        (
+            "learning_components",
+            "learning_components_content_hash",
+            "omitted_learning_component_count",
+        )
+        if condition == "lc_removed"
+        else ("ancestor_paths", "ancestors", "parent_sfi_uuids")
+    )
+
+    for key in keys:
+        _upstream_drop_field(key=key, parent=endpoint, path=path, removals=removals)
+
+    if condition == "hierarchy_removed":
+        _upstream_drop_field(
+            key="root_fallback_relationship_uuids",
+            parent=endpoint["context"],
+            path=path + "/context",
+            removals=removals,
+        )
+
+        for index, component in enumerate(endpoint["learning_components"]):
+            for key in ("metadata", "upstream_content_hash"):
+                _upstream_drop_field(
+                    key=key,
+                    parent=component,
+                    path=f"{path}/learning_components/{index}",
+                    removals=removals,
+                )
+
+
 def _upstream_report(
     *, academic: AcademicStandardsKGBundle, upstream: AcademicStandardsLCKGBundle
 ) -> dict[str, Any]:
@@ -2704,6 +3265,118 @@ def _upstream_report(
         }
     )
     return report
+
+
+def _upstream_unavailable(payload: dict[str, Any]) -> list[str]:
+    """Record unavailable evidence separately from deliberate family removals.
+
+    Parameters
+    ----------
+    payload
+        Bounded evidence view.
+
+    Returns
+    -------
+    list[str]
+        Paths to unavailable coordinate or empty evidence populations.
+    """
+
+    unavailable: list[str] = []
+
+    for index, endpoint in enumerate(payload["sfis"]):
+        for key in ("ancestor_paths", "learning_components", "source_evidence"):
+            if key in endpoint and not endpoint[key]:
+                unavailable.append(f"/sfis/{index}/{key}")
+
+        if endpoint["coordinate"]["status"] == "missing":
+            unavailable.append(f"/sfis/{index}/coordinate")
+
+    return unavailable
+
+
+def _upstream_warning_values(
+    *,
+    endpoint_uuids: set[str],
+    path: str,
+    removals: list[dict[str, Any]],
+    warnings: list[str],
+) -> None:
+    """Mask non-endpoint identities while retaining each warning's meaning.
+
+    Parameters
+    ----------
+    endpoint_uuids
+        Canonical endpoints still shown to the judge.
+    path
+        JSON pointer to the warning list.
+    removals
+        Audit retaining original warnings whenever their identifiers change.
+    warnings
+        Mutable warning list from the fresh diagnostic copy.
+    """
+
+    for index, warning in enumerate(warnings):
+        changed = warning
+        for identifier in re.findall(
+            r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}", warning
+        ):
+            if identifier not in endpoint_uuids:
+                changed = changed.replace(identifier, "[withheld context]")
+
+        if changed != warning:
+            removals.append(
+                {
+                    "original_warning": warning,
+                    "path": f"{path}/{index}",
+                    "reason": "hide_context_identity_preserving_warning",
+                }
+            )
+            warnings[index] = changed
+
+
+def _upstream_withhold_warning_identifiers(
+    *, endpoint_uuids: set[str], path: str, removals: list[dict[str, Any]], value: Any
+) -> None:
+    """Keep warning meaning while hiding positive-context identities in an ablation.
+
+    Parameters
+    ----------
+    endpoint_uuids
+        Endpoint identities which remain visible.
+    path
+        Current JSON pointer.
+    removals
+        Audit retaining original warning values and their locations.
+    value
+        Mutable payload tree.
+    """
+
+    if isinstance(value, dict):
+        for key, item in value.items():
+            child = path + "/" + _upstream_pointer_token(key)
+
+            if key == "warnings":
+                _upstream_warning_values(
+                    endpoint_uuids=endpoint_uuids,
+                    path=child,
+                    removals=removals,
+                    warnings=item,
+                )
+            else:
+                _upstream_withhold_warning_identifiers(
+                    endpoint_uuids=endpoint_uuids,
+                    path=child,
+                    removals=removals,
+                    value=item,
+                )
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _upstream_withhold_warning_identifiers(
+                endpoint_uuids=endpoint_uuids,
+                path=f"{path}/{index}",
+                removals=removals,
+                value=item,
+            )
 
 
 def _walk_runs(
@@ -2787,6 +3460,67 @@ def _walk_runs(
             ) from exc
 
     return sorted(directories), aliases, skipped
+
+
+def build_upstream_evidence_builder(
+    source: UpstreamEvidenceSource,
+) -> UpstreamEvidenceBuilder:
+    """Validate and isolate an upstream-only evidence capability without file access.
+
+    Parameters
+    ----------
+    source
+        Exact upstream bytes and captured configuration from a validated frozen input.
+
+    Returns
+    -------
+    UpstreamEvidenceBuilder
+        Run-local graph and policy indexes for on-demand bounded pair construction.
+
+    Raises
+    ------
+    ValueError
+        If source bytes, framework identity, policy or upstream structure are invalid.
+    """
+
+    artifact = source.upstream_artifact
+
+    if (
+        artifact.name != "as_lc_kg_bundle.json"
+        or hashlib.sha256(artifact.payload).hexdigest() != artifact.fingerprint.sha256
+        or len(artifact.payload) != artifact.fingerprint.size_bytes
+    ):
+        raise ValueError("Upstream evidence artifact does not match its byte binding.")
+
+    bundle = AcademicStandardsLCKGBundle.model_validate(
+        _decode_snapshot_json(artifact.payload)
+    )
+    config = _CapturedKGConfig.model_validate(
+        _decode_snapshot_json(source.config_json.encode("utf-8"))
+    )
+    if bundle.framework.case_identifier_uuid != source.framework_uuid:
+        raise ValueError("Upstream evidence framework does not match its binding.")
+
+    selection = build_lp_selection(as_lc_bundle=bundle, kg_config=config)
+    pair_filter = build_lp_pair_filter(
+        as_lc_bundle=bundle, doc_key=source.doc_key, kg_config=config
+    )
+    return UpstreamEvidenceBuilder(
+        _config=config,
+        _framework_title=bundle.framework.name,
+        _graph_index=build_lp_graph_index(bundle),
+        _input_content_hash=lp_material_content_hash(
+            {
+                "config_json": source.config_json,
+                "doc_key": source.doc_key,
+                "framework_uuid": str(source.framework_uuid),
+                "upstream_sha256": artifact.fingerprint.sha256,
+            }
+        ),
+        _pair_filter=pair_filter,
+        _records={record.sfi.case_identifier_uuid: record for record in selection.sfis},
+        _source=source,
+    )
 
 
 def discover_lp_runs(
@@ -3032,6 +3766,49 @@ def load_frozen_lp_inputs(reference: FrozenInputs) -> tuple[ValidatedSnapshot, .
         return tuple(snapshots)
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
         raise LPSnapshotError(f"Invalid frozen LP inputs: {exc}") from exc
+
+
+def upstream_evidence_source(snapshot: ValidatedSnapshot) -> UpstreamEvidenceSource:
+    """Extract only upstream evidence from an already validated frozen snapshot.
+
+    Call load_frozen_lp_inputs before use to check original and frozen material. This
+    adapter neither reads nor decodes production requests or judgment payloads.
+
+    Parameters
+    ----------
+    snapshot
+        Copy-backed snapshot returned by frozen input loading.
+
+    Returns
+    -------
+    UpstreamEvidenceSource
+        Immutable upstream-only input for independent evidence construction.
+
+    Raises
+    ------
+    ValueError
+        If the selected snapshot lacks one upstream bundle or its framework identity.
+    """
+
+    artifacts = [
+        artifact
+        for artifact in snapshot.artifacts
+        if artifact.name == "as_lc_kg_bundle.json"
+    ]
+
+    if (
+        len(artifacts) != 1
+        or snapshot.run.doc_key is None
+        or snapshot.run.framework_uuid is None
+    ):
+        raise ValueError("Snapshot has no unique bound upstream evidence source.")
+
+    return UpstreamEvidenceSource(
+        config_json=snapshot.config_json,
+        doc_key=snapshot.run.doc_key,
+        framework_uuid=snapshot.run.framework_uuid,
+        upstream_artifact=artifacts[0],
+    )
 
 
 def validate_lp_snapshot(run: DiscoveredRun) -> ValidatedSnapshot:

@@ -402,6 +402,76 @@ class SnapshotArtifact:
 
 
 @dataclass(frozen=True, slots=True)
+class UpstreamEvidenceSource:
+    """Isolated upstream inputs with no production nomination or judgment artifacts.
+
+    Attributes
+    ----------
+    config_json
+        Captured effective configuration, preserving its historical field shape.
+    doc_key
+        Validated document identity.
+    framework_uuid
+        Validated framework identity.
+    upstream_artifact
+        Exact frozen AS+LC bundle bytes and their original fingerprint.
+    """
+
+    config_json: str
+    doc_key: str
+    framework_uuid: UUID
+    upstream_artifact: SnapshotArtifact
+
+
+@dataclass(frozen=True, slots=True)
+class UpstreamEvidenceView:
+    """An immutable pair evidence view, separate from prompts and production answers.
+
+    Attributes
+    ----------
+    audit_json
+        Canonical construction, omission and removal audit; never judge evidence.
+    condition
+        Common reconstructed base or a separately identified diagnostic condition.
+    doc_key
+        Framework-contained document identity.
+    endpoint_uuids
+        Canonical lower and higher SFI CASE UUIDs.
+    framework_uuid
+        Framework containing both endpoints.
+    input_content_hash
+        Identity of the exact upstream bytes and captured configuration.
+    material_content_hash
+        Identity of the payload, condition, references, limits and construction audit.
+    pair_id
+        Stable unordered pair identity, without a production nomination claim.
+    payload_json
+        Canonical bounded judge-visible facts and policy, without the audit.
+    payload_sha256
+        SHA-256 of the exact UTF-8 payload.
+    references
+        JSON pointers into shown evidence, usable for contained judge citations.
+    """
+
+    audit_json: str
+    condition: Literal[
+        "reconstructed_bounded_upstream",
+        "expanded_upstream",
+        "lc_removed",
+        "hierarchy_removed",
+    ]
+    doc_key: str
+    endpoint_uuids: tuple[UUID, UUID]
+    framework_uuid: UUID
+    input_content_hash: str
+    material_content_hash: str
+    pair_id: str
+    payload_json: str
+    payload_sha256: str
+    references: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ValidatedSnapshot:
     """Validated material awaiting a separate immutable snapshot-freezing operation.
 
