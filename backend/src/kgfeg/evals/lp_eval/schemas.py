@@ -112,6 +112,22 @@ class DiscoverySkip:
     reason: Literal["evaluation_output", "outside_results_root"]
 
 
+@dataclass(frozen=True, slots=True)
+class EvaluationPair:
+    """Canonical framework-contained pair identity without a semantic label.
+
+    Attributes
+    ----------
+    endpoint_uuids
+        Lower and higher canonical SFI CASE UUIDs.
+    pair_id
+        Document-scoped unordered pair identifier.
+    """
+
+    endpoint_uuids: tuple[UUID, UUID]
+    pair_id: str
+
+
 class EvaluationSettings(BaseModel):
     """Validated invocation-wide sampling and repetition controls.
 
@@ -338,6 +354,83 @@ class FrozenSnapshot:
     config_json: str
     run: DiscoveredRun
     source_artifact: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionPair:
+    """Production comparison metadata, never an independent truth label.
+
+    Attributes
+    ----------
+    checker_outcome
+        Original accepted or corrected checker status.
+    direction
+        Final production direction, when applicable.
+    outcome
+        Published relationship type or final nonpublishing production outcome.
+    pair
+        Canonical pair identity.
+    producer_direction
+        Original producer direction, when applicable.
+    producer_outcome
+        Original producer decision.
+    producer_to_final_changes
+        Names of judgment fields changed by reconciliation, including rationale changes.
+    published_relationship_uuid
+        Actual published relationship identifier; absent for nonpublishing outcomes.
+    request_content_hash
+        Original bounded request material hash.
+    request_id
+        Original request identifier.
+    tags
+        Applicable production diagnostic tags in the prescribed order.
+    """
+
+    checker_outcome: Literal["accepted", "corrected"]
+    direction: str | None
+    outcome: Literal["buildsTowards", "relatesTo", "no_relation", "needs_review"]
+    pair: EvaluationPair
+    producer_direction: str | None
+    producer_outcome: str
+    producer_to_final_changes: tuple[str, ...]
+    published_relationship_uuid: UUID | None
+    request_content_hash: str
+    request_id: UUID
+    tags: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionPopulation:
+    """Complete production comparison inventory bound to exact frozen artifacts.
+
+    Attributes
+    ----------
+    artifact_fingerprints
+        Exact material read to derive production outcomes and truncation tags.
+    doc_key
+        Validated document identity.
+    framework_uuid
+        Framework containing every pair.
+    material_content_hash
+        Content identity covering inputs and the complete ordered inventory.
+    outcome_counts
+        Counts for all four outcomes, retaining zero cells.
+    pairs
+        Unique production pairs ordered by canonical endpoint UUIDs.
+    tag_counts
+        Counts for all twelve production tags, retaining zero cells.
+    upstream_input_content_hash
+        Exact upstream/configuration binding shared with the admissible population.
+    """
+
+    artifact_fingerprints: tuple[FileFingerprint, ...]
+    doc_key: str
+    framework_uuid: UUID
+    material_content_hash: str
+    outcome_counts: tuple[tuple[str, int], ...]
+    pairs: tuple[ProductionPair, ...]
+    tag_counts: tuple[tuple[str, int], ...]
+    upstream_input_content_hash: str
 
 
 @dataclass(frozen=True, slots=True)

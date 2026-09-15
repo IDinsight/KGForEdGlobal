@@ -10,16 +10,21 @@ stored separately and checked against their original material before use.
 # Standard Library
 import fcntl
 import hashlib
+import heapq
 import json
 import os
 import re
 import stat
+import unicodedata
 
-from collections import Counter
+from bisect import bisect_right
+from collections import Counter, deque
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
+from fractions import Fraction
+from itertools import islice
 from operator import itemgetter
 from pathlib import Path
 from typing import Any, Literal
@@ -39,11 +44,14 @@ from kgfeg.evals.lp_eval.schemas import (
     DiscoveryAlias,
     DiscoveryInventory,
     DiscoverySkip,
+    EvaluationPair,
     FileFingerprint,
     FrozenArtifact,
     FrozenInputManifest,
     FrozenInputs,
     FrozenSnapshot,
+    ProductionPair,
+    ProductionPopulation,
     SnapshotArtifact,
     UpstreamEvidenceSource,
     UpstreamEvidenceView,
@@ -54,6 +62,7 @@ from kgfeg.kgs.lp_admissibility import (
     LPCandidateFilter,
     LPPairAdmissibility,
     build_lp_pair_filter,
+    build_lp_pair_id,
 )
 from kgfeg.kgs.lp_artifacts import (
     LPGenerationSummary,
@@ -74,11 +83,12 @@ from kgfeg.kgs.lp_export import (
     _merge_material,
     _validate_combined_material,
 )
-from kgfeg.kgs.lp_finalization import LPFinalClaims, LPRelationships
+from kgfeg.kgs.lp_finalization import LPFinalClaim, LPFinalClaims, LPRelationships
 from kgfeg.kgs.lp_index import LPGraphIndex, build_lp_graph_index
 from kgfeg.kgs.lp_requests import (
     LPGenerationRequest,
     LPRequestPopulation,
+    LPRequestSFI,
     _artifact_payloads,
     _bounded_text,
     _request_sfi,
@@ -102,6 +112,7 @@ from kgfeg.kgs.schemas import (
     LCGenerationSummary,
     LPGenerationResponse,
     LPGenerationValidationVerdict,
+    Relationship,
 )
 from kgfeg.kgs.sfi_export import (
     _build_learning_commons_nodes,
@@ -118,6 +129,26 @@ _STAGE_FILES = {
     "verdict": "lp_generation_validation_verdicts.jsonl",
     "response": "lp_generation_responses.jsonl",
 }
+PRODUCTION_DIAGNOSTIC_TAGS = (
+    "checker_correction",
+    "same_rank",
+    "different_valid_ranks",
+    "missing_coordinate",
+    "equal_normalized_sfi_text",
+    "unequal_text_high_jaccard",
+    "endpoint_without_lcs",
+    "shared_exact_lc",
+    "nonshared_lcs",
+    "broadly_reused_lc",
+    "unresolved_self_or_ancestry",
+    "production_evidence_truncation",
+)
+PRODUCTION_OUTCOMES = ("buildsTowards", "relatesTo", "no_relation", "needs_review")
+UPSTREAM_DIAGNOSTIC_TAGS = (
+    "multi_parent_dag_context",
+    *PRODUCTION_DIAGNOSTIC_TAGS[1:-1],
+    "reconstructed_evidence_truncation",
+)
 
 
 class _CapturedKGConfig(CreateKGConfig):
@@ -149,6 +180,30 @@ class _CapturedKGConfig(CreateKGConfig):
             material.get(key, {}).pop("max_concurrent_requests", None)
 
         return material
+
+
+@dataclass(frozen=True, slots=True)
+class _EndpointFeatures:
+    """Compact upstream facts used only for diagnostic population membership."""
+
+    broadly_reused_lc: bool
+    lc_uuids: frozenset[UUID]
+    multi_parent_context: bool
+    normalized_text: str
+    rank: int | None
+    reconstructed_truncation: bool
+    tokens: frozenset[str]
+    unresolved_ancestry: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _ProductionRequestBinding:
+    """Original bounded batch identity and its pair's endpoint binding."""
+
+    endpoint_uuids: tuple[UUID, UUID]
+    request_content_hash: str
+    request_id: UUID
+    truncated: bool
 
 
 class _SnapshotReader:
@@ -401,6 +456,254 @@ class UpstreamEvidenceBuilder:
         return _upstream_freeze_view(
             audit=audit, builder=self, condition=condition, pair=pair, payload=payload
         )
+
+
+@dataclass(frozen=True, slots=True)
+class AdmissiblePairPopulation:
+    """Exact canonical pair indexing without retaining a quadratic pair table.
+
+    Type, rank and endpoint permissions determine compatible groups. Row cumulative
+    counts support direct uniform-sample indexing; diagnostic scans stream pairs in
+    canonical UUID order. No production nomination or judgment material is consumed.
+    """
+
+    _builder: UpstreamEvidenceBuilder
+    _endpoint_groups: dict[UUID, int]
+    _features: dict[UUID, _EndpointFeatures]
+    _groups: tuple[tuple[UUID, ...], ...]
+    _row_ends: tuple[int, ...]
+    doc_key: str
+    endpoint_uuids: tuple[UUID, ...]
+    framework_uuid: UUID
+    input_content_hash: str
+    material_content_hash: str
+
+    def iter_pairs(self) -> Iterator[EvaluationPair]:
+        """Stream the complete population in canonical endpoint order.
+
+        Yields
+        ------
+        EvaluationPair
+            Distinct admissible pairs without an all-pairs in-memory table.
+        """
+
+        for first in self.endpoint_uuids:
+            allowed = _population_compatible_groups(
+                builder=self._builder, first=first, groups=self._groups
+            )
+            seconds = heapq.merge(
+                *(
+                    islice(group, bisect_right(group, first), None)
+                    for group in (self._groups[index] for index in allowed)
+                )
+            )
+
+            for second in seconds:
+                yield _evaluation_pair(doc_key=self.doc_key, first=first, second=second)
+
+    def pair_at(self, index: int) -> EvaluationPair:
+        """Resolve a zero-based index in the exact canonical pair population.
+
+        Parameters
+        ----------
+        index
+            Integer between zero and total_pairs minus one.
+
+        Returns
+        -------
+        EvaluationPair
+            The same pair as canonical streaming at this index.
+
+        Raises
+        ------
+        ValueError
+            If the index is not an integer inside the population.
+        """
+
+        if (
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or not 0 <= index < self.total_pairs
+        ):
+            raise ValueError("Pair index must be an integer inside the population.")
+
+        row = bisect_right(self._row_ends, index)
+        offset = index - (self._row_ends[row - 1] if row else 0)
+        first = self.endpoint_uuids[row]
+        allowed = _population_compatible_groups(
+            builder=self._builder, first=first, groups=self._groups
+        )
+        starts = tuple(bisect_right(self._groups[cell], first) for cell in allowed)
+        low, high = row + 1, len(self.endpoint_uuids) - 1
+
+        while low < high:
+            middle = (low + high) // 2
+            count = sum(
+                bisect_right(self._groups[cell], self.endpoint_uuids[middle]) - start
+                for cell, start in zip(allowed, starts)
+            )
+
+            if count > offset:
+                high = middle
+            else:
+                low = middle + 1
+
+        return _evaluation_pair(
+            doc_key=self.doc_key, first=first, second=self.endpoint_uuids[low]
+        )
+
+    def pair_for_endpoints(
+        self, *, first_sfi_uuid: UUID | str, second_sfi_uuid: UUID | str
+    ) -> EvaluationPair:
+        """Require a distinct admitted pair without consulting production metadata.
+
+        Parameters
+        ----------
+        first_sfi_uuid
+            One endpoint from this framework.
+        second_sfi_uuid
+            The other endpoint, in either encounter order.
+
+        Returns
+        -------
+        EvaluationPair
+            Canonical pair identity.
+
+        Raises
+        ------
+        ValueError
+            If either endpoint is malformed, unknown, excluded or incompatible.
+        """
+
+        first, second = sorted((UUID(str(first_sfi_uuid)), UUID(str(second_sfi_uuid))))
+
+        if first == second or any(
+            item not in self._endpoint_groups for item in (first, second)
+        ):
+            raise ValueError("Pair endpoints must be distinct eligible framework SFIs.")
+
+        if not self._builder._pair_filter._admissible_decisions(
+            first=self._builder._records[first], second=self._builder._records[second]
+        ):
+            raise ValueError("Pair is excluded by the captured curriculum policy.")
+
+        return _evaluation_pair(doc_key=self.doc_key, first=first, second=second)
+
+    def tags_for_pair(self, pair: EvaluationPair) -> tuple[str, ...]:
+        """Return all upstream tags in their fixed diagnostic order.
+
+        Parameters
+        ----------
+        pair
+            Canonical identity belonging to this population.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Upstream-only tags, never production nomination or semantic labels.
+
+        Raises
+        ------
+        ValueError
+            If the pair is noncanonical, excluded or bound to different input identity.
+        """
+
+        expected = self.pair_for_endpoints(
+            first_sfi_uuid=pair.endpoint_uuids[0],
+            second_sfi_uuid=pair.endpoint_uuids[1],
+        )
+
+        if pair != expected:
+            raise ValueError("Pair identity does not match this population.")
+
+        first, second = (self._features[item] for item in pair.endpoint_uuids)
+        return _upstream_pair_tags(first=first, second=second)
+
+    @property
+    def total_pairs(self) -> int:
+        """Return the exact uniform-cohort denominator.
+
+        Returns
+        -------
+        int
+            Total distinct admissible pairs, including low-signal pairs.
+        """
+
+        return self._row_ends[-1] if self._row_ends else 0
+
+
+def _bounded_endpoint_truncated(endpoint: LPRequestSFI) -> bool:
+    """Inspect typed evidence bounds without interpreting arbitrary audit metadata.
+
+    Parameters
+    ----------
+    endpoint
+        Original or reconstructed bounded endpoint.
+
+    Returns
+    -------
+    bool
+        Whether any shown text, source, LC, coordinate-origin or ancestor depth was
+        limited by its evidence bound.
+    """
+
+    contexts = (endpoint.context, *endpoint.ancestors)
+    texts = [
+        *endpoint.coordinate.source_fields,
+        *(
+            text
+            for context in contexts
+            for text in (
+                context.description,
+                context.statement_code,
+                context.alternate_statement_code,
+            )
+            if text is not None
+        ),
+        *(
+            text
+            for component in endpoint.learning_components
+            for text in (component.description, component.metadata)
+        ),
+        *(
+            text
+            for item in endpoint.source_evidence
+            for text in (item.excerpt, item.reference)
+        ),
+    ]
+    return any(
+        (
+            endpoint.omitted_learning_component_count,
+            endpoint.omitted_source_evidence_count,
+            endpoint.coordinate.omitted_source_field_count,
+            any(path.depth_truncated for path in endpoint.ancestor_paths),
+            any(text.truncated for text in texts),
+        )
+    )
+
+
+def _bounded_request_truncated(request: LPGenerationRequest) -> bool:
+    """Inspect every typed truncation signal in the original bounded request batch.
+
+    Parameters
+    ----------
+    request
+        Unchanged original production request.
+
+    Returns
+    -------
+    bool
+        Whether the framework, any endpoint or any nomination context was truncated.
+    """
+
+    return (
+        request.framework_title.truncated
+        or any(_bounded_endpoint_truncated(endpoint) for endpoint in request.sfis)
+        or any(
+            pair.nomination.evidence.truncated or pair.nomination.references_truncated
+            for pair in request.pairs
+        )
+    )
 
 
 def _check_checkpoint_row(
@@ -761,6 +1064,69 @@ def _equal(*, actual: Any, expected: Any, label: str) -> None:
 
     if actual != expected:
         raise ValueError(f"{label} differs from its source material")
+
+
+def _evaluation_artifact(*, name: str, snapshot: ValidatedSnapshot) -> SnapshotArtifact:
+    """Require exactly one unchanged captured artifact without reading a live file.
+
+    Parameters
+    ----------
+    name
+        Required original artifact name.
+    snapshot
+        Copy-backed validated snapshot.
+
+    Returns
+    -------
+    SnapshotArtifact
+        Exact retained bytes.
+
+    Raises
+    ------
+    ValueError
+        If the artifact is absent, duplicated or inconsistent with its fingerprint.
+    """
+
+    matches = [artifact for artifact in snapshot.artifacts if artifact.name == name]
+
+    if len(matches) != 1:
+        raise ValueError(f"Evaluation requires exactly one artifact: {name}.")
+
+    artifact = matches[0]
+
+    if (
+        len(artifact.payload) != artifact.fingerprint.size_bytes
+        or hashlib.sha256(artifact.payload).hexdigest() != artifact.fingerprint.sha256
+    ):
+        raise ValueError(f"Evaluation artifact bytes changed: {name}.")
+
+    return artifact
+
+
+def _evaluation_pair(*, doc_key: str, first: UUID, second: UUID) -> EvaluationPair:
+    """Bind canonical endpoints to their document-scoped identity.
+
+    Parameters
+    ----------
+    doc_key
+        Validated document identity.
+    first
+        Lower canonical endpoint.
+    second
+        Higher canonical endpoint.
+
+    Returns
+    -------
+    EvaluationPair
+        Pair identity without evidence or production labels.
+    """
+
+    return EvaluationPair(
+        endpoint_uuids=(first, second),
+        pair_id=build_lp_pair_id(
+            doc_key=doc_key, first_sfi_uuid=first, second_sfi_uuid=second
+        ),
+    )
 
 
 def _frozen_artifact_layout(*, artifact: FrozenArtifact, run: DiscoveredRun) -> None:
@@ -1368,6 +1734,308 @@ def _path_exclusion(
         return DiscoverySkip(path=path, reason="evaluation_output")
 
     return None
+
+
+def _population_compatible_groups(
+    *,
+    builder: UpstreamEvidenceBuilder,
+    first: UUID,
+    groups: tuple[tuple[UUID, ...], ...],
+) -> tuple[int, ...]:
+    """Find compatible groups for one row using the authoritative permission rule.
+
+    Group members share type, rank and relation participation. Evaluate one
+    representative without copying provenance or retaining a group-pair matrix.
+    Distinctness and canonical orientation are enforced by the row's UUID suffix.
+
+    Parameters
+    ----------
+    builder
+        Validated upstream and policy indexes.
+    first
+        Canonical first endpoint for the row.
+    groups
+        Canonical members of identical-permission groups.
+
+    Returns
+    -------
+    tuple[int, ...]
+        Compatible group indices for this row only.
+    """
+
+    return tuple(
+        index
+        for index, group in enumerate(groups)
+        if builder._pair_filter._admissible_decisions(
+            first=builder._records[first], second=builder._records[group[0]]
+        )
+    )
+
+
+def _population_features(
+    *, builder: UpstreamEvidenceBuilder, records: tuple[LPSFIEligibility, ...]
+) -> dict[UUID, _EndpointFeatures]:
+    """Derive compact diagnostic facts from full authoritative upstream material.
+
+    Parameters
+    ----------
+    builder
+        Upstream-only graph, policy and evidence constructor.
+    records
+        Eligible endpoints in canonical order.
+
+    Returns
+    -------
+    dict[UUID, _EndpointFeatures]
+        Features with LC reuse counted only over eligible SFIs.
+
+    Raises
+    ------
+    ValueError
+        If mandatory reconstructed evidence cannot fit its captured bounds.
+    """
+
+    graph = builder._graph_index
+    eligible = {record.sfi.case_identifier_uuid for record in records}
+    broad_lcs = {
+        identifier
+        for identifier, sfis in graph.sfis_by_learning_component_uuid.items()
+        if len({sfi.case_identifier_uuid for sfi in sfis} & eligible) >= 10
+    }
+    multi_parent = {
+        identifier
+        for identifier, parents in graph.parent_sfi_uuids_by_sfi_uuid.items()
+        if len(parents) > 1
+    }
+    pending = deque(multi_parent)
+
+    while pending:
+        current = pending.popleft()
+
+        for child in graph.child_sfi_uuids_by_parent_sfi_uuid[current]:
+            if child not in multi_parent:
+                multi_parent.add(child)
+                pending.append(child)
+
+    maximum = (
+        builder._config.learning_progressions.evidence_limits.max_source_evidence_characters_per_sfi
+    )
+    title_truncated = len(builder._framework_title) > maximum
+    features: dict[UUID, _EndpointFeatures] = {}
+
+    for record in records:
+        identifier = record.sfi.case_identifier_uuid
+        context = _request_sfi(
+            graph_index=graph,
+            kg_config=builder._config,
+            records=builder._records,
+            sfi_uuid=identifier,
+        )
+        lc_ids = frozenset(
+            component.identifier
+            for component in graph.learning_components_by_sfi_uuid[identifier]
+        )
+        features[identifier] = _EndpointFeatures(
+            broadly_reused_lc=bool(lc_ids & broad_lcs),
+            lc_uuids=lc_ids,
+            multi_parent_context=identifier in multi_parent,
+            normalized_text=normalize_evaluation_text(record.sfi.description),
+            rank=record.coordinate.rank,
+            reconstructed_truncation=title_truncated
+            or _bounded_endpoint_truncated(context),
+            tokens=evaluation_token_set(record.sfi.description),
+            unresolved_ancestry=record.unresolved_ancestry,
+        )
+
+    return features
+
+
+def _production_pair(
+    *,
+    claim: LPFinalClaim,
+    population: AdmissiblePairPopulation,
+    publication: UUID | None,
+    request: _ProductionRequestBinding,
+) -> ProductionPair:
+    """Build production comparison metadata with separately scoped diagnostic tags.
+
+    Parameters
+    ----------
+    claim
+        Validated original final claim and producer/checker provenance.
+    population
+        Independent upstream population, used only to derive shared feature tags.
+    publication
+        Matching actual published edge, if any.
+    request
+        Original batch evidence binding.
+
+    Returns
+    -------
+    ProductionPair
+        Production outcome and change audit, never an independent truth label.
+
+    Raises
+    ------
+    ValueError
+        If the claim, request, pair or outcome does not reconcile.
+    """
+
+    judgment = claim.judgment
+    pair = population.pair_for_endpoints(
+        first_sfi_uuid=judgment.first_sfi_uuid,
+        second_sfi_uuid=judgment.second_sfi_uuid,
+    )
+
+    if (
+        pair.pair_id != judgment.pair_id
+        or pair.endpoint_uuids != request.endpoint_uuids
+        or claim.provenance.request_id != request.request_id
+        or claim.provenance.request_content_hash != request.request_content_hash
+        or (publication is not None) != (judgment.decision in PRODUCTION_OUTCOMES[:2])
+    ):
+        raise ValueError("Production pair does not reconcile with request/publication.")
+
+    tags = set(population.tags_for_pair(pair)) & set(PRODUCTION_DIAGNOSTIC_TAGS[1:-1])
+
+    if claim.provenance.checker_outcome == "corrected":
+        tags.add("checker_correction")
+
+    if request.truncated:
+        tags.add("production_evidence_truncation")
+
+    producer = claim.provenance.producer_judgment.model_dump(mode="json")
+    final = judgment.model_dump(mode="json")
+    return ProductionPair(
+        checker_outcome=claim.provenance.checker_outcome,
+        direction=judgment.direction,
+        outcome=judgment.decision,
+        pair=pair,
+        producer_direction=claim.provenance.producer_judgment.direction,
+        producer_outcome=claim.provenance.producer_judgment.decision,
+        producer_to_final_changes=tuple(
+            field for field in sorted(final) if producer[field] != final[field]
+        ),
+        published_relationship_uuid=publication,
+        request_content_hash=request.request_content_hash,
+        request_id=request.request_id,
+        tags=tuple(tag for tag in PRODUCTION_DIAGNOSTIC_TAGS if tag in tags),
+    )
+
+
+def _production_publications(
+    *, artifacts: tuple[SnapshotArtifact, ...], claims: LPFinalClaims
+) -> dict[str, UUID]:
+    """Reconcile actual published edges with positive final claims.
+
+    Parameters
+    ----------
+    artifacts
+        Captured standalone relationship projections in outcome order.
+    claims
+        Complete original claims.
+
+    Returns
+    -------
+    dict[str, UUID]
+        One real relationship UUID per positive pair.
+
+    Raises
+    ------
+    ValueError
+        If publication identity, endpoints, provenance or coverage disagrees.
+    """
+
+    expected = {
+        claim.judgment.pair_id: claim
+        for claim in claims.claims
+        if claim.judgment.decision in PRODUCTION_OUTCOMES[:2]
+    }
+    result: dict[str, UUID] = {}
+    identifiers: set[UUID] = set()
+
+    for artifact, outcome in zip(artifacts, PRODUCTION_OUTCOMES[:2]):
+        for line in artifact.payload.splitlines():
+            edge = Relationship.model_validate(_decode_snapshot_json(line))
+            raw_claim = edge.metadata.get("claim")
+
+            if not isinstance(raw_claim, dict):
+                raise ValueError("Published edge is missing its original claim.")
+
+            claim = LPFinalClaim.model_validate(raw_claim)
+            pair_id = claim.judgment.pair_id
+
+            if (
+                pair_id not in expected
+                or claim != expected[pair_id]
+                or pair_id in result
+                or edge.identifier in identifiers
+                or edge.relationship_type != outcome
+                or claim.judgment.decision != outcome
+                or edge.source_entity_value != str(claim.source_sfi_uuid)
+                or edge.target_entity_value != str(claim.target_sfi_uuid)
+            ):
+                raise ValueError("Published relationship disagrees with final claims.")
+
+            result[pair_id] = edge.identifier
+            identifiers.add(edge.identifier)
+
+    if set(result) != set(expected):
+        raise ValueError("Published relationship coverage is incomplete.")
+
+    return result
+
+
+def _production_requests(
+    *, artifact: SnapshotArtifact, claims: LPFinalClaims
+) -> dict[str, _ProductionRequestBinding]:
+    """Read original request/batch truncation without reconstructing production
+    evidence.
+
+    Parameters
+    ----------
+    artifact
+        Exact original bounded request JSONL.
+    claims
+        Original claim manifest defining complete request and pair coverage.
+
+    Returns
+    -------
+    dict[str, _ProductionRequestBinding]
+        Pair bindings; truncation applies to the complete original bounded batch.
+
+    Raises
+    ------
+    ValueError
+        If original requests have duplicate pairs or mismatched manifest coverage.
+    """
+
+    result: dict[str, _ProductionRequestBinding] = {}
+    request_ids: list[UUID] = []
+
+    for line in artifact.payload.splitlines():
+        request = LPGenerationRequest.model_validate(_decode_snapshot_json(line))
+        request_ids.append(request.request_id)
+        truncated = _bounded_request_truncated(request)
+
+        for pair in request.pairs:
+            if pair.pair_id in result:
+                raise ValueError("Original request population repeats a pair.")
+
+            result[pair.pair_id] = _ProductionRequestBinding(
+                endpoint_uuids=(pair.first_sfi_uuid, pair.second_sfi_uuid),
+                request_content_hash=request.request_content_hash,
+                request_id=request.request_id,
+                truncated=truncated,
+            )
+
+    if (
+        tuple(request_ids) != claims.request_manifest.request_ids
+        or tuple(result) != claims.request_manifest.pair_ids
+    ):
+        raise ValueError("Original request population disagrees with its manifest.")
+
+    return result
 
 
 def _read_metadata(
@@ -3021,6 +3689,47 @@ def _upstream_pair_payload(
     }
 
 
+def _upstream_pair_tags(
+    *, first: _EndpointFeatures, second: _EndpointFeatures
+) -> tuple[str, ...]:
+    """Classify upstream diagnostic membership without production or judge outcomes.
+
+    Parameters
+    ----------
+    first
+        First endpoint's source-derived facts.
+    second
+        Second endpoint's source-derived facts.
+
+    Returns
+    -------
+    tuple[str, ...]
+        Every matching tag in the prescribed stable order.
+    """
+
+    valid_ranks = first.rank is not None and second.rank is not None
+    shared = first.lc_uuids & second.lc_uuids
+    union = first.tokens | second.tokens
+    high_jaccard = bool(union) and 2 * len(first.tokens & second.tokens) >= len(union)
+    flags = (
+        first.multi_parent_context or second.multi_parent_context,
+        valid_ranks and first.rank == second.rank,
+        valid_ranks and first.rank != second.rank,
+        not valid_ranks,
+        first.normalized_text == second.normalized_text,
+        first.normalized_text != second.normalized_text and high_jaccard,
+        not first.lc_uuids or not second.lc_uuids,
+        bool(shared),
+        bool(first.lc_uuids and second.lc_uuids) and not shared,
+        first.broadly_reused_lc or second.broadly_reused_lc,
+        first.unresolved_ancestry or second.unresolved_ancestry,
+        first.reconstructed_truncation or second.reconstructed_truncation,
+    )
+    return tuple(
+        tag for tag, applies in zip(UPSTREAM_DIAGNOSTIC_TAGS, flags) if applies
+    )
+
+
 def _upstream_payload_hash(payload: dict[str, Any]) -> str:
     """Hash the exact canonical UTF-8 judge-visible evidence bytes.
 
@@ -3462,6 +4171,185 @@ def _walk_runs(
     return sorted(directories), aliases, skipped
 
 
+def build_admissible_population(
+    source: UpstreamEvidenceSource,
+) -> AdmissiblePairPopulation:
+    """Build exact pair counts and indexing from upstream evidence and policy alone.
+
+    No candidate population is read or generated. Storage scales with endpoints and
+    compatible type/rank groups, rather than the complete pair population.
+
+    Parameters
+    ----------
+    source
+        Isolated frozen upstream bytes and captured curriculum configuration.
+
+    Returns
+    -------
+    AdmissiblePairPopulation
+        Canonical random-access and streaming population, with upstream-only tags.
+
+    Raises
+    ------
+    ValueError
+        If the upstream binding, policy or bounded evidence is invalid.
+    """
+
+    builder = build_upstream_evidence_builder(source)
+    records = builder._pair_filter.eligible_sfis
+    cells: dict[tuple[str, int | None, tuple[str, ...]], list[UUID]] = {}
+
+    for record in records:
+        key = (
+            record.statement_type,
+            record.coordinate.rank,
+            tuple(sorted(record.eligibility_reasons)),
+        )
+        cells.setdefault(key, []).append(record.sfi.case_identifier_uuid)
+
+    groups = tuple(tuple(members) for members in cells.values())
+    endpoint_groups = {
+        identifier: index
+        for index, members in enumerate(groups)
+        for identifier in members
+    }
+    endpoints = tuple(record.sfi.case_identifier_uuid for record in records)
+    row_ends: list[int] = []
+    count = 0
+
+    for first in endpoints:
+        allowed = _population_compatible_groups(
+            builder=builder, first=first, groups=groups
+        )
+        count += sum(
+            len(groups[cell]) - bisect_right(groups[cell], first) for cell in allowed
+        )
+        row_ends.append(count)
+
+    features = _population_features(builder=builder, records=records)
+    identity = {
+        "endpoints": [str(item) for item in endpoints],
+        "features": {
+            str(identifier): {
+                **asdict(feature),
+                "lc_uuids": sorted(str(item) for item in feature.lc_uuids),
+                "tokens": sorted(feature.tokens),
+            }
+            for identifier, feature in features.items()
+        },
+        "groups": [[str(item) for item in group] for group in groups],
+        "input_content_hash": builder._input_content_hash,
+        "row_ends": row_ends,
+        "tag_order": UPSTREAM_DIAGNOSTIC_TAGS,
+    }
+    return AdmissiblePairPopulation(
+        _builder=builder,
+        _endpoint_groups=endpoint_groups,
+        _features=features,
+        _groups=groups,
+        _row_ends=tuple(row_ends),
+        doc_key=source.doc_key,
+        endpoint_uuids=endpoints,
+        framework_uuid=source.framework_uuid,
+        input_content_hash=builder._input_content_hash,
+        material_content_hash=lp_material_content_hash(identity),
+    )
+
+
+def build_production_population(
+    *, population: AdmissiblePairPopulation, snapshot: ValidatedSnapshot
+) -> ProductionPopulation:
+    """Build a separate production inventory without altering upstream selection.
+
+    Call only for the production component or after independent selection/evidence have
+    been frozen. The returned inventory must not guide independent sampling. Use
+    load_frozen_lp_inputs before this operation to validate original material.
+
+    Parameters
+    ----------
+    population
+        Independently constructed admissible population and upstream features.
+    snapshot
+        Matching frozen snapshot with the original production artifact bytes.
+
+    Returns
+    -------
+    ProductionPopulation
+        Complete canonical outcomes, twelve diagnostic counts and provenance.
+
+    Raises
+    ------
+    ValueError
+        If snapshot identity, artifact bindings or original populations disagree.
+    """
+
+    if upstream_evidence_source(snapshot) != population._builder._source:
+        raise ValueError("Production and upstream population bindings differ.")
+
+    names = (
+        "lp_final_claims.json",
+        "lp_generation_requests.jsonl",
+        "lp_relationships_builds_towards.jsonl",
+        "lp_relationships_relates_to.jsonl",
+    )
+    artifacts = tuple(
+        _evaluation_artifact(name=name, snapshot=snapshot) for name in names
+    )
+    claims = LPFinalClaims.model_validate(_decode_snapshot_json(artifacts[0].payload))
+
+    if (
+        claims.request_manifest.doc_key != population.doc_key
+        or claims.request_manifest.framework_uuid != population.framework_uuid
+    ):
+        raise ValueError("Production claims have a different framework identity.")
+
+    requests = _production_requests(artifact=artifacts[1], claims=claims)
+    publications = _production_publications(artifacts=artifacts[2:], claims=claims)
+    pairs = tuple(
+        sorted(
+            (
+                _production_pair(
+                    claim=claim,
+                    population=population,
+                    publication=publications.get(claim.judgment.pair_id),
+                    request=requests[claim.judgment.pair_id],
+                )
+                for claim in claims.claims
+            ),
+            key=lambda pair: pair.pair.endpoint_uuids,
+        )
+    )
+    outcome_counts = tuple(
+        (outcome, sum(pair.outcome == outcome for pair in pairs))
+        for outcome in PRODUCTION_OUTCOMES
+    )
+    tag_counts = tuple(
+        (tag, sum(tag in pair.tags for pair in pairs))
+        for tag in PRODUCTION_DIAGNOSTIC_TAGS
+    )
+    material = {
+        "artifact_hashes": {
+            artifact.name: artifact.fingerprint.sha256 for artifact in artifacts
+        },
+        "outcome_counts": outcome_counts,
+        "pairs": TypeAdapter(tuple[ProductionPair, ...]).dump_python(
+            pairs, mode="json"
+        ),
+        "tag_counts": tag_counts,
+        "upstream_population_content_hash": population.material_content_hash,
+    }
+    return ProductionPopulation(
+        artifact_fingerprints=tuple(artifact.fingerprint for artifact in artifacts),
+        doc_key=population.doc_key,
+        framework_uuid=population.framework_uuid,
+        material_content_hash=lp_material_content_hash(material),
+        outcome_counts=outcome_counts,
+        pairs=pairs,
+        tag_counts=tag_counts,
+        upstream_input_content_hash=population.input_content_hash,
+    )
+
+
 def build_upstream_evidence_builder(
     source: UpstreamEvidenceSource,
 ) -> UpstreamEvidenceBuilder:
@@ -3610,6 +4498,23 @@ def discover_lp_runs(
         )
 
     return inventory
+
+
+def evaluation_token_set(text: str) -> frozenset[str]:
+    """Tokenize normalized text into Unicode alphanumeric runs without stopwords.
+
+    Parameters
+    ----------
+    text
+        Source SFI text, including unfamiliar languages and scripts.
+
+    Returns
+    -------
+    frozenset[str]
+        Unique alphanumeric runs; punctuation and underscores separate tokens.
+    """
+
+    return frozenset(re.findall(r"[^\W_]+", normalize_evaluation_text(text)))
 
 
 def freeze_lp_inputs(
@@ -3766,6 +4671,50 @@ def load_frozen_lp_inputs(reference: FrozenInputs) -> tuple[ValidatedSnapshot, .
         return tuple(snapshots)
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
         raise LPSnapshotError(f"Invalid frozen LP inputs: {exc}") from exc
+
+
+def normalize_evaluation_text(text: str) -> str:
+    """Apply Unicode NFKC, case folding and whitespace collapse in that order.
+
+    Parameters
+    ----------
+    text
+        Original source text.
+
+    Returns
+    -------
+    str
+        Deterministic normalized text used only for evaluation diagnostics.
+    """
+
+    return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
+
+
+def text_token_jaccard(*, first: str, second: str) -> Fraction:
+    """Compute exact token Jaccard similarity, assigning empty unions zero.
+
+    Parameters
+    ----------
+    first
+        First SFI text.
+    second
+        Second SFI text.
+
+    Returns
+    -------
+    Fraction
+        Intersection over union as an exact rational diagnostic, never a truth label.
+    """
+
+    first_tokens = evaluation_token_set(first)
+    second_tokens = evaluation_token_set(second)
+    union = first_tokens | second_tokens
+
+    return (
+        Fraction(len(first_tokens & second_tokens), len(union))
+        if union
+        else Fraction(0)
+    )
 
 
 def upstream_evidence_source(snapshot: ValidatedSnapshot) -> UpstreamEvidenceSource:
