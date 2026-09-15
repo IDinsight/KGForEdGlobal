@@ -27,6 +27,7 @@ from fractions import Fraction
 from itertools import islice
 from operator import itemgetter
 from pathlib import Path
+from random import Random
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -45,13 +46,17 @@ from kgfeg.evals.lp_eval.schemas import (
     DiscoveryInventory,
     DiscoverySkip,
     EvaluationPair,
+    EvaluationSettings,
     FileFingerprint,
     FrozenArtifact,
     FrozenInputManifest,
     FrozenInputs,
     FrozenSnapshot,
+    PairSamplePlan,
     ProductionPair,
     ProductionPopulation,
+    SampleCell,
+    SampledPair,
     SnapshotArtifact,
     UpstreamEvidenceSource,
     UpstreamEvidenceView,
@@ -204,6 +209,47 @@ class _ProductionRequestBinding:
     request_content_hash: str
     request_id: UUID
     truncated: bool
+
+
+@dataclass
+class _SampleReservoir:
+    """Bounded uniform reservoir over a canonical stream, isolated by route.
+
+    Attributes
+    ----------
+    count
+        Number of matching pairs considered, including discarded pairs.
+    pairs
+        Current without-replacement sample, bounded by the target.
+    random
+        Private seeded random stream for this route alone.
+    target
+        Number of desired new draws; zero for an already-satisfied supplement.
+    """
+
+    count: int
+    pairs: list[EvaluationPair]
+    random: Random
+    target: int
+
+    def offer(self, pair: EvaluationPair) -> None:
+        """Consider one unique canonical pair with uniform replacement probability.
+
+        Parameters
+        ----------
+        pair
+            Next pair from the canonical, duplicate-free population stream.
+        """
+
+        self.count += 1
+
+        if len(self.pairs) < self.target:
+            self.pairs.append(pair)
+        elif self.target:
+            position = self.random.randrange(self.count)
+
+            if position < self.target:
+                self.pairs[position] = pair
 
 
 class _SnapshotReader:
@@ -2223,6 +2269,172 @@ def _required_text(*, key: str, record: dict[str, Any]) -> str:
         raise ValueError(f"{key} must be nonblank text without surrounding whitespace")
 
     return value
+
+
+def _sample_cell(
+    *,
+    population_count: int,
+    prior: tuple[EvaluationPair, ...] = (),
+    reservoir: _SampleReservoir,
+    route: str,
+    target: int,
+    uniform: bool = False,
+) -> SampleCell:
+    """Freeze cell accounting, distinguishing new draws from supplement credit.
+
+    Parameters
+    ----------
+    population_count
+        Complete matching population before any sampling.
+    prior
+        Already selected matching pairs credited toward a supplement.
+    reservoir
+        Bounded new draws.
+    route
+        Stable component-qualified route.
+    target
+        Configured quota before supplement credit.
+    uniform
+        Whether this cell supports an exact uniform inclusion probability.
+
+    Returns
+    -------
+    SampleCell
+        Canonical draw and membership identities and honest exhausted shortfall.
+    """
+
+    drawn = sorted(reservoir.pairs, key=lambda pair: pair.endpoint_uuids)
+    selected = sorted((*prior, *drawn), key=lambda pair: pair.endpoint_uuids)
+    probability = Fraction(len(drawn), population_count) if population_count else None
+    return SampleCell(
+        drawn_pair_ids=tuple(pair.pair_id for pair in drawn),
+        inclusion_probability=(
+            (probability.numerator, probability.denominator)
+            if uniform and probability is not None
+            else None
+        ),
+        population_count=population_count,
+        route=route,
+        selected_pair_ids=tuple(pair.pair_id for pair in selected),
+        shortfall=max(0, target - len(selected)),
+        target=target,
+    )
+
+
+def _sample_plan(
+    *,
+    base_evidence: tuple[UpstreamEvidenceView, ...],
+    cells: tuple[SampleCell, ...],
+    component: Literal["independent", "production"],
+    doc_key: str,
+    framework_uuid: UUID,
+    input_content_hash: str,
+    pairs: tuple[SampledPair, ...],
+    population_content_hash: str,
+    settings: EvaluationSettings,
+) -> PairSamplePlan:
+    """Bind canonical selections, routes, settings and evidence into one identity.
+
+    Parameters
+    ----------
+    base_evidence
+        Common upstream evidence, or an empty tuple for production selection.
+    cells
+        Ordered cell accounting with selection routes and shortfalls.
+    component
+        Assessment component; prevents cross-component deduplication.
+    doc_key
+        Validated document identity.
+    framework_uuid
+        Shared endpoint framework.
+    input_content_hash
+        Exact upstream material identity.
+    pairs
+        Canonical selected pairs with every route retained.
+    population_content_hash
+        Complete source population identity.
+    settings
+        Validated effective controls, including the seed.
+
+    Returns
+    -------
+    PairSamplePlan
+        Immutable plan with a content hash covering all of its remaining fields.
+    """
+
+    plan = PairSamplePlan(
+        algorithm="canonical-reservoir-v1/sha256-route-seed/python-mt19937",
+        base_evidence=base_evidence,
+        cells=cells,
+        component=component,
+        doc_key=doc_key,
+        framework_uuid=framework_uuid,
+        input_content_hash=input_content_hash,
+        material_content_hash="",
+        pairs=pairs,
+        population_content_hash=population_content_hash,
+        settings_json=canonical_lp_json(settings.model_dump(mode="json")),
+    )
+    material = TypeAdapter(PairSamplePlan).dump_python(plan, mode="json")
+    del material["material_content_hash"]
+    return replace(plan, material_content_hash=lp_material_content_hash(material))
+
+
+def _sample_reservoir(
+    *, doc_key: str, framework_uuid: UUID, route: str, seed: int, target: int
+) -> _SampleReservoir:
+    """Create an isolated deterministic random stream for one sampling cell.
+
+    Parameters
+    ----------
+    doc_key
+        Validated input document identity.
+    framework_uuid
+        Framework containing the source population.
+    route
+        Component-qualified outcome or tag route.
+    seed
+        Explicit integer sampling seed.
+    target
+        Number of desired new draws.
+
+    Returns
+    -------
+    _SampleReservoir
+        Empty bounded reservoir seeded from canonical identity, route and seed.
+    """
+
+    identity = canonical_lp_json(
+        {
+            "doc_key": doc_key,
+            "framework_uuid": str(framework_uuid),
+            "route": route,
+            "seed": seed,
+        }
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).digest()
+    return _SampleReservoir(
+        count=0, pairs=[], random=Random(int.from_bytes(digest, "big")), target=target
+    )
+
+
+def _sample_routes(*, cells: tuple[SampleCell, ...], pair_id: str) -> tuple[str, ...]:
+    """Return all ordered cell memberships for a deduplicated pair.
+
+    Parameters
+    ----------
+    cells
+        Frozen cells in processing order.
+    pair_id
+        Pair whose memberships are requested.
+
+    Returns
+    -------
+    tuple[str, ...]
+        Every route that selected or credited the pair.
+    """
+
+    return tuple(cell.route for cell in cells if pair_id in cell.selected_pair_ids)
 
 
 def _snapshot_config(reader: _SnapshotReader) -> _CapturedKGConfig:
@@ -4688,6 +4900,227 @@ def normalize_evaluation_text(text: str) -> str:
     """
 
     return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
+
+
+def sample_independent_pairs(
+    *, population: AdmissiblePairPopulation, settings: EvaluationSettings
+) -> PairSamplePlan:
+    """Select upstream pairs and freeze common evidence without production access.
+
+    Selection makes one canonical pass with bounded reservoirs. Every diagnostic tag
+    has an independent quota, including when its pairs overlap the uniform cohort. The
+    exact uniform inclusion fraction applies only to the uniform route. Diagnostic
+    draws and the union have no asserted population-estimation probability.
+
+    Call this before any production metadata join. The returned evidence is the common
+    reconstructed bounded base for every selected pair, regardless of nomination.
+
+    Parameters
+    ----------
+    population
+        Complete upstream-only admissible pair universe.
+    settings
+        Effective validated evaluator settings shared by all selected curricula.
+
+    Returns
+    -------
+    PairSamplePlan
+        Frozen upstream selection, all routes, shortfalls and bounded evidence.
+
+    Raises
+    ------
+    ValueError
+        If settings are invalid, streamed population counts disagree, or mandatory
+        bounded evidence cannot be constructed for a selected pair.
+    """
+
+    settings = EvaluationSettings.model_validate(settings.model_dump())
+    routes = ("independent/uniform",) + tuple(
+        f"independent/tag/{tag}" for tag in UPSTREAM_DIAGNOSTIC_TAGS
+    )
+    targets = (settings.independent_uniform_pairs,) + (
+        settings.independent_pairs_per_tag,
+    ) * len(UPSTREAM_DIAGNOSTIC_TAGS)
+    reservoirs = tuple(
+        _sample_reservoir(
+            doc_key=population.doc_key,
+            framework_uuid=population.framework_uuid,
+            route=route,
+            seed=settings.sampling_seed,
+            target=target,
+        )
+        for route, target in zip(routes, targets, strict=True)
+    )
+
+    for pair in population.iter_pairs():
+        reservoirs[0].offer(pair)
+        tags = population.tags_for_pair(pair)
+
+        for tag, reservoir in zip(
+            UPSTREAM_DIAGNOSTIC_TAGS, reservoirs[1:], strict=True
+        ):
+            if tag in tags:
+                reservoir.offer(pair)
+
+    if reservoirs[0].count != population.total_pairs:
+        raise ValueError("Streamed admissible population count differs from its index.")
+
+    cells = tuple(
+        _sample_cell(
+            population_count=reservoir.count,
+            reservoir=reservoir,
+            route=route,
+            target=target,
+            uniform=index == 0,
+        )
+        for index, (route, target, reservoir) in enumerate(
+            zip(routes, targets, reservoirs, strict=True)
+        )
+    )
+    unique = {
+        pair.pair_id: pair for reservoir in reservoirs for pair in reservoir.pairs
+    }
+    pairs = tuple(
+        SampledPair(
+            pair=pair,
+            routes=_sample_routes(cells=cells, pair_id=pair.pair_id),
+            tags=population.tags_for_pair(pair),
+        )
+        for pair in sorted(unique.values(), key=lambda pair: pair.endpoint_uuids)
+    )
+    evidence = tuple(
+        population._builder.build_pair(
+            first_sfi_uuid=entry.pair.endpoint_uuids[0],
+            second_sfi_uuid=entry.pair.endpoint_uuids[1],
+        )
+        for entry in pairs
+    )
+    return _sample_plan(
+        base_evidence=evidence,
+        cells=cells,
+        component="independent",
+        doc_key=population.doc_key,
+        framework_uuid=population.framework_uuid,
+        input_content_hash=population.input_content_hash,
+        pairs=pairs,
+        population_content_hash=population.material_content_hash,
+        settings=settings,
+    )
+
+
+def sample_production_pairs(
+    *, population: ProductionPopulation, settings: EvaluationSettings
+) -> PairSamplePlan:
+    """Select uniform outcomes followed by ordered deficit-only tag supplements.
+
+    Existing matches count toward each tag target when it is processed. Additions can
+    satisfy later tags; exhausted quotas are never transferred. Route credit remains
+    separate from actual draws, and later incidental tag matches remain in pair tags.
+    Uniform probabilities describe only the corresponding outcome cell, never the
+    diagnostic supplement or combined selected population.
+
+    Parameters
+    ----------
+    population
+        Validated canonical production inventory bound to its original artifacts.
+    settings
+        Effective validated evaluator settings shared by all selected curricula.
+
+    Returns
+    -------
+    PairSamplePlan
+        Frozen production selection with all routes, denominators and shortfalls.
+
+    Raises
+    ------
+    ValueError
+        If evaluator settings are invalid.
+    """
+
+    settings = EvaluationSettings.model_validate(settings.model_dump())
+    ordered = tuple(sorted(population.pairs, key=lambda item: item.pair.endpoint_uuids))
+    selected: dict[str, ProductionPair] = {}
+    cells: list[SampleCell] = []
+
+    for outcome in PRODUCTION_OUTCOMES:
+        route = f"production/outcome/{outcome}"
+        reservoir = _sample_reservoir(
+            doc_key=population.doc_key,
+            framework_uuid=population.framework_uuid,
+            route=route,
+            seed=settings.sampling_seed,
+            target=settings.production_pairs_per_outcome,
+        )
+        candidates = tuple(item for item in ordered if item.outcome == outcome)
+
+        for item in candidates:
+            reservoir.offer(item.pair)
+
+        cell = _sample_cell(
+            population_count=len(candidates),
+            reservoir=reservoir,
+            route=route,
+            target=settings.production_pairs_per_outcome,
+            uniform=True,
+        )
+        cells.append(cell)
+        selected.update(
+            (item.pair.pair_id, item)
+            for item in candidates
+            if item.pair.pair_id in cell.drawn_pair_ids
+        )
+
+    for tag in PRODUCTION_DIAGNOSTIC_TAGS:
+        route = f"production/tag/{tag}"
+        candidates = tuple(item for item in ordered if tag in item.tags)
+        prior = tuple(item.pair for item in candidates if item.pair.pair_id in selected)
+        reservoir = _sample_reservoir(
+            doc_key=population.doc_key,
+            framework_uuid=population.framework_uuid,
+            route=route,
+            seed=settings.sampling_seed,
+            target=max(0, settings.production_examples_per_tag - len(prior)),
+        )
+
+        for item in candidates:
+            if item.pair.pair_id not in selected:
+                reservoir.offer(item.pair)
+
+        cell = _sample_cell(
+            population_count=len(candidates),
+            prior=prior,
+            reservoir=reservoir,
+            route=route,
+            target=settings.production_examples_per_tag,
+        )
+        cells.append(cell)
+        selected.update(
+            (item.pair.pair_id, item)
+            for item in candidates
+            if item.pair.pair_id in cell.drawn_pair_ids
+        )
+
+    frozen_cells = tuple(cells)
+    pairs = tuple(
+        SampledPair(
+            pair=item.pair,
+            routes=_sample_routes(cells=frozen_cells, pair_id=item.pair.pair_id),
+            tags=item.tags,
+        )
+        for item in ordered
+        if item.pair.pair_id in selected
+    )
+    return _sample_plan(
+        base_evidence=(),
+        cells=frozen_cells,
+        component="production",
+        doc_key=population.doc_key,
+        framework_uuid=population.framework_uuid,
+        input_content_hash=population.upstream_input_content_hash,
+        pairs=pairs,
+        population_content_hash=population.material_content_hash,
+        settings=settings,
+    )
 
 
 def text_token_jaccard(*, first: str, second: str) -> Fraction:

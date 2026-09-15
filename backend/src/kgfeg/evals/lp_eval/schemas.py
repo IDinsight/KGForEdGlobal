@@ -357,6 +357,49 @@ class FrozenSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class PairSamplePlan:
+    """Immutable selection and evidence binding for one framework and component.
+
+    Attributes
+    ----------
+    algorithm
+        Recorded canonical reservoir algorithm and random stream derivation.
+    base_evidence
+        Independent common bounded views, in selected-pair order; empty for production.
+    cells
+        Ordered uniform cells followed by diagnostic cells, including empty cells.
+    component
+        Independent upstream or production assessment; overlaps remain separate.
+    doc_key
+        Input document identity.
+    framework_uuid
+        Framework containing every selected pair.
+    input_content_hash
+        Upstream material identity.
+    material_content_hash
+        Hash of the complete plan excluding this field.
+    pairs
+        Canonical unique pairs with all routes retained.
+    population_content_hash
+        Identity of the complete population from which selection was made.
+    settings_json
+        Canonical effective evaluator controls, including the seed.
+    """
+
+    algorithm: str
+    base_evidence: tuple[UpstreamEvidenceView, ...]
+    cells: tuple[SampleCell, ...]
+    component: Literal["independent", "production"]
+    doc_key: str
+    framework_uuid: UUID
+    input_content_hash: str
+    material_content_hash: str
+    pairs: tuple[SampledPair, ...]
+    population_content_hash: str
+    settings_json: str
+
+
+@dataclass(frozen=True, slots=True)
 class ProductionPair:
     """Production comparison metadata, never an independent truth label.
 
@@ -473,6 +516,58 @@ class ResolvedJudgeSettings:
     model_config_json: str
     model_settings_json: str
     provider: str
+
+
+@dataclass(frozen=True, slots=True)
+class SampleCell:
+    """One sampling route with explicit quota and population accounting.
+
+    Attributes
+    ----------
+    drawn_pair_ids
+        Actual without-replacement draws, in canonical endpoint order.
+    inclusion_probability
+        Reduced numerator/denominator for a uniform cell; None for diagnostics or an
+        empty population. Never a probability for the deduplicated union.
+    population_count
+        Complete number of matching pairs before selection.
+    route
+        Component-qualified outcome, uniform or diagnostic route.
+    selected_pair_ids
+        Cell members: draws for independent cells; prior members plus additions for
+        production supplements, counted when that supplement was processed.
+    shortfall
+        Unfilled target after exhausting available candidates, without reallocation.
+    target
+        Configured target; production supplements count previously selected pairs.
+    """
+
+    drawn_pair_ids: tuple[str, ...]
+    inclusion_probability: tuple[int, int] | None
+    population_count: int
+    route: str
+    selected_pair_ids: tuple[str, ...]
+    shortfall: int
+    target: int
+
+
+@dataclass(frozen=True, slots=True)
+class SampledPair:
+    """One selected pair and all of its sampling memberships.
+
+    Attributes
+    ----------
+    pair
+        Canonical endpoint identities without a pedagogical truth label.
+    routes
+        All selecting or supplement-credit routes in cell processing order.
+    tags
+        All diagnostic tags, including tags that did not select this pair.
+    """
+
+    pair: EvaluationPair
+    routes: tuple[str, ...]
+    tags: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
