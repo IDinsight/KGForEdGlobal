@@ -1,14 +1,18 @@
-"""Typed discovery and validated input records for Learning Progressions evaluation."""
+"""Typed input and configuration records for Learning Progressions evaluation."""
 
 # Future Library
 from __future__ import annotations
 
 # Standard Library
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 from uuid import UUID
+
+# Third Party Library
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +110,136 @@ class DiscoverySkip:
 
     path: Path
     reason: Literal["evaluation_output", "outside_results_root"]
+
+
+class EvaluationSettings(BaseModel):
+    """Validated invocation-wide sampling and repetition controls.
+
+    All counts apply uniformly across selected curricula. Empty populations produce
+    recorded shortfalls; settings never disable a required component. Explicitly
+    supplied values can equal defaults and remain recorded as overrides.
+
+    Attributes
+    ----------
+    additional_diagnostic_replicates
+        Additional fresh judgments with identical base presentation; base plus
+        additional must be at least two.
+    base_blind_replicates
+        Blind judgments per real pair in each component's required base condition.
+    critique_replicates
+        Separate operative-rationale critiques per selected production pair.
+    diagnostic_pairs_per_cohort
+        Target pairs for repetition and all five variants in each cohort per curriculum.
+    independent_pairs_per_tag
+        Independent without-replacement target per upstream tag per curriculum.
+    independent_uniform_pairs
+        Uniform admissible upstream pair target per curriculum.
+    lexical_baseline_top_k
+        Lexical ranking target per cohort, capped by its available sampled population.
+    production_examples_per_tag
+        Minimum examples per production tag, counting already-selected pairs.
+    production_pairs_per_outcome
+        Uniform without-replacement target for each production outcome per curriculum.
+    sampling_seed
+        Integer seed for all deterministic selection and ordering.
+    synthetic_cases_per_family
+        Constructed cases per required control family per curriculum.
+    synthetic_control_replicates
+        Fresh judgments per constructed synthetic control.
+    variant_replicates
+        Fresh judgments per diagnostic pair for each of the five required variants.
+    """
+
+    additional_diagnostic_replicates: int = Field(
+        default=2,
+        description="Additional fresh judgments with identical base presentation; base plus additional must be at least two.",
+        ge=0,
+    )
+    base_blind_replicates: int = Field(
+        default=1,
+        description="Blind judgments per real pair in each component's required base condition.",
+        ge=1,
+    )
+    critique_replicates: int = Field(
+        default=1,
+        description="Separate operative-rationale critiques per selected production pair.",
+        ge=1,
+    )
+    diagnostic_pairs_per_cohort: int = Field(
+        default=12,
+        description="Target pairs for repetition and all five variants in each cohort per curriculum.",
+        ge=1,
+    )
+    independent_pairs_per_tag: int = Field(
+        default=3,
+        description="Independent without-replacement target per upstream tag per curriculum.",
+        ge=1,
+    )
+    independent_uniform_pairs: int = Field(
+        default=36,
+        description="Uniform admissible upstream pair target per curriculum.",
+        ge=1,
+    )
+    lexical_baseline_top_k: int = Field(
+        default=10,
+        description="Lexical ranking target per cohort, capped by its available sampled population.",
+        ge=1,
+    )
+    production_examples_per_tag: int = Field(
+        default=2,
+        description="Minimum examples per production tag, counting already-selected pairs.",
+        ge=1,
+    )
+    production_pairs_per_outcome: int = Field(
+        default=15,
+        description="Uniform without-replacement target for each production outcome per curriculum.",
+        ge=1,
+    )
+    sampling_seed: int = Field(
+        default=20260911,
+        description="Integer seed for all deterministic selection and ordering.",
+    )
+    synthetic_cases_per_family: int = Field(
+        default=5,
+        description="Constructed cases per required control family per curriculum.",
+        ge=1,
+    )
+    synthetic_control_replicates: int = Field(
+        default=3,
+        description="Fresh judgments per constructed synthetic control.",
+        ge=1,
+    )
+    variant_replicates: int = Field(
+        default=1,
+        description="Fresh judgments per diagnostic pair for each of the five required variants.",
+        ge=1,
+    )
+
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, strict=True, validate_default=True
+    )
+
+    @model_validator(mode="after")
+    def _validate_diagnostic_replicates(self) -> Self:
+        """Require repeated judgments for every diagnostic pair.
+
+        Returns
+        -------
+        Self
+            The validated settings.
+
+        Raises
+        ------
+        ValueError
+            If base and additional counts cannot produce at least two judgments.
+        """
+
+        if self.base_blind_replicates + self.additional_diagnostic_replicates < 2:
+            raise ValueError(
+                "Base blind plus additional diagnostic replicates must be at least 2."
+            )
+
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +341,48 @@ class FrozenSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolvedEvaluationSettings:
+    """Effective controls and the names explicitly overridden by the caller.
+
+    Attributes
+    ----------
+    overrides
+        Sorted explicitly supplied field names, including values equal to defaults.
+        Their effective values are retained in settings.
+    settings
+        Complete immutable validated settings, including all defaults.
+    """
+
+    overrides: tuple[str, ...]
+    settings: EvaluationSettings
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedJudgeSettings:
+    """Non-secret model and execution material captured without creating a client.
+
+    Attributes
+    ----------
+    execution_json
+        Canonical fixed concurrency, timeout, retry and retry-wait settings.
+    model
+        Exact resolved provider-prefixed model identifier.
+    model_config_json
+        Complete canonical shared model configuration for reproducible resolution.
+    model_settings_json
+        Canonical effective learning-progressions settings from the shared registry.
+    provider
+        Provider resolved from the explicit model identifier.
+    """
+
+    execution_json: str
+    model: str
+    model_config_json: str
+    model_settings_json: str
+    provider: str
+
+
+@dataclass(frozen=True, slots=True)
 class SnapshotArtifact:
     """Exact input bytes retained separately from production and evaluator outputs.
 
@@ -251,3 +427,27 @@ class ValidatedSnapshot:
     config_json: str
     run: DiscoveredRun
     source_artifact: str
+
+
+def resolve_evaluation_settings(
+    overrides: Mapping[str, int] | None = None,
+) -> ResolvedEvaluationSettings:
+    """Resolve defaults and supplied overrides without reading curriculum settings.
+
+    Parameters
+    ----------
+    overrides
+        Explicit integer controls keyed by EvaluationSettings field name. Omit fields
+        to use defaults; boolean, string and fractional values are invalid.
+
+    Returns
+    -------
+    ResolvedEvaluationSettings
+        Complete validated controls and sorted explicit override names.
+    """
+
+    supplied = {} if overrides is None else dict(overrides)
+    settings = EvaluationSettings.model_validate(supplied)
+    return ResolvedEvaluationSettings(
+        overrides=tuple(sorted(supplied)), settings=settings
+    )
