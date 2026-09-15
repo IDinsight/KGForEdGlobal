@@ -128,6 +128,85 @@ class FileFingerprint:
 
 
 @dataclass(frozen=True, slots=True)
+class FrozenArtifact:
+    """One preserved artifact's original location and content-addressed copy identity.
+
+    Attributes
+    ----------
+    fingerprint
+        Original resolved path, SHA-256 and byte length.
+    name
+        Original run-relative artifact name; never used as an output filename.
+    """
+
+    fingerprint: FileFingerprint
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenInputManifest:
+    """Fixed input selection, independent of subsequent discovery or evaluation calls.
+
+    Attributes
+    ----------
+    inventory
+        Original discovery inventory, including excluded runs and directory aliases.
+    kind
+        Identifies this input artifact without claiming evaluation completion.
+    snapshots
+        Validated curricula and their exact preserved material bindings.
+    """
+
+    inventory: DiscoveryInventory
+    kind: Literal["lp_evaluation_inputs"]
+    snapshots: tuple[FrozenSnapshot, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenInputs:
+    """Pinned reference used to reject edited or substituted input manifests.
+
+    Attributes
+    ----------
+    content_hash
+        SHA-256 of the complete canonical manifest bytes.
+    manifest_path
+        Exact absolute path of the published manifest.
+    """
+
+    content_hash: str
+    manifest_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenSnapshot:
+    """A completed curriculum's exact material bindings without mutable payloads.
+
+    Attributes
+    ----------
+    absent_artifacts
+        Optional and transaction artifacts recorded absent during validation.
+    artifacts
+        Original names and byte identities, in deterministic name order.
+    checkpoint_format
+        Validated historical-prefix or journal-bearing interpretation.
+    config_json
+        Captured effective configuration in its original serialization shape.
+    run
+        Original completion and framework identity.
+    source_artifact
+        Original run-relative source DocumentIR path.
+    """
+
+    absent_artifacts: tuple[str, ...]
+    artifacts: tuple[FrozenArtifact, ...]
+    checkpoint_format: str
+    config_json: str
+    run: DiscoveredRun
+    source_artifact: str
+
+
+@dataclass(frozen=True, slots=True)
 class SnapshotArtifact:
     """Exact input bytes retained separately from production and evaluator outputs.
 

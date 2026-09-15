@@ -3,7 +3,8 @@
 Discovery reads completion metadata. Snapshot validation reconstructs bounded requests
 and reconciles persisted judgments, provenance and graph projections. Shared pure
 artifact helpers and the read-only journal reader are used without invoking production
-generation, recovery, writes or model calls. Validated bytes await separate freezing.
+generation, recovery, writes or model calls. Frozen copies and selection manifests are
+stored separately and checked against their original material before use.
 """
 
 # Standard Library
@@ -21,10 +22,15 @@ from datetime import datetime
 from operator import itemgetter
 from pathlib import Path
 from typing import Any, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 # Third Party Library
-from pydantic import SerializationInfo, SerializerFunctionWrapHandler, model_serializer
+from pydantic import (
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    TypeAdapter,
+    model_serializer,
+)
 
 # Package Library
 from kgfeg.evals.lp_eval.schemas import (
@@ -33,6 +39,10 @@ from kgfeg.evals.lp_eval.schemas import (
     DiscoveryInventory,
     DiscoverySkip,
     FileFingerprint,
+    FrozenArtifact,
+    FrozenInputManifest,
+    FrozenInputs,
+    FrozenSnapshot,
     SnapshotArtifact,
     ValidatedSnapshot,
 )
@@ -638,6 +648,478 @@ def _equal(*, actual: Any, expected: Any, label: str) -> None:
 
     if actual != expected:
         raise ValueError(f"{label} differs from its source material")
+
+
+def _frozen_artifact_layout(*, artifact: FrozenArtifact, run: DiscoveredRun) -> None:
+    """Check a material name and its original path without resolving output names.
+
+    Parameters
+    ----------
+    artifact
+        Original name and fingerprint.
+    run
+        Owning completed run.
+
+    Raises
+    ------
+    ValueError
+        Artifact identity or containment is invalid.
+    """
+
+    name = Path(artifact.name)
+    fingerprint = artifact.fingerprint
+
+    if name.is_absolute() or name.as_posix() != artifact.name:
+        raise ValueError("Frozen artifact name must be a canonical relative path")
+
+    original = Path(os.path.abspath(run.kgs_directory / name))
+
+    if not original.is_relative_to(run.kgs_directory.parent):
+        raise ValueError("Frozen artifact name escapes its run container")
+
+    if not fingerprint.path.is_absolute() or not fingerprint.path.is_relative_to(
+        run.kgs_directory.parent
+    ):
+        raise ValueError("Frozen original path escapes its run container")
+
+    if len(fingerprint.sha256) != 64 or any(
+        char not in "0123456789abcdef" for char in fingerprint.sha256
+    ):
+        raise ValueError("Invalid frozen SHA-256")
+
+    if isinstance(fingerprint.size_bytes, bool) or fingerprint.size_bytes < 0:
+        raise ValueError("Invalid frozen artifact length")
+
+
+def _frozen_bytes(manifest: FrozenInputManifest) -> bytes:
+    """Serialize the complete input selection with stable ordering and finite JSON.
+
+    Parameters
+    ----------
+    manifest
+        Fixed discovery and validated material bindings.
+
+    Returns
+    -------
+    bytes
+        Canonical UTF-8 manifest, including its terminal newline.
+    """
+
+    return (
+        canonical_lp_json(
+            TypeAdapter(FrozenInputManifest).dump_python(manifest, mode="json")
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _frozen_copy_read(*, artifact: FrozenArtifact, directory: Path) -> bytes:
+    """Read a separate stored copy and validate its actual length, digest and inode.
+
+    Parameters
+    ----------
+    artifact
+        Expected original byte identity.
+    directory
+        Frozen input directory containing SHA-256-named copies.
+
+    Returns
+    -------
+    bytes
+        Exact stored input payload.
+
+    Raises
+    ------
+    ValueError
+        A copy is aliased, linked to another file or fails its byte identity.
+    """
+
+    path = directory / artifact.fingerprint.sha256
+
+    if path.resolve(strict=True) != path or path.stat().st_nlink != 1:
+        raise ValueError(f"Frozen copy is aliased or hard-linked: {path}")
+
+    raw, observed = _read_snapshot_bytes(boundary=directory, path=path)
+    _equal(
+        actual=(observed.sha256, observed.size_bytes),
+        expected=(artifact.fingerprint.sha256, artifact.fingerprint.size_bytes),
+        label=f"Frozen copy {artifact.name}",
+    )
+    return raw
+
+
+@contextmanager
+def _frozen_directory(path: Path) -> Iterator[int]:
+    """Hold an output directory descriptor and detect directory substitution.
+
+    Parameters
+    ----------
+    path
+        Existing physical output directory.
+
+    Yields
+    ------
+    int
+        Directory descriptor for relative output operations.
+
+    Raises
+    ------
+    ValueError
+        The directory changes identity or is aliased.
+    """
+
+    if path.resolve(strict=True) != path:
+        raise ValueError("Frozen directory is aliased")
+
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+
+    try:
+        before = os.fstat(descriptor)
+        yield descriptor
+        after = path.stat()
+
+        if (before.st_dev, before.st_ino) != (
+            after.st_dev,
+            after.st_ino,
+        ) or path.resolve(strict=True) != path:
+            raise ValueError("Frozen directory changed identity")
+    finally:
+        os.close(descriptor)
+
+
+def _frozen_layout(manifest: FrozenInputManifest) -> None:
+    """Check unique selection, safe material locations and manifest coverage.
+
+    Parameters
+    ----------
+    manifest
+        Parsed frozen selection.
+
+    Raises
+    ------
+    ValueError
+        Identities repeat, material names escape their run container, or metadata does
+        not reconcile with the selected inventory.
+    """
+
+    selected = tuple(
+        run for run in manifest.inventory.runs if run.status == "completed_candidate"
+    )
+
+    if (
+        not selected
+        or tuple(snapshot.run for snapshot in manifest.snapshots) != selected
+    ):
+        raise ValueError("Frozen inputs do not exactly cover selected completed runs")
+
+    identities: dict[tuple[str, str], Path] = {}
+
+    for snapshot in manifest.snapshots:
+        _register_run_identity(identities=identities, run=snapshot.run)
+        _frozen_snapshot_layout(snapshot)
+
+    _frozen_output_boundary(
+        inventory=manifest.inventory, output=manifest.inventory.evaluation_root
+    )
+
+
+def _frozen_manifest(reference: FrozenInputs) -> FrozenInputManifest:
+    """Read a manifest only at its pinned path and exact byte identity.
+
+    Parameters
+    ----------
+    reference
+        Expected manifest path and digest, retained by the consuming invocation.
+
+    Returns
+    -------
+    FrozenInputManifest
+        Canonically parsed, structurally reconciled fixed selection.
+
+    Raises
+    ------
+    ValueError
+        Manifest bytes, shape, location or identity differ.
+    """
+
+    path = reference.manifest_path
+
+    if not path.is_absolute() or path.resolve(strict=True) != path:
+        raise ValueError("Frozen manifest path must be absolute and unaliased")
+
+    raw, fingerprint = _read_snapshot_bytes(boundary=path.parent, path=path)
+    _equal(
+        actual=fingerprint.sha256,
+        expected=reference.content_hash,
+        label="Frozen manifest hash",
+    )
+    manifest = TypeAdapter(FrozenInputManifest).validate_python(
+        _decode_snapshot_json(raw)
+    )
+    _equal(
+        actual=raw,
+        expected=_frozen_bytes(manifest),
+        label="Frozen manifest schema round trip",
+    )
+    _frozen_layout(manifest)
+    _equal(
+        actual=path,
+        expected=manifest.inventory.evaluation_root
+        / "inputs"
+        / reference.content_hash
+        / "manifest.json",
+        label="Frozen manifest location",
+    )
+    expected = {
+        "manifest.json",
+        *(
+            artifact.fingerprint.sha256
+            for snapshot in manifest.snapshots
+            for artifact in snapshot.artifacts
+        ),
+    }
+    _equal(
+        actual={entry.name for entry in path.parent.iterdir()},
+        expected=expected,
+        label="Frozen directory contents",
+    )
+    return manifest
+
+
+def _frozen_output_boundary(*, inventory: DiscoveryInventory, output: Path) -> None:
+    """Reject output aliases or overlap with any discovered curriculum run container.
+
+    Parameters
+    ----------
+    inventory
+        Original discovery paths, including unfinished runs.
+    output
+        Repository evaluation output root.
+
+    Raises
+    ------
+    ValueError
+        Output is aliased or overlaps a run's source/material container.
+    """
+
+    if not output.is_absolute() or output.resolve(strict=False) != output:
+        raise ValueError("Evaluation output must be an absolute unaliased directory")
+
+    for run in inventory.runs:
+        container = run.kgs_directory.parent
+
+        if output.is_relative_to(container) or container.is_relative_to(output):
+            raise ValueError(
+                f"Evaluation output overlaps curriculum inputs: {container}"
+            )
+
+
+def _frozen_publish(*, directory: Path, payload: bytes) -> None:
+    """Publish the completed manifest atomically without replacing prior evidence.
+
+    Parameters
+    ----------
+    directory
+        Evaluator-owned directory whose copies have already passed verification.
+    payload
+        Canonical complete manifest.
+    """
+
+    name = f".manifest-pending-{uuid4().hex}"
+    _frozen_write(directory=directory, name=name, payload=payload)
+
+    with _frozen_directory(directory) as descriptor:
+        os.link(
+            name,
+            "manifest.json",
+            src_dir_fd=descriptor,
+            dst_dir_fd=descriptor,
+            follow_symlinks=False,
+        )
+        os.unlink(name, dir_fd=descriptor)
+        os.fsync(descriptor)
+
+
+def _frozen_snapshot_layout(snapshot: FrozenSnapshot) -> None:
+    """Require original metadata and safe, unique artifact/absence bindings.
+
+    Parameters
+    ----------
+    snapshot
+        One curriculum's fixed material index.
+
+    Raises
+    ------
+    ValueError
+        Names, digests, source paths, metadata or absences are inconsistent.
+    """
+
+    names = tuple(artifact.name for artifact in snapshot.artifacts)
+
+    if not names or names != tuple(sorted(set(names))):
+        raise ValueError("Frozen artifact names must be nonempty, sorted and unique")
+
+    if snapshot.absent_artifacts != tuple(sorted(set(snapshot.absent_artifacts))):
+        raise ValueError("Frozen absence names must be sorted and unique")
+
+    if (
+        set(names).intersection(snapshot.absent_artifacts)
+        or snapshot.source_artifact not in names
+    ):
+        raise ValueError("Frozen source or absence coverage is inconsistent")
+
+    if snapshot.checkpoint_format not in {"historical_prefix", "journal_bearing"}:
+        raise ValueError("Unsupported frozen checkpoint interpretation")
+
+    for artifact in snapshot.artifacts:
+        _frozen_artifact_layout(artifact=artifact, run=snapshot.run)
+
+    for name in snapshot.absent_artifacts:
+        if Path(name).name != name or name in {"", ".", ".."}:
+            raise ValueError("Invalid frozen absence name")
+
+    fingerprints = {
+        artifact.fingerprint.path: artifact.fingerprint
+        for artifact in snapshot.artifacts
+    }
+
+    for fingerprint in snapshot.run.fingerprints:
+        _equal(
+            actual=fingerprints.get(fingerprint.path),
+            expected=fingerprint,
+            label="Frozen discovery metadata",
+        )
+
+    config = _decode_snapshot_json(snapshot.config_json.encode("utf-8"))
+    _equal(
+        actual=canonical_lp_json(config),
+        expected=snapshot.config_json,
+        label="Frozen configuration encoding",
+    )
+
+
+def _frozen_source_check(snapshot: FrozenSnapshot) -> None:
+    """Verify original selected material remains complete, stable and byte-identical.
+
+    Parameters
+    ----------
+    snapshot
+        Pinned original run, material and absence identities.
+
+    Raises
+    ------
+    ValueError
+        Original material or completion metadata changed.
+    """
+
+    reader = _SnapshotReader(snapshot.run.kgs_directory)
+
+    with _snapshot_ownership(reader):
+        current = _classify_run(
+            kgs_directory=snapshot.run.kgs_directory,
+            results_root=snapshot.run.kgs_directory,
+        )
+        _equal(
+            actual=replace(current, aliases=snapshot.run.aliases),
+            expected=snapshot.run,
+            label="Frozen source completion",
+        )
+
+        for artifact in snapshot.artifacts:
+            _, observed = _read_snapshot_bytes(
+                boundary=snapshot.run.kgs_directory.parent,
+                path=snapshot.run.kgs_directory / artifact.name,
+            )
+            _equal(
+                actual=observed,
+                expected=artifact.fingerprint,
+                label=f"Frozen original {artifact.name}",
+            )
+
+        for name in snapshot.absent_artifacts:
+            if os.path.lexists(snapshot.run.kgs_directory / name):
+                raise ValueError(f"Previously absent source artifact appeared: {name}")
+
+        reader.check_unchanged()
+
+
+def _frozen_store_copies(
+    *, directory: Path, snapshots: tuple[ValidatedSnapshot, ...]
+) -> None:
+    """Copy validated payloads without source hard links, verifying each saved object.
+
+    Parameters
+    ----------
+    directory
+        Newly created evaluator input directory.
+    snapshots
+        Fully validated source bytes.
+    """
+
+    written: set[str] = set()
+
+    for snapshot in snapshots:
+        for artifact in snapshot.artifacts:
+            digest = artifact.fingerprint.sha256
+            _equal(
+                actual=(
+                    hashlib.sha256(artifact.payload).hexdigest(),
+                    len(artifact.payload),
+                ),
+                expected=(digest, artifact.fingerprint.size_bytes),
+                label="Captured snapshot payload",
+            )
+
+            if digest not in written:
+                _frozen_write(
+                    directory=directory, name=digest, payload=artifact.payload
+                )
+                written.add(digest)
+
+            _frozen_copy_read(
+                artifact=FrozenArtifact(
+                    fingerprint=artifact.fingerprint, name=artifact.name
+                ),
+                directory=directory,
+            )
+
+
+def _frozen_write(*, directory: Path, name: str, payload: bytes) -> None:
+    """Write one new evaluator-owned file durably without following aliases.
+
+    Parameters
+    ----------
+    directory
+        Existing unaliased evaluator directory.
+    name
+        Safe generated basename.
+    payload
+        Complete bytes to preserve.
+
+    Raises
+    ------
+    ValueError
+        The output path is unsafe or its directory changes.
+    """
+
+    if directory.resolve(strict=True) != directory or Path(name).name != name:
+        raise ValueError("Unsafe frozen output location")
+
+    with _frozen_directory(directory) as descriptor:
+        file_descriptor = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=descriptor,
+        )
+
+        with os.fdopen(file_descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.fchmod(stream.fileno(), 0o444)
+
+        os.fsync(descriptor)
 
 
 def _is_run_directory(*, evaluation_root: Path, path: Path, resolved: Path) -> bool:
@@ -2394,6 +2876,162 @@ def discover_lp_runs(
         )
 
     return inventory
+
+
+def freeze_lp_inputs(
+    *, inventory: DiscoveryInventory, repository_root: Path
+) -> FrozenInputs:
+    """Validate and freeze exactly the discovery selection into separate input copies.
+
+    The content-addressed directory is reused only when its complete manifest and
+    copies match. Interrupted or invalid existing output fails without repair or
+    overwrite. The manifest is the final commit marker; partial copies are never
+    returned as frozen inputs. This operation prepares inputs only and makes no calls.
+
+    Parameters
+    ----------
+    inventory
+        Fixed discovery selection, including excluded unfinished runs.
+    repository_root
+        Repository whose results/lp_evals directory owns evaluator outputs.
+
+    Returns
+    -------
+    FrozenInputs
+        Exact path and digest to retain in the later evaluation invocation manifest.
+
+    Raises
+    ------
+    LPSnapshotError
+        Selected inputs fail validation, output aliases inputs, or publication fails.
+    """
+
+    try:
+        output = repository_root.resolve(strict=True) / "results" / "lp_evals"
+        _equal(
+            actual=inventory.evaluation_root,
+            expected=output,
+            label="Repository evaluation root",
+        )
+        _frozen_output_boundary(inventory=inventory, output=output)
+        snapshots = validate_lp_snapshots(inventory)
+        manifest = FrozenInputManifest(
+            inventory=inventory,
+            kind="lp_evaluation_inputs",
+            snapshots=tuple(
+                FrozenSnapshot(
+                    absent_artifacts=snapshot.absent_artifacts,
+                    artifacts=tuple(
+                        FrozenArtifact(
+                            fingerprint=artifact.fingerprint, name=artifact.name
+                        )
+                        for artifact in snapshot.artifacts
+                    ),
+                    checkpoint_format=snapshot.checkpoint_format,
+                    config_json=snapshot.config_json,
+                    run=snapshot.run,
+                    source_artifact=snapshot.source_artifact,
+                )
+                for snapshot in snapshots
+            ),
+        )
+        _frozen_layout(manifest)
+        payload = _frozen_bytes(manifest)
+        digest = hashlib.sha256(payload).hexdigest()
+        directory = output / "inputs" / digest
+        reference = FrozenInputs(
+            content_hash=digest, manifest_path=directory / "manifest.json"
+        )
+
+        for snapshot in manifest.snapshots:
+            _frozen_source_check(snapshot)
+
+        _frozen_output_boundary(inventory=inventory, output=output)
+
+        if os.path.lexists(directory):
+            load_frozen_lp_inputs(reference)
+            return reference
+
+        directory.parent.mkdir(parents=True, exist_ok=True)
+
+        if directory.parent.resolve(strict=True) != directory.parent:
+            raise ValueError("Frozen output parent is aliased")
+
+        directory.mkdir()
+        _frozen_store_copies(directory=directory, snapshots=snapshots)
+
+        for snapshot in manifest.snapshots:
+            _frozen_source_check(snapshot)
+
+        _frozen_publish(directory=directory, payload=payload)
+        load_frozen_lp_inputs(reference)
+        return reference
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        raise LPSnapshotError(f"Cannot freeze LP inputs: {exc}") from exc
+
+
+def load_frozen_lp_inputs(reference: FrozenInputs) -> tuple[ValidatedSnapshot, ...]:
+    """Read only the pinned selection, verifying original inputs and separate copies.
+
+    This function never discovers runs, adds newly completed curricula, rewrites
+    evidence or interprets the input manifest as evaluation completion. Returned
+    payloads come from the preserved copies. The caller retains the pinned reference
+    and revalidates before subsequent use.
+
+    Parameters
+    ----------
+    reference
+        Manifest path and digest from the consuming invocation.
+
+    Returns
+    -------
+    tuple[ValidatedSnapshot, ...]
+        Copy-backed payloads with their original identities and configuration.
+
+    Raises
+    ------
+    LPSnapshotError
+        Manifest, selected originals, stored copies or required absences changed.
+    """
+
+    try:
+        manifest = _frozen_manifest(reference)
+        snapshots = []
+
+        for snapshot in manifest.snapshots:
+            _frozen_source_check(snapshot)
+            artifacts = tuple(
+                SnapshotArtifact(
+                    fingerprint=artifact.fingerprint,
+                    name=artifact.name,
+                    payload=_frozen_copy_read(
+                        artifact=artifact, directory=reference.manifest_path.parent
+                    ),
+                )
+                for artifact in snapshot.artifacts
+            )
+            snapshots.append(
+                ValidatedSnapshot(
+                    absent_artifacts=snapshot.absent_artifacts,
+                    artifacts=artifacts,
+                    checkpoint_format=snapshot.checkpoint_format,
+                    config_json=snapshot.config_json,
+                    run=snapshot.run,
+                    source_artifact=snapshot.source_artifact,
+                )
+            )
+
+        for snapshot in manifest.snapshots:
+            _frozen_source_check(snapshot)
+
+        _equal(
+            actual=_frozen_manifest(reference),
+            expected=manifest,
+            label="Frozen manifest stability",
+        )
+        return tuple(snapshots)
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        raise LPSnapshotError(f"Invalid frozen LP inputs: {exc}") from exc
 
 
 def validate_lp_snapshot(run: DiscoveredRun) -> ValidatedSnapshot:
