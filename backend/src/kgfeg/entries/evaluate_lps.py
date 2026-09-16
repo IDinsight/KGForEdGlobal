@@ -6,6 +6,24 @@ python src/kgfeg/entries/evaluate_lps.py ../results/kg_for_ed
 
 The command performs local preflight, frozen preparation, judging/resume and reporting.
 It can make live judge calls. Preparation remains separately callable without a client.
+
+To run a shorter version of this evaluation pipeline, use:
+
+python src/kgfeg/entries/evaluate_lps.py \
+  ../results/kg_for_ed \
+  --new-invocation \
+  --production-pairs-per-outcome 1 \
+  --production-examples-per-tag 1 \
+  --independent-uniform-pairs 1 \
+  --independent-pairs-per-tag 1 \
+  --diagnostic-pairs-per-cohort 1 \
+  --base-blind-replicates 1 \
+  --additional-diagnostic-replicates 1 \
+  --critique-replicates 1 \
+  --variant-replicates 1 \
+  --synthetic-cases-per-family 1 \
+  --synthetic-control-replicates 1 \
+  --lexical-baseline-top-k 1
 """
 
 # Standard Library

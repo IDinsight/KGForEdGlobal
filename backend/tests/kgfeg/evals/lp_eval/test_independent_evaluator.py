@@ -5,9 +5,13 @@ from __future__ import annotations
 
 # Standard Library
 import asyncio
+import builtins
 import hashlib
+import io
 import itertools
 import json
+import os
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -16,7 +20,7 @@ from collections import Counter
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from unittest.mock import Mock
 from uuid import UUID
 
@@ -47,6 +51,10 @@ from kgfeg.evals.lp_eval.schemas import (
     UpstreamEvidenceSource,
     resolve_evaluation_settings,
 )
+from tests.fixtures.lp_eval.snapshot_fixtures import (
+    build_snapshot,
+    load_historical_snapshot,
+)
 from tests.kgfeg.kgs import test_lp_selection as selection_fixtures
 
 # Private pytest fixtures are used parameters, not intentionally ignored arguments.
@@ -54,7 +62,9 @@ from tests.kgfeg.kgs import test_lp_selection as selection_fixtures
 
 
 _ROOT = Path(__file__).resolve().parents[5]
-_MANIFEST_HASH = "2c8660aeab6a70494ed7c9fe3119004090cf96210bf3b048a9b1a0c08f8038e1"
+# Two five-SFI and one six-SFI fixtures yield 10, 10 and 15 unordered pairs. Both default
+# cohorts select all pairs. Per curriculum: 2P + I + 7(min(P,12)+min(I,12)) + 75.
+_EXPECTED_REQUESTS = 245 + 288 + 245
 _PROFILES = (
     "madhi_math",
     "nigeria_math",
@@ -83,74 +93,31 @@ def _dump(value: Any) -> str:
 
 @pytest.fixture(scope="module")
 def _frozen(tmp_path_factory: pytest.TempPathFactory) -> FrozenInputs:
-    """Freeze the fixed development selection afresh without changing its material.
-
-    The historical manifest pins the four source directories and every original
-    artifact hash. Its old lock-absence observations are not a reusable invocation.
-    Revalidate completed sources and record their current ownership state in a new
-    temporary manifest. Every later read still enforces that manifest's frozen state.
+    """Build and freeze synthetic runs without reading any repository results.
 
     Parameters
     ----------
     tmp_path_factory
-        Factory for isolated evaluator copies outside the repository results tree.
+        Factory for isolated test-owned source and evaluation artifacts.
 
     Returns
     -------
     FrozenInputs
-        Newly validated temporary snapshot of the unchanged development material.
+        Three fully validated synthetic curricula in temporary storage.
     """
-    path = _ROOT / "results/lp_evals/inputs" / _MANIFEST_HASH / "manifest.json"
-    original_bytes = path.read_bytes()
-    assert hashlib.sha256(original_bytes).hexdigest() == _MANIFEST_HASH
-    original = sampling._frozen_manifest(
-        FrozenInputs(content_hash=_MANIFEST_HASH, manifest_path=path)
-    )
     repository = tmp_path_factory.mktemp("lp-evaluator-inputs").resolve()
-    output = repository / "results/lp_evals"
-    runs = []
-    for snapshot in original.snapshots:
-        inventory = sampling.discover_lp_runs(
-            evaluation_root=output, results_root=snapshot.run.kgs_directory
-        )
-        assert len(inventory.runs) == 1
-        run = inventory.runs[0]
-        assert run.status == "completed_candidate"
-        assert run.kgs_directory == snapshot.run.kgs_directory
-        assert run.doc_key == snapshot.run.doc_key
-        assert run.framework_uuid == snapshot.run.framework_uuid
-        runs.append(run)
-    reference = sampling.freeze_lp_inputs(
-        inventory=replace(
-            original.inventory,
-            aliases=(),
-            evaluation_root=output,
-            runs=tuple(runs),
-            skipped_paths=(),
-        ),
-        repository_root=repository,
+    sources = repository / "synthetic-runs"
+    for count, identity in ((5, 10000), (6, 20000)):
+        build_snapshot(count=count, identity=identity, root=sources)
+    load_historical_snapshot(sources)
+    inventory = sampling.discover_lp_runs(
+        evaluation_root=repository / "results/lp_evals", results_root=sources
     )
-    observed = sampling.load_frozen_lp_inputs(reference)
-    assert len(observed) == len(original.snapshots) == 4
-    for expected, current in zip(original.snapshots, observed, strict=True):
-        assert current.run.kgs_directory == expected.run.kgs_directory
-        assert current.checkpoint_format == expected.checkpoint_format
-        assert current.config_json == expected.config_json
-        assert current.source_artifact == expected.source_artifact
-        assert {
-            item.name: (item.fingerprint.sha256, item.fingerprint.size_bytes)
-            for item in current.artifacts
-        } == {
-            item.name: (item.fingerprint.sha256, item.fingerprint.size_bytes)
-            for item in expected.artifacts
-        }
-        assert set(current.absent_artifacts) - {".lp_generation.lock"} == (
-            set(expected.absent_artifacts) - {".lp_generation.lock"}
-        )
-        assert (".lp_generation.lock" in current.absent_artifacts) == (
-            not (current.run.kgs_directory / ".lp_generation.lock").exists()
-        )
-    assert path.read_bytes() == original_bytes
+    assert len(inventory.runs) == 3
+    assert all(run.status == "completed_candidate" for run in inventory.runs)
+    reference = sampling.freeze_lp_inputs(
+        inventory=inventory, repository_root=repository
+    )
     assert reference.manifest_path.is_relative_to(repository)
     return reference
 
@@ -277,6 +244,66 @@ def _report_inputs(_schedule: Any) -> Any:
     return scoring.prepare_report_inputs(_schedule)
 
 
+@pytest.fixture(autouse=True, scope="module")
+def _results_are_not_test_inputs() -> Any:
+    """Forbid repository-result reads, including during module fixture setup.
+
+    Yields
+    ------
+    Any
+        Restoring read guards; isolated pytest artifacts remain available.
+    """
+    results = (_ROOT / "results").resolve()
+
+    def _guard(operation: Callable[..., Any]) -> Callable[..., Any]:
+        """Wrap a file or directory reader without restricting temporary fixtures.
+
+        Parameters
+        ----------
+        operation
+            Original reader restored after the module finishes.
+
+        Returns
+        -------
+        Callable[..., Any]
+            Reader rejecting accidental dependencies on local generated results.
+        """
+
+        def _read(*args: Any, **kwargs: Any) -> Any:
+            """Check the requested location before delegating to the real reader.
+
+            Parameters
+            ----------
+            args
+                Positional reader arguments.
+            kwargs
+                Named reader arguments.
+
+            Returns
+            -------
+            Any
+                Original reader result.
+            """
+            file = args[0] if args else kwargs.get("file", kwargs.get("path", "."))
+            if isinstance(file, (str, bytes, os.PathLike)):
+                assert (
+                    not Path(os.fsdecode(file)).resolve().is_relative_to(results)
+                ), "Evaluator pytest must not read repository results"
+            return operation(*args, **kwargs)
+
+        return _read
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        for target, name in (
+            (builtins, "open"),
+            (io, "open"),
+            (os, "listdir"),
+            (os, "scandir"),
+        ):
+            monkeypatch.setattr(target, name, _guard(getattr(target, name)))
+        yield
+
+
 def _run_metadata(
     *, directory: Path, identity: int = 1, status: str | None = "success"
 ) -> None:
@@ -323,7 +350,7 @@ def _schedule(_frozen: FrozenInputs) -> Any:
     Parameters
     ----------
     _frozen
-        Authenticated four-curriculum development manifest reference.
+        Authenticated synthetic multi-curriculum manifest reference.
 
     Returns
     -------
@@ -529,8 +556,8 @@ def test_all_requests_offline_execution_reporting_and_denominators(
                 transport=_Transport(),
             ).run()
         )
-        assert len(cache.judgments) == 1607
-        assert len(cache.events) == 3214
+        assert len(cache.judgments) == _EXPECTED_REQUESTS
+        assert len(cache.events) == 2 * _EXPECTED_REQUESTS
         report = scoring.score_evaluation(
             cache=cache,
             inputs=_report_inputs,
@@ -538,8 +565,15 @@ def test_all_requests_offline_execution_reporting_and_denominators(
         )
         material = json.loads(report.report_json)
         assert material["execution_complete"]
-        assert material["valid_judgments"] == material["planned_judgments"] == 1607
-        assert material["usage_summary"]["tokens"]["input_tokens"]["total"] == 1607 * 7
+        assert (
+            material["valid_judgments"]
+            == material["planned_judgments"]
+            == _EXPECTED_REQUESTS
+        )
+        assert (
+            material["usage_summary"]["tokens"]["input_tokens"]["total"]
+            == _EXPECTED_REQUESTS * 7
+        )
         assert material["usage_summary"]["cost"]["total_by_currency"] is None
         for metric in material["metrics"]:
             assert metric["valid"] == metric["ambiguous"] == metric["planned"]
@@ -568,7 +602,7 @@ def test_blind_view_retains_facts_and_original_critique_boundary(
     Parameters
     ----------
     _frozen
-        Authenticated four-curriculum development manifest reference.
+        Authenticated synthetic multi-curriculum manifest reference.
     """
     snapshot = sampling.load_frozen_lp_inputs(_frozen)[0]
     population = sampling.build_admissible_population(
@@ -1155,12 +1189,12 @@ def test_execution_timeout_is_applied_per_attempt(
 def test_frozen_input_full_validation_and_byte_preservation(
     _frozen: FrozenInputs,
 ) -> None:
-    """Revalidate historical and current snapshots without production resume.
+    """Revalidate synthetic historical and current snapshots without production resume.
 
     Parameters
     ----------
     _frozen
-        Authenticated four-curriculum development manifest reference.
+        Authenticated synthetic multi-curriculum manifest reference.
     """
     snapshots = sampling.load_frozen_lp_inputs(_frozen)
     before = {
@@ -1175,10 +1209,10 @@ def test_frozen_input_full_validation_and_byte_preservation(
         assert {a.name: a.fingerprint.sha256 for a in validated.artifacts} == {
             a.name: a.fingerprint.sha256 for a in snapshot.artifacts
         }
-    assert len(snapshots) == 4
+    assert len(snapshots) == 3
     assert Counter(s.checkpoint_format for s in snapshots) == {
-        "historical_prefix": 3,
-        "journal_bearing": 1,
+        "historical_prefix": 1,
+        "journal_bearing": 2,
     }
     assert before == {
         path: hashlib.sha256(path.read_bytes()).hexdigest() for path in before
@@ -1259,10 +1293,10 @@ def test_incomplete_cache_cannot_report_completion(
     )
     material = json.loads(report.report_json)
     assert not material["execution_complete"]
-    assert material["missing_judgments"] == 1607
+    assert material["missing_judgments"] == _EXPECTED_REQUESTS
     assert material["valid_judgments"] == 0
     assert all(metric["ambiguous"] == 0 for metric in material["metrics"])
-    assert len(report.failures_jsonl.splitlines()) == 1607
+    assert len(report.failures_jsonl.splitlines()) == _EXPECTED_REQUESTS
 
 
 def test_independent_selection_is_unchanged_by_production_join(_schedule: Any) -> None:
@@ -1809,7 +1843,10 @@ def test_response_identity_schema_and_reference_rejections(
     elif mutation == "pair":
         material["pair_id"] = "wrong"
     elif mutation == "endpoint":
-        material["first_sfi_uuid"] = str(UUID(int=1))
+        material["first_sfi_uuid"] = str(UUID(int=2**128 - 1))
+        assert material["first_sfi_uuid"] not in {
+            str(uid) for uid in request.canonical_endpoint_uuids
+        }
     elif mutation == "evidence":
         material["evidence_references"] = ["/hidden"]
     elif mutation == "direction":
@@ -1832,8 +1869,8 @@ def test_schedule_counts_overlap_repetitions_and_identities(_schedule: Any) -> N
         Complete default development request schedule.
     """
     requests = [r for c in _schedule.curricula for r in c.requests]
-    assert len(requests) == _schedule.total_requests == 1607
-    assert sorted(len(c.requests) for c in _schedule.curricula) == [394, 395, 408, 410]
+    assert len(requests) == _schedule.total_requests == _EXPECTED_REQUESTS
+    assert sorted(len(c.requests) for c in _schedule.curricula) == [245, 245, 288]
     material = TypeAdapter(EvaluationSchedule).dump_python(_schedule, mode="json")
     recorded_hash = material.pop("material_content_hash")
     assert hashlib.sha256(_dump(material).encode()).hexdigest() == recorded_hash
@@ -1994,6 +2031,74 @@ def test_store_excludes_concurrent_writers(tmp_path: Path) -> None:
         with pytest.raises((ValueError, OSError)):
             with judge._exclusive_store_lock(path):
                 pytest.fail("Second writer acquired the same store")
+
+
+@pytest.mark.parametrize("checkpoint_format", ["historical_prefix", "journal_bearing"])
+@pytest.mark.parametrize(
+    "mutation",
+    ["source", "configuration", "response", "projection", "journal", "missing"],
+)
+def test_snapshot_integrity_rejects_tampered_test_artifacts(
+    _frozen: FrozenInputs, checkpoint_format: str, mutation: str, tmp_path: Path
+) -> None:
+    """Require real validation to reject corrupt copies of both checkpoint formats.
+
+    Parameters
+    ----------
+    _frozen
+        Authenticated synthetic historical and current snapshots.
+    checkpoint_format
+        Format whose full source/config/checkpoint bindings are challenged.
+    mutation
+        Independently selected corruption, never applied to production evidence.
+    tmp_path
+        Isolated attack copy preserving the untouched module fixtures.
+    """
+    snapshot = next(
+        item
+        for item in sampling.load_frozen_lp_inputs(_frozen)
+        if item.checkpoint_format == checkpoint_format
+    )
+    copied = tmp_path / "source"
+    shutil.copytree(snapshot.run.kgs_directory.parent, copied)
+    directory = copied / "kgs"
+    if mutation == "source":
+        path = copied / "document_ir.json"
+        material = json.loads(path.read_bytes())
+        material["doc_key"] = "different-synthetic-source"
+        path.write_text(_dump(material))
+    elif mutation == "configuration":
+        path = directory / "kg_run.json"
+        material = json.loads(path.read_bytes())
+        material["extra"]["lp"]["producer_instructions"] += " Changed."
+        path.write_text(_dump(material))
+    elif mutation == "response":
+        path = directory / "lp_generation_responses.jsonl"
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        rows[0]["payload"]["judgments"][0]["rationale"] = "Changed synthetic rationale."
+        path.write_text("".join(_dump(row) + "\n" for row in rows))
+    elif mutation == "projection":
+        (directory / "as_lc_lp_relationships.jsonl").write_text("")
+    elif mutation == "journal":
+        (directory / "lp_generation_usage.json").write_text("{}\n")
+    else:
+        (directory / "lp_generation_draft_responses.jsonl").unlink()
+    before = {
+        path.relative_to(copied): path.read_bytes()
+        for path in copied.rglob("*")
+        if path.is_file()
+    }
+    run = sampling.discover_lp_runs(
+        evaluation_root=tmp_path / "eval", results_root=directory
+    ).runs[0]
+    assert run.status == "completed_candidate"
+    with pytest.raises(sampling.LPSnapshotError):
+        sampling.validate_lp_snapshot(run)
+    assert before == {
+        path.relative_to(copied): path.read_bytes()
+        for path in copied.rglob("*")
+        if path.is_file()
+    }
 
 
 def test_swapped_endpoint_assessment_is_remapped(_schedule: Any) -> None:
