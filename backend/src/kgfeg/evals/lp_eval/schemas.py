@@ -203,7 +203,7 @@ class CritiqueJudgment(BaseModel):
 
     @model_validator(mode="after")
     def _validate_assessment(self) -> Self:
-        """Require distinct endpoints and a consistent fully-grounded assessment.
+        """Require distinct endpoints and grounding consistent with claim support.
 
         Returns
         -------
@@ -213,16 +213,34 @@ class CritiqueJudgment(BaseModel):
         Raises
         ------
         ValueError
-            If identity, required text or a fully-grounded claim set is invalid.
+            If identity, required text or aggregate grounding is inconsistent.
         """
 
         if self.first_sfi_uuid == self.second_sfi_uuid:
             raise ValueError("Critique endpoints must be distinct.")
 
-        if self.grounding == "grounded" and any(
-            claim.support != "supported" for claim in self.claims
-        ):
+        support_states = {claim.support for claim in self.claims}
+
+        if self.grounding == "grounded" and support_states != {"supported"}:
             raise ValueError("A grounded rationale must support every material claim.")
+
+        if self.grounding == "partially_grounded" and (
+            "supported" not in support_states or support_states == {"supported"}
+        ):
+            raise ValueError(
+                "A partially grounded rationale must support some but not all claims."
+            )
+
+        # A contradicted central justification can outweigh other supported claims;
+        # whether it is central remains the critic's evidence-based assessment.
+        if (
+            self.grounding == "unsupported"
+            and "supported" in support_states
+            and "contradicted" not in support_states
+        ):
+            raise ValueError(
+                "An unsupported rationale with supported claims needs a contradiction."
+            )
 
         _validate_judgment_text(
             references=(), texts=(self.explanation, self.pair_id, self.request_id)

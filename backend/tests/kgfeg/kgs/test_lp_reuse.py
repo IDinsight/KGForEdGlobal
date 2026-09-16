@@ -449,6 +449,7 @@ def test_entry_exact_reuse_skips_lp_stages_preserves_checkpoints_and_records_zer
         harness.proposals.default_decision = outcome
     harness._install(monkeypatch=monkeypatch, real_lp=True)
     create_kgs.create(harness.config_path)
+    assert (harness.root / ".lp_generation.lock").is_file()
     before = _state(harness.root)
     expected = json.loads(before[_BUNDLE][0])
     for name in _PROJECTIONS:

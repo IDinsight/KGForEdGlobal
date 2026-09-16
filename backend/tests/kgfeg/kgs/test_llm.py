@@ -71,8 +71,8 @@ def test_learning_progressions_model_settings_resolve_from_shared_kg_model(
     assert model_config.kgs_settings("learning_progressions") == expected_settings
 
 
-def test_no_learning_progressions_model_environment_setting_exists() -> None:
-    """LP uses the shared KG model field without a dedicated environment setting."""
+def test_no_separate_production_learning_progressions_model_setting_exists() -> None:
+    """Production LP shares the KG model; only its evaluator has a dedicated field."""
 
     model_fields = set(BackendSettings.model_fields)
     progression_model_fields = {
@@ -83,7 +83,7 @@ def test_no_learning_progressions_model_environment_setting_exists() -> None:
     }
 
     assert "LLM_KG_MODEL" in model_fields
-    assert progression_model_fields == set()
+    assert progression_model_fields == {"LLM_LP_EVAL_JUDGE_MODEL"}
 
 
 def test_usage_tracker_aggregates_learning_progressions_with_existing_buckets() -> None:

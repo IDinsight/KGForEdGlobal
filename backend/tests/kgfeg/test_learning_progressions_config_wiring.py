@@ -224,7 +224,7 @@ def _expected_lp_policy(profile_name: str) -> dict[str, Any]:
         "evidence_limits": {
             **deepcopy(_COMMON_EVIDENCE_LIMITS),
             "max_source_evidence_characters_per_sfi": (
-                3000 if profile_name == "pratham_science" else 2000
+                3000 if profile_name in {"ghana_math", "pratham_science"} else 2000
             ),
         },
         "max_concurrent_requests": 4,

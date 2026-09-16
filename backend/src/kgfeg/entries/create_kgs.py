@@ -7,8 +7,6 @@ python src/kgfeg/entries/create_kgs.py ../examples/ghana/config_math_curriculum.
 """
 
 # Standard Library
-import fcntl
-import os
 import sys
 import traceback
 
@@ -426,6 +424,9 @@ def create(
         Learning Progressions producer/checker calls.
     5. Build the knowledge graphs.
 
+    Successful runs retain the generation lock inode for safe completed-run reuse and
+    mutual exclusion with competing processes.
+
     Parameters
     ----------
     config_fp
@@ -497,27 +498,6 @@ def create(
         kg_run.extra["usage"] = usage_tracker.to_dict()
         kg_run.completed_at = datetime.now(timezone.utc)
         write_to_json(fp=kg_dirs.root / "kg_run.json", json_info=kg_run)
-
-    # Reached only after successful completion and successful metadata persistence.
-    lock_path = kg_dirs.root / ".lp_generation.lock"
-
-    try:
-        with lock_path.open("rb") as lock:
-            try:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                # Another run owns this file; leave it alone.
-                return
-
-            # Do not delete a replacement file at the same pathname.
-            if not os.path.samestat(os.fstat(lock.fileno()), lock_path.stat()):
-                return
-
-            lock_path.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError as error:
-        logger.warning(f"KG completed, but lock-file cleanup failed: {error}")
 
 
 if __name__ == "__main__":

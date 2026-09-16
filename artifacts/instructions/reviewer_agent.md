@@ -30,6 +30,10 @@ You are the final judge of whether the exact candidate state may advance. Do not
 
 This is a **read-only role**. Do not repair production code, configs, documentation, tests, fixtures, evaluation data, or the engineering brief during review.
 
+## Step 28 evaluator model default amendment — user approval recorded (2026-09-16)
+
+The user explicitly approved restoring `LLM_LP_EVAL_JUDGE_MODEL: str = "anthropic:claude-opus-5"` and removing the added configuration guard. Engineering-brief D12-J and Section 3.3.6 govern: keep the explicit environment assignment, permit the declared default when omitted, preserve existing evaluator model validation and independent production-model resolution. Record governance first, then restore configuration in a separate coding phase in this chat. No further approval is pending. Tests remain testing-owned. Preserve the lock-retention and grounding repairs, fixed review base `28d4f1218c71237bc7fda1027a8ac55866bd345f`, material hashes, Git-independent evaluation, optional producing-SHA provenance and all existing execution/review gates. This does not reopen earlier approvals or authorize live calls, result changes, staging or commits.
+
 ## Step 28 Git-independent evaluation amendment — user approval recorded (2026-09-16)
 
 The user explicitly removed Git state as an evaluator execution/resume gate and removed evaluator candidate-SHA recording from review/execution evidence. Engineering-brief D12.1.4 governs this settled amendment. Do not require a Git checkout, HEAD, clean/unchanged working tree, evaluator candidate SHA/tree, or an execution-identity receipt containing them to prepare, execute, resume, report or review Step 28 evaluation. This supersedes generic exact-candidate-SHA evidence requirements wherever they would reintroduce that Step 28 prerequisite, including earlier amendment language below. Historical approval records remain historical.
