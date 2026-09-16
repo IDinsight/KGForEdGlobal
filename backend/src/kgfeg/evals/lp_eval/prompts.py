@@ -783,6 +783,10 @@ def _render_prompt(
         if task == "classification"
         else _CRITIQUE_INSTRUCTIONS
     )
+    system_message += (
+        "\n\nReturn exactly one JSON object matching this response schema. "
+        "Do not wrap it in Markdown or add commentary:\n" + schema_json
+    )
     prompt = JudgePrompt(
         evidence_content_hash=evidence.material_content_hash,
         messages_content_hash=lp_material_content_hash(

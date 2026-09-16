@@ -711,6 +711,22 @@ class JudgePrompt:
     user_message: str
 
 
+@dataclass(frozen=True, slots=True)
+class JudgeReply:
+    """One transport response before scheduled output validation.
+
+    Attributes
+    ----------
+    response_json
+        Exact returned text. Malformed JSON remains available as failure evidence.
+    usage
+        Available accounting from this attempt, including unknown values.
+    """
+
+    response_json: str
+    usage: JudgeUsage
+
+
 class JudgeUsage(BaseModel):
     """Observed per-attempt accounting; unavailable values remain explicitly null.
 
