@@ -82,17 +82,77 @@ def _dump(value: Any) -> str:
 
 
 @pytest.fixture(scope="module")
-def _frozen() -> FrozenInputs:
-    """Authenticate the supplied frozen manifest before reading its snapshots.
+def _frozen(tmp_path_factory: pytest.TempPathFactory) -> FrozenInputs:
+    """Freeze the fixed development selection afresh without changing its material.
+
+    The historical manifest pins the four source directories and every original
+    artifact hash. Its old lock-absence observations are not a reusable invocation.
+    Revalidate completed sources and record their current ownership state in a new
+    temporary manifest. Every later read still enforces that manifest's frozen state.
+
+    Parameters
+    ----------
+    tmp_path_factory
+        Factory for isolated evaluator copies outside the repository results tree.
 
     Returns
     -------
     FrozenInputs
-        Authenticated frozen test material for dependent checks.
+        Newly validated temporary snapshot of the unchanged development material.
     """
     path = _ROOT / "results/lp_evals/inputs" / _MANIFEST_HASH / "manifest.json"
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == _MANIFEST_HASH
-    return FrozenInputs(content_hash=_MANIFEST_HASH, manifest_path=path)
+    original_bytes = path.read_bytes()
+    assert hashlib.sha256(original_bytes).hexdigest() == _MANIFEST_HASH
+    original = sampling._frozen_manifest(
+        FrozenInputs(content_hash=_MANIFEST_HASH, manifest_path=path)
+    )
+    repository = tmp_path_factory.mktemp("lp-evaluator-inputs").resolve()
+    output = repository / "results/lp_evals"
+    runs = []
+    for snapshot in original.snapshots:
+        inventory = sampling.discover_lp_runs(
+            evaluation_root=output, results_root=snapshot.run.kgs_directory
+        )
+        assert len(inventory.runs) == 1
+        run = inventory.runs[0]
+        assert run.status == "completed_candidate"
+        assert run.kgs_directory == snapshot.run.kgs_directory
+        assert run.doc_key == snapshot.run.doc_key
+        assert run.framework_uuid == snapshot.run.framework_uuid
+        runs.append(run)
+    reference = sampling.freeze_lp_inputs(
+        inventory=replace(
+            original.inventory,
+            aliases=(),
+            evaluation_root=output,
+            runs=tuple(runs),
+            skipped_paths=(),
+        ),
+        repository_root=repository,
+    )
+    observed = sampling.load_frozen_lp_inputs(reference)
+    assert len(observed) == len(original.snapshots) == 4
+    for expected, current in zip(original.snapshots, observed, strict=True):
+        assert current.run.kgs_directory == expected.run.kgs_directory
+        assert current.checkpoint_format == expected.checkpoint_format
+        assert current.config_json == expected.config_json
+        assert current.source_artifact == expected.source_artifact
+        assert {
+            item.name: (item.fingerprint.sha256, item.fingerprint.size_bytes)
+            for item in current.artifacts
+        } == {
+            item.name: (item.fingerprint.sha256, item.fingerprint.size_bytes)
+            for item in expected.artifacts
+        }
+        assert set(current.absent_artifacts) - {".lp_generation.lock"} == (
+            set(expected.absent_artifacts) - {".lp_generation.lock"}
+        )
+        assert (".lp_generation.lock" in current.absent_artifacts) == (
+            not (current.run.kgs_directory / ".lp_generation.lock").exists()
+        )
+    assert path.read_bytes() == original_bytes
+    assert reference.manifest_path.is_relative_to(repository)
+    return reference
 
 
 @pytest.fixture(autouse=True)
@@ -1125,7 +1185,9 @@ def test_frozen_input_full_validation_and_byte_preservation(
     }
 
 
-@pytest.mark.parametrize("mutation", ["changed", "missing", "appeared"])
+@pytest.mark.parametrize(
+    "mutation", ["changed", "missing", "appeared", "lock_appeared"]
+)
 def test_frozen_source_detects_changed_missing_and_new_material(
     mutation: str, tmp_path: Path
 ) -> None:
@@ -1149,7 +1211,7 @@ def test_frozen_source_detects_changed_missing_and_new_material(
         evaluation_root=tmp_path / "out", results_root=tmp_path
     )
     snapshot = FrozenSnapshot(
-        absent_artifacts=("later.json",),
+        absent_artifacts=(".lp_generation.lock", "later.json"),
         artifacts=(
             FrozenArtifact(
                 fingerprint=FileFingerprint(
@@ -1170,6 +1232,8 @@ def test_frozen_source_detects_changed_missing_and_new_material(
         path.write_bytes(b"tampered")
     elif mutation == "missing":
         path.unlink()
+    elif mutation == "lock_appeared":
+        (directory / ".lp_generation.lock").touch()
     else:
         (directory / "later.json").write_text("new")
     with pytest.raises((OSError, ValueError)):
