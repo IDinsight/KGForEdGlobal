@@ -15,6 +15,93 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+class AttemptEvent(BaseModel):
+    """Append-only start or terminal evidence for one scheduled API attempt.
+
+    A durable start without a terminal event represents an interrupted, possibly billed
+    attempt. It cannot be mistaken for an unattempted request or a success.
+    """
+
+    attempt_number: int = Field(ge=1, le=3)
+    event: Literal["started", "succeeded", "failed"]
+    failure_category: (
+        Literal[
+            "timeout",
+            "rate_limit",
+            "server_error",
+            "invalid_output",
+            "interrupted",
+            "authentication",
+            "configuration",
+            "invalid_input",
+            "transport",
+        ]
+        | None
+    ) = None
+    failure_message: str | None = None
+    judgment_json: str | None = None
+    raw_response: str | None = None
+    request_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    request_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    timestamp: datetime
+    usage: JudgeUsage | None = None
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    @model_validator(mode="after")
+    def _validate_event(self) -> Self:
+        """Require timezone-aware times and disjoint start/success/failure payloads.
+
+        Returns
+        -------
+        Self
+            Structurally complete attempt event.
+
+        Raises
+        ------
+        ValueError
+            If the event mixes outcomes, omits accounting or has a naive timestamp.
+        """
+
+        if self.timestamp.utcoffset() is None:
+            raise ValueError("Attempt timestamp must include a timezone.")
+
+        if self.event == "started":
+            if any(
+                value is not None
+                for value in (
+                    self.failure_category,
+                    self.failure_message,
+                    self.judgment_json,
+                    self.raw_response,
+                    self.usage,
+                )
+            ):
+                raise ValueError("A start event cannot contain an outcome.")
+        elif self.usage is None:
+            raise ValueError(
+                "Every terminal attempt requires explicit usage accounting."
+            )
+        elif self.event == "succeeded":
+            if (
+                self.judgment_json is None
+                or self.failure_category is not None
+                or self.failure_message is not None
+            ):
+                raise ValueError("Successful attempts require only a valid judgment.")
+        elif (
+            self.judgment_json is not None
+            or self.failure_category is None
+            or not self.failure_message
+            or not self.failure_message.strip()
+        ):
+            raise ValueError(
+                "Failed attempts require a category and meaningful explanation."
+            )
+
+        return self
+
+
 class ClassificationJudgment(BaseModel):
     """Independent relationship assessment, never a production truth label.
 
@@ -244,6 +331,25 @@ class DiscoverySkip:
 
 
 @dataclass(frozen=True, slots=True)
+class EvaluationCache:
+    """Validated outcomes and complete attempt history from a frozen invocation.
+
+    Attributes
+    ----------
+    events
+        Ordered, immutable start and terminal events, including every failed attempt.
+    judgments
+        Successful scheduled responses, retaining every replicate separately.
+    unfinished
+        Started attempts without a terminal event; their usage remains unknown.
+    """
+
+    events: tuple[AttemptEvent, ...]
+    judgments: tuple[ClassificationJudgment | CritiqueJudgment, ...]
+    unfinished: tuple[AttemptEvent, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class EvaluationPair:
     """Canonical framework-contained pair identity without a semantic label.
 
@@ -424,6 +530,47 @@ class EvaluationSettings(BaseModel):
 
 
 @dataclass(frozen=True, slots=True)
+class EvaluationStore:
+    """Pinned manifest reference for an invocation, independent of discovery.
+
+    Attributes
+    ----------
+    content_hash
+        SHA-256 of the canonical invocation manifest.
+    manifest_path
+        Absolute invocation manifest path under the evaluator output directory.
+    """
+
+    content_hash: str
+    manifest_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationStoreManifest:
+    """Exact frozen schedule location and deterministic invocation lookup identity.
+
+    Attributes
+    ----------
+    inputs
+        Original frozen input selection.
+    kind
+        Explicit version of this storage contract.
+    schedule_content_hash
+        Material identity of the full schedule.
+    schedule_sha256
+        SHA-256 of the compressed schedule bytes.
+    selector_hash
+        Starting-directory and effective-settings identity, never a latest-run hint.
+    """
+
+    inputs: FrozenInputs
+    kind: Literal["lp_evaluation_store_v1"]
+    schedule_content_hash: str
+    schedule_sha256: str
+    selector_hash: str
+
+
+@dataclass(frozen=True, slots=True)
 class FileFingerprint:
     """Actual input bytes observed at a resolved path.
 
@@ -562,6 +709,54 @@ class JudgePrompt:
     system_message: str
     task: Literal["classification", "critique"]
     user_message: str
+
+
+class JudgeUsage(BaseModel):
+    """Observed per-attempt accounting; unavailable values remain explicitly null.
+
+    Token categories are provider observations and need not be additive. Cost is
+    recorded only when supplied, with its currency; no price estimate is required.
+    """
+
+    cache_read_tokens: int | None = Field(default=None, ge=0)
+    cache_write_tokens: int | None = Field(default=None, ge=0)
+    cost: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    cost_currency: str | None = None
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    provider_model: str | None = None
+    provider_request_id: str | None = None
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    @model_validator(mode="after")
+    def _validate_cost(self) -> Self:
+        """Keep observed cost and its currency together.
+
+        Returns
+        -------
+        Self
+            Accounting with unknown values preserved.
+
+        Raises
+        ------
+        ValueError
+            If a cost lacks a currency or metadata contains blank strings.
+        """
+
+        if (self.cost is None) != (self.cost_currency is None):
+            raise ValueError("Observed cost and currency must be supplied together.")
+
+        for value in (
+            self.cost_currency,
+            self.provider_model,
+            self.provider_request_id,
+        ):
+            if value is not None and not value.strip():
+                raise ValueError("Usage metadata cannot contain blank strings.")
+
+        return self
 
 
 @dataclass(frozen=True, slots=True)

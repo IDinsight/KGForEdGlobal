@@ -3168,6 +3168,10 @@ def _schedule_implementation() -> tuple[FileFingerprint, ...]:
     fingerprints = []
 
     for path in sorted(root.rglob("*.py")):
+        # Report-only scoring changes do not invalidate identical judge requests.
+        if path == root / "evals" / "lp_eval" / "scoring.py":
+            continue
+
         before = path.stat()
         payload = path.read_bytes()
         after = path.stat()
