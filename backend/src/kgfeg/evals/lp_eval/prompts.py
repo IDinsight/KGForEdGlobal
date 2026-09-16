@@ -24,6 +24,7 @@ from kgfeg.evals.lp_eval.schemas import (
     EvaluationSettings,
     JudgePrompt,
     ProductionEvidenceView,
+    ScheduledEvidence,
     SyntheticControl,
     UpstreamEvidenceSource,
     UpstreamEvidenceView,
@@ -47,10 +48,13 @@ relatesTo; emit exactly one decision. no_relation means the shown evidence suppo
 neither permitted relationship. ambiguous means insufficient or contradictory evidence
 prevents a defensible decision. Missing or malformed output is never ambiguity.
 
-Use only the target pair's admissible_decisions. A needs_review permission, if present
-in original material, permits the evaluator label ambiguous; it is not a production
-answer. first_to_second and second_to_first refer to response_identity endpoints.
-A displayed endpoint order is technical, never evidence of developmental direction.
+Use only assessment_permissions, already mapped to response_identity endpoints.
+First/second labels within the evidence, including nomination facts, retain their
+original evidence_endpoint_mapping orientation. Do not reinterpret those factual labels
+as the displayed order. A needs_review permission in original material permits the
+evaluator label ambiguous; it is not a production answer. first_to_second and
+second_to_first in your response refer to response_identity endpoints. Displayed order
+is technical, never evidence of developmental direction.
 
 Shared hierarchy, rank, wording, codes, proximity or Learning Components alone do not
 establish a relationship. Look for substantive deepening, extension, combination or
@@ -387,6 +391,81 @@ class _NominationProjection:
         return {"facts": self.facts, "original_excerpt_truncated": self.truncated}
 
 
+def _assessment_orientation(
+    *,
+    evidence: (
+        ProductionEvidenceView
+        | UpstreamEvidenceView
+        | SyntheticControl
+        | ScheduledEvidence
+    ),
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Map original permission directions to displayed response endpoints.
+
+    Parameters
+    ----------
+    evidence
+        Actual displayed endpoint order and assessed identity.
+    payload
+        Shown evidence whose first/second factual labels retain original meaning.
+
+    Returns
+    -------
+    dict[str, Any]
+        Explicit original/display mapping and permitted displayed outcomes.
+
+    Raises
+    ------
+    ValueError
+        If payload endpoints or target-pair coverage differ from the view.
+    """
+
+    if "pair" in payload:
+        pair = payload["pair"]
+    else:
+        matches = [
+            pair for pair in payload["pairs"] if pair["pair_id"] == evidence.pair_id
+        ]
+
+        if len(matches) != 1:
+            raise ValueError("Shown evidence must contain exactly one assessed pair.")
+
+        pair = matches[0]
+
+    original = (UUID(pair["first_sfi_uuid"]), UUID(pair["second_sfi_uuid"]))
+
+    if len(set(original)) != 2 or set(original) != set(evidence.endpoint_uuids):
+        raise ValueError("Shown and displayed endpoint identities disagree.")
+
+    swapped = original != evidence.endpoint_uuids
+    permissions = []
+
+    for permission in pair["admissible_decisions"]:
+        decision, direction = permission["decision"], permission["direction"]
+
+        if swapped and direction is not None:
+            direction = {
+                "first_to_second": "second_to_first",
+                "second_to_first": "first_to_second",
+            }[direction]
+
+        permissions.append(
+            {
+                "decision": "ambiguous" if decision == "needs_review" else decision,
+                "direction": direction,
+            }
+        )
+
+    return {
+        "assessment_permissions": permissions,
+        "evidence_endpoint_mapping": {
+            "first_sfi_uuid": str(original[0]),
+            "second_sfi_uuid": str(original[1]),
+        },
+    }
+
+
 def _control_case(
     *, family: str, index: int
 ) -> tuple[str, str, str, list[str], dict[str, Any]]:
@@ -615,7 +694,12 @@ def _control_material(
 
 def _render_prompt(
     *,
-    evidence: ProductionEvidenceView | UpstreamEvidenceView | SyntheticControl,
+    evidence: (
+        ProductionEvidenceView
+        | UpstreamEvidenceView
+        | SyntheticControl
+        | ScheduledEvidence
+    ),
     request_id: str,
     task: Literal["classification", "critique"],
 ) -> JudgePrompt:
@@ -642,8 +726,11 @@ def _render_prompt(
         incompatible with the requested assessment.
     """
 
-    is_critique = isinstance(evidence, (ProductionEvidenceView, SyntheticControl)) and (
-        evidence.view in {"original_production_critique", "synthetic_critique"}
+    is_critique = isinstance(
+        evidence, (ProductionEvidenceView, SyntheticControl, ScheduledEvidence)
+    ) and (
+        evidence.view
+        in {"original_production_critique", "synthetic_critique", "critique"}
     )
 
     if is_critique != (task == "critique"):
@@ -673,8 +760,14 @@ def _render_prompt(
 
     schema = ClassificationJudgment if task == "classification" else CritiqueJudgment
     schema_json = canonical_lp_json(schema.model_json_schema())
+    orientation = (
+        _assessment_orientation(evidence=evidence, payload=payload)
+        if task == "classification"
+        else {}
+    )
     user_message = canonical_lp_json(
         {
+            **orientation,
             "evidence": payload,
             "permitted_evidence_references": list(evidence.references),
             "response_identity": {
@@ -964,7 +1057,12 @@ def production_blind_payload(
 
 def render_classification_prompt(
     *,
-    evidence: ProductionEvidenceView | UpstreamEvidenceView | SyntheticControl,
+    evidence: (
+        ProductionEvidenceView
+        | UpstreamEvidenceView
+        | SyntheticControl
+        | ScheduledEvidence
+    ),
     request_id: str,
 ) -> JudgePrompt:
     """Render a blind classifier prompt without production answers or control labels.
@@ -993,7 +1091,9 @@ def render_classification_prompt(
 
 
 def render_critique_prompt(
-    *, evidence: ProductionEvidenceView | SyntheticControl, request_id: str
+    *,
+    evidence: ProductionEvidenceView | SyntheticControl | ScheduledEvidence,
+    request_id: str,
 ) -> JudgePrompt:
     """Render operative-rationale critique without receiving a classifier answer.
 

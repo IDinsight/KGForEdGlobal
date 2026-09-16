@@ -40,13 +40,20 @@ from pydantic import (
 )
 
 # Package Library
-from kgfeg.evals.lp_eval.prompts import production_blind_payload
+from kgfeg.evals.lp_eval.prompts import (
+    build_synthetic_controls,
+    production_blind_payload,
+    render_classification_prompt,
+    render_critique_prompt,
+)
 from kgfeg.evals.lp_eval.schemas import (
+    CurriculumSchedule,
     DiscoveredRun,
     DiscoveryAlias,
     DiscoveryInventory,
     DiscoverySkip,
     EvaluationPair,
+    EvaluationSchedule,
     EvaluationSettings,
     FileFingerprint,
     FrozenArtifact,
@@ -58,9 +65,14 @@ from kgfeg.evals.lp_eval.schemas import (
     ProductionEvidenceViews,
     ProductionPair,
     ProductionPopulation,
+    ResolvedEvaluationSettings,
+    ResolvedJudgeSettings,
     SampleCell,
     SampledPair,
+    ScheduledEvidence,
+    ScheduledRequest,
     SnapshotArtifact,
+    SyntheticControl,
     UpstreamEvidenceSource,
     UpstreamEvidenceView,
     ValidatedSnapshot,
@@ -253,6 +265,15 @@ class _SampleReservoir:
 
             if position < self.target:
                 self.pairs[position] = pair
+
+
+@dataclass(frozen=True, slots=True)
+class _ScheduleContext:
+    """Invocation-wide immutable identity for individual scheduled requests."""
+
+    implementation_hash: str
+    judge: ResolvedJudgeSettings
+    settings: EvaluationSettings
 
 
 class _SnapshotReader:
@@ -2694,6 +2715,702 @@ def _sample_routes(*, cells: tuple[SampleCell, ...], pair_id: str) -> tuple[str,
     """
 
     return tuple(cell.route for cell in cells if pair_id in cell.selected_pair_ids)
+
+
+def _schedule_call(
+    *,
+    canonical_endpoints: tuple[UUID, UUID],
+    component: Literal["production", "independent", "controls"],
+    context: _ScheduleContext,
+    dependencies: tuple[str, ...] = (),
+    evidence: ScheduledEvidence,
+    replicate: int,
+    role: Literal["base", "identical_repeat", "variant", "critique", "control"],
+) -> ScheduledRequest:
+    """Bind one exact request to its condition, replicate, model and implementation.
+
+    Parameters
+    ----------
+    canonical_endpoints
+        Comparison orientation independent of displayed order.
+    component
+        Required assessment component.
+    context
+        Effective invocation settings and actual implementation identity.
+    dependencies
+        Blind results which must freeze before dispatch.
+    evidence
+        Complete evidence/condition/presentation payload.
+    replicate
+        One-based replicate index.
+    role
+        Scheduled purpose, kept outside judge evidence.
+
+    Returns
+    -------
+    ScheduledRequest
+        Material-bound prompt and dependency record.
+
+    Raises
+    ------
+    ValueError
+        If the evidence cannot be rendered under the required response schema.
+    """
+
+    request_id = lp_material_content_hash(
+        {
+            "canonical_endpoint_uuids": [str(item) for item in canonical_endpoints],
+            "component": component,
+            "evidence_content_hash": evidence.material_content_hash,
+            "implementation_hash": context.implementation_hash,
+            "judge": TypeAdapter(ResolvedJudgeSettings).dump_python(
+                context.judge, mode="json"
+            ),
+            "replicate": replicate,
+            "role": role,
+            "settings": context.settings.model_dump(mode="json"),
+        }
+    )
+    renderer = (
+        render_critique_prompt
+        if evidence.view == "critique"
+        else render_classification_prompt
+    )
+    prompt = renderer(evidence=evidence, request_id=request_id)
+    result = ScheduledRequest(
+        canonical_endpoint_uuids=canonical_endpoints,
+        component=component,
+        dependencies=dependencies,
+        evidence=evidence,
+        material_content_hash="",
+        prompt=prompt,
+        replicate=replicate,
+        role=role,
+    )
+    material = TypeAdapter(ScheduledRequest).dump_python(result, mode="json")
+    del material["material_content_hash"]
+    return replace(result, material_content_hash=lp_material_content_hash(material))
+
+
+def _schedule_cohort(
+    *,
+    bases: tuple[ProductionEvidenceView | UpstreamEvidenceView, ...],
+    component: Literal["production", "independent"],
+    context: _ScheduleContext,
+    diagnostic: SampleCell,
+    upstream: UpstreamEvidenceBuilder,
+) -> tuple[ScheduledRequest, ...]:
+    """Schedule every real base, identical repeat and preselected diagnostic variant.
+
+    Parameters
+    ----------
+    bases
+        All selected cohort base views in canonical pair order.
+    component
+        Real assessment component.
+    context
+        Resolved controls and identities.
+    diagnostic
+        Independently seeded within-cohort diagnostic selection.
+    upstream
+        Frozen upstream constructor for expanded/common evidence comparisons.
+
+    Returns
+    -------
+    tuple[ScheduledRequest, ...]
+        Complete calls, with no model-result-driven selection or sample shrinkage.
+
+    Raises
+    ------
+    ValueError
+        If required evidence cannot be constructed or rendered.
+    """
+
+    calls: list[ScheduledRequest] = []
+    condition = (
+        "original_production_blind"
+        if component == "production"
+        else "reconstructed_bounded_upstream"
+    )
+
+    for base in bases:
+        evidence = _schedule_evidence(base=base, condition=condition)
+
+        for replicate in range(1, context.settings.base_blind_replicates + 1):
+            calls.append(
+                _schedule_call(
+                    canonical_endpoints=base.endpoint_uuids,
+                    component=component,
+                    context=context,
+                    evidence=evidence,
+                    replicate=replicate,
+                    role="base",
+                )
+            )
+
+        if base.pair_id not in diagnostic.selected_pair_ids:
+            continue
+
+        start = context.settings.base_blind_replicates + 1
+
+        for replicate in range(
+            start, start + context.settings.additional_diagnostic_replicates
+        ):
+            calls.append(
+                _schedule_call(
+                    canonical_endpoints=base.endpoint_uuids,
+                    component=component,
+                    context=context,
+                    evidence=evidence,
+                    replicate=replicate,
+                    role="identical_repeat",
+                )
+            )
+
+        for variant in _schedule_variants(
+            base=base, condition=condition, upstream=upstream
+        ):
+            for replicate in range(1, context.settings.variant_replicates + 1):
+                calls.append(
+                    _schedule_call(
+                        canonical_endpoints=base.endpoint_uuids,
+                        component=component,
+                        context=context,
+                        evidence=variant,
+                        replicate=replicate,
+                        role="variant",
+                    )
+                )
+
+    return tuple(calls)
+
+
+def _schedule_curriculum(
+    *, context: _ScheduleContext, snapshot: ValidatedSnapshot
+) -> CurriculumSchedule:
+    """Freeze independent selection/evidence before inspecting production outcomes.
+
+    Parameters
+    ----------
+    context
+        Effective settings and material identity.
+    snapshot
+        One complete validated frozen curriculum.
+
+    Returns
+    -------
+    CurriculumSchedule
+        Every component and required call, retaining all shortfalls.
+
+    Raises
+    ------
+    ValueError
+        If any selected population or required view fails validation.
+    """
+
+    source = upstream_evidence_source(snapshot)
+    population = build_admissible_population(source)
+    independent = sample_independent_pairs(
+        population=population, settings=context.settings
+    )
+    independent_diagnostic = _schedule_diagnostic(
+        plan=independent, settings=context.settings
+    )
+
+    # This is the first production metadata access after independent freezing.
+    production_population = build_production_population(
+        population=population, snapshot=snapshot
+    )
+    production = sample_production_pairs(
+        population=production_population, settings=context.settings
+    )
+    production_diagnostic = _schedule_diagnostic(
+        plan=production, settings=context.settings
+    )
+    builder = build_production_evidence_builder(snapshot)
+    views = tuple(builder.build_pair(selected.pair) for selected in production.pairs)
+    production_calls = _schedule_cohort(
+        bases=tuple(view.blind for view in views),
+        component="production",
+        context=context,
+        diagnostic=production_diagnostic,
+        upstream=population._builder,
+    )
+    independent_calls = _schedule_cohort(
+        bases=independent.base_evidence,
+        component="independent",
+        context=context,
+        diagnostic=independent_diagnostic,
+        upstream=population._builder,
+    )
+    critique_calls = []
+
+    for view in views:
+        dependencies = tuple(
+            call.prompt.request_id
+            for call in production_calls
+            if call.evidence.pair_id == view.blind.pair_id
+            and call.role in {"base", "identical_repeat"}
+        )
+
+        for replicate in range(1, context.settings.critique_replicates + 1):
+            critique_calls.append(
+                _schedule_call(
+                    canonical_endpoints=view.critique.endpoint_uuids,
+                    component="production",
+                    context=context,
+                    dependencies=dependencies,
+                    evidence=_schedule_evidence(
+                        base=view.critique, condition="original_production_critique"
+                    ),
+                    replicate=replicate,
+                    role="critique",
+                )
+            )
+
+    controls = build_synthetic_controls(settings=context.settings, source=source)
+    control_calls = tuple(
+        _schedule_call(
+            canonical_endpoints=control.endpoint_uuids,
+            component="controls",
+            context=context,
+            evidence=_schedule_evidence(base=control, condition=control.view),
+            replicate=replicate,
+            role="control",
+        )
+        for control in controls
+        for replicate in range(1, context.settings.synthetic_control_replicates + 1)
+    )
+    return CurriculumSchedule(
+        controls=controls,
+        correction_audits=tuple(
+            (view.blind.pair_id, view.correction_audit_json) for view in views
+        ),
+        diagnostic_cells=(production_diagnostic, independent_diagnostic),
+        doc_key=source.doc_key,
+        framework_uuid=source.framework_uuid,
+        independent_sample=independent,
+        production_population=production_population,
+        production_sample=production,
+        requests=production_calls
+        + independent_calls
+        + tuple(critique_calls)
+        + control_calls,
+    )
+
+
+def _schedule_diagnostic(
+    *, plan: PairSamplePlan, settings: EvaluationSettings
+) -> SampleCell:
+    """Select uniform diagnostic pairs within a frozen cohort without judge results.
+
+    Parameters
+    ----------
+    plan
+        Frozen canonical selected cohort.
+    settings
+        Invocation-wide count and seed.
+
+    Returns
+    -------
+    SampleCell
+        Exact inclusion fraction, selected identities and exhausted shortfall.
+    """
+
+    route = plan.component + "/repetition_and_evidence_diagnostics"
+    reservoir = _sample_reservoir(
+        doc_key=plan.doc_key,
+        framework_uuid=plan.framework_uuid,
+        route=route,
+        seed=settings.sampling_seed,
+        target=settings.diagnostic_pairs_per_cohort,
+    )
+
+    for selected in plan.pairs:
+        reservoir.offer(selected.pair)
+
+    return _sample_cell(
+        population_count=len(plan.pairs),
+        reservoir=reservoir,
+        route=route,
+        target=settings.diagnostic_pairs_per_cohort,
+        uniform=True,
+    )
+
+
+def _schedule_evidence(
+    *,
+    base: ProductionEvidenceView | UpstreamEvidenceView | SyntheticControl,
+    comparison_base: ProductionEvidenceView | UpstreamEvidenceView | None = None,
+    condition: str,
+    payload: dict[str, Any] | None = None,
+    presentation: Literal[
+        "canonical", "endpoint_swapped", "evidence_lists_reversed"
+    ] = "canonical",
+    removal_audit: list[dict[str, Any]] | None = None,
+) -> ScheduledEvidence:
+    """Freeze a condition/presentation without changing the underlying evidence owner.
+
+    Parameters
+    ----------
+    base
+        Source view whose audit and material identity remain available.
+    comparison_base
+        Original cohort base for an expanded comparison; omitted for other variants.
+    condition
+        Explicit evidence condition.
+    payload
+        Optional separately constructed removal payload.
+    presentation
+        Display-only transformation; original orientation-sensitive facts stay intact.
+    removal_audit
+        Recorded field removals for production evidence comparisons.
+
+    Returns
+    -------
+    ScheduledEvidence
+        Presented bytes, regenerated pointers and explicit change/omission audit.
+
+    Raises
+    ------
+    ValueError
+        If source bytes or presentation are inconsistent.
+    """
+
+    if hashlib.sha256(base.payload_json.encode()).hexdigest() != base.payload_sha256:
+        raise ValueError("Schedule evidence differs from its source bytes.")
+
+    original = json.loads(base.payload_json)
+    comparison = (
+        original
+        if comparison_base is None
+        else json.loads(comparison_base.payload_json)
+    )
+    shown = json.loads(canonical_lp_json(original if payload is None else payload))
+    endpoints = base.endpoint_uuids
+    presentation_changes: list[str] = []
+
+    if presentation == "endpoint_swapped":
+        shown["sfis"] = list(reversed(shown["sfis"]))
+        endpoints = (endpoints[1], endpoints[0])
+        presentation_changes.append("/sfis")
+    elif presentation == "evidence_lists_reversed":
+        _schedule_reverse_lists(changes=presentation_changes, path="", value=shown)
+    elif presentation != "canonical":
+        raise ValueError("Unsupported evidence presentation.")
+
+    task: Literal["classification", "critique"] = (
+        "critique"
+        if isinstance(base, (ProductionEvidenceView, SyntheticControl))
+        and base.view in {"original_production_critique", "synthetic_critique"}
+        else "classification"
+    )
+    references = (
+        _upstream_references(path="/original_request", value=shown["original_request"])
+        if task == "critique"
+        else _upstream_references(path="", value=shown)
+    )
+    audit = {
+        "base_audit": (
+            json.loads(base.audit_json)
+            if not isinstance(base, SyntheticControl)
+            else {}
+        ),
+        "canonical_endpoint_uuids": [str(item) for item in base.endpoint_uuids],
+        "changed_paths": _upstream_changed_paths(base=original, value=shown),
+        "comparison_base_content_hash": (
+            base.material_content_hash
+            if comparison_base is None
+            else comparison_base.material_content_hash
+        ),
+        "comparison_changed_paths": _upstream_changed_paths(
+            base=comparison, value=shown
+        ),
+        "comparison_unchanged": shown == comparison,
+        "presentation_changed_lists": presentation_changes,
+        "removals": removal_audit or [],
+        "source_payload_sha256": base.payload_sha256,
+        "unchanged_from_source": shown == original,
+    }
+    result = ScheduledEvidence(
+        audit_json=canonical_lp_json(audit),
+        condition=condition,
+        endpoint_uuids=endpoints,
+        material_content_hash="",
+        pair_id=base.pair_id,
+        payload_json=canonical_lp_json(shown),
+        payload_sha256=_upstream_payload_hash(shown),
+        presentation=presentation,
+        references=tuple(references),
+        source_content_hash=base.material_content_hash,
+        view=task,
+    )
+    material = TypeAdapter(ScheduledEvidence).dump_python(result, mode="json")
+    del material["material_content_hash"]
+    return replace(result, material_content_hash=lp_material_content_hash(material))
+
+
+def _schedule_implementation() -> tuple[FileFingerprint, ...]:
+    """Capture actual package Python bytes without Git mutations or secret reads.
+
+    Returns
+    -------
+    tuple[FileFingerprint, ...]
+        Stable ordered source identities, including shared evidence/rendering helpers.
+
+    Raises
+    ------
+    ValueError
+        If a source file changes while its bytes are captured.
+    """
+
+    root = Path(__file__).resolve().parents[2]
+    fingerprints = []
+
+    for path in sorted(root.rglob("*.py")):
+        before = path.stat()
+        payload = path.read_bytes()
+        after = path.stat()
+
+        if _stat_identity(before) != _stat_identity(after):
+            raise ValueError("Implementation changed during schedule preparation.")
+
+        fingerprints.append(
+            FileFingerprint(
+                path=path,
+                sha256=hashlib.sha256(payload).hexdigest(),
+                size_bytes=len(payload),
+            )
+        )
+
+    return tuple(fingerprints)
+
+
+def _schedule_nomination_removal(
+    *, condition: Literal["lc_removed", "hierarchy_removed"], payload: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Remove derived nomination facts and identifiers for the selected evidence family.
+
+    Parameters
+    ----------
+    condition
+        Evidence family to remove.
+    payload
+        Fresh production blind payload with original bounded nomination projections.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Removed field identities; incomplete unidentifiable records are also withheld.
+    """
+
+    forbidden = (
+        {"shared_learning_components", "lc_text_token_overlap", "lc_tag_token_overlap"}
+        if condition == "lc_removed"
+        else {"hierarchy_context"}
+    )
+    removals: list[dict[str, Any]] = []
+
+    for index, pair in enumerate(payload["pairs"]):
+        nomination = pair["nomination_facts"]
+        records: dict[str, str] = {}
+
+        for fact in nomination["facts"]:
+            if fact["field"].endswith("/evidence_type") and not fact["truncated"]:
+                records[fact["field"].split("/")[1]] = json.loads(fact["json_excerpt"])
+
+        keep = []
+
+        for fact in nomination["facts"]:
+            family = records.get(fact["field"].split("/")[1])
+
+            if family is None or family in forbidden:
+                removals.append(
+                    {
+                        "path": f"/pairs/{index}/nomination_facts" + fact["field"],
+                        "content_hash": lp_material_content_hash(fact),
+                        "reason": "selected_family_or_incomplete_family_identity",
+                    }
+                )
+            else:
+                keep.append(fact)
+
+        nomination["facts"] = keep
+        nomination["evidence_types"] = [
+            family for family in nomination["evidence_types"] if family not in forbidden
+        ]
+        _upstream_drop_field(
+            key="original_characters",
+            parent=nomination,
+            path=f"/pairs/{index}/nomination_facts",
+            removals=removals,
+        )
+
+    return removals
+
+
+def _schedule_production_removal(
+    *,
+    base: ProductionEvidenceView,
+    condition: Literal["lc_removed", "hierarchy_removed"],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Ablate original bounded production evidence, including derived nomination facts.
+
+    Parameters
+    ----------
+    base
+        Frozen blind production view, never its original critique payload.
+    condition
+        Selected family.
+
+    Returns
+    -------
+    tuple[dict[str, Any], list[dict[str, Any]]]
+        Fresh comparison payload and explicit removals/collateral omissions.
+    """
+
+    payload = json.loads(base.payload_json)
+    payload["pair"] = next(
+        pair for pair in payload["pairs"] if pair["pair_id"] == base.pair_id
+    )
+    payload, removals = _upstream_remove(condition=condition, payload=payload)
+    del payload["pair"]
+    removals.extend(_schedule_nomination_removal(condition=condition, payload=payload))
+    return payload, removals
+
+
+def _schedule_reverse_fact(
+    *, changes: list[str], path: str, value: dict[str, Any]
+) -> None:
+    """Reverse complete unordered nomination lists without completing partial excerpts.
+
+    Parameters
+    ----------
+    changes
+        Audit paths for actual reordered factual excerpts.
+    path
+        Current factual-record pointer.
+    value
+        Mutable nomination fact record or another payload object.
+    """
+
+    if value.get("truncated") is False and str(value.get("field", "")).rsplit("/", 1)[
+        -1
+    ] in {"references", "shared_values", "shared_ancestors"}:
+        excerpt = json.loads(value["json_excerpt"])
+
+        if isinstance(excerpt, list) and len(excerpt) > 1:
+            value["json_excerpt"] = canonical_lp_json(list(reversed(excerpt)))
+            changes.append(path + "/json_excerpt")
+
+
+def _schedule_reverse_lists(*, changes: list[str], path: str, value: Any) -> None:
+    """Reverse evidence container lists while preserving path steps and policy order.
+
+    Parameters
+    ----------
+    changes
+        Audit paths for nontrivial reversed lists.
+    path
+        Current payload pointer.
+    value
+        Mutable copy of shown evidence.
+    """
+
+    reversible = {
+        "sfis",
+        "ancestors",
+        "ancestor_paths",
+        "learning_components",
+        "source_evidence",
+        "parent_sfi_uuids",
+        "facts",
+        "warnings",
+    }
+
+    if isinstance(value, dict):
+        _schedule_reverse_fact(changes=changes, path=path, value=value)
+
+        for key, child in value.items():
+            child_path = path + "/" + _upstream_pointer_token(key)
+
+            if key in reversible and isinstance(child, list) and len(child) > 1:
+                child.reverse()
+                changes.append(child_path)
+
+            if key not in {"policy", "audit_context", "metadata", "coordinate"}:
+                _schedule_reverse_lists(changes=changes, path=child_path, value=child)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _schedule_reverse_lists(
+                changes=changes, path=f"{path}/{index}", value=child
+            )
+
+
+def _schedule_variants(
+    *,
+    base: ProductionEvidenceView | UpstreamEvidenceView,
+    condition: str,
+    upstream: UpstreamEvidenceBuilder,
+) -> tuple[ScheduledEvidence, ...]:
+    """Materialize all five variants, preserving independent common-base semantics.
+
+    Parameters
+    ----------
+    base
+        Production blind or common reconstructed base.
+    condition
+        Base condition retained by presentation-only variants.
+    upstream
+        Frozen upstream evidence source.
+
+    Returns
+    -------
+    tuple[ScheduledEvidence, ...]
+        Swap, list reversal, expanded upstream, LC removal and hierarchy removal.
+
+    Raises
+    ------
+    ValueError
+        If mandatory expanded or removed evidence cannot be constructed.
+    """
+
+    variants = [
+        _schedule_evidence(
+            base=base, condition=condition, presentation="endpoint_swapped"
+        ),
+        _schedule_evidence(
+            base=base, condition=condition, presentation="evidence_lists_reversed"
+        ),
+    ]
+    expanded = upstream.build_pair(
+        condition="expanded_upstream",
+        first_sfi_uuid=base.endpoint_uuids[0],
+        second_sfi_uuid=base.endpoint_uuids[1],
+    )
+    variants.append(
+        _schedule_evidence(
+            base=expanded, comparison_base=base, condition="expanded_upstream"
+        )
+    )
+
+    for removal in ("lc_removed", "hierarchy_removed"):
+        if isinstance(base, ProductionEvidenceView):
+            payload, audit = _schedule_production_removal(base=base, condition=removal)
+            variants.append(
+                _schedule_evidence(
+                    base=base, condition=removal, payload=payload, removal_audit=audit
+                )
+            )
+        else:
+            removed = upstream.build_pair(
+                condition=removal,
+                first_sfi_uuid=base.endpoint_uuids[0],
+                second_sfi_uuid=base.endpoint_uuids[1],
+            )
+            variants.append(_schedule_evidence(base=removed, condition=removal))
+
+    return tuple(variants)
 
 
 def _snapshot_config(reader: _SnapshotReader) -> _CapturedKGConfig:
@@ -5281,6 +5998,115 @@ def normalize_evaluation_text(text: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
 
 
+def prepare_evaluation_schedule(
+    *,
+    inputs: FrozenInputs,
+    judge: ResolvedJudgeSettings,
+    settings: ResolvedEvaluationSettings,
+) -> EvaluationSchedule:
+    """Prepare the entire frozen-input schedule without model calls or file writes.
+
+    All settings apply uniformly to every selected curriculum. The returned plan
+    contains every required call and its dependencies, ready for separate persistence
+    and execution.
+
+    Parameters
+    ----------
+    inputs
+        Exact validated frozen selection; newly completed runs cannot be absorbed.
+    judge
+        Resolved evaluator-only model and finite operational settings.
+    settings
+        Effective controls and recorded explicit overrides.
+
+    Returns
+    -------
+    EvaluationSchedule
+        Complete immutable calls, conditions, replicas, mappings and dependencies.
+
+    Raises
+    ------
+    ValueError
+        If selected inputs, settings, required evidence, identities or source stability
+        fail. No component is silently dropped or shrunk on failure.
+    """
+
+    effective = EvaluationSettings.model_validate(settings.settings.model_dump())
+    expected_execution = {
+        "attempt_timeout_seconds": 180,
+        "concurrency": 4,
+        "max_retries": 2,
+        "retry_waits_seconds": [5, 20],
+        "sdk_max_retries": 0,
+    }
+    _equal(
+        actual=json.loads(judge.execution_json),
+        expected=expected_execution,
+        label="Judge execution controls",
+    )
+    snapshots = load_frozen_lp_inputs(inputs)
+
+    if not snapshots:
+        raise ValueError("Evaluation requires at least one frozen selected curriculum.")
+
+    implementation = _schedule_implementation()
+    context = _ScheduleContext(
+        implementation_hash=lp_material_content_hash(
+            TypeAdapter(tuple[FileFingerprint, ...]).dump_python(
+                implementation, mode="json"
+            )
+        ),
+        judge=judge,
+        settings=effective,
+    )
+    curricula = tuple(
+        _schedule_curriculum(context=context, snapshot=snapshot)
+        for snapshot in sorted(
+            snapshots,
+            key=lambda item: (str(item.run.framework_uuid), str(item.run.doc_key)),
+        )
+    )
+    seen: set[str] = set()
+    counts: Counter[str] = Counter()
+
+    for curriculum in curricula:
+        for call in curriculum.requests:
+            if call.prompt.request_id in seen or not set(call.dependencies) <= seen:
+                raise ValueError(
+                    "Schedule has duplicate identities or unresolved dependencies."
+                )
+
+            seen.add(call.prompt.request_id)
+            counts[
+                canonical_lp_json(
+                    {
+                        "component": call.component,
+                        "condition": call.evidence.condition,
+                        "presentation": call.evidence.presentation,
+                        "task": call.prompt.task,
+                    }
+                )
+            ] += 1
+
+    if _schedule_implementation() != implementation:
+        raise ValueError("Implementation changed while the schedule was prepared.")
+
+    load_frozen_lp_inputs(inputs)
+    schedule = EvaluationSchedule(
+        curricula=curricula,
+        implementation_fingerprints=implementation,
+        inputs=inputs,
+        judge=judge,
+        material_content_hash="",
+        request_counts=tuple(sorted(counts.items())),
+        settings=settings,
+        total_requests=len(seen),
+    )
+    material = TypeAdapter(EvaluationSchedule).dump_python(schedule, mode="json")
+    del material["material_content_hash"]
+    return replace(schedule, material_content_hash=lp_material_content_hash(material))
+
+
 def sample_independent_pairs(
     *, population: AdmissiblePairPopulation, settings: EvaluationSettings
 ) -> PairSamplePlan:
@@ -5577,7 +6403,7 @@ def validate_lp_snapshot(run: DiscoveredRun) -> ValidatedSnapshot:
 
     Original byte payloads, relative names, resolved paths and absences are returned
     for a separate freezing boundary. Passing this function establishes input
-    consistency only; it does not constitute reviewer approval or a frozen snapshot.
+    consistency; freezing and pedagogical assessment are separate operations.
     Producing Git provenance is retained if recorded and is never required.
 
     Parameters

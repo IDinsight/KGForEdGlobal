@@ -5,12 +5,66 @@ import json
 
 # Package Library
 from kgfeg.config import BackendSettings, Settings
-from kgfeg.evals.lp_eval.schemas import ResolvedJudgeSettings
+from kgfeg.evals.lp_eval.schemas import (
+    ClassificationJudgment,
+    ResolvedJudgeSettings,
+    ScheduledRequest,
+)
 
 JUDGE_ATTEMPT_TIMEOUT_SECONDS = 180
 JUDGE_CONCURRENCY = 4
 JUDGE_MAX_RETRIES = 2
 JUDGE_RETRY_WAITS_SECONDS = (5, 20)
+
+
+def canonicalize_classification(
+    *, judgment: ClassificationJudgment, request: ScheduledRequest
+) -> ClassificationJudgment:
+    """Remap a displayed classification to its canonical endpoint orientation.
+
+    This does not establish response validity or semantic correctness; the execution
+    validator must also check scheduled permissions and evidence-reference containment.
+
+    Parameters
+    ----------
+    judgment
+        Schema-valid response in exactly the scheduled displayed orientation.
+    request
+        Corresponding scheduled classification request.
+
+    Returns
+    -------
+    ClassificationJudgment
+        Same decision, explanation and citations with canonical endpoints/direction.
+
+    Raises
+    ------
+    ValueError
+        If task, request, pair or displayed endpoint identity does not match.
+    """
+
+    displayed = request.evidence.endpoint_uuids
+    canonical = request.canonical_endpoint_uuids
+
+    if (
+        request.prompt.task != "classification"
+        or judgment.request_id != request.prompt.request_id
+        or judgment.pair_id != request.evidence.pair_id
+        or (judgment.first_sfi_uuid, judgment.second_sfi_uuid) != displayed
+        or set(displayed) != set(canonical)
+    ):
+        raise ValueError("Classification does not match its scheduled presentation.")
+
+    material = judgment.model_dump()
+    material["first_sfi_uuid"], material["second_sfi_uuid"] = canonical
+
+    if displayed != canonical and judgment.direction is not None:
+        material["direction"] = {
+            "first_to_second": "second_to_first",
+            "second_to_first": "first_to_second",
+        }[judgment.direction]
+
+    return ClassificationJudgment.model_validate(material)
 
 
 def resolve_judge_settings(
@@ -19,8 +73,8 @@ def resolve_judge_settings(
     """Capture the dedicated model and existing shared registry settings.
 
     This performs local configuration resolution only. It does not instantiate provider
-    clients, verify remote model availability or authorize execution. Model
-    availability is an execution preflight obligation.
+    clients or verify remote model availability. Model availability is checked during
+    execution preflight.
 
     Parameters
     ----------

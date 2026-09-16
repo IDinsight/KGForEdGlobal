@@ -110,6 +110,43 @@ class CritiqueJudgment(BaseModel):
 
 
 @dataclass(frozen=True, slots=True)
+class CurriculumSchedule:
+    """Complete pre-call work and selection evidence for one framework.
+
+    Attributes
+    ----------
+    controls
+        Constructed controls with hidden expectations.
+    correction_audits
+        Original producer/final provenance keyed by production pair identity.
+    diagnostic_cells
+        Uniform within-cohort diagnostic selections and counted shortfalls.
+    doc_key
+        Selected document identity.
+    framework_uuid
+        Shared framework for this curriculum's real and constructed pairs.
+    independent_sample
+        Independently frozen selection and common evidence before production joins.
+    production_population
+        Original production metadata for later comparison, never prompt truth labels.
+    production_sample
+        Production selection with all routes and shortfalls.
+    requests
+        Ordered complete scheduled calls; no result-dependent expansion.
+    """
+
+    controls: tuple[SyntheticControl, ...]
+    correction_audits: tuple[tuple[str, str], ...]
+    diagnostic_cells: tuple[SampleCell, ...]
+    doc_key: str
+    framework_uuid: UUID
+    independent_sample: PairSamplePlan
+    production_population: ProductionPopulation
+    production_sample: PairSamplePlan
+    requests: tuple[ScheduledRequest, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class DiscoveredRun:
     """One run's recorded completion state, not a validated evaluation snapshot.
 
@@ -220,6 +257,40 @@ class EvaluationPair:
 
     endpoint_uuids: tuple[UUID, UUID]
     pair_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationSchedule:
+    """Complete immutable execution plan prepared without model calls.
+
+    Attributes
+    ----------
+    curricula
+        All selected curricula and every required component.
+    implementation_fingerprints
+        Actual local package source files used to construct this plan.
+    inputs
+        Exact frozen input manifest; no discovery or selection expansion on resume.
+    judge
+        Effective non-secret provider/model/settings and finite execution controls.
+    material_content_hash
+        Identity of the complete plan excluding this field.
+    request_counts
+        Counts by component, condition, presentation and task, encoded as JSON keys.
+    settings
+        Effective controls and explicit override names.
+    total_requests
+        Exact number of scheduled calls, excluding possible retry attempts.
+    """
+
+    curricula: tuple[CurriculumSchedule, ...]
+    implementation_fingerprints: tuple[FileFingerprint, ...]
+    inputs: FrozenInputs
+    judge: ResolvedJudgeSettings
+    material_content_hash: str
+    request_counts: tuple[tuple[str, int], ...]
+    settings: ResolvedEvaluationSettings
+    total_requests: int
 
 
 class EvaluationSettings(BaseModel):
@@ -809,6 +880,83 @@ class SampledPair:
     pair: EvaluationPair
     routes: tuple[str, ...]
     tags: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduledEvidence:
+    """Exact presented payload and its construction audit for a scheduled call.
+
+    Attributes
+    ----------
+    audit_json
+        Source binding, removals, changed/unavailable evidence and presentation audit.
+    condition
+        Evidence condition; distinct from presentation order.
+    endpoint_uuids
+        Displayed first/second endpoints; canonical mapping is stored in the request.
+    material_content_hash
+        Hash covering all other fields.
+    pair_id
+        Stable assessed pair.
+    payload_json
+        Actual shown evidence; original first/second facts retain their orientation.
+    payload_sha256
+        SHA-256 of the shown evidence.
+    presentation
+        Canonical, swapped endpoints or reversed evidence lists.
+    references
+        Permitted pointers regenerated for the presented payload.
+    source_content_hash
+        Immutable source-view identity.
+    view
+        Assessment task, kept outside evidence text.
+    """
+
+    audit_json: str
+    condition: str
+    endpoint_uuids: tuple[UUID, UUID]
+    material_content_hash: str
+    pair_id: str
+    payload_json: str
+    payload_sha256: str
+    presentation: Literal["canonical", "endpoint_swapped", "evidence_lists_reversed"]
+    references: tuple[str, ...]
+    source_content_hash: str
+    view: Literal["classification", "critique"]
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduledRequest:
+    """One finite scheduled judgment, with immutable response and dependency identity.
+
+    Attributes
+    ----------
+    canonical_endpoint_uuids
+        Stable orientation used for comparisons after remapping displayed judgments.
+    component
+        Real production, independent upstream, or constructed controls.
+    dependencies
+        Blind request IDs that must validate and freeze before this call can dispatch.
+    evidence
+        Exact condition and presentation payload.
+    material_content_hash
+        Hash covering every field except itself.
+    prompt
+        Exact messages, response schema and opaque request ID.
+    replicate
+        One-based replicate within component/pair/condition/presentation/task.
+    role
+        Base, identical diagnostic repeat, variant, critique or control.
+    """
+
+    canonical_endpoint_uuids: tuple[UUID, UUID]
+    component: Literal["production", "independent", "controls"]
+    dependencies: tuple[str, ...]
+    evidence: ScheduledEvidence
+    material_content_hash: str
+    prompt: JudgePrompt
+    replicate: int
+    role: Literal["base", "identical_repeat", "variant", "critique", "control"]
 
 
 @dataclass(frozen=True, slots=True)
