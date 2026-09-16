@@ -149,6 +149,40 @@ class ClassificationJudgment(BaseModel):
         return self
 
 
+class ConcernDisposition(BaseModel):
+    """User-recorded disposition bound to one immutable report and concern group."""
+
+    authority: Literal["IDinsight project user"]
+    concern_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    disposition: Literal["acknowledged", "investigate", "remediation_requested"]
+    rationale: str = Field(min_length=1)
+    report_json_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    report_markdown_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    timestamp: datetime
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    @model_validator(mode="after")
+    def _validate_record(self) -> Self:
+        """Require accountable rationale and an unambiguous timestamp.
+
+        Returns
+        -------
+        Self
+            Structurally valid record, pending report-relative validation.
+
+        Raises
+        ------
+        ValueError
+            If the rationale is blank or the timestamp lacks a timezone.
+        """
+
+        if not self.rationale.strip() or self.timestamp.utcoffset() is None:
+            raise ValueError("Disposition requires rationale and a zoned timestamp.")
+
+        return self
+
+
 class CritiqueJudgment(BaseModel):
     """Grounding of the operative rationale, separate from blind classification.
 
@@ -363,6 +397,53 @@ class EvaluationPair:
 
     endpoint_uuids: tuple[UUID, UUID]
     pair_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationReport:
+    """Deterministic scoring outputs, retaining every request and attempt.
+
+    Attributes
+    ----------
+    cache_content_hash
+        Identity of the validated ledger and successful responses.
+    failures_jsonl
+        Failed, unfinished and unattempted work with later-resolution status.
+    judgments_jsonl
+        Every valid displayed and canonical assessment, separately identified.
+    report_json
+        Complete counts, comparisons, baseline rankings and concern memberships.
+    schedule_content_hash
+        Exact frozen schedule scored.
+    scorer_sha256
+        Actual scoring source byte identity.
+    usage_json
+        Every attempt and grouped known/unknown accounting.
+    """
+
+    cache_content_hash: str
+    failures_jsonl: str
+    judgments_jsonl: str
+    report_json: str
+    schedule_content_hash: str
+    scorer_sha256: str
+    usage_json: str
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationReportArtifacts:
+    """Pinned immutable report generation, separate from the execution cache.
+
+    Attributes
+    ----------
+    directory
+        Exact content-addressed report directory under its invocation.
+    manifest_sha256
+        SHA-256 of the manifest listing every required report artifact.
+    """
+
+    directory: Path
+    manifest_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -997,6 +1078,35 @@ class RationaleClaimAssessment(BaseModel):
             raise ValueError("Supported or contradicted claims need shown evidence.")
 
         return self
+
+
+@dataclass(frozen=True, slots=True)
+class ReportInputs:
+    """Upstream-only population descriptions and bounded lexical comparisons.
+
+    Attributes
+    ----------
+    lexical_scores
+        Document, component, pair ID and exact Jaccard numerator/denominator.
+    population_json
+        Compact complete population membership, exclusions and source bindings.
+    schedule_content_hash
+        Frozen schedule whose selected pairs determine the baseline comparisons.
+    """
+
+    lexical_scores: tuple[tuple[str, str, str, int, int], ...]
+    population_json: str
+    schedule_content_hash: str
+
+
+class ReportProvenance(BaseModel):
+    """Observed evaluator identity and explicit development/evaluation evidence kind."""
+
+    evaluator_candidate_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    evidence_kind: Literal["development", "evaluation"]
+    working_tree_changed_paths: tuple[str, ...]
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
 @dataclass(frozen=True, slots=True)
