@@ -15,6 +15,100 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+class ClassificationJudgment(BaseModel):
+    """Independent relationship assessment, never a production truth label.
+
+    Evidence references are JSON pointers into the shown payload. Scheduled identity,
+    permissions and reference containment require request-relative validation.
+    """
+
+    confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
+    decision: Literal["buildsTowards", "relatesTo", "no_relation", "ambiguous"]
+    direction: Literal["first_to_second", "second_to_first"] | None
+    evidence_references: tuple[str, ...] = Field(min_length=1)
+    explanation: str = Field(min_length=1)
+    first_sfi_uuid: UUID
+    pair_id: str = Field(min_length=1)
+    request_id: str = Field(min_length=1)
+    second_sfi_uuid: UUID
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    @model_validator(mode="after")
+    def _validate_assessment(self) -> Self:
+        """Require distinct endpoints, meaningful text and relation-direction shape.
+
+        Returns
+        -------
+        Self
+            Intrinsically consistent assessment, pending request-relative checks.
+
+        Raises
+        ------
+        ValueError
+            If endpoint identity, text, citations or direction shape is invalid.
+        """
+
+        if self.first_sfi_uuid == self.second_sfi_uuid:
+            raise ValueError("Judgment endpoints must be distinct.")
+
+        if (self.decision == "buildsTowards") != (self.direction is not None):
+            raise ValueError("Only a developmental assessment has a direction.")
+
+        _validate_judgment_text(
+            references=self.evidence_references,
+            texts=(self.explanation, self.pair_id, self.request_id),
+        )
+        return self
+
+
+class CritiqueJudgment(BaseModel):
+    """Grounding of the operative rationale, separate from blind classification.
+
+    Request-relative validation must check identity and every claim's references.
+    Confidence is uncalibrated judge self-report, never a release threshold.
+    """
+
+    claims: tuple[RationaleClaimAssessment, ...] = Field(min_length=1)
+    confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
+    explanation: str = Field(min_length=1)
+    first_sfi_uuid: UUID
+    grounding: Literal["grounded", "partially_grounded", "unsupported", "ambiguous"]
+    pair_id: str = Field(min_length=1)
+    request_id: str = Field(min_length=1)
+    second_sfi_uuid: UUID
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    @model_validator(mode="after")
+    def _validate_assessment(self) -> Self:
+        """Require distinct endpoints and a consistent fully-grounded assessment.
+
+        Returns
+        -------
+        Self
+            Intrinsically valid critique, pending source/identity validation.
+
+        Raises
+        ------
+        ValueError
+            If identity, required text or a fully-grounded claim set is invalid.
+        """
+
+        if self.first_sfi_uuid == self.second_sfi_uuid:
+            raise ValueError("Critique endpoints must be distinct.")
+
+        if self.grounding == "grounded" and any(
+            claim.support != "supported" for claim in self.claims
+        ):
+            raise ValueError("A grounded rationale must support every material claim.")
+
+        _validate_judgment_text(
+            references=(), texts=(self.explanation, self.pair_id, self.request_id)
+        )
+        return self
+
+
 @dataclass(frozen=True, slots=True)
 class DiscoveredRun:
     """One run's recorded completion state, not a validated evaluation snapshot.
@@ -357,6 +451,49 @@ class FrozenSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class JudgePrompt:
+    """Exact prompt and response schema, with audit identity outside message text.
+
+    Attributes
+    ----------
+    evidence_content_hash
+        Bound evidence-view identity; hidden from the response rubric.
+    material_content_hash
+        Hash covering both messages, schema and all binding fields.
+    messages_content_hash
+        Hash of the exact system and user messages, without hidden audit material.
+    pair_id
+        Assessed canonical pair.
+    references
+        Permitted pointers relative to the shown evidence object.
+    request_id
+        Opaque caller-supplied scheduled request identity.
+    response_schema_json
+        Exact canonical structured-output schema.
+    response_schema_sha256
+        SHA-256 of that schema.
+    system_message
+        Task-specific instructions without control expectations or earlier answers.
+    task
+        Classification or grounding critique.
+    user_message
+        Evidence, response identity and permitted citations only.
+    """
+
+    evidence_content_hash: str
+    material_content_hash: str
+    messages_content_hash: str
+    pair_id: str
+    references: tuple[str, ...]
+    request_id: str
+    response_schema_json: str
+    response_schema_sha256: str
+    system_message: str
+    task: Literal["classification", "critique"]
+    user_message: str
+
+
+@dataclass(frozen=True, slots=True)
 class PairSamplePlan:
     """Immutable selection and evidence binding for one framework and component.
 
@@ -542,6 +679,44 @@ class ProductionPopulation:
     upstream_input_content_hash: str
 
 
+class RationaleClaimAssessment(BaseModel):
+    """One material rationale claim and its grounding in shown evidence only."""
+
+    claim: str = Field(min_length=1)
+    evidence_references: tuple[str, ...]
+    explanation: str = Field(min_length=1)
+    support: Literal["supported", "unsupported", "contradicted", "unresolved"]
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    @model_validator(mode="after")
+    def _validate_claim(self) -> Self:
+        """Require useful claim text and citations for assertions of support.
+
+        Returns
+        -------
+        Self
+            Claim assessment with valid text and citation shape.
+
+        Raises
+        ------
+        ValueError
+            If text is blank, citations repeat, or support lacks a reference.
+        """
+
+        _validate_judgment_text(
+            references=self.evidence_references, texts=(self.claim, self.explanation)
+        )
+
+        if (
+            self.support in {"supported", "contradicted"}
+            and not self.evidence_references
+        ):
+            raise ValueError("Supported or contradicted claims need shown evidence.")
+
+        return self
+
+
 @dataclass(frozen=True, slots=True)
 class ResolvedEvaluationSettings:
     """Effective controls and the names explicitly overridden by the caller.
@@ -656,6 +831,55 @@ class SnapshotArtifact:
 
 
 @dataclass(frozen=True, slots=True)
+class SyntheticControl:
+    """Constructed evaluator control with expectations separated from shown evidence.
+
+    Attributes
+    ----------
+    construction_json
+        Hidden toy-world assumptions and planted defect definition.
+    doc_key
+        Selected curriculum owning the control; never a real-population example.
+    endpoint_uuids
+        Distinct invented endpoint identities in canonical order.
+    expectation_json
+        Hidden explicit expected classification/direction or rationale grounding.
+    family
+        Hidden required control family.
+    framework_uuid
+        Owning framework; no cross-framework pair is constructed.
+    input_content_hash
+        Selected snapshot/configuration binding.
+    material_content_hash
+        Complete control identity including hidden oracle material.
+    pair_id
+        Opaque invented pair identity without a family label.
+    payload_json
+        Judge-visible bounded toy-world facts and optional operative rationale.
+    payload_sha256
+        SHA-256 of the exact shown evidence.
+    references
+        Permitted shown evidence pointers, excluding the rationale under critique.
+    view
+        Internal dispatch type, hidden from judge messages.
+    """
+
+    construction_json: str
+    doc_key: str
+    endpoint_uuids: tuple[UUID, UUID]
+    expectation_json: str
+    family: str
+    framework_uuid: UUID
+    input_content_hash: str
+    material_content_hash: str
+    pair_id: str
+    payload_json: str
+    payload_sha256: str
+    references: tuple[str, ...]
+    view: Literal["synthetic_classification", "synthetic_critique"]
+
+
+@dataclass(frozen=True, slots=True)
 class UpstreamEvidenceSource:
     """Isolated upstream inputs with no production nomination or judgment artifacts.
 
@@ -751,6 +975,31 @@ class ValidatedSnapshot:
     config_json: str
     run: DiscoveredRun
     source_artifact: str
+
+
+def _validate_judgment_text(
+    *, references: tuple[str, ...], texts: tuple[str, ...]
+) -> None:
+    """Validate nonblank judgment strings and unique nonblank evidence pointers.
+
+    Parameters
+    ----------
+    references
+        Citations whose containment is checked separately against a request.
+    texts
+        Required explanatory and identity strings.
+
+    Raises
+    ------
+    ValueError
+        If a string is blank or a citation is duplicated.
+    """
+
+    if any(not text.strip() for text in (*texts, *references)):
+        raise ValueError("Judgment text and evidence references cannot be blank.")
+
+    if len(set(references)) != len(references):
+        raise ValueError("Evidence references must not repeat.")
 
 
 def resolve_evaluation_settings(
