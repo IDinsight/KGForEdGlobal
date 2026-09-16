@@ -400,6 +400,72 @@ class PairSamplePlan:
 
 
 @dataclass(frozen=True, slots=True)
+class ProductionEvidenceView:
+    """One immutable judge-visible production view with a separate construction audit.
+
+    Attributes
+    ----------
+    audit_json
+        Field mappings and original material bindings, never judge-visible evidence.
+    endpoint_uuids
+        Canonical assessed endpoints.
+    input_content_hash
+        Complete source artifact and configuration identity.
+    material_content_hash
+        View identity covering payload, audit, pair and condition.
+    pair_id
+        Assessed production pair.
+    payload_json
+        Exact canonical evidence payload to render in a fresh judge context.
+    payload_sha256
+        SHA-256 of the payload's UTF-8 bytes.
+    references
+        JSON pointers to evidence available in this view.
+    request_content_hash
+        Original bounded request material identity.
+    request_id
+        Original batch identity.
+    view
+        Classification and critique remain distinct even for the same pair.
+    """
+
+    audit_json: str
+    endpoint_uuids: tuple[UUID, UUID]
+    input_content_hash: str
+    material_content_hash: str
+    pair_id: str
+    payload_json: str
+    payload_sha256: str
+    references: tuple[str, ...]
+    request_content_hash: str
+    request_id: UUID
+    view: Literal["production_blind", "original_production_critique"]
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionEvidenceViews:
+    """Separate classification/critique evidence and hidden correction diagnostics.
+
+    Preparation may freeze both views before calls. Execution must freeze the validated
+    blind response before dispatching critique, without supplying that response to it.
+
+    Attributes
+    ----------
+    blind
+        Facts and policy with production answers and nomination advice withheld.
+    correction_audit_json
+        Original producer judgment, operative judgment and change provenance. Retained
+        for diagnostics, never appended to the blind or default critic input.
+    critique
+        Original bounded batch, original instructions and operative final judgment.
+    """
+
+    blind: ProductionEvidenceView
+    correction_audit_json: str
+    critique: ProductionEvidenceView
+
+
+@dataclass(frozen=True, slots=True)
 class ProductionPair:
     """Production comparison metadata, never an independent truth label.
 

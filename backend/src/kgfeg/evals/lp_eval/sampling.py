@@ -40,6 +40,7 @@ from pydantic import (
 )
 
 # Package Library
+from kgfeg.evals.lp_eval.prompts import production_blind_payload
 from kgfeg.evals.lp_eval.schemas import (
     DiscoveredRun,
     DiscoveryAlias,
@@ -53,6 +54,8 @@ from kgfeg.evals.lp_eval.schemas import (
     FrozenInputs,
     FrozenSnapshot,
     PairSamplePlan,
+    ProductionEvidenceView,
+    ProductionEvidenceViews,
     ProductionPair,
     ProductionPopulation,
     SampleCell,
@@ -400,6 +403,128 @@ class LPDiscoveryError(ValueError):
 
 class LPSnapshotError(ValueError):
     """A selected completed run has unavailable, changed or inconsistent evidence."""
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionEvidenceBuilder:
+    """Construct two separate views from immutable original production material.
+
+    Attributes
+    ----------
+    _claims_json
+        Canonical final claims by pair; drafts and corrections stay outside blind input.
+    _input_content_hash
+        Exact original artifact and captured configuration identity.
+    _policy_json
+        Captured curriculum semantics and instructions.
+    _requests_json
+        Original bounded request records by request UUID.
+    """
+
+    _claims_json: dict[str, str]
+    _input_content_hash: str
+    _policy_json: str
+    _requests_json: dict[UUID, str]
+
+    def build_pair(self, pair: EvaluationPair) -> ProductionEvidenceViews:
+        """Freeze blind facts and original-production critique evidence separately.
+
+        Both payloads can be prepared before execution. A later execution dependency
+        must require a validated, frozen blind response before critique dispatch. This
+        constructor accepts no evaluator answer and cannot feed it to the critic.
+
+        Parameters
+        ----------
+        pair
+            Selected canonical production pair.
+
+        Returns
+        -------
+        ProductionEvidenceViews
+            Separate material-bound views and hidden original correction diagnostics.
+
+        Raises
+        ------
+        ValueError
+            If original pair, batch, policy or prompt bindings disagree.
+        """
+
+        if pair.pair_id not in self._claims_json:
+            raise ValueError("Selected pair has no original production claim.")
+
+        claim = LPFinalClaim.model_validate_json(self._claims_json[pair.pair_id])
+
+        if pair.endpoint_uuids != (
+            claim.judgment.first_sfi_uuid,
+            claim.judgment.second_sfi_uuid,
+        ):
+            raise ValueError("Selected pair endpoints differ from its original claim.")
+
+        request = LPGenerationRequest.model_validate_json(
+            self._requests_json[claim.provenance.request_id]
+        )
+        policy = json.loads(self._policy_json)
+        blind, mapping = production_blind_payload(
+            policy=policy, request=request, target_pair_id=pair.pair_id
+        )
+        prompt_material = _production_prompt_material(
+            builder=self, claim=claim, request=request
+        )
+        critique = {
+            "original_request": request.model_dump(mode="json"),
+            "original_producer_system_message": prompt_material["producer_system"],
+            "original_checker_system_message": prompt_material["checker_system"],
+            "operative_judgment": claim.judgment.model_dump(mode="json"),
+            "target_pair_id": pair.pair_id,
+        }
+        common_audit = {
+            "original_request_content_hash": request.request_content_hash,
+            "original_request_id": str(request.request_id),
+            "producer_prompt_content_hash": claim.provenance.producer_prompt_content_hash,
+            "checker_prompt_content_hash": claim.provenance.checker_prompt_content_hash,
+        }
+        return ProductionEvidenceViews(
+            blind=_production_freeze_view(
+                audit={**common_audit, "field_mapping": mapping},
+                builder=self,
+                pair=pair,
+                payload=blind,
+                request=request,
+                view="production_blind",
+            ),
+            correction_audit_json=canonical_lp_json(
+                {
+                    "checker_outcome": claim.provenance.checker_outcome,
+                    "operative_judgment": claim.judgment.model_dump(mode="json"),
+                    "producer_judgment": claim.provenance.producer_judgment.model_dump(
+                        mode="json"
+                    ),
+                    "provenance": claim.provenance.model_dump(mode="json"),
+                }
+            ),
+            critique=_production_freeze_view(
+                audit={
+                    **common_audit,
+                    "field_mapping": [
+                        {
+                            "source_path": "/",
+                            "target_path": "/original_request",
+                            "action": "original_request_fields_unchanged",
+                        },
+                        {
+                            "source_path": "/claim/judgment",
+                            "target_path": "/operative_judgment",
+                            "action": "operative_final_judgment",
+                        },
+                    ],
+                },
+                builder=self,
+                pair=pair,
+                payload=critique,
+                request=request,
+                view="original_production_critique",
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1896,6 +2021,66 @@ def _population_features(
     return features
 
 
+def _production_freeze_view(
+    *,
+    audit: dict[str, Any],
+    builder: ProductionEvidenceBuilder,
+    pair: EvaluationPair,
+    payload: dict[str, Any],
+    request: LPGenerationRequest,
+    view: Literal["production_blind", "original_production_critique"],
+) -> ProductionEvidenceView:
+    """Bind original evidence, separate audit and actual rendered view bytes.
+
+    Parameters
+    ----------
+    audit
+        Non-prompt construction and source mapping.
+    builder
+        Original material owner.
+    pair
+        Canonical assessed pair.
+    payload
+        Judge-visible view, without correction or sampling audit.
+    request
+        Original bounded batch.
+    view
+        Distinct classification or critique condition.
+
+    Returns
+    -------
+    ProductionEvidenceView
+        Immutable JSON and hashes with contained evidence references.
+    """
+
+    payload_json = canonical_lp_json(payload)
+
+    # A rationale cannot cite itself as evidence that its factual claims are grounded.
+    evidence_references = (
+        _upstream_references(
+            path="/original_request", value=payload["original_request"]
+        )
+        if view == "original_production_critique"
+        else _upstream_references(path="", value=payload)
+    )
+    result = ProductionEvidenceView(
+        audit_json=canonical_lp_json(audit),
+        endpoint_uuids=pair.endpoint_uuids,
+        input_content_hash=builder._input_content_hash,
+        material_content_hash="",
+        pair_id=pair.pair_id,
+        payload_json=payload_json,
+        payload_sha256=hashlib.sha256(payload_json.encode("utf-8")).hexdigest(),
+        references=tuple(evidence_references),
+        request_content_hash=request.request_content_hash,
+        request_id=request.request_id,
+        view=view,
+    )
+    material = TypeAdapter(ProductionEvidenceView).dump_python(result, mode="json")
+    del material["material_content_hash"]
+    return replace(result, material_content_hash=lp_material_content_hash(material))
+
+
 def _production_pair(
     *,
     claim: LPFinalClaim,
@@ -1967,6 +2152,80 @@ def _production_pair(
         request_id=request.request_id,
         tags=tuple(tag for tag in PRODUCTION_DIAGNOSTIC_TAGS if tag in tags),
     )
+
+
+def _production_prompt_material(
+    *,
+    builder: ProductionEvidenceBuilder,
+    claim: LPFinalClaim,
+    request: LPGenerationRequest,
+) -> dict[str, str]:
+    """Recover original policy messages only when both recorded prompt hashes match.
+
+    This uses the already validated compatible renderer and original bounded request.
+    It neither invokes production generation nor reconstructs evidence from a graph.
+
+    Parameters
+    ----------
+    builder
+        Original claim/request owner.
+    claim
+        Assessed claim with recorded prompt bindings.
+    request
+        Exact original batch.
+
+    Returns
+    -------
+    dict[str, str]
+        Original producer/checker system messages for the critique evidence.
+
+    Raises
+    ------
+    ValueError
+        If compatible rendering does not reproduce the original prompt identities.
+    """
+
+    policy = json.loads(builder._policy_json)
+    draft = LPGenerationResponse(
+        judgments=[
+            LPFinalClaim.model_validate_json(
+                builder._claims_json[pair.pair_id]
+            ).provenance.producer_judgment
+            for pair in request.pairs
+        ],
+        request_content_hash=request.request_content_hash,
+        request_id=request.request_id,
+    )
+    producer = build_lp_generation_prompt(
+        lp_generation_request=request,
+        producer_instructions=policy["producer_instructions"],
+    )
+    checker = validate_lp_generation_response(
+        checker_instructions=policy["checker_instructions"],
+        draft_response=draft,
+        lp_generation_request=request,
+        producer_instructions=policy["producer_instructions"],
+    )
+
+    for prompt, expected in (
+        (producer, claim.provenance.producer_prompt_content_hash),
+        (checker, claim.provenance.checker_prompt_content_hash),
+    ):
+        _equal(
+            actual=content_hash(
+                {
+                    "system_message": prompt.system_message,
+                    "user_message": prompt.user_message,
+                }
+            ),
+            expected=expected,
+            label="Original production prompt",
+        )
+
+    return {
+        "producer_system": producer.system_message,
+        "checker_system": checker.system_message,
+    }
 
 
 def _production_publications(
@@ -4465,6 +4724,126 @@ def build_admissible_population(
         framework_uuid=source.framework_uuid,
         input_content_hash=builder._input_content_hash,
         material_content_hash=lp_material_content_hash(identity),
+    )
+
+
+def build_production_evidence_builder(
+    snapshot: ValidatedSnapshot,
+) -> ProductionEvidenceBuilder:
+    """Index exact original requests, claims and policy without upstream retrieval.
+
+    Use a snapshot from load_frozen_lp_inputs. Original source bytes are rechecked
+    here, and historical receipts are interpreted read-only without production
+    checkpoint loading, migration, recovery or generation.
+
+    Parameters
+    ----------
+    snapshot
+        Complete validated frozen production snapshot.
+
+    Returns
+    -------
+    ProductionEvidenceBuilder
+        Reusable original-material owner for selected production pairs.
+
+    Raises
+    ------
+    ValueError
+        If original bytes, receipt, claims, requests, framework or policy disagree.
+    """
+
+    requests_artifact = _evaluation_artifact(
+        name="lp_generation_requests.jsonl", snapshot=snapshot
+    )
+    claims_artifact = _evaluation_artifact(
+        name="lp_final_claims.json", snapshot=snapshot
+    )
+    receipt_artifact = _evaluation_artifact(
+        name="lp_generation_checkpoint_manifest.json", snapshot=snapshot
+    )
+    claims = LPFinalClaims.model_validate(
+        _decode_snapshot_json(claims_artifact.payload)
+    )
+    receipt = _decode_snapshot_json(receipt_artifact.payload)
+    _equal(
+        actual=claims.execution_material,
+        expected=receipt["material"],
+        label="Original execution material",
+    )
+    _equal(
+        actual=claims.checkpoint_receipt_byte_hash,
+        expected=receipt_artifact.fingerprint.sha256,
+        label="Original receipt",
+    )
+    if (
+        claims.request_manifest.doc_key != snapshot.run.doc_key
+        or claims.request_manifest.framework_uuid != snapshot.run.framework_uuid
+    ):
+        raise ValueError("Original production evidence has a different framework.")
+
+    bindings = _production_requests(artifact=requests_artifact, claims=claims)
+
+    for claim in claims.claims:
+        binding = bindings[claim.judgment.pair_id]
+
+        if (
+            binding.request_id != claim.provenance.request_id
+            or binding.request_content_hash != claim.provenance.request_content_hash
+            or binding.endpoint_uuids
+            != (claim.judgment.first_sfi_uuid, claim.judgment.second_sfi_uuid)
+        ):
+            raise ValueError("Original claim and bounded request bindings disagree.")
+
+    config = _CapturedKGConfig.model_validate_json(snapshot.config_json)
+    lp = config.learning_progressions
+    policy = {
+        "builds_towards": lp.builds_towards.model_dump(mode="json"),
+        "checker_instructions": lp.checker_instructions,
+        "developmental_coordinate": lp.developmental_coordinate.model_dump(mode="json"),
+        "producer_instructions": lp.producer_instructions,
+        "relates_to": lp.relates_to.model_dump(mode="json"),
+        "unresolved_participation": lp.unresolved_participation,
+    }
+
+    for name in ("producer_instructions", "checker_instructions"):
+        _equal(
+            actual=policy[name],
+            expected=claims.execution_material[name],
+            label="Original curriculum instructions",
+        )
+
+    requests = [
+        LPGenerationRequest.model_validate(_decode_snapshot_json(line))
+        for line in requests_artifact.payload.splitlines()
+    ]
+    return ProductionEvidenceBuilder(
+        _claims_json={
+            claim.judgment.pair_id: canonical_lp_json(claim.model_dump(mode="json"))
+            for claim in claims.claims
+        },
+        _input_content_hash=lp_material_content_hash(
+            {
+                "artifacts": TypeAdapter(tuple[FileFingerprint, ...]).dump_python(
+                    tuple(
+                        artifact.fingerprint
+                        for artifact in (
+                            claims_artifact,
+                            requests_artifact,
+                            receipt_artifact,
+                        )
+                    ),
+                    mode="json",
+                ),
+                "config_json": snapshot.config_json,
+                "doc_key": snapshot.run.doc_key,
+                "framework_uuid": str(snapshot.run.framework_uuid),
+            }
+        ),
+        _policy_json=canonical_lp_json(policy),
+        _requests_json={
+            request.request_id: canonical_lp_json(request.model_dump(mode="json"))
+            for request in requests
+        },
     )
 
 
