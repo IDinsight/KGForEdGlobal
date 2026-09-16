@@ -40,6 +40,7 @@ from pydantic import (
 )
 
 # Package Library
+from kgfeg.evals.lp_eval.output import judge_output_contract
 from kgfeg.evals.lp_eval.prompts import (
     build_synthetic_controls,
     production_blind_payload,
@@ -141,6 +142,7 @@ from kgfeg.kgs.sfi_export import (
     _validate_graph_export,
 )
 from kgfeg.kgs.validators import verify_lp_generation_validation_integrity
+from kgfeg.model_registry import ModelConfig
 from kgfeg.page_ir_extraction.validators import QualityError
 from kgfeg.schemas import CreateKGConfig
 
@@ -6036,6 +6038,13 @@ def prepare_evaluation_schedule(
     """
 
     effective = EvaluationSettings.model_validate(settings.settings.model_dump())
+    _equal(
+        actual=judge.output_contract_json,
+        expected=judge_output_contract(
+            ModelConfig.model_validate_json(judge.model_config_json)
+        ),
+        label="Judge structured output contract",
+    )
     expected_execution = {
         "attempt_timeout_seconds": 180,
         "concurrency": 4,

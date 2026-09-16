@@ -371,7 +371,7 @@ def test_unavailable_judge_preflight_does_not_fallback(
     # Third Party Library
     import httpx
 
-    model = f"{provider}:unavailable-synthetic-model"
+    model = "anthropic:claude-opus-5" if provider == "anthropic" else "openai:gpt-5.2"
     settings = BackendSettings(
         _env_file=None,
         LEARNING_COMMONS_EXPORT_SCHEMA_VERSION="1.0.0",
@@ -432,4 +432,4 @@ def test_unavailable_judge_preflight_does_not_fallback(
     asyncio.run(_exercise())
     assert len(calls) == 1
     assert calls[0][0] == "GET"
-    assert calls[0][1].endswith("/models/unavailable-synthetic-model")
+    assert calls[0][1].endswith("/models/" + model.partition(":")[2])

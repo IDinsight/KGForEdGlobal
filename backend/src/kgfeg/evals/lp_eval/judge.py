@@ -17,6 +17,7 @@ from abc import abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -25,10 +26,16 @@ from uuid import uuid4
 # Third Party Library
 import httpx
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 from pydantic_ai import Agent, capture_run_messages
 from pydantic_ai.exceptions import AgentRunError, UnexpectedModelBehavior, UserError
-from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ThinkingPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelResponse,
+    TextPart,
+    ThinkingPart,
+    ToolCallPart,
+)
 from pydantic_ai.models import Model
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.openai import OpenAIResponsesModel
@@ -38,6 +45,11 @@ from pydantic_ai.usage import RunUsage, UsageLimits
 
 # Package Library
 from kgfeg.config import BackendSettings, Settings
+from kgfeg.evals.lp_eval.output import (
+    judge_output_contract,
+    judge_output_profile,
+    judge_output_type,
+)
 from kgfeg.evals.lp_eval.prompts import _resolve_evidence_reference
 from kgfeg.evals.lp_eval.sampling import (
     _decode_snapshot_json,
@@ -60,6 +72,7 @@ from kgfeg.evals.lp_eval.schemas import (
     JudgePrompt,
     JudgeReply,
     JudgeUsage,
+    RationaleClaimAssessment,
     ResolvedEvaluationSettings,
     ResolvedJudgeSettings,
     ScheduledRequest,
@@ -67,6 +80,9 @@ from kgfeg.evals.lp_eval.schemas import (
 from kgfeg.kgs.lp_requests import canonical_lp_json, lp_material_content_hash
 from kgfeg.model_registry import ModelConfig
 
+_ATTEMPT_OUTPUT: ContextVar[list[_ProviderOutput | None] | None] = ContextVar(
+    "lp_eval_attempt_output", default=None
+)
 _ATTEMPT_USAGE: ContextVar[list[JudgeUsage | None] | None] = ContextVar(
     "lp_eval_attempt_usage", default=None
 )
@@ -74,6 +90,19 @@ _CACHE_SCHEMA = {
     "events": "CREATE TABLE events (sequence INTEGER PRIMARY KEY, payload TEXT NOT NULL, content_hash TEXT NOT NULL)",
     "metadata": "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
 }
+_OUTPUT_VALIDATION_REASONS = frozenset(
+    {
+        "A grounded rationale must support every material claim.",
+        "A partially grounded rationale must support some but not all claims.",
+        "An unsupported rationale with supported claims needs a contradiction.",
+        "Critique endpoints must be distinct.",
+        "Evidence references must not repeat.",
+        "Judgment endpoints must be distinct.",
+        "Judgment text and evidence references cannot be blank.",
+        "Only a developmental assessment has a direction.",
+        "Supported or contradicted claims need shown evidence.",
+    }
+)
 JUDGE_ATTEMPT_TIMEOUT_SECONDS = 180
 JUDGE_CONCURRENCY = 4
 JUDGE_MAX_RETRIES = 2
@@ -187,12 +216,12 @@ class _Execution:
                 response_json=reply.response_json,
                 usage=reply.usage,
             )
-        except ValueError:
+        except ValueError as error:
             self._failure(
                 attempt=attempt,
                 error=JudgeCallError(
                     category="invalid_output",
-                    message="Response failed the exact scheduled output contract.",
+                    message=_output_validation_message(error),
                     raw_response=reply.response_json,
                     usage=reply.usage,
                 ),
@@ -497,7 +526,7 @@ class _ProviderJudge:
         self._settings = settings
 
     async def judge(self, prompt: JudgePrompt) -> JudgeReply:
-        """Run one agent attempt and preserve raw output before JSON validation.
+        """Run one typed agent attempt and retain raw output and usage on failure.
 
         Parameters
         ----------
@@ -507,7 +536,7 @@ class _ProviderJudge:
         Returns
         -------
         JudgeReply
-            Original response text and available usage, including invalid-output usage.
+            Raw native JSON or output-tool arguments and available usage.
 
         Raises
         ------
@@ -516,42 +545,112 @@ class _ProviderJudge:
         """
 
         config = ModelConfig.model_validate_json(self.settings.model_config_json)
+        validate_judge_settings(self.settings)
+        schema = (
+            ClassificationJudgment
+            if prompt.task == "classification"
+            else CritiqueJudgment
+        )
+        schema_json = canonical_lp_json(schema.model_json_schema())
+
+        if (
+            prompt.response_schema_json != schema_json
+            or prompt.response_schema_sha256
+            != hashlib.sha256(schema_json.encode()).hexdigest()
+        ):
+            raise JudgeCallError(
+                category="invalid_input",
+                message="Frozen response schema differs from the typed output schema.",
+            )
+
+        mode = json.loads(self.settings.output_contract_json)["mode"]
         agent = Agent(
             instructions=prompt.system_message,
             model=self._model,
             model_settings=config.kgs_settings("learning_progressions"),
             output_retries=0,
-            output_type=str,
+            output_type=judge_output_type(config=config, task=prompt.task),
             retries=0,
         )
         usage = RunUsage()
         observed: list[JudgeUsage | None] = _ATTEMPT_USAGE.get() or [None]
+        output: list[_ProviderOutput | None] = [None]
+        output_token = _ATTEMPT_OUTPUT.set(output)
         token = _ATTEMPT_USAGE.set(observed)
 
         try:
             with capture_run_messages() as messages:
                 try:
-                    await agent.run(
+                    result = await agent.run(
                         prompt.user_message,
                         usage=usage,
-                        usage_limits=UsageLimits(request_limit=None),
+                        usage_limits=UsageLimits(request_limit=1),
                     )
                 except Exception as error:
-                    failure = _classify_judge_error(error)
+                    accounting = observed[0] or _agent_usage(
+                        messages=messages, usage=usage
+                    )
+
+                    if output[0] is not None and output[0].failure is not None:
+                        output[0].failure.usage = accounting
+                        raise output[0].failure from None
+
+                    # Inspect the unmodified response even when SDK validation failed;
+                    # wrapped SDK errors otherwise hide missing-field diagnostics.
+                    has_response = any(
+                        isinstance(item, ModelResponse) for item in messages
+                    )
+
+                    if has_response:
+                        _agent_reply(
+                            messages=messages,
+                            mode=mode,
+                            prompt=prompt,
+                            usage=accounting,
+                        )
+
+                    failure = (
+                        JudgeCallError(
+                            category="invalid_output",
+                            message="Provider output could not be decoded by the SDK.",
+                        )
+                        if output[0] is not None and not has_response
+                        else _classify_judge_error(error)
+                    )
                     raise JudgeCallError(
                         category=failure.category,
                         message=str(failure),
-                        raw_response=_agent_text(messages),
-                        usage=observed[0]
-                        or _agent_usage(messages=messages, usage=usage),
+                        raw_response=(
+                            output[0].raw_response
+                            if output[0] is not None
+                            else _agent_raw_output(messages)
+                        ),
+                        usage=accounting,
                     ) from None
+
+            accounting = observed[0] or _agent_usage(messages=messages, usage=usage)
+
+            if output[0] is not None and output[0].failure is not None:
+                output[0].failure.usage = accounting
+                raise output[0].failure
+
+            if not isinstance(result.output, schema):
+                raise JudgeCallError(
+                    category="invalid_output",
+                    message="Agent returned an unexpected typed output.",
+                    raw_response=_agent_raw_output(messages),
+                    usage=accounting,
+                )
 
             return _agent_reply(
                 messages=messages,
-                usage=observed[0] or _agent_usage(messages=messages, usage=usage),
+                mode=mode,
+                prompt=prompt,
+                usage=accounting,
             )
         finally:
             _ATTEMPT_USAGE.reset(token)
+            _ATTEMPT_OUTPUT.reset(output_token)
 
     async def preflight(self) -> None:
         """Verify model access without making a generation request.
@@ -590,6 +689,22 @@ class _ProviderJudge:
             Provider, model and effective settings.
         """
         return self._settings
+
+
+@dataclass(frozen=True, slots=True)
+class _ProviderOutput:
+    """Original provider output evidence before lossy SDK normalization.
+
+    Attributes
+    ----------
+    failure
+        Output-envelope violation, with sanitized raw evidence attached.
+    raw_response
+        Only returned output fields; no request, headers or provider metadata.
+    """
+
+    failure: JudgeCallError | None
+    raw_response: str | None
 
 
 class EvaluationSession:
@@ -1055,74 +1170,161 @@ class JudgeTransport(Protocol):
         raise NotImplementedError
 
 
-def _agent_reply(*, messages: list[ModelMessage], usage: JudgeUsage) -> JudgeReply:
-    """Require one complete Pydantic AI response with exactly one text part.
+def _agent_output_json(*, mode: str, response: ModelResponse, schema_name: str) -> str:
+    """Extract the sole intended output without accepting incomplete responses.
+
+    Parameters
+    ----------
+    mode
+        Frozen native or tool mode.
+    response
+        The only response from this attempt.
+    schema_name
+        Intended output tool name when tool mode is used.
+
+    Returns
+    -------
+    str
+        Native text or tool arguments, pending strict JSON validation.
+
+    Raises
+    ------
+    JudgeCallError
+        If completion, output count or part types are invalid.
+    """
+
+    parts = [part for part in response.parts if not isinstance(part, ThinkingPart)]
+
+    if response.finish_reason not in (
+        {"stop"} if mode == "native" else {"stop", "tool_call"}
+    ):
+        problem = "Judge output is incomplete, truncated, filtered or missing a completion reason."
+    elif len(parts) != 1:
+        problem = f"Expected exactly one output part; received {len(parts)}."
+    elif mode == "native" and isinstance(parts[0], TextPart):
+        return parts[0].content
+    elif mode == "tool" and isinstance(parts[0], ToolCallPart):
+        if parts[0].tool_name != schema_name:
+            problem = "Judge called an unexpected output tool."
+        else:
+            arguments = parts[0].args
+            return arguments if isinstance(arguments, str) else json.dumps(arguments)
+    else:
+        problem = "Judge returned an unexpected output part for the frozen mode."
+
+    raise JudgeCallError(category="invalid_output", message=problem)
+
+
+def _agent_raw_output(messages: list[ModelMessage]) -> str | None:
+    """Capture output text and tool arguments without input messages or metadata.
+
+    Parameters
+    ----------
+    messages
+        Captured single-attempt messages.
+
+    Returns
+    -------
+    str | None
+        Raw text for a single text output, otherwise an ordered response envelope.
+        Thinking, signatures, headers and provider metadata are deliberately omitted.
+    """
+
+    responses = [message for message in messages if isinstance(message, ModelResponse)]
+
+    if not responses:
+        return None
+
+    if len(responses) == 1 and all(
+        isinstance(part, (TextPart, ThinkingPart)) for part in responses[0].parts
+    ):
+        texts = [
+            part.content for part in responses[0].parts if isinstance(part, TextPart)
+        ]
+
+        if len(texts) == 1:
+            return texts[0]
+
+    material = []
+
+    for response in responses:
+        parts: list[dict[str, Any]] = []
+
+        for part in response.parts:
+            if isinstance(part, TextPart):
+                parts.append({"kind": "text", "text": part.content})
+            elif isinstance(part, ToolCallPart):
+                parts.append(
+                    {"arguments": part.args, "kind": "tool", "name": part.tool_name}
+                )
+            elif not isinstance(part, ThinkingPart):
+                parts.append({"kind": part.part_kind})
+
+        material.append({"finish_reason": response.finish_reason, "parts": parts})
+
+    return json.dumps(material, ensure_ascii=False, separators=(",", ":"))
+
+
+def _agent_reply(
+    *, messages: list[ModelMessage], mode: str, prompt: JudgePrompt, usage: JudgeUsage
+) -> JudgeReply:
+    """Require exactly one complete native object or intended output-tool call.
 
     Parameters
     ----------
     messages
         Captured messages from a single fresh agent attempt.
+    mode
+        Frozen explicit native or tool output mode.
+    prompt
+        Intended schema and task, already verified against the frozen material.
     usage
         Available accounting, retained when completion validation fails.
 
     Returns
     -------
     JudgeReply
-        Original response text, still subject to strict scheduled JSON validation.
+        Original JSON or tool arguments, pending strict scheduled identity checks.
 
     Raises
     ------
     JudgeCallError
-        If output is missing, incomplete, duplicated or includes tool actions.
+        If output is missing, incomplete, duplicated, malformed or unexpected.
     """
 
     responses = [message for message in messages if isinstance(message, ModelResponse)]
-    valid = len(responses) == 1
+    schema = (
+        ClassificationJudgment if prompt.task == "classification" else CritiqueJudgment
+    )
+    raw = _agent_raw_output(messages)
 
-    if valid:
-        response = responses[0]
-        texts = [part for part in response.parts if isinstance(part, TextPart)]
-        valid = (
-            response.finish_reason == "stop"
-            and len(texts) == 1
-            and all(
-                isinstance(part, (TextPart, ThinkingPart)) for part in response.parts
-            )
-        )
-
-    if not valid:
+    if len(responses) != 1:
         raise JudgeCallError(
             category="invalid_output",
-            message="Judge did not return one complete text response.",
-            raw_response=_agent_text(messages),
+            message=f"Expected one model response; received {len(responses)}.",
+            raw_response=raw,
             usage=usage,
         )
 
-    return JudgeReply(response_json=texts[0].content, usage=usage)
+    try:
+        response_json = _agent_output_json(
+            mode=mode, response=responses[0], schema_name=schema.__name__
+        )
+        _decode_snapshot_json(response_json.encode())
+        schema.model_validate_json(response_json)
+    except JudgeCallError as error:
+        error.raw_response = raw
+        error.usage = usage
+        raise
+    except ValueError as error:
+        raise JudgeCallError(
+            category="invalid_output",
+            message=_output_validation_message(error),
+            raw_response=raw,
+            usage=usage,
+        ) from None
 
-
-def _agent_text(messages: list[ModelMessage]) -> str | None:
-    """Retain returned text for failures without serializing input messages.
-
-    Parameters
-    ----------
-    messages
-        Messages captured during the one attempt.
-
-    Returns
-    -------
-    str | None
-        Exact text content, or unknown if no text response arrived.
-    """
-
-    texts = [
-        part.content
-        for message in messages
-        if isinstance(message, ModelResponse)
-        for part in message.parts
-        if isinstance(part, TextPart)
-    ]
-    return "\n".join(texts) if texts else None
+    return JudgeReply(response_json=response_json, usage=usage)
 
 
 def _agent_usage(*, messages: list[ModelMessage], usage: RunUsage) -> JudgeUsage:
@@ -1420,6 +1622,177 @@ def _load_store_manifest(reference: EvaluationStore) -> EvaluationStoreManifest:
 
     _frozen_output_boundary(inventory=inventory, output=inventory.evaluation_root)
     return manifest
+
+
+def _output_validation_message(error: ValueError) -> str:
+    """Describe validation failures without copying values or provider exceptions.
+
+    Parameters
+    ----------
+    error
+        Strict JSON, schema or request-relative validation failure.
+
+    Returns
+    -------
+    str
+        Known field locations and error codes, or a fixed domain diagnostic.
+    """
+
+    if isinstance(error, ValidationError):
+        fields = (
+            set(ClassificationJudgment.model_fields)
+            | set(CritiqueJudgment.model_fields)
+            | set(RationaleClaimAssessment.model_fields)
+        )
+        details = []
+
+        for item in error.errors(
+            include_context=False, include_input=False, include_url=False
+        ):
+            location = (
+                ".".join(
+                    str(part) if isinstance(part, int) or part in fields else "<extra>"
+                    for part in item["loc"]
+                )
+                or "judgment"
+            )
+            reason = item["type"]
+            domain_message = item["msg"].removeprefix("Value error, ")
+
+            if domain_message in _OUTPUT_VALIDATION_REASONS:
+                reason += f" ({domain_message})"
+
+            details.append(f"{location}: {reason}")
+
+        return "Structured output validation failed: " + "; ".join(details)
+
+    if isinstance(error, json.JSONDecodeError):
+        return f"Malformed output JSON at line {error.lineno}, column {error.colno}."
+
+    if str(error).startswith("Duplicate JSON key:"):
+        return "Output JSON contains a duplicate object key."
+
+    if str(error).startswith("invalid JSON numeric constant:"):
+        return "Output JSON contains a nonfinite numeric constant."
+
+    safe_messages = {
+        "Judge response identity differs from its scheduled presentation.",
+        "Judge response violates the displayed assessment permissions.",
+        "Judge cited evidence outside its permitted shown references.",
+        "Evidence reference must be a JSON pointer.",
+        "Evidence reference is outside the shown payload.",
+        "Noncanonical evidence array index.",
+    }
+    return (
+        str(error)
+        if str(error) in safe_messages
+        else (
+            "Output failed strict JSON or scheduled validation (including duplicate keys "
+            "and nonfinite values)."
+        )
+    )
+
+
+def _provider_output(*, material: dict[str, Any], provider: str) -> _ProviderOutput:
+    """Validate original output count and completion before SDK normalization.
+
+    Parameters
+    ----------
+    material
+        Decoded successful HTTP response, never a request or error-body dump.
+    provider
+        Configured provider defining the response envelope.
+
+    Returns
+    -------
+    _ProviderOutput
+        Sanitized output evidence and any envelope failure for durable accounting.
+    """
+
+    native = provider == "anthropic"
+    parts = material.get("content" if native else "output")
+    raw = json.dumps(
+        (
+            [_provider_output_part(part) for part in parts]
+            if isinstance(parts, list)
+            else None
+        ),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    problem = None
+    complete = (
+        material.get("stop_reason") == "end_turn"
+        if native
+        else material.get("status") == "completed"
+        and material.get("incomplete_details") is None
+    )
+
+    if not complete:
+        problem = "Provider output is incomplete, truncated, filtered or missing completion status."
+    elif not isinstance(parts, list) or any(
+        not isinstance(part, dict) for part in parts
+    ):
+        problem = "Provider output parts are missing or malformed."
+    else:
+        thinking = ("thinking", "redacted_thinking") if native else ("reasoning",)
+        outputs = [part for part in parts if part.get("type") not in thinking]
+        expected = "text" if native else "function_call"
+
+        if len(outputs) != 1 or outputs[0].get("type") != expected:
+            problem = "Provider must return exactly one intended output and no unexpected tools or parts."
+        elif outputs[0].get("status") not in (None, "completed"):
+            problem = "Provider returned an incomplete output item."
+        elif not isinstance(outputs[0].get("text" if native else "arguments"), str):
+            problem = "Provider output text or tool arguments are missing or malformed."
+
+    failure = (
+        JudgeCallError(category="invalid_output", message=problem, raw_response=raw)
+        if problem is not None
+        else None
+    )
+    return _ProviderOutput(failure=failure, raw_response=raw)
+
+
+def _provider_output_part(part: Any) -> dict[str, Any]:
+    """Keep output text and tool arguments without reasoning or metadata fields.
+
+    Parameters
+    ----------
+    part
+        One provider output item or nested message content item.
+
+    Returns
+    -------
+    dict[str, Any]
+        Allowlisted output evidence, including unexpected tool arguments.
+    """
+
+    if not isinstance(part, dict):
+        return {"type": "malformed_part"}
+
+    if part.get("type") in ("thinking", "redacted_thinking", "reasoning"):
+        return {"type": part["type"]}
+
+    result = {
+        key: part[key]
+        for key in (
+            "action",
+            "arguments",
+            "input",
+            "name",
+            "refusal",
+            "status",
+            "text",
+            "type",
+        )
+        if key in part
+    }
+
+    if isinstance(part.get("content"), list):
+        result["content"] = [_provider_output_part(item) for item in part["content"]]
+
+    return result
 
 
 def _provider_usage(
@@ -2250,7 +2623,7 @@ async def open_judge_transport(
         raise ValueError(f"Missing {key_name} for LP evaluation.")
 
     async def _capture_usage(response: httpx.Response) -> None:
-        """Retain actual accounting before SDK defaults erase missing-value distinctions.
+        """Capture usage and validate output before the SDK can drop response items.
 
         Parameters
         ----------
@@ -2264,19 +2637,38 @@ async def open_judge_transport(
             return
 
         await response.aread()
+        problem = None
 
         try:
             material = response.json()
         except ValueError:
-            return
+            material = None
+            problem = "Provider returned malformed JSON in a successful HTTP response."
 
-        if isinstance(material, dict):
-            observed[0] = _provider_usage(
-                material=material,
-                provider=settings.provider,
-                request_id=response.headers.get("request-id")
-                or response.headers.get("x-request-id"),
-            )
+        observed[0] = _provider_usage(
+            material=material if isinstance(material, dict) else {},
+            provider=settings.provider,
+            request_id=response.headers.get("request-id")
+            or response.headers.get("x-request-id"),
+        )
+        output = _ATTEMPT_OUTPUT.get()
+
+        if response.is_success and output is not None:
+            if isinstance(material, dict):
+                output[0] = _provider_output(
+                    material=material, provider=settings.provider
+                )
+            else:
+                # Without an object envelope, output fields cannot be isolated safely.
+                # Retain the failure without logging the body or inventing usage.
+                output[0] = _ProviderOutput(
+                    failure=JudgeCallError(
+                        category="invalid_output",
+                        message=problem
+                        or "Provider returned non-object JSON in a successful HTTP response.",
+                    ),
+                    raw_response=None,
+                )
 
     async with httpx.AsyncClient(
         event_hooks={"response": [_capture_usage]},
@@ -2291,6 +2683,9 @@ async def open_judge_transport(
         if settings.provider == "anthropic":
             model = AnthropicModel(
                 name,
+                profile=judge_output_profile(
+                    ModelConfig.model_validate_json(settings.model_config_json)
+                ),
                 provider=AnthropicProvider(
                     api_key=api_key,
                     base_url="https://api.anthropic.com",
@@ -2447,6 +2842,7 @@ def resolve_judge_settings(
         model_settings_json=json.dumps(
             dict(model_settings), allow_nan=False, separators=(",", ":"), sort_keys=True
         ),
+        output_contract_json=judge_output_contract(model_config),
         provider=provider,
     )
 
@@ -2556,6 +2952,9 @@ def validate_judge_settings(settings: ResolvedJudgeSettings) -> None:
 
     if effective != settings.model_settings_json:
         raise ValueError("Frozen judge settings differ from the shared registry.")
+
+    if settings.output_contract_json != judge_output_contract(config):
+        raise ValueError("Frozen judge structured output contract is incompatible.")
 
     expected = {
         "attempt_timeout_seconds": JUDGE_ATTEMPT_TIMEOUT_SECONDS,

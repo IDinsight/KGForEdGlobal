@@ -1274,6 +1274,67 @@ def test_frozen_source_detects_changed_missing_and_new_material(
         sampling._frozen_source_check(snapshot)
 
 
+@pytest.mark.parametrize("mutation", ["mode", "schema", "sdk", "source"])
+def test_incompatible_store_is_rejected_without_evidence_writes(
+    _schedule: Any, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    """Preserve a frozen invocation when runtime output or source material changes.
+
+    Parameters
+    ----------
+    _schedule
+        Complete synthetic schedule with authenticated input material.
+    monkeypatch
+        Restoring simulated runtime material changes.
+    mutation
+        Output or implementation identity changed after freezing.
+    """
+    frozen_manifest = json.loads(_schedule.inputs.manifest_path.read_text())
+    repository = Path(frozen_manifest["inventory"]["evaluation_root"]).parents[1]
+    reference = judge.persist_evaluation_schedule(
+        repository_root=repository, schedule=_schedule
+    )
+    directory = reference.manifest_path.parent
+    before = {
+        str(path.relative_to(directory)): path.read_bytes()
+        for path in directory.rglob("*")
+        if path.is_file()
+    }
+    assert any(
+        item.path.name == "output.py" for item in _schedule.implementation_fingerprints
+    )
+    if mutation == "source":
+        monkeypatch.setattr(
+            name="_schedule_implementation", target=judge, value=lambda: ()
+        )
+        expected = "implementation"
+    else:
+        contract = json.loads(_schedule.judge.output_contract_json)
+        if mutation == "mode":
+            contract["mode"] = "tool"
+        elif mutation == "schema":
+            contract["schemas"]["classification"]["schema"]["required"].append(
+                "new_field"
+            )
+        else:
+            contract["sdk_versions"]["anthropic"] = "new-sdk-version"
+        monkeypatch.setattr(
+            name="judge_output_contract",
+            target=sampling,
+            value=lambda config: _dump(contract),
+        )
+        expected = "structured output contract"
+    with pytest.raises(ValueError, match=expected):
+        with judge.open_evaluation_store(reference):
+            raise AssertionError("Incompatible frozen invocation was opened.")
+    after = {
+        str(path.relative_to(directory)): path.read_bytes()
+        for path in directory.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+
+
 def test_incomplete_cache_cannot_report_completion(
     _report_inputs: Any, _schedule: Any
 ) -> None:
@@ -1573,15 +1634,13 @@ def test_local_provider_uses_one_function_model_call(_schedule: Any) -> None:
     transport = judge._ProviderJudge(
         model=FunctionModel(function=_model), settings=_schedule.judge
     )
-    reply = asyncio.run(transport.judge(prompt))
-    assert reply.response_json == "{}"
+    with pytest.raises(judge.JudgeCallError) as failure:
+        asyncio.run(transport.judge(prompt))
+    assert failure.value.category == "invalid_output"
+    assert failure.value.raw_response == "{}"
     assert len(calls) == 1
-    assert reply.usage.input_tokens is not None
-    with pytest.raises(ValueError):
-        judge.validate_judge_response(
-            request=_schedule.curricula[0].requests[0],
-            response_json=reply.response_json,
-        )
+    assert failure.value.usage.input_tokens is not None
+    assert "request_id: missing" in str(failure.value)
 
 
 def test_nomination_coverage_positive_denominator_is_condition_specific(
@@ -2018,21 +2077,6 @@ def test_settings_reject_invalid_counts(field: str, value: Any) -> None:
         resolve_evaluation_settings({field: value})
 
 
-def test_store_excludes_concurrent_writers(tmp_path: Path) -> None:
-    """Reject a second writer while the first holds the actual filesystem lock.
-
-    Parameters
-    ----------
-    tmp_path
-        Isolated pytest-owned directory for disposable evidence.
-    """
-    path = tmp_path / "writer.lock"
-    with judge._exclusive_store_lock(path):
-        with pytest.raises((ValueError, OSError)):
-            with judge._exclusive_store_lock(path):
-                pytest.fail("Second writer acquired the same store")
-
-
 @pytest.mark.parametrize("checkpoint_format", ["historical_prefix", "journal_bearing"])
 @pytest.mark.parametrize(
     "mutation",
@@ -2099,6 +2143,21 @@ def test_snapshot_integrity_rejects_tampered_test_artifacts(
         for path in copied.rglob("*")
         if path.is_file()
     }
+
+
+def test_store_excludes_concurrent_writers(tmp_path: Path) -> None:
+    """Reject a second writer while the first holds the actual filesystem lock.
+
+    Parameters
+    ----------
+    tmp_path
+        Isolated pytest-owned directory for disposable evidence.
+    """
+    path = tmp_path / "writer.lock"
+    with judge._exclusive_store_lock(path):
+        with pytest.raises((ValueError, OSError)):
+            with judge._exclusive_store_lock(path):
+                pytest.fail("Second writer acquired the same store")
 
 
 def test_swapped_endpoint_assessment_is_remapped(_schedule: Any) -> None:

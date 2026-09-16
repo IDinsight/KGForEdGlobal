@@ -817,7 +817,7 @@ class JudgeReply:
     Attributes
     ----------
     response_json
-        Exact returned text. Malformed JSON remains available as failure evidence.
+        Returned native JSON text or output-tool arguments before scheduled validation.
     usage
         Available accounting from this attempt, including unknown values.
     """
@@ -1156,6 +1156,8 @@ class ResolvedJudgeSettings:
         Complete canonical shared model configuration for reproducible resolution.
     model_settings_json
         Canonical effective learning-progressions settings from the shared registry.
+    output_contract_json
+        Explicit output mode, effective provider schemas and SDK/retry binding.
     provider
         Provider resolved from the explicit model identifier.
     """
@@ -1164,6 +1166,7 @@ class ResolvedJudgeSettings:
     model: str
     model_config_json: str
     model_settings_json: str
+    output_contract_json: str
     provider: str
 
 

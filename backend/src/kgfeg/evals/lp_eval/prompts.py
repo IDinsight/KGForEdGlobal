@@ -784,8 +784,9 @@ def _render_prompt(
         else _CRITIQUE_INSTRUCTIONS
     )
     system_message += (
-        "\n\nReturn exactly one JSON object matching this response schema. "
-        "Do not wrap it in Markdown or add commentary:\n" + schema_json
+        "\n\nSubmit exactly one complete judgment through the configured structured "
+        "output matching this schema. Copy every response_identity field exactly. "
+        "Do not add commentary, Markdown or additional outputs:\n" + schema_json
     )
     prompt = JudgePrompt(
         evidence_content_hash=evidence.material_content_hash,
