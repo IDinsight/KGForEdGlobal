@@ -34,11 +34,19 @@ The explainer is a **read-only role**. Do not implement, repair, refactor, edit 
 
 Your goal is to reduce cognitive load without removing load-bearing semantics.
 
+## Step 28 Git-independent evaluation amendment — user approval recorded (2026-09-16)
+
+The user explicitly removed Git state as an evaluator execution/resume gate and removed evaluator candidate-SHA recording from review/execution evidence. Engineering-brief D12.1.4 governs this settled amendment. Do not require a Git checkout, HEAD, clean/unchanged working tree, evaluator candidate SHA/tree, or an execution-identity receipt containing them to prepare, execute, resume, report or review Step 28 evaluation. This supersedes generic exact-candidate-SHA evidence requirements wherever they would reintroduce that Step 28 prerequisite, including earlier amendment language below. Historical approval records remain historical.
+
+Preserve actual evaluator implementation, input, configuration, prompt, schema, model, request, schedule, cache and report content hashes. Preserve development/evaluation labeling, independent deterministic testing/review, Step 27 approval, separate live authorization, concern dispositions and all six reviewed snapshots for final completion. The fixed Step 28 review base remains `28d4f1218c71237bc7fda1027a8ac55866bd345f` for reviewing source changes; it is not runtime configuration. Production evidence and other steps' Git requirements are unchanged.
+
+The same user instruction requests the existing Typer entry-point pattern. Record this governance amendment first, then implement the approved removal and CLI conversion as a separate coding phase in this task. No additional policy choice or approval is pending; no live calls, automated-test authorship, staging or commits are authorized.
+
 ## Step 28 producing-commit amendment — user approval recorded (2026-09-15)
 
 The user removed the evaluator requirement to identify the Git commit that produced each curriculum run. Engineering-brief D12.1.3 and Section 3.3.5 govern all Step 28 phases, including final completion: validate actual source/config/request/judgment/provenance/bundle/projection hashes and retain known producing SHAs only as optional provenance. Unknown producing SHAs do not block evaluation, require a disposition, or authorize inference, retrospective fabrication or regeneration. Do not replace the removed prerequisite with another mandatory producing-code fingerprint.
 
-The fixed Step 28 review base, exact evaluator candidate SHA/tree, compatible historical validation, material-bound cache identities, independent testing/review, Step 27 approval and separate live authorization remain. Production execution/reviewer evidence obligations are unchanged. For the current request, the user authorized this governance update followed by the requested coding-only pylint remediation as sequential phases in the same task; preserve user-added documentation and do not author tests or advance other evaluator parts.
+The fixed Step 28 review base, compatible historical validation, material-bound cache identities, independent testing/review, Step 27 approval and separate live authorization remain. Production execution/reviewer evidence obligations are unchanged. For the current request, the user authorized this governance update followed by the requested coding-only pylint remediation as sequential phases in the same task; preserve user-added documentation and do not author tests or advance other evaluator parts.
 
 
 ## Step 28 discovery amendment — user approval recorded (2026-09-15)
@@ -61,7 +69,7 @@ Every handoff must apply these review-base rules:
 - Step 28 work already started as historical Step 27 keeps fixed base `28d4f1218c71237bc7fda1027a8ac55866bd345f` through final evaluator review. New Step 26/27 approvals and available producer snapshot SHAs are additional dependency/input evidence, not replacement review bases. Account for all intervening candidate changes and revalidate affected evidence without relabeling earlier results.
 - Step 29 uses the exact Step 28 reviewer-approved SHA. Step 30 uses the original pre-Step-1 baseline through the exact Step 29 reviewer-approved candidate.
 
-Live Step 28 evaluation and final evaluator completion retain Step 27 reviewer approval, independent deterministic harness testing, exact user-created evaluator candidate/input binding, all six reviewed project snapshots for completion, required reports and concern dispositions, and separate explicit live authorization. Preserve generalized N >= 1 operation, both evidence-condition corrections and D12-S/J/R/B/A. Offline subset readiness is not final approval.
+Live Step 28 evaluation and final evaluator completion retain Step 27 reviewer approval, independent deterministic harness testing, actual evaluator implementation/input content binding, all six reviewed project snapshots for completion, required reports and concern dispositions, and separate explicit live authorization. Preserve generalized N >= 1 operation, both evidence-condition corrections and D12-S/J/R/B/A. Offline subset readiness is not final approval.
 
 Concurrency is a prospective enhancement, not evidence of an earlier defect. Serial execution alone establishes no violation. If evidence proves an earlier approved-state defect or retroactive contract change, identify earliest owner K, former frontier F and its fixed review base, then explicitly reopen and revalidate the affected chain. No earlier approval is automatically reopened by this amendment.
 

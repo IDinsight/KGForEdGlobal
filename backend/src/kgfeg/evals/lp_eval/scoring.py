@@ -1007,7 +1007,7 @@ def _report_files(
     inputs
         Upstream population and baseline bindings.
     provenance
-        Explicit observed candidate/tree and evidence purpose.
+        Explicit development/evaluation evidence purpose.
     report
         Deterministic scored ledger.
     schedule
@@ -1845,7 +1845,7 @@ def write_evaluation_reports(
     execution_errors
         Sanitized preflight/dispatch failure messages, if execution stopped.
     provenance
-        Observed evaluator candidate/tree and explicit evidence kind.
+        Explicit development/evaluation evidence kind.
     reference
         Exact frozen invocation; cached judgments are revalidated without calls.
 

@@ -1100,11 +1100,9 @@ class ReportInputs:
 
 
 class ReportProvenance(BaseModel):
-    """Observed evaluator identity and explicit development/evaluation evidence kind."""
+    """Explicit development/evaluation evidence kind without Git metadata."""
 
-    evaluator_candidate_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
     evidence_kind: Literal["development", "evaluation"]
-    working_tree_changed_paths: tuple[str, ...]
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
