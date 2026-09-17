@@ -463,7 +463,7 @@ as_lc_lp_relationships.jsonl
   = all hasChild + all supports + all buildsTowards + all relatesTo
 ```
 
-Confirm no duplicate nodes/relationships, stable serialization, exact bundle parity, and no accidental switch to the slim AS-only Learning Commons wire format.
+Confirm no duplicate nodes/relationships, stable serialization, and exact bundle parity. AS+LC+LP JSONL must retain its internal projection format. Existing AS-only and AS+LC JSONL must retain their Learning Commons-shaped delivery wire format.
 
 ### 5.15 D12 release policy and six-curriculum evidence
 

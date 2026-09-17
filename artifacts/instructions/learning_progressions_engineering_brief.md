@@ -226,9 +226,11 @@ as_lc_relationships.jsonl
 
 The AS-only and AS+LC artifacts remain valid integration boundaries. The new AS+LC+LP artifacts are additive.
 
-**SETTLED — `as_lc_lp_*.jsonl` follows the existing combined internal projection, not the AS Learning Commons wire projection.**
+**SETTLED — AS+LC+LP JSONL uses internal projections; existing AS-only and AS+LC JSONL retain their delivery wire format.**
 
-Like `as_lc_nodes.jsonl` and `as_lc_relationships.jsonl`, the new combined files will use snake_case internal models, retain internal relationship metadata, and include `entity_type` on node rows. They are not interchangeable with the slim Learning Commons-shaped `as_nodes.jsonl` / `as_relationships.jsonl` contract.
+`as_lc_lp_nodes.jsonl` and `as_lc_lp_relationships.jsonl` use snake_case internal models, retain internal relationship metadata, and include `entity_type` on node rows.
+
+The existing `as_nodes.jsonl` / `as_relationships.jsonl` and `as_lc_nodes.jsonl` / `as_lc_relationships.jsonl` pairs use the Learning Commons-shaped delivery wire format. The AS+LC pair preserves the AS wire records and appends LearningComponent nodes and supports relationships. These existing formats remain unchanged. The AS+LC+LP internal projections are not interchangeable with either delivery pair; logical node parity does not imply identical serialization.
 
 Step 26's internal pending-completion and usage journals under D13-C3 accompany the deterministic successful JSONL prefixes. Under the prospective 2026-09-13 amendment, new production requires complete receipt-authenticated journal-bearing checkpoint evidence; absence is not an empty journal. The transaction journal remains transient and may be absent after a committed transaction. Public graph/AS/AS+LC contracts remain intact. Historical artifact validation remains bound to compatible historical code/schema; this change does not retrofit journal files into old snapshots. Implementation approval for format removal is recorded in Section 3.3.3; separate coding/testing/reviewer gates still apply.
 
@@ -2170,6 +2172,12 @@ The former D12-J requirement to reject an omitted evaluator variable is supersed
 Observed root: `/Users/tzz/Projects/private/idi/KGForEdGlobal`; branch `tz6/lp-kg-build-step-28`; HEAD `e8412756b13a0ab6c3fa569f7c684aa9adfe4ffa`. Fixed review base remains `28d4f1218c71237bc7fda1027a8ac55866bd345f`. Pre-existing changes are the three source repairs in `config.py`, `entries/create_kgs.py` and `evals/lp_eval/schemas.py`, the Ghana/Pratham config-wiring test correction, and untracked evaluator tests. Preserve the production lock-retention and grounding-consistency repairs and all testing-owned work. The user's lock question requests clarification and does not authorize restoring production lock deletion.
 
 This changes current unapproved Step 28 configuration behavior only; it does not reopen earlier approvals, certify Step 28 completion, alter Git-independent evaluation or optional producing-SHA provenance, or waive actual material hashes. Independent testing/review, Step 27 approval, separate live authorization, required reports/dispositions and all six reviewed snapshots for final completion remain. No automated-test authorship, live calls, active-run/result changes, staging or commits are authorized.
+
+### 3.3.7 AS+LC projection description clarified — user decision recorded, 2026-09-17
+
+The user confirmed that the existing code is correct and requested a governance clarification. Section 1.6 incorrectly described the existing AS+LC JSONL delivery files as internal projections. AS-only and AS+LC JSONL use the Learning Commons-shaped delivery wire format; AS+LC+LP JSONL uses the separate internal projection format.
+
+This corrects the specification's description of existing behavior. It requires no implementation, test, user-documentation, or generated-artifact changes and authorizes no regeneration. It does not itself reopen earlier approvals, replace any review base, or establish final Step 28 or formal Step 29 approval.
 
 ---
 
