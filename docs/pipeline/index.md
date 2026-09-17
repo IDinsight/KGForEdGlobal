@@ -372,8 +372,12 @@ and `lp_validation_report.json`.
 
 `needs_review` is nonpublishing and nonblocking; any unresolved processing failure
 blocks LP/combined success. Bounded concurrency defaults to four requests, with durable
-pending completions and active-call drain after exhausted failure. Unsupported or stale
-checkpoint material cannot be bypassed with overwrite. See
+pending completions and active-call drain after exhausted failure. With
+`kgs.overwrite=false`, stale material is rejected during resume or reuse. Separately
+authorized regeneration with `kgs.overwrite=true` can rebuild affected stages when the
+existing checkpoint format is supported; the new evidence must pass validation.
+Unsupported checkpoint formats are always rejected before calls or artifact changes,
+including when overwrite is enabled. See
 [Learning Progressions](learning-progressions.md) for the full contract.
 
 ---

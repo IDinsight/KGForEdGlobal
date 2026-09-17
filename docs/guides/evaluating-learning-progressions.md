@@ -168,6 +168,15 @@ request/policy and rationale, including the corrected rationale when applicable.
 does not receive the classifier's answer and cannot revise it. Grounding is reported
 separately as `grounded`, `partially_grounded`, `unsupported`, or `ambiguous`.
 
+Critiques may cite the original bounded request and the historical producer/checker
+policy text actually shown to the critic. Policy text can support a claim about that
+policy; it cannot by itself establish factual relationship support between standards.
+The rationale being assessed cannot serve as evidence for itself. Citations must exactly
+match the supplied permitted references, without appended descriptions or quotations.
+The policy references `/original_producer_system_message` and
+`/original_checker_system_message` are permitted only when their corresponding text is
+present and nonblank. This does not expand the blind classifier's evidence view.
+
 **Independent upstream-pair assessment** selects from admissible eligible AS+LC pairs
 without reading nomination or production outcomes. Every selected pair uses the same
 `reconstructed_bounded_upstream` construction rules, whether nominated or not. Evidence
@@ -191,6 +200,12 @@ condition/view, rendered prompt, response schema, judge settings, replicate and
 presentation order, and the original request/policy/rationale for critiques. Reuse
 accepts only fully validated successes; stale, truncated, duplicate, extra, or mismatched
 records fail closed. Actual implementation hashes remain required even though Git does not.
+
+Changes to material evaluator code, rendered prompts, or permitted critique citations
+make an older frozen invocation incompatible. Resume rejects it before opening its
+writable judgment cache, preserving earlier judgments and failures, including exhausted
+attempts. A separately authorized new invocation uses the current material; it does not
+migrate old judgments or reset the old invocation's attempts.
 
 Outputs are rooted at repository-root `results/lp_evals/`, independently of the supplied
 production results root:
