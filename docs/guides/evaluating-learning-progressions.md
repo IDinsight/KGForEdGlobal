@@ -1,28 +1,32 @@
-# Evaluate Learning Progressions
+# Evaluating Learning Progressions
 
 The LP evaluator reads completed, validated production snapshots and writes separate
-assessment artifacts. It does not change graphs, production configuration, or production
-success reports. It supports any positive number of compatible curricula, with
-framework-contained populations derived from each snapshot's configuration.
+assessment artifacts. It does not change graphs, production configuration, or
+production success reports. It supports any positive number of compatible curricula,
+with framework-contained populations derived from each snapshot's configuration.
+
+The reporting path also creates an evaluation workbook and interactive visual report.
 
 ## Command and discovery
 
-Use the project's configured environment described in [local setup](../development/local-setup.md).
-Settings come from the environment managed by direnv; this entry point does not load
-an evaluator-specific dotenv file. Run from `backend/`:
+Use the project's configured environment described in
+[local setup](../development/local-setup.md). Settings come from the environment
+managed by `direnv`; this entry point does not load an evaluator-specific dotenv file.
+Run from `backend/`:
 
 ```bash
 python src/kgfeg/entries/evaluate_lps.py --help
+
 # Live-capable execution example, only after the required execution authorization:
 python src/kgfeg/entries/evaluate_lps.py ../results/kg_for_ed
 ```
 
-The Typer command has one required argument, `RESULTS_ROOT`, and no subcommands. It
-performs preflight, frozen preparation, judging/resume, and reporting in sequence.
-There is no offline CLI flag. Calling it on real inputs can make external model calls.
-Local preparation is available to developers through `prepare_evaluation()` without
-constructing a provider client; deterministic tests inject local transports into
-`run_evaluation()` and label the resulting evidence `development`.
+The Typer command has one required argument, `RESULTS_ROOT`, and no subcommands. By
+default it performs preflight, frozen preparation, judging/resume, and reporting in
+sequence. Calling it on real inputs can make external model calls. For presentation
+only, `--render-report` treats `RESULTS_ROOT` as an existing saved report directory and
+bypasses evaluation preparation and execution. Local preparation is available to
+developers through `prepare_evaluation()` without constructing a provider client.
 
 Discovery recursively finds directories named exactly `kgs`, including the supplied
 root itself. Parent depth and folder names do not determine curriculum identity.
@@ -37,17 +41,17 @@ judgments, provenance, reports, bundles, projections, and actual hashes must rec
 Unreadable/contradictory completion evidence, invalid completed inputs, or no completed
 inputs fails preparation before judge dispatch. A completed-looking snapshot whose
 generation lock is actively held also fails snapshot validation; a retained unlocked
-lock file is acceptable. Completed historical prefix evidence
-has a compatible read-only interpretation; this does not upgrade it or enable
+lock file is acceptable. Completed historical prefix evidence has a compatible
+read-only interpretation; this does not upgrade it or enable
 [production checkpoint reuse](../pipeline/learning-progressions.md#historical-graphs-versus-production-reuse).
 
 ## Frozen selection and resume
 
 Before calls, the evaluator freezes discovery inventory, exact selected paths and
-material hashes, input copies, effective settings, populations, samples, evidence views,
-and the complete request/condition/replicate schedule. Resume revalidates both frozen
-copies and selected source material. Missing, changed, or incompatible inputs fail;
-newly completed curricula cannot enter an existing invocation.
+material hashes, input copies, effective settings, populations, samples, evidence
+views, and the complete request/condition/replicate schedule. Resume revalidates both
+frozen copies and selected source material. Missing, changed, or incompatible inputs
+fail; newly completed curricula cannot enter an existing invocation.
 
 Repeating a command automatically finds a matching frozen invocation by root and
 settings. Multiple matching invocations require explicit selection. To retain overrides
@@ -60,36 +64,38 @@ python src/kgfeg/entries/evaluate_lps.py ../results/kg_for_ed \
 
 `--resume-manifest` targets the invocation's `manifest.json`, not the report's
 `lp_eval_manifest.json`. Omitted controls retain frozen values; explicit mismatches or
-a changed model are rejected. Without explicit resume, supply the original overrides
-to match the original settings rather than the defaults.
+a changed model are rejected. Without explicit resume, supply the original overrides to
+match the original settings rather than the defaults.
 
-`--new-invocation` requests discovery again and preserves prior evidence. It is mutually
-exclusive with `--resume-manifest`. Identical material can resolve to the existing
-content-addressed invocation; this flag is not an exhausted-attempt reset or permission
-to repeat completed calls. Fully cached execution avoids provider construction.
+`--new-invocation` requests discovery again and preserves prior evidence. It is
+mutually exclusive with `--resume-manifest`. Identical material can resolve to the
+existing content-addressed invocation; this flag is not an exhausted-attempt reset or
+permission to repeat completed calls. Fully cached execution avoids provider
+construction.
 
 ## Sampling and repetition controls
 
 All controls below are optional and apply per selected curriculum unless stated
-otherwise. Effective values and explicit overrides are recorded with the frozen schedule
-and reports. All counts are positive integers except the additional-replicate count,
-which may be zero if base plus additional is at least two; the seed is an integer.
+otherwise. Effective values and explicit overrides are recorded with the frozen
+schedule and reports. All counts are positive integers except the additional-replicate
+count, which may be zero if base plus additional is at least two; the seed is an
+integer.
 
-| CLI option | Default | Meaning |
-| --- | --- | --- |
-| `--production-pairs-per-outcome` | 15 | Uniform sample within each of four production outcomes |
-| `--production-examples-per-tag` | 2 | Minimum per diagnostic tag, crediting already selected pairs |
-| `--independent-uniform-pairs` | 36 | Uniform sample from admissible upstream pairs |
-| `--independent-pairs-per-tag` | 3 | Independent sample per upstream tag |
-| `--sampling-seed` | 20260911 | Deterministic selection and ordering seed |
-| `--base-blind-replicates` | 1 | Base judgments per real pair in each selected component |
-| `--critique-replicates` | 1 | Separate operative-rationale critiques per production pair |
-| `--diagnostic-pairs-per-cohort` | 12 | Pairs from each production/independent cohort for diagnostics |
-| `--additional-diagnostic-replicates` | 2 | Extra identical-presentation base judgments |
-| `--variant-replicates` | 1 | Judgments per diagnostic pair for each of five variants |
-| `--synthetic-cases-per-family` | 5 | Cases in each of five synthetic control families |
-| `--synthetic-control-replicates` | 3 | Judgments per synthetic case |
-| `--lexical-baseline-top-k` | 10 | Lexical ranking cutoff, capped by sampled availability |
+| CLI option                           | Default  | Meaning                                                       |
+|--------------------------------------|----------|---------------------------------------------------------------|
+| `--production-pairs-per-outcome`     | 15       | Uniform sample within each of four production outcomes        |
+| `--production-examples-per-tag`      | 2        | Minimum per diagnostic tag, crediting already selected pairs  |
+| `--independent-uniform-pairs`        | 36       | Uniform sample from admissible upstream pairs                 |
+| `--independent-pairs-per-tag`        | 3        | Independent sample per upstream tag                           |
+| `--sampling-seed`                    | 20260911 | Deterministic selection and ordering seed                     |
+| `--base-blind-replicates`            | 1        | Base judgments per real pair in each selected component       |
+| `--critique-replicates`              | 1        | Separate operative-rationale critiques per production pair    |
+| `--diagnostic-pairs-per-cohort`      | 12       | Pairs from each production/independent cohort for diagnostics |
+| `--additional-diagnostic-replicates` | 2        | Extra identical-presentation base judgments                   |
+| `--variant-replicates`               | 1        | Judgments per diagnostic pair for each of five variants       |
+| `--synthetic-cases-per-family`       | 5        | Cases in each of five synthetic control families              |
+| `--synthetic-control-replicates`     | 3        | Judgments per synthetic case                                  |
+| `--lexical-baseline-top-k`           | 10       | Lexical ranking cutoff, capped by sampled availability        |
 
 For example, an authorized invocation can override the two uniform sample sizes:
 
@@ -98,7 +104,7 @@ python src/kgfeg/entries/evaluate_lps.py ../results/kg_for_ed \
   --production-pairs-per-outcome 10 --independent-uniform-pairs 24
 ```
 
-The S1 defaults select up to 60 production base pairs, then at most 24 additional
+The defaults select up to 60 production base pairs, then at most 24 additional
 diagnostic pairs, and 36 independent uniform plus 36 tagged draws before deduplication.
 Selection is seeded and without replacement within each cell, with canonical UUID
 ordering, retained selection routes, and no quota reallocation. Empty or exhausted
@@ -113,12 +119,13 @@ truncation. Text normalization uses Unicode NFKC, casefolding, and whitespace co
 tokens are Unicode alphanumeric runs without stopword removal. These are diagnostic
 sampling features, not truth labels.
 
-R1 adds identical-presentation repeats and five separate variants: swapped endpoints,
-reversed evidence lists, expanded evidence, LC removal, and trustworthy-hierarchy removal.
-Expanded evidence doubles positive production count/text/depth limits with stable
-ordering and explicit omissions. Removal also removes derived facts and references,
-while preserving uncertainty warnings. Every replicate is retained; a majority does
-not erase disagreement. Required components and conditions cannot be disabled.
+Identical-presentation repeats and five separate variants are also added: swapped
+endpoints, reversed evidence lists, expanded evidence, LC removal, and
+trustworthy-hierarchy removal. Expanded evidence doubles positive production
+count/text/depth limits with stable ordering and explicit omissions. Removal also
+removes derived facts and references, while preserving uncertainty warnings. Every
+replicate is retained; a majority does not erase disagreement. Required components and
+conditions cannot be disabled.
 
 ## Model and bounded execution
 
@@ -127,40 +134,21 @@ through the normal environment. Omission uses the default; explicitly blank, mal
 unsupported, or unavailable configuration fails without model fallback. This is a
 configured identifier, not a claim that a live provider has been verified available.
 
-The judge resolves through `lp_eval_judge` and the shared
-`kgs_settings("learning_progressions")` settings, including output-token and provider
-effort/thinking controls. Production resolves `LLM_KG_MODEL` independently; changing the
-evaluator variable does not select a production model. Actual provider/model, non-secret
-settings, SDK versions, and provider-transformed schemas are material-bound.
-
-The implemented provider paths request strict native schema output for Anthropic and
-strict typed tool output for OpenAI. There is no unstructured text fallback. Responses
-must satisfy exact task/request/endpoint identity, allowed relation/direction, bounded
-fields, evidence-reference containment, and critique grounding consistency. Malformed
-successful HTTP responses consume an invalid-output attempt; available usage is retained,
-and unavailable counters stay unknown.
-
-Execution uses **concurrency 4**, **180 seconds per attempt**, and **at most two retries
-after the initial attempt**, waiting **5 then 20 seconds**. Timeout, HTTP 429/5xx, and
-invalid structured output are retryable within that allowance. Input, authentication,
-configuration, and stale-cache failures fail immediately. SDK and output-repair retries
-cannot multiply the three-attempt maximum. After terminal failure, active calls drain
-without admitting further calls. Durable successes survive; unresolved or uncertain
-attempts are not silently reset on resume.
-
 There are no aggregate dollar, token, or attempt budgets and no required cost-estimate
 approval gate. The explicit schedule, bounded evidence, and finite retries bound the
 work. Usage reports include attempts, retries, valid/failed outcomes, curriculum,
-component, condition, model, available input/output/reasoning/cache tokens, and available
-cost. Unknown usage or pricing is not zero. Missing pricing alone does not block completion.
+component, condition, model, available input/output/reasoning/cache tokens, and
+available cost. Unknown usage or pricing is not zero. Missing pricing alone does not
+block completion.
 
 ## What the judge assesses
 
-**Production-pair assessment** samples published `buildsTowards`, published `relatesTo`,
-final `no_relation`, and final `needs_review` pairs. Blind classification hides production
-conclusions, rationale, confidence, publication status, and nomination recommendations.
-It retains permitted factual nomination evidence, references, limits, and warnings.
-Its outcomes are a permitted relation/direction, `no_relation`, or evaluator `ambiguous`.
+**Production-pair assessment** samples published `buildsTowards`, published
+`relatesTo`, final `no_relation`, and final `needs_review` pairs. Blind classification
+hides production conclusions, rationale, confidence, publication status, and nomination
+recommendations. It retains permitted factual nomination evidence, references, limits,
+and warnings. Its outcomes are a permitted relation/direction, `no_relation`, or
+evaluator `ambiguous`.
 
 Only after the blind response is validated and frozen does a fresh call critique the
 operative production rationale. That call receives the original bounded production
@@ -171,9 +159,9 @@ separately as `grounded`, `partially_grounded`, `unsupported`, or `ambiguous`.
 Critiques may cite the original bounded request and the historical producer/checker
 policy text actually shown to the critic. Policy text can support a claim about that
 policy; it cannot by itself establish factual relationship support between standards.
-The rationale being assessed cannot serve as evidence for itself. Citations must exactly
-match the supplied permitted references, without appended descriptions or quotations.
-The policy references `/original_producer_system_message` and
+The rationale being assessed cannot serve as evidence for itself. Citations must
+exactly match the supplied permitted references, without appended descriptions or
+quotations. The policy references `/original_producer_system_message` and
 `/original_checker_system_message` are permitted only when their corresponding text is
 present and nonblank. This does not expand the blind classifier's evidence view.
 
@@ -184,10 +172,10 @@ is frozen before joining production outcomes for reporting. A pair selected in b
 components retains both judgments and identities.
 
 **Evaluator checks** use constructed developmental extension, nondirectional coherence,
-unrelated concepts, insufficient/contradictory evidence, and invented-rationale controls.
-Control expectations are hidden and kept separate from real-pair results. Constant
-`no_relation` and lexical top-k baselines add no model calls. An unasserted real pair is
-never assumed to be a known negative.
+unrelated concepts, insufficient/contradictory evidence, and invented-rationale
+controls. Control expectations are hidden and kept separate from real-pair results.
+Constant `no_relation` and lexical top-k baselines add no model calls. An unasserted
+real pair is never assumed to be a known negative.
 
 Original production evidence, the blind view, reconstructed upstream evidence, expanded
 evidence, and evidence-removal conditions are distinct. Additional upstream evidence
@@ -195,24 +183,18 @@ cannot rescue an unsupported original-production rationale during grounding asse
 
 ## Cache, artifacts, and interpretation
 
-Cache identity includes actual snapshot/evidence/request material, endpoints, component,
-condition/view, rendered prompt, response schema, judge settings, replicate and
-presentation order, and the original request/policy/rationale for critiques. Reuse
-accepts only fully validated successes; stale, truncated, duplicate, extra, or mismatched
-records fail closed. Actual implementation hashes remain required even though Git does not.
+Cache identity includes actual snapshot/evidence/request material, endpoints,
+component, condition/view, rendered prompt, response schema, judge settings, replicate
+and presentation order, and the original request/policy/rationale for critiques. Reuse
+accepts only fully validated successes; stale, truncated, duplicate, extra, or
+mismatched records fail closed.
 
-Changes to material evaluator code, rendered prompts, or permitted critique citations
-make an older frozen invocation incompatible. Resume rejects it before opening its
-writable judgment cache, preserving earlier judgments and failures, including exhausted
-attempts. A separately authorized new invocation uses the current material; it does not
-migrate old judgments or reset the old invocation's attempts.
-
-Outputs are rooted at repository-root `results/lp_evals/`, independently of the supplied
-production results root:
+Outputs are rooted at repository-root `results/lp_evals/`, independently of the
+supplied production results root:
 
 ```text
 results/lp_evals/
-  inputs/<input-hash>/manifest.json       # frozen selection and input copies
+  inputs/<input-hash>/manifest.json     # frozen selection and input copies
   invocations/<schedule-hash>/
     manifest.json                       # --resume-manifest target
     schedule.json.gz
@@ -233,67 +215,21 @@ results/lp_evals/
     dispositions/<disposition-hash>/lp_eval_dispositions.json
 ```
 
-Reports are immutable generations with file hashes. A scorer-only change may generate
-a new report from compatible judgments with the new scorer hash; it does not relabel
-old evidence. Production graphs and `kg_run.json` remain untouched.
+Reports are immutable generations with file hashes. A scorer-only change may generate a
+new report from compatible judgments with the new scorer hash; it does not relabel old
+evidence. Production graphs and `kg_run.json` remain untouched.
 
 Read raw numerators/denominators, sample membership, shortfalls, all replicates,
 disagreement, ambiguity, and omitted evidence alongside rates. Nomination coverage uses
 valid judge-positive independently sampled pairs under the common reconstructed
-condition: nominated positives divided by all positives in that condition/cohort/replicate.
-Matching publication and nominated-but-rejected/unresolved categories use the same
-denominator. Diagnostic oversamples are not population estimates, and zero denominators
-are explicitly unavailable, not 0% or 100%. Agreement and judge support are not semantic
-precision/recall or curriculum-wide recall.
+condition: nominated positives divided by all positives in that
+condition/cohort/replicate. Matching publication and nominated-but-rejected/unresolved
+categories use the same denominator. Diagnostic oversamples are not population
+estimates, and zero denominators are explicitly unavailable, not 0% or 100%. Agreement
+and judge support are not semantic precision/recall or curriculum-wide recall.
 
 Execution failures, valid semantic ambiguity, and quality concerns are separate.
 Missing judgments, exhausted failures, or invalid reports prevent execution completion.
-Disagreement, unsupported rationales, missed sampled positives, control performance, and
-presentation/evidence instability become concern groups without an automatic score gate.
-
-IDinsight, acting through the project user, supplies `acknowledged`, `investigate`, or
-`remediation_requested` dispositions with authority, timestamp, rationale, and exact
-report hashes. The callable `record_concern_dispositions()` accepts validated
-`ConcernDisposition` records and writes separate immutable disposition generations;
-there is no disposition CLI subcommand. Records retain affected concern/pair/condition
-membership. Partial submissions remain pending and cannot waive execution failures.
-Confirmed defects require authorized earliest-stage repair and affected reruns, not
-manual graph edits or evaluator-driven production tuning.
-
-## Git-independent evaluation
-
-Preparation, judging, resume, and reporting require no Git checkout, HEAD, clean working
-tree, evaluator candidate SHA/tree, or Git-bearing execution receipt. Actual source,
-configuration, input, prompt, schema, model, schedule, cache, and report content hashes
-still govern compatibility. Unrelated commits are not evaluation failures.
-
-A genuinely recorded producing SHA is optional provenance. If unknown, leave it
-unknown; do not infer it from current HEAD, dates, or a review base, and do not regenerate
-results merely to obtain it. This evaluator rule does not remove production evidence
-requirements or the project's independent source-review gates.
-
-## Execution evidence and project completion
-
-This documentation update describes implementation; it supplies no new live evaluation
-results. Final Step 28 approval has not been established for this update. The scoped
-structured-output/malformed-HTTP assessment is not that final approval.
-
-Live evaluation requires independent deterministic harness validation, Step 27 reviewer
-approval, and separate explicit execution authorization. The CLI delegates authorization
-to its caller; preflight success and its `evaluation` label do not establish approval.
-Final project evidence must cover all six reviewed project snapshots, all required
-components/reports, no unresolved execution failures, complete user concern dispositions,
-and independent review. Development/subset evidence cannot substitute for that record.
-
-The CLI returns **0** for complete execution/reporting, **1** for input/execution/report
-failure, **2** for invalid CLI arguments, and **130** for interruption. Exit 0 does not
-certify concern disposition, six-curriculum coverage, pedagogical correctness, or final
-project completion. There is no automatic semantic passing score or human gold-set
-prerequisite. Judge bias, bounded evidence, sampling, and upstream errors remain
-[accepted limitations](../pipeline/learning-progressions.md#accepted-limitations).
-
-Still awaiting final evidence are the reviewed snapshot identities, actual execution
-commands/model/usage, per-curriculum findings and denominators, any failures and their
-resolution, report hashes, concern dispositions, and final Step 28 reviewer verdict.
-Formal Step 29 review must use that actual approved SHA when available; an observed HEAD
-is not a substitute.
+Disagreement, unsupported rationales, missed sampled positives, control performance,
+and presentation/evidence instability become concern groups without an automatic score
+gate.

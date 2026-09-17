@@ -45,7 +45,7 @@ upstream artifacts before continuing.
 | 3. Document IR construction           | `backend/src/kgfeg/entries/stitch_document_ir.py`        | `kgfeg.document_ir`          | `stitching/document_ir.json`                           |
 | 4. Academic Standards KG construction | `backend/src/kgfeg/entries/create_kgs.py`                | `kgfeg.kgs.sfi_*`            | `kgs/as_kg_bundle.json`                                |
 | 5. Learning Components construction   | `backend/src/kgfeg/entries/create_kgs.py`                | `kgfeg.kgs.lc_*`             | `kgs/as_lc_kg_bundle.json`                             |
-| 6. Learning Progressions construction | `backend/src/kgfeg/entries/create_kgs.py` | `kgfeg.kgs.lp_*` | `kgs/as_lc_lp_kg_bundle.json` |
+| 6. Learning Progressions construction | `backend/src/kgfeg/entries/create_kgs.py`                | `kgfeg.kgs.lp_*`             | `kgs/as_lc_lp_kg_bundle.json`                          |
 
 From the `backend/` directory, a complete run follows this order:
 
@@ -67,15 +67,15 @@ a production stage or a prerequisite for production success.
 
 Each stage expands context while constraining what the next stage is allowed to assume.
 
-| Handoff                                     | What downstream code may rely on                                                                                            | What has **not** yet been asserted                               |
-|---------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------|
-| PDF → Page IR                               | Accepted page-local blocks, tables, figures, coordinates, visible codes, and boundary hints satisfy PageIR validation       | Document-wide continuity or curriculum hierarchy                 |
-| Page IR → verified Page IR                  | Adjacent-page continuation evidence has been independently evaluated and confidence-gated patches have been applied         | Document-level stitched segments or curriculum semantics         |
-| Verified Page IR → DocumentIR               | Cross-page chains have been stitched, provenance is retained, and normalized source items are consumed exactly once         | Standards identities, hierarchy, or Learning Components          |
-| DocumentIR → Academic Standards KG          | Source-grounded semantic extraction can operate over a stitched, provenance-preserving document representation              | Final standards identities or graph relationships                |
-| Academic Standards KG → Learning Components | Standards identities, `hasChild` hierarchy, provenance, and AS validation have been resolved sufficiently for LC generation | Canonical atomic-skill identities                                |
-| AS + LC KG → LP | Validated standards, hierarchy, LCs, supports, and retained provenance | Progression relationships |
-| AS + LC + LP KG → consumers | Direct adjudicated LP edges and structural/process validation | Empirical prerequisite truth or pedagogical correctness |
+| Handoff                                     | What downstream code may rely on                                                                                            | What has **not** yet been asserted                       |
+|---------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------|
+| PDF → Page IR                               | Accepted page-local blocks, tables, figures, coordinates, visible codes, and boundary hints satisfy PageIR validation       | Document-wide continuity or curriculum hierarchy         |
+| Page IR → verified Page IR                  | Adjacent-page continuation evidence has been independently evaluated and confidence-gated patches have been applied         | Document-level stitched segments or curriculum semantics |
+| Verified Page IR → DocumentIR               | Cross-page chains have been stitched, provenance is retained, and normalized source items are consumed exactly once         | Standards identities, hierarchy, or Learning Components  |
+| DocumentIR → Academic Standards KG          | Source-grounded semantic extraction can operate over a stitched, provenance-preserving document representation              | Final standards identities or graph relationships        |
+| Academic Standards KG → Learning Components | Standards identities, `hasChild` hierarchy, provenance, and AS validation have been resolved sufficiently for LC generation | Canonical atomic-skill identities                        |
+| AS + LC KG → LP                             | Validated standards, hierarchy, LCs, supports, and retained provenance                                                      | Progression relationships                                |
+| AS + LC + LP KG → consumers                 | Direct adjudicated LP edges and structural/process validation                                                               | Empirical prerequisite truth or pedagogical correctness  |
 
 The main semantic boundary is between **Document IR construction** and **Academic
 Standards construction**. `PageIR` and `DocumentIR` describe the source document;
@@ -431,20 +431,20 @@ When debugging, start with the artifact closest to the stage where behavior dive
 For resume behavior, overwrite decisions, partial-run recovery, and rerun scope, see
 [Run, Resume, and Debug](../guides/running-and-debugging.md).
 
-| Question | Start here |
-| --- | --- |
-| Was a page extracted incorrectly? | Accepted PageIR, corresponding page image, and `page_irs_raw/` attempts |
-| Was a page-break continuation classified incorrectly? | `page_irs_pair_reports/` and the corresponding pair crop |
-| Was content stitched across pages incorrectly? | `stitch_report.json` and `document_ir.json` |
-| Was a standard missed or extracted incorrectly? | SFI extraction windows/results and `sfi_candidate_registry.json` |
-| Were two standards merged incorrectly? | SFI merge report/groups/conflicts and dedup review artifacts |
-| Was a standard assigned the wrong parent? | `has_child_candidate_parent_sets.jsonl`, resolution artifacts, and `has_child_edges_final.json` |
-| Why was a standard excluded from LC generation? | `lc_eligibility_report.json` and `lc_eligible_sfis.json` |
-| Was a skill generated incorrectly? | `lc_generation_requests.jsonl`, producer drafts, validator verdicts, final responses, and failures |
-| Were two skills merged or kept separate incorrectly? | `lc_dedup_candidate_pairs.jsonl`, `lc_dedup_verdicts.jsonl`, and `lc_dedup_groups.json` |
-| Why was an LP pair omitted or classified this way? | Eligibility, candidates, bounded requests, producer/checker judgments, and `lp_final_claims.json` |
-| Does the final graph reconcile? | AS/LP validation reports, LC/LP summaries, and all three bundles |
-| What does separate judge evidence say? | `lp_eval_report.md` and JSON report, sample/condition denominators, failures, usage, and concern dispositions |
+| Question                                              | Start here                                                                                                    |
+|-------------------------------------------------------|---------------------------------------------------------------------------------------------------------------|
+| Was a page extracted incorrectly?                     | Accepted PageIR, corresponding page image, and `page_irs_raw/` attempts                                       |
+| Was a page-break continuation classified incorrectly? | `page_irs_pair_reports/` and the corresponding pair crop                                                      |
+| Was content stitched across pages incorrectly?        | `stitch_report.json` and `document_ir.json`                                                                   |
+| Was a standard missed or extracted incorrectly?       | SFI extraction windows/results and `sfi_candidate_registry.json`                                              |
+| Were two standards merged incorrectly?                | SFI merge report/groups/conflicts and dedup review artifacts                                                  |
+| Was a standard assigned the wrong parent?             | `has_child_candidate_parent_sets.jsonl`, resolution artifacts, and `has_child_edges_final.json`               |
+| Why was a standard excluded from LC generation?       | `lc_eligibility_report.json` and `lc_eligible_sfis.json`                                                      |
+| Was a skill generated incorrectly?                    | `lc_generation_requests.jsonl`, producer drafts, validator verdicts, final responses, and failures            |
+| Were two skills merged or kept separate incorrectly?  | `lc_dedup_candidate_pairs.jsonl`, `lc_dedup_verdicts.jsonl`, and `lc_dedup_groups.json`                       |
+| Why was an LP pair omitted or classified this way?    | Eligibility, candidates, bounded requests, producer/checker judgments, and `lp_final_claims.json`             |
+| Does the final graph reconcile?                       | AS/LP validation reports, LC/LP summaries, and all three bundles                                              |
+| What does separate judge evidence say?                | `lp_eval_report.md` and JSON report, sample/condition denominators, failures, usage, and concern dispositions |
 
 ---
 

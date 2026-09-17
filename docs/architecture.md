@@ -31,14 +31,14 @@ flowchart TD
     H -. Frozen completed snapshots .-> I[Separate LP evaluation]
 ```
 
-| Stage                              | Main CLI entry point                                   | Primary input                                            | Primary output                         |
-|------------------------------------|--------------------------------------------------------|----------------------------------------------------------|----------------------------------------|
-| Page IR extraction                 | `backend/src/kgfeg/entries/extract_page_ir.py`         | Curriculum PDF                                           | One `PageIR` JSON per page             |
+| Stage                              | Main CLI entry point                                     | Primary input                                            | Primary output                         |
+|------------------------------------|----------------------------------------------------------|----------------------------------------------------------|----------------------------------------|
+| Page IR extraction                 | `backend/src/kgfeg/entries/extract_page_ir.py`           | Curriculum PDF                                           | One `PageIR` JSON per page             |
 | Page IR continuity verification    | `backend/src/kgfeg/entries/verify_page_ir_continuity.py` | Page images + extracted `PageIR`s                        | Verified `PageIR`s + boundary verdicts |
 | Document IR construction           | `backend/src/kgfeg/entries/stitch_document_ir.py`        | Verified `PageIR`s + verification evidence               | `document_ir.json`                     |
 | Academic Standards KG construction | `backend/src/kgfeg/entries/create_kgs.py`                | `DocumentIR` + `kgs.as` configuration                    | Academic Standards KG artifacts        |
 | Learning Components construction   | `backend/src/kgfeg/entries/create_kgs.py`                | Validated Academic Standards KG + `kgs.lc` configuration | Combined AS + LC KG artifacts          |
-| Learning Progressions construction | `backend/src/kgfeg/entries/create_kgs.py` | Validated AS+LC bundle + `kgs.lp` | Combined AS+LC+LP artifacts |
+| Learning Progressions construction | `backend/src/kgfeg/entries/create_kgs.py`                | Validated AS+LC bundle + `kgs.lp`                        | Combined AS+LC+LP artifacts            |
 
 The first three stages reconstruct the source document with progressively broader
 context. The final three stages perform curriculum-semantic interpretation and knowledge
@@ -563,33 +563,31 @@ kgs/
 
 ## Stage 6: Learning Progressions construction
 
-LP indexes the validated AS+LC graph, preserving DAG parents, local identity-scope order,
-and unresolved warnings. Configured statement-type pair matrices define eligibility
-independently of LC selection. Deterministic, bounded non-embedding nomination precedes
-complete request materialization and producer/checker adjudication.
+LP indexes the validated AS+LC graph, preserving DAG parents, local identity-scope
+order, and unresolved warnings. Configured statement-type pair matrices define
+eligibility independently of LC selection. Deterministic, bounded non-embedding
+nomination precedes complete request materialization and producer/checker adjudication.
 
-A sole writer retains successful ordered prefixes plus durable out-of-order completions
-and attempt accounting. `kgs.lp.max_concurrent_requests` defaults to 4; after exhausted
-failure, only already active calls drain. Material changes or unsupported checkpoint
-formats fail closed, including during final reuse. Generation lock files remain after
-success. See [Learning Progressions](pipeline/learning-progressions.md) for configuration,
+A single writer retains successful ordered prefixes plus durable out-of-order
+completions and attempt accounting. `kgs.lp.max_concurrent_requests` defaults to 4;
+after exhausted failure, only already active calls drain. Material changes or
+unsupported checkpoint formats fail closed, including during final reuse. See
+[Learning Progressions](pipeline/learning-progressions.md) for configuration,
 semantics, historical compatibility, failures, and accepted limitations.
 
 The compiler preserves AS+LC content and adds LP provenance, summaries, unresolved
-judgments, and two relationship groups to `as_lc_lp_kg_bundle.json`. Its JSONL projections
-are internal snake_case records; the AS/AS+LC delivery wire formats remain unchanged.
+judgments, and two relationship groups to `as_lc_lp_kg_bundle.json`. Its JSONL
+projections are internal snake_case records; the AS/AS+LC delivery wire formats remain
+unchanged.
 
 ## Separate LP evaluation
 
-[The evaluator](guides/evaluating-learning-progressions.md) discovers completed snapshots,
-freezes inputs and the complete schedule, and assesses production pairs, independently
-sampled upstream pairs, and synthetic controls. Blind classification and original-rationale
-critique use distinct evidence views and calls. Reports and user concern dispositions are
-separate immutable evidence under `results/lp_evals/`, never production release inputs.
-
-Evaluation is Git-independent but retains actual material hashes. Production structural
-success, evaluator execution completion, and final project review are separate claims.
-This documentation does not supply pending six-curriculum evaluation results or approval.
+[The evaluator](guides/evaluating-learning-progressions.md) discovers completed
+snapshots, freezes inputs and the complete schedule, and assesses production pairs,
+independently sampled upstream pairs, and synthetic controls. Blind classification and
+original-rationale critique use distinct evidence views and calls. Reports and user
+concern dispositions are separate immutable evidence under `results/lp_evals/` and are
+not production release inputs.
 
 ---
 
@@ -639,15 +637,15 @@ cross-framework edge is added.
 A useful way to reason about the architecture is by where each type of assertion is
 allowed to enter the system.
 
-| Layer                 | Owns                                                                                          | Does not own                                      |
-|-----------------------|-----------------------------------------------------------------------------------------------|---------------------------------------------------|
-| Page IR               | Visible page structure, coordinates, page-local item content, local continuation hints        | Document-wide curriculum semantics                |
-| Verification          | Evidence-backed continuation across adjacent page boundaries                                  | Curriculum hierarchy                              |
-| Document IR           | Deterministic document-level stitching, table reconstruction, section context, provenance     | Standards identity or KG relationships            |
-| Academic Standards KG | Curriculum statement types, global SFI identity, direct hierarchy, normalized grades/metadata | Atomic skill decomposition                        |
-| Learning Components   | Atomic skills, LC identity/deduplication, `supports` alignment                                | Reinterpretation of the source document hierarchy |
-| Learning Progressions | Bounded SFI pair adjudication, developmental/coherence edges, provenance | New nodes, cross-framework edges, empirical prerequisite truth |
-| LP evaluation | Frozen sampling, fallible judge assessments, reports and concern records | Graph mutation, automatic semantic release threshold |
+| Layer                            | Owns                                                                                          | Does not own                                                   |
+|----------------------------------|-----------------------------------------------------------------------------------------------|----------------------------------------------------------------|
+| Page IR                          | Visible page structure, coordinates, page-local item content, local continuation hints        | Document-wide curriculum semantics                             |
+| Verification                     | Evidence-backed continuation across adjacent page boundaries                                  | Curriculum hierarchy                                           |
+| Document IR                      | Deterministic document-level stitching, table reconstruction, section context, provenance     | Standards identity or KG relationships                         |
+| Academic Standards KG            | Curriculum statement types, global SFI identity, direct hierarchy, normalized grades/metadata | Atomic skill decomposition                                     |
+| Learning Components              | Atomic skills, LC identity/deduplication, `supports` alignment                                | Reinterpretation of the source document hierarchy              |
+| Learning Progressions            | Bounded SFI pair adjudication, developmental/coherence edges, provenance                      | New nodes, cross-framework edges, empirical prerequisite truth |
+| Learning Progressions evaluation | Frozen sampling, fallible judge assessments, reports and concern records                      | Graph mutation, automatic semantic release threshold           |
 
 This separation reduces the amount of semantic inference required at any one stage,
 makes errors easier to localize, and preserves an auditable path from the final graph
@@ -666,7 +664,7 @@ The production architecture documented here has several deliberate boundaries:
 - Learning Components are downstream of the Academic Standards graph and do not bypass
   it to extract skills directly from PDF pages.
 - Learning Progressions preserves upstream AS/LC and adds only within-framework edges.
-- LP evaluation remains separate from production success. Read the
+- Learning Progressions evaluation remains separate from production success. Read the
   [accepted limitations](pipeline/learning-progressions.md#accepted-limitations) before
   interpreting graph or judge output as evidence of instructional quality.
 

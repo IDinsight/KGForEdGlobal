@@ -6,6 +6,7 @@ python src/kgfeg/entries/evaluate_lps.py ../results/kg_for_ed
 
 The command performs local preflight, frozen preparation, judging/resume and reporting.
 It can make live judge calls. Preparation remains separately callable without a client.
+Use --render-report with a saved report directory to render only its Excel/HTML outputs.
 
 To run a shorter version of this evaluation pipeline, use:
 
@@ -71,6 +72,7 @@ from kgfeg.evals.lp_eval.judge import (
     resolve_judge_settings,
     validate_judge_settings,
 )
+from kgfeg.evals.lp_eval.presentation import render_evaluation_presentations
 from kgfeg.evals.lp_eval.sampling import (
     _frozen_manifest,
     discover_lp_runs,
@@ -228,6 +230,49 @@ def _error_message(error: Exception) -> str:
     return f"Evaluation stopped ({type(error).__name__})."
 
 
+def _render_report(
+    *,
+    evaluation_options_supplied: bool,
+    output_directory: Path | None,
+    report_directory: Path,
+) -> None:
+    """Render saved presentation derivatives without preparing or executing evaluation.
+
+    Parameters
+    ----------
+    evaluation_options_supplied
+        Whether any evaluation or resume controls were supplied.
+    output_directory
+        Optional isolated presentation destination.
+    report_directory
+        Exact immutable saved report, including a partial report.
+
+    Raises
+    ------
+    typer.BadParameter
+        If evaluation or resume options would otherwise be ignored.
+    typer.Exit
+        If saved material validation or presentation publication fails.
+    """
+
+    if evaluation_options_supplied:
+        raise typer.BadParameter(
+            "--render-report cannot be combined with evaluation controls, "
+            "--new-invocation or --resume-manifest."
+        )
+
+    try:
+        directory = render_evaluation_presentations(
+            output_directory=output_directory, report_directory=report_directory
+        )
+    except (ValueError, OSError, RuntimeError) as error:
+        typer.echo(f"Presentation rendering failed: {_error_message(error)}", err=True)
+        raise typer.Exit(code=1) from error
+
+    typer.echo(f'Workbook: {directory / "learning_progressions_evaluation.xlsx"}')
+    typer.echo(f'Visualization: {directory / "report.html"}')
+
+
 def _report_result(
     *, artifacts: EvaluationReportArtifacts, provenance: ReportProvenance
 ) -> EvaluationResult:
@@ -354,15 +399,20 @@ def _setting_help(name: str) -> str:
 @cli.command(
     help=(
         "Preflight, freeze, judge/resume and report completed LP runs in sequence. "
-        "Unfinished runs are excluded; invalid completed inputs fail before judge calls."
+        "Unfinished runs are excluded; invalid completed inputs fail before judge calls. "
+        "With --render-report, RESULTS_ROOT is a saved report directory: render only, "
+        "without judging, rescoring or resuming."
     ),
     epilog=(
         "Resumes a matching frozen invocation without adding newly completed runs. "
         "Use --new-invocation to discover again or --resume-manifest to select a run. "
-        "This command can make live API calls. Offline callers use prepare_evaluation() "
+        "Without --render-report this command can make live API calls. "
+        "Offline callers use prepare_evaluation() "
         "and injected run_evaluation() transports. Reports are written to results/lp_evals/. "
-        "Exit status: 0 for complete execution/reporting, 1 for execution/input/report "
-        "failure, 2 for invalid CLI arguments, 130 for interruption. Quality concerns "
+        "Evaluation exit status: 0 for complete execution/reporting, 1 for execution/input/report "
+        "failure, 2 for invalid CLI arguments, 130 for interruption. "
+        "With --render-report, exit 0 means successful presentation generation only; "
+        "the saved evaluation may still be incomplete. Quality concerns "
         "do not impose a passing score or certify project completion."
     ),
 )
@@ -394,14 +444,24 @@ def evaluate(
         "--new-invocation",
         help="Rediscover inputs while preserving earlier invocations.",
     ),
+    output_directory: Path | None = typer.Option(
+        None,
+        help="Isolated presentation destination; requires --render-report.",
+    ),
     production_examples_per_tag: int | None = typer.Option(
         None, help=_setting_help("production_examples_per_tag"), show_default=False
     ),
     production_pairs_per_outcome: int | None = typer.Option(
         None, help=_setting_help("production_pairs_per_outcome"), show_default=False
     ),
+    render_report: bool = typer.Option(
+        False,
+        "--render-report",
+        help="Render Excel/HTML from the saved report at RESULTS_ROOT, without evaluation.",
+    ),
     results_root: Path = typer.Argument(
-        ..., help="Starting results directory; completed kgs runs may be at any depth."
+        ...,
+        help="Starting results directory, or exact saved report directory with --render-report.",
     ),
     resume_manifest: Path | None = typer.Option(
         None,
@@ -440,12 +500,16 @@ def evaluate(
         Optional override of the corresponding frozen sampling/repetition control.
     new_invocation
         Discover a new selection instead of automatically resuming frozen work.
+    output_directory
+        Optional isolated presentation destination; requires render_report.
     production_examples_per_tag
         Optional override of the corresponding frozen sampling/repetition control.
     production_pairs_per_outcome
         Optional override of the corresponding frozen sampling/repetition control.
+    render_report
+        Render the supplied saved report without preparing or executing evaluation.
     results_root
-        Starting directory containing curriculum results at arbitrary depths.
+        Starting curriculum results directory, or saved report when render_report is set.
     resume_manifest
         Optional exact frozen invocation to resume without rediscovery.
     sampling_seed
@@ -484,6 +548,19 @@ def evaluate(
         }.items()
         if value is not None
     }
+
+    if render_report:
+        _render_report(
+            evaluation_options_supplied=bool(
+                overrides or new_invocation or resume_manifest is not None
+            ),
+            output_directory=output_directory,
+            report_directory=results_root,
+        )
+        raise typer.Exit(code=0)
+
+    if output_directory is not None:
+        raise typer.BadParameter("--output-directory requires --render-report.")
 
     if new_invocation and resume_manifest is not None:
         raise typer.BadParameter(

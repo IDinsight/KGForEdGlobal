@@ -16,14 +16,14 @@ For operational recovery and artifact-first debugging, see
 
 ## Choose the output that matches your consumer
 
-| Need                                                                                   | Recommended artifact                                      | Shape                                                                                                               |
-|----------------------------------------------------------------------------------------|-----------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------|
-| Complete validated Academic Standards graph, including provenance and unresolved state | `kgs/as_kg_bundle.json`                                   | One structured JSON bundle using the pipeline's internal export models                                              |
-| Academic Standards in the Learning Commons-shaped JSONL delivery format                | `kgs/as_nodes.jsonl` + `kgs/as_relationships.jsonl`       | Compact aliased JSONL records for `StandardsFramework`, `StandardsFrameworkItem`, and `hasChild`                    |
-| Complete validated Academic Standards + Learning Components graph                      | `kgs/as_lc_kg_bundle.json`                                | One structured JSON bundle containing AS, LCs, `hasChild`, `supports`, provenance, unresolved state, and validation |
-| Academic Standards **and** Learning Components in the Learning Commons-shaped JSONL delivery format | `kgs/as_lc_nodes.jsonl` + `kgs/as_lc_relationships.jsonl` | The same wire records as the pair above, with `LearningComponent` nodes and `supports` edges appended               |
-| Complete AS + LC + LP graph | `kgs/as_lc_lp_kg_bundle.json` | Additive bundle with both LP relationship groups, provenance, summaries, unresolved state, and validation |
-| Flat AS + LC + LP records | `kgs/as_lc_lp_nodes.jsonl` + `kgs/as_lc_lp_relationships.jsonl` | Internal snake_case projection with node `entity_type` and full relationship metadata; **not** the delivery wire shape above |
+| Need                                                                                                | Recommended artifact                                            | Shape                                                                                                                        |
+|-----------------------------------------------------------------------------------------------------|-----------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------|
+| Complete validated Academic Standards graph, including provenance and unresolved state              | `kgs/as_kg_bundle.json`                                         | One structured JSON bundle using the pipeline's internal export models                                                       |
+| Academic Standards in the Learning Commons-shaped JSONL delivery format                             | `kgs/as_nodes.jsonl` + `kgs/as_relationships.jsonl`             | Compact aliased JSONL records for `StandardsFramework`, `StandardsFrameworkItem`, and `hasChild`                             |
+| Complete validated Academic Standards + Learning Components graph                                   | `kgs/as_lc_kg_bundle.json`                                      | One structured JSON bundle containing AS, LCs, `hasChild`, `supports`, provenance, unresolved state, and validation          |
+| Academic Standards **and** Learning Components in the Learning Commons-shaped JSONL delivery format | `kgs/as_lc_nodes.jsonl` + `kgs/as_lc_relationships.jsonl`       | The same wire records as the pair above, with `LearningComponent` nodes and `supports` edges appended                        |
+| Complete AS + LC + LP graph                                                                         | `kgs/as_lc_lp_kg_bundle.json`                                   | Additive bundle with both LP relationship groups, provenance, summaries, unresolved state, and validation                    |
+| Flat AS + LC + LP records                                                                           | `kgs/as_lc_lp_nodes.jsonl` + `kgs/as_lc_lp_relationships.jsonl` | Internal snake_case projection with node `entity_type` and full relationship metadata; **not** the delivery wire shape above |
 
 For most programmatic integrations, start with a bundle. Bundles are self-contained,
 carry validation and unresolved-state information with the graph, and avoid requiring a
@@ -412,25 +412,25 @@ across AS+LC and AS+LC+LP, but serialized rows are not byte-identical across tho
 
 All names below are relative to the production `kgs/` directory.
 
-| Artifacts | Purpose |
-| --- | --- |
-| `lp_eligible_sfis.json`, `lp_eligibility_report.json` | Eligible endpoints, coordinate/unresolved warnings, exclusions, and counts |
-| `lp_candidate_pairs.jsonl`, `lp_candidate_summary.json` | Bounded nomination population, reasons, budgets, and identities |
-| `lp_generation_requests.jsonl`, `lp_generation_requests_manifest.json` | Complete bounded request population and material binding before calls |
-| `lp_generation_draft_responses.jsonl` | Validated contiguous producer prefix |
-| `lp_generation_validation_verdicts.jsonl` | Validated contiguous checker prefix |
-| `lp_generation_responses.jsonl` | Validated contiguous reconciled judgment prefix |
-| `lp_generation_failures.json` | Separate failed-request evidence and dispositions |
-| `lp_generation_pending_completions.json` | Durable validated completions beyond prefix gaps |
-| `lp_generation_usage.json` | Durable attempt and usage accounting |
-| `lp_generation_checkpoint_manifest.json` | Execution identity, state/counts, and artifact byte hashes |
-| `lp_generation_checkpoint_transaction.json` | Transient crash-recovery record; may be absent after commit |
-| `.lp_generation.lock` | Retained lock inode, including after success; presence does not establish active ownership |
-| `lp_final_claims.json` | Reconciled pair decisions before relationship conversion |
-| `lp_relationships_builds_towards.jsonl`, `lp_relationships_relates_to.jsonl` | Standalone direct LP relationships |
-| `lp_relationship_provenance.json` | Candidate, request, producer/checker, source, config, and material lineage |
-| `lp_unresolved_items.json` | Nonpublishing `needs_review` judgments |
-| `lp_generation_summary.json`, `lp_validation_report.json` | Reconciled counts and structural/process validation |
+| Artifacts                                                                    | Purpose                                                                                    |
+|------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------|
+| `lp_eligible_sfis.json`, `lp_eligibility_report.json`                        | Eligible endpoints, coordinate/unresolved warnings, exclusions, and counts                 |
+| `lp_candidate_pairs.jsonl`, `lp_candidate_summary.json`                      | Bounded nomination population, reasons, budgets, and identities                            |
+| `lp_generation_requests.jsonl`, `lp_generation_requests_manifest.json`       | Complete bounded request population and material binding before calls                      |
+| `lp_generation_draft_responses.jsonl`                                        | Validated contiguous producer prefix                                                       |
+| `lp_generation_validation_verdicts.jsonl`                                    | Validated contiguous checker prefix                                                        |
+| `lp_generation_responses.jsonl`                                              | Validated contiguous reconciled judgment prefix                                            |
+| `lp_generation_failures.json`                                                | Separate failed-request evidence and dispositions                                          |
+| `lp_generation_pending_completions.json`                                     | Durable validated completions beyond prefix gaps                                           |
+| `lp_generation_usage.json`                                                   | Durable attempt and usage accounting                                                       |
+| `lp_generation_checkpoint_manifest.json`                                     | Execution identity, state/counts, and artifact byte hashes                                 |
+| `lp_generation_checkpoint_transaction.json`                                  | Transient crash-recovery record; may be absent after commit                                |
+| `.lp_generation.lock`                                                        | Retained lock inode, including after success; presence does not establish active ownership |
+| `lp_final_claims.json`                                                       | Reconciled pair decisions before relationship conversion                                   |
+| `lp_relationships_builds_towards.jsonl`, `lp_relationships_relates_to.jsonl` | Standalone direct LP relationships                                                         |
+| `lp_relationship_provenance.json`                                            | Candidate, request, producer/checker, source, config, and material lineage                 |
+| `lp_unresolved_items.json`                                                   | Nonpublishing `needs_review` judgments                                                     |
+| `lp_generation_summary.json`, `lp_validation_report.json`                    | Reconciled counts and structural/process validation                                        |
 
 Checkpoint files form one authenticated store; they are not independently editable
 recovery controls. Missing journals do not mean empty work. Current production rejects

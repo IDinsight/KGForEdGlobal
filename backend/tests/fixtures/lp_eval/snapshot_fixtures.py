@@ -79,7 +79,9 @@ def _write(root: Path, name: str, value: Any) -> None:
     (root / name).write_text(payload, encoding="utf-8")
 
 
-def build_snapshot(*, count: int, identity: int, root: Path) -> Path:
+def build_snapshot(
+    *, count: int, identity: int, root: Path, title: str | None = None
+) -> Path:
     """Create a complete small current-format run with four scripted outcomes.
 
     Parameters
@@ -90,6 +92,8 @@ def build_snapshot(*, count: int, identity: int, root: Path) -> Path:
         Distinct framework identity for generic multi-curriculum discovery.
     root
         Temporary parent directory, never the repository results directory.
+    title
+        Optional unfamiliar framework title for consumer presentation tests.
 
     Returns
     -------
@@ -99,6 +103,14 @@ def build_snapshot(*, count: int, identity: int, root: Path) -> Path:
     directory = root / f"synthetic-{identity}" / "kgs"
     directory.mkdir(parents=True)
     harness = claims._Harness(batch=3, count=count, root=directory)
+    if title is not None:
+        harness.config = harness.config.model_copy(
+            update={
+                "metadata": harness.config.metadata.model_copy(
+                    update={"framework_title": title}
+                )
+            }
+        )
     harness.decisions = {
         (1, 2): ("buildsTowards", "first_to_second"),
         (1, 3): ("relatesTo", None),

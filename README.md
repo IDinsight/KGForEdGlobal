@@ -31,10 +31,10 @@ Academic Standards KG
 + Learning Progressions relationships
 ```
 
-Six conceptual stages use four production CLI entry points. The final entry point
-builds Academic Standards (AS), then Learning Components (LC), then Learning
-Progressions (LP) from the validated AS+LC bundle. LP adds SFI-to-SFI `buildsTowards`
-and symmetric `relatesTo` relationships.
+Six conceptual stages use four CLI entry points. The final entry point builds Academic
+Standards (AS), then Learning Components (LC), and followed by Learning Progressions
+(LP). LP adds SFI-to-SFI `buildsTowards` and symmetric `relatesTo` relationships to the
+AS graph.
 
 ## Quick start
 
@@ -50,8 +50,8 @@ python src/kgfeg/entries/create_kgs.py <config.json>
 
 Example curriculum profiles are available under [`examples/`](examples/). If you are
 adapting the system to a new source, start with the
-[Add a New Curriculum](docs/guides/adding-a-curriculum.md) guide rather than editing the
-backend for source-specific conventions.
+[Add a New Curriculum](docs/guides/adding-a-curriculum.md) guide rather than editing
+the backend for source-specific conventions.
 
 ## What the pipeline produces
 
@@ -62,12 +62,13 @@ three additive KG handoffs:
   provenance;
 - `kgs/as_lc_kg_bundle.json` — the combined Academic Standards + Learning Components
   graph with `hasChild` and `supports` relationships; and
-- `kgs/as_lc_lp_kg_bundle.json` — the combined graph with Learning Progressions.
+- `kgs/as_lc_lp_kg_bundle.json` — the combined graph with Learning Progressions
+  relationships.
 
-See the [pipeline overview](docs/pipeline/index.md) for the full artifact map and stage contracts.
-Downstream consumers should also read the
-[output artifacts and integration contract](docs/reference/output-artifacts.md) before building against the exported
-JSON/JSONL shapes.
+See the [pipeline overview](docs/pipeline/index.md) for the full artifact map and stage
+contracts. Downstream consumers should also read the
+[output artifacts and integration contract](docs/reference/output-artifacts.md) before
+building against the exported JSON/JSONL shapes.
 
 ## Documentation
 

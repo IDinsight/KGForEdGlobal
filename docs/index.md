@@ -35,7 +35,6 @@ flowchart LR
     D --> E[Academic Standards]
     E --> F[Learning Components]
     F --> G[Learning Progressions]
-    G -. Frozen completed snapshots .-> H[Separate LP evaluation]
 ```
 
 The six conceptual production stages are:
@@ -49,8 +48,8 @@ The six conceptual production stages are:
    source-grounded standards.
 5. **Learning Components** — decompose eligible standards into atomic skills, resolve
    duplicates, and connect them back to the standards they support.
-6. **[Learning Progressions](pipeline/learning-progressions.md)** — add bounded,
-   producer/checker-adjudicated developmental and conceptual relationships between SFIs.
+6. **Learning Progressions** — add bounded, producer/checker-adjudicated developmental
+   and conceptual relationships between SFIs.
 
 The current implementation is document- and configuration-driven rather than tied to a
 single curriculum or country.
@@ -66,8 +65,9 @@ single curriculum or country.
   deterministic invariants, and relationship between the major representations.
 - **Pipeline** documents the operational flow from PDF extraction through the final
   Academic Standards + Learning Components + Learning Progressions graph.
-- **[LP evaluation](guides/evaluating-learning-progressions.md)** explains the separate
-  judge workflow, frozen inputs, reports, and pending completion evidence.
+- **[Learning Progressions evaluation](guides/evaluating-learning-progressions.md)**
+  explains the separate judge workflow, frozen inputs, reports, and pending completion
+  evidence.
 - **Development** contains local development and contributor-oriented material.
 
 !!! note
