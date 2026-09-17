@@ -43,6 +43,7 @@ from pydantic import (
 from kgfeg.evals.lp_eval.output import judge_output_contract
 from kgfeg.evals.lp_eval.prompts import (
     build_synthetic_controls,
+    critique_policy_references,
     production_blind_payload,
     render_classification_prompt,
     render_critique_prompt,
@@ -2083,6 +2084,7 @@ def _production_freeze_view(
         _upstream_references(
             path="/original_request", value=payload["original_request"]
         )
+        + list(critique_policy_references(payload))
         if view == "original_production_critique"
         else _upstream_references(path="", value=payload)
     )
@@ -3109,6 +3111,7 @@ def _schedule_evidence(
     )
     references = (
         _upstream_references(path="/original_request", value=shown["original_request"])
+        + list(critique_policy_references(shown))
         if task == "critique"
         else _upstream_references(path="", value=shown)
     )

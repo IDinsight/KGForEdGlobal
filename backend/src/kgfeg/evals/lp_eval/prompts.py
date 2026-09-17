@@ -83,10 +83,10 @@ knowledge to supply missing curriculum facts. Confidence is uncalibrated self-re
 
 _CRITIQUE_INSTRUCTIONS = """
 Assess only the grounding of the supplied operative_judgment rationale against its
-original bounded request. Return the critique schema, copying response_identity
-exactly. This is a fresh context: no independent classifier answer is provided or
-needed. Do not reclassify the pair, revise any independent assessment, or combine
-relationship plausibility with rationale grounding.
+original bounded request and shown historical policy. Return the critique schema,
+copying response_identity exactly. This is a fresh context: no independent classifier
+answer is provided or needed. Do not reclassify the pair, revise any independent
+assessment, or combine relationship plausibility with rationale grounding.
 
 Identify every material factual or pedagogical justification in the rationale. For
 each, quote or concisely identify the claim, report supported, unsupported,
@@ -94,6 +94,8 @@ contradicted or unresolved, explain briefly, and cite specific permitted pointer
 Supported and contradicted claims need shown evidence. For invented sources or missing
 evidence you may use no pointer; explain exactly what is absent. Never manufacture a
 pointer to the missing source or cite the assessed rationale as evidence for itself.
+Copy citation strings exactly from permitted_evidence_references. Do not append
+descriptions, quotations or parenthetical suffixes to citation strings.
 
 Report grounded when every material claim is supported by shown evidence;
 partially_grounded when some but not all material claims are supported; unsupported
@@ -103,9 +105,11 @@ invented reference or assertion from uncertainty caused by incomplete evidence.
 Confidence is uncalibrated self-report, never an acceptance threshold.
 
 Use the original request boundary, factual nomination values, policy, limits and
-warnings. Nomination recommendations cannot justify a relationship. Factual evidence
-inside a nomination record still counts: do not discount it because a separate blind
-view might redact surrounding advice. Aggregate values need their original scope and
+warnings. Nomination recommendations cannot justify a relationship. Historical policy
+text can substantiate a claim about that policy; it cannot by itself establish factual
+relationship support between standards. Factual evidence inside a nomination record
+still counts: do not discount it because a separate blind view might redact surrounding
+advice. Aggregate values need their original scope and
 omission qualifications. Do not rescue a rationale with expanded upstream material,
 raw source documents, reconstructed missing content or outside facts.
 
@@ -746,11 +750,13 @@ def _render_prompt(
         raise ValueError("Judge evidence payload differs from its byte binding.")
 
     payload = json.loads(evidence.payload_json)
+    policy_references = critique_policy_references(payload) if is_critique else ()
 
     for reference in evidence.references:
         if task == "critique" and not (
             reference == "/original_request"
             or reference.startswith("/original_request/")
+            or reference in policy_references
         ):
             raise ValueError(
                 "Critique citations must refer to original bounded evidence."
@@ -904,6 +910,31 @@ def build_synthetic_controls(
         )
         for family in SYNTHETIC_CONTROL_FAMILIES
         for index in range(settings.synthetic_cases_per_family)
+    )
+
+
+def critique_policy_references(payload: dict[str, Any]) -> tuple[str, ...]:
+    """Identify only the historical policy strings actually shown to the critic.
+
+    Parameters
+    ----------
+    payload
+        Original-production or synthetic critique evidence.
+
+    Returns
+    -------
+    tuple[str, ...]
+        Exact canonical pointers for nonblank producer/checker policy text. Other
+        payload fields, including the assessed judgment, are never policy evidence.
+    """
+
+    return tuple(
+        f"/{field}"
+        for field in (
+            "original_checker_system_message",
+            "original_producer_system_message",
+        )
+        if isinstance(payload.get(field), str) and payload[field].strip()
     )
 
 

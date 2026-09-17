@@ -34,9 +34,11 @@ flowchart LR
     C --> D[Document IR]
     D --> E[Academic Standards]
     E --> F[Learning Components]
+    F --> G[Learning Progressions]
+    G -. Frozen completed snapshots .-> H[Separate LP evaluation]
 ```
 
-The five conceptual stages are:
+The six conceptual production stages are:
 
 1. **Page IR Extraction** — reconstruct the visible structure of each PDF page.
 2. **Page IR Verification** — verify likely cross-page continuations and conservatively
@@ -47,6 +49,8 @@ The five conceptual stages are:
    source-grounded standards.
 5. **Learning Components** — decompose eligible standards into atomic skills, resolve
    duplicates, and connect them back to the standards they support.
+6. **[Learning Progressions](pipeline/learning-progressions.md)** — add bounded,
+   producer/checker-adjudicated developmental and conceptual relationships between SFIs.
 
 The current implementation is document- and configuration-driven rather than tied to a
 single curriculum or country.
@@ -61,14 +65,16 @@ single curriculum or country.
 - **Architecture** explains the system boundaries, trust model, provenance strategy,
   deterministic invariants, and relationship between the major representations.
 - **Pipeline** documents the operational flow from PDF extraction through the final
-  Academic Standards + Learning Components graph.
+  Academic Standards + Learning Components + Learning Progressions graph.
+- **[LP evaluation](guides/evaluating-learning-progressions.md)** explains the separate
+  judge workflow, frozen inputs, reports, and pending completion evidence.
 - **Development** contains local development and contributor-oriented material.
 
 !!! note
-    The production pipeline currently builds `hasChild` relationships within the
-    Academic Standards hierarchy and `supports` relationships from Learning Components
-    to Standards Framework Items. Other Learning Commons relationship types may exist in
-    the shared schema but are not constructed by the current pipeline.
+    Production builds `hasChild`, `supports`, `buildsTowards`, and `relatesTo`.
+    LP adds relationships, not nodes. Structural/process validation and fallible judge
+    assessments do not establish pedagogical correctness. Implemented functionality
+    does not certify final six-curriculum evaluation or reviewer approval.
 
 !!! question "Have a use case or feature request?"
     If you are working with curriculum data in government, education, research, or the

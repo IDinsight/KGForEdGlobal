@@ -365,6 +365,11 @@ records, provenance, summaries, and validation results for the combined graph.
 
 ---
 
+The validated AS+LC bundle is also the authoritative input to
+[Learning Progressions](learning-progressions.md), the third KG phase. LP adds SFI-to-SFI
+relationships without replacing the AS/LC artifacts described here. Its internal JSONL
+projection has a different shape from the AS+LC delivery wire pair.
+
 ## Next
 
 [Pipeline Overview ←](index.md)

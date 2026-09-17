@@ -627,8 +627,18 @@ def test_blind_view_retains_facts_and_original_critique_boundary(
     assert "original_request" not in blind
     assert views.blind.material_content_hash != views.critique.material_content_hash
     assert set(views.critique.references)
+    policy_references = {
+        "/original_checker_system_message",
+        "/original_producer_system_message",
+    }
+    assert policy_references <= set(views.critique.references)
+    assert all(critique[reference[1:]].strip() for reference in policy_references)
     assert all(
-        ref.startswith("/original_request/") for ref in views.critique.references
+        ref.startswith("/original_request/") or ref in policy_references
+        for ref in views.critique.references
+    )
+    assert not any(
+        ref.startswith("/operative_judgment") for ref in views.critique.references
     )
     # The critic must see the actual original bounded request, not expanded content.
     request_rows = next(

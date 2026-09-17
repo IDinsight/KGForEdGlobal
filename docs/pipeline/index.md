@@ -12,7 +12,7 @@ For the higher-level design principles behind these stages, see
 
 ## At a glance
 
-The production pipeline has **five conceptual stages implemented through four main CLI
+The production pipeline has **six conceptual stages implemented through four main CLI
 entry points**:
 
 ```mermaid
@@ -22,11 +22,12 @@ flowchart TD
     C -->|Verified PageIRs + pair verdicts| D[3. Document IR construction]
     D -->|DocumentIR| E[4. Academic Standards KG construction]
     E -->|Validated Academic Standards KG| F[5. Learning Components construction]
-    F --> G[Combined AS + LC KG]
+    F -->|Validated AS + LC| G[6. Learning Progressions]
+    G --> H[Combined AS + LC + LP KG]
 ```
 
 The first three stages reconstruct the source document with progressively broader
-context. The final two stages perform curriculum-semantic interpretation and knowledge
+context. The final three stages perform curriculum-semantic interpretation and knowledge
 graph construction.
 
 ---
@@ -44,6 +45,7 @@ upstream artifacts before continuing.
 | 3. Document IR construction           | `backend/src/kgfeg/entries/stitch_document_ir.py`        | `kgfeg.document_ir`          | `stitching/document_ir.json`                           |
 | 4. Academic Standards KG construction | `backend/src/kgfeg/entries/create_kgs.py`                | `kgfeg.kgs.sfi_*`            | `kgs/as_kg_bundle.json`                                |
 | 5. Learning Components construction   | `backend/src/kgfeg/entries/create_kgs.py`                | `kgfeg.kgs.lc_*`             | `kgs/as_lc_kg_bundle.json`                             |
+| 6. Learning Progressions construction | `backend/src/kgfeg/entries/create_kgs.py` | `kgfeg.kgs.lp_*` | `kgs/as_lc_lp_kg_bundle.json` |
 
 From the `backend/` directory, a complete run follows this order:
 
@@ -54,8 +56,10 @@ python src/kgfeg/entries/stitch_document_ir.py <config.json>
 python src/kgfeg/entries/create_kgs.py <config.json>
 ```
 
-`create_kgs.py` owns both KG phases. It constructs and validates the Academic Standards
-layer first, then uses that validated layer as the source for Learning Components.
+`create_kgs.py` owns all three KG phases: AS → LC → LP. Each consumes the validated
+upstream bundle. The separate [LP evaluator](../guides/evaluating-learning-progressions.md)
+uses `evaluate_lps.py RESULTS_ROOT` after completed snapshots are available; it is not
+a production stage or a prerequisite for production success.
 
 ---
 
@@ -70,7 +74,8 @@ Each stage expands context while constraining what the next stage is allowed to 
 | Verified Page IR → DocumentIR               | Cross-page chains have been stitched, provenance is retained, and normalized source items are consumed exactly once         | Standards identities, hierarchy, or Learning Components          |
 | DocumentIR → Academic Standards KG          | Source-grounded semantic extraction can operate over a stitched, provenance-preserving document representation              | Final standards identities or graph relationships                |
 | Academic Standards KG → Learning Components | Standards identities, `hasChild` hierarchy, provenance, and AS validation have been resolved sufficiently for LC generation | Canonical atomic-skill identities                                |
-| AS + LC KG → downstream consumers           | Final AS/LC nodes, `hasChild` and `supports` relationships, provenance, and validation artifacts are available              | Progression relationships such as `buildsTowards` or `relatesTo` |
+| AS + LC KG → LP | Validated standards, hierarchy, LCs, supports, and retained provenance | Progression relationships |
+| AS + LC + LP KG → consumers | Direct adjudicated LP edges and structural/process validation | Empirical prerequisite truth or pedagogical correctness |
 
 The main semantic boundary is between **Document IR construction** and **Academic
 Standards construction**. `PageIR` and `DocumentIR` describe the source document;
@@ -90,6 +95,8 @@ document_ir
 kgs
   as   # Academic Standards construction
   lc   # Learning Components construction
+  lp   # Learning Progressions
+  metadata # Framework metadata
 ```
 
 The same source PDF and output root are shared across the run, while the stage-specific
@@ -98,7 +105,8 @@ selection is configured separately through the backend settings/environment.
 
 The KG configuration is optional at the global schema level. Page extraction,
 continuity verification, and DocumentIR construction can therefore be run without
-constructing a knowledge graph.
+constructing a knowledge graph. When `kgs` is supplied, `as`, `lc`, `lp`, and `metadata`
+are all required; LP cannot be silently omitted.
 
 ---
 
@@ -139,7 +147,13 @@ stage outputs beneath that document-specific directory:
     ├── lc_generation_summary.json
     ├── as_lc_kg_bundle.json
     ├── as_lc_nodes.jsonl
-    └── as_lc_relationships.jsonl
+    ├── as_lc_relationships.jsonl
+    ├── ... Learning Progressions working artifacts ...
+    ├── lp_generation_summary.json
+    ├── lp_validation_report.json
+    ├── as_lc_lp_kg_bundle.json
+    ├── as_lc_lp_nodes.jsonl
+    └── as_lc_lp_relationships.jsonl
 ```
 
 Intermediate files are intentional pipeline artifacts. They preserve evidence and
@@ -240,7 +254,7 @@ and traceable to the verified PageIR source items.
 **Purpose:** transform source-grounded DocumentIR content into a validated Academic
 Standards graph.
 
-This is the first curriculum-semantic stage. The first half of `create_kgs.py`:
+This is the first curriculum-semantic stage. The first KG phase in `create_kgs.py`:
 
 1. plans source units and bounded extraction windows;
 2. extracts source-grounded Standards Framework Item (SFI) candidates;
@@ -275,7 +289,7 @@ layer and independently reinterpret the original PDF.
 **Purpose:** derive reusable atomic skills from eligible Academic Standards and connect
 them back to the standards they support.
 
-The second half of `create_kgs.py`:
+The second KG phase in `create_kgs.py`:
 
 1. gates LC construction on the validated Academic Standards bundle;
 2. deterministically selects eligible source SFIs;
@@ -338,6 +352,32 @@ kgs/as_lc_relationships.jsonl
 
 ---
 
+## Stage 6: Learning Progressions construction
+
+**Purpose:** add within-framework SFI-to-SFI developmental and conceptual relationships.
+
+LP consumes the validated AS+LC bundle, selects eligible SFIs using `kgs.lp`, nominates
+bounded deterministic candidates, freezes requests, and runs a producer/checker flow.
+Python owns endpoint/coverage checks, deterministic IDs, counts, provenance, relation
+exclusivity, and whole-graph acyclicity. No upstream nodes or relationships are replaced.
+
+**Primary handoff:** `kgs/as_lc_lp_kg_bundle.json`, `kgs/as_lc_lp_nodes.jsonl`, and
+`kgs/as_lc_lp_relationships.jsonl`. The JSONL uses internal snake_case records, unlike
+the AS/AS+LC delivery wire pairs.
+
+**Audit starting points:** `lp_eligibility_report.json`, `lp_candidate_pairs.jsonl`,
+`lp_generation_requests.jsonl`, draft/verdict/response checkpoints, failures and usage,
+`lp_final_claims.json`, `lp_relationship_provenance.json`, `lp_unresolved_items.json`,
+and `lp_validation_report.json`.
+
+`needs_review` is nonpublishing and nonblocking; any unresolved processing failure
+blocks LP/combined success. Bounded concurrency defaults to four requests, with durable
+pending completions and active-call drain after exhausted failure. Unsupported or stale
+checkpoint material cannot be bypassed with overwrite. See
+[Learning Progressions](learning-progressions.md) for the full contract.
+
+---
+
 ## Validation and failure containment
 
 A model response or upstream artifact must pass each stage's explicit check gates
@@ -371,12 +411,13 @@ The current production path creates:
 - `StandardsFramework` nodes;
 - `StandardsFrameworkItem` nodes;
 - `LearningComponent` nodes;
-- `hasChild` relationships among Academic Standards entities; and
-- `supports` relationships from Learning Components to Standards Framework Items.
+- `hasChild` relationships among Academic Standards entities;
+- `supports` relationships from Learning Components to Standards Framework Items; and
+- `buildsTowards` and `relatesTo` relationships between SFIs in the same framework.
 
-The shared schema can also represent relationship concepts such as `buildsTowards` and
-`relatesTo`, but the current `create_kgs.py` pipeline does **not** construct those
-progression or association relationships.
+`relatesTo` requires symmetric lookup. `buildsTowards` is not a strict prerequisite,
+and computed reachability is not another published edge. See
+[relationship semantics](learning-progressions.md#relationship-meaning-and-consumer-queries).
 
 ---
 
@@ -397,13 +438,15 @@ For resume behavior, overwrite decisions, partial-run recovery, and rerun scope,
 | Why was a standard excluded from LC generation? | `lc_eligibility_report.json` and `lc_eligible_sfis.json` |
 | Was a skill generated incorrectly? | `lc_generation_requests.jsonl`, producer drafts, validator verdicts, final responses, and failures |
 | Were two skills merged or kept separate incorrectly? | `lc_dedup_candidate_pairs.jsonl`, `lc_dedup_verdicts.jsonl`, and `lc_dedup_groups.json` |
-| Does the final graph reconcile? | `as_validation_report.json`, `lc_generation_summary.json`, `as_kg_bundle.json`, and `as_lc_kg_bundle.json` |
+| Why was an LP pair omitted or classified this way? | Eligibility, candidates, bounded requests, producer/checker judgments, and `lp_final_claims.json` |
+| Does the final graph reconcile? | AS/LP validation reports, LC/LP summaries, and all three bundles |
+| What does separate judge evidence say? | `lp_eval_report.md` and JSON report, sample/condition denominators, failures, usage, and concern dispositions |
 
 ---
 
 ## Stage-specific documentation
 
-Detailed documentation is organized around the same five conceptual stages:
+Detailed documentation is organized around the same six conceptual stages:
 
 ```text
 docs/pipeline/page-ir-extraction.md
@@ -411,7 +454,11 @@ docs/pipeline/page-ir-verification.md
 docs/pipeline/document-ir.md
 docs/pipeline/academic-standards.md
 docs/pipeline/learning-components.md
+docs/pipeline/learning-progressions.md
 ```
+
+- [Learning Progressions](learning-progressions.md)
+- [Separate LP evaluation](../guides/evaluating-learning-progressions.md)
 
 These pages provide the implementation details, configuration behavior, validation
 rules, and artifact contracts that this overview intentionally keeps concise.

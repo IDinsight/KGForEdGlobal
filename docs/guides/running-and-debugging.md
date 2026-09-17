@@ -78,9 +78,11 @@ python src/kgfeg/entries/stitch_document_ir.py <config.json>
 python src/kgfeg/entries/create_kgs.py <config.json>
 ```
 
-The five conceptual pipeline stages are implemented through these four commands because
-`create_kgs.py` builds the Academic Standards layer first and then derives Learning
-Components from it.
+Six conceptual production stages use these four commands: `create_kgs.py` builds AS,
+then LC, then LP from the validated AS+LC bundle. `kgs` requires `as`, `lc`, `lp`, and
+`metadata`. Production uses `LLM_KG_MODEL`. The separate
+[LP evaluation command](evaluating-learning-progressions.md) is live-capable and writes
+under repository-root `results/lp_evals/`; it is not a production success gate.
 
 ## Understand `overwrite` before resuming
 
@@ -117,13 +119,14 @@ There are four independent overwrite settings:
 | DocumentIR           | An existing `document_ir.json` causes the stitching stage to skip                                                                                            | Verified PageIRs or any stitching behavior/config changed                                |
 | KG construction      | Several LLM-heavy sub-stages reuse complete current artifacts or aligned progress; deterministic derived artifacts are recomputed or cross-checked as needed | KG semantic config/model/code changed and you need the new behavior applied deliberately |
 
-The safest mental model is:
+Resume only when the material is unchanged:
 
 > **Resume with `overwrite=false` only when the inputs and policy for that stage are
 > intentionally unchanged.**
 
-If you changed what a stage is supposed to mean, use its overwrite setting or a fresh
-output root rather than assuming cached artifacts will be invalidated automatically.
+For intentional regeneration, choose an authorized overwrite or a fresh output root.
+LP specifically rejects stale material and unsupported checkpoint formats. Overwrite
+cannot bypass its supported-format preflight; preserve historical evidence.
 
 ## How each stage resumes
 
@@ -218,18 +221,52 @@ deduplication semantics, or implementation behavior and need to guarantee fresh 
 judgments, use `kgs.overwrite=true` or a separate output root.
 
 !!! warning "KG overwrite currently applies to the whole KG command"
-    There is one `kgs.overwrite` flag for both Academic Standards and Learning
-    Components. There is not a separate LC-only overwrite flag.
+    There is one `kgs.overwrite` flag for AS, LC, and LP. There is no separate LC-only
+    or LP-only overwrite flag. Unsupported LP checkpoints are rejected before any
+    overwrite effects, including AS/LC calls and run-record changes.
 
     If you set `kgs.overwrite=true` to guarantee fresh LC generation, the expensive AS
     LLM sub-stages are also restarted. There is currently no supported switch that
     forces only the LC LLM work to restart while guaranteeing that all AS LLM work is
     reused.
 
+## LP resume, failure, and historical evidence
+
+With `kgs.overwrite=false`, LP revalidates actual upstream/configuration, prompt/model,
+candidate/request, and checkpoint identities before reusing work. Complete candidates
+and requests are materialized before calls. A saved valid draft can be reused while its
+checker resumes; validated pending suffix completions survive prefix gaps. Corruption,
+staleness, or missing authenticated journals fails closed. Production retry limits apply
+per invocation: restarting gives unfinished stages a new configured allowance, including
+after earlier exhaustion or an unknown outcome. Prior attempts and failures remain in
+the durable history; do not delete or edit them. Inspect that history before authorizing
+a resume, which can make new calls. The evaluator has separate
+[resume restrictions](evaluating-learning-progressions.md#model-and-bounded-execution).
+
+`kgs.lp.max_concurrent_requests` defaults to 4 admitted request batches, including retry
+waits; 1 is serial. Batch size is independent. Each checker waits for its own producer.
+After exhausted failure, admission and dispatch close: only already active calls finish,
+and their valid outcomes/usage are saved by the sole writer. No new checker or retry
+starts during drain. Any unresolved failed pair blocks success; `no_relation` and
+`needs_review` are valid outcomes, with `needs_review` visible and nonpublishing.
+
+Successful runs retain `.lp_generation.lock`. File presence is not proof of an active
+writer. Never delete the lock file to force progress: competing processes must coordinate
+on the same inode. A compatible completed run can reuse its final bundle and rewrite
+projections without new LP model calls.
+
+Historical completed graphs can still be consumed or validated with compatible schema
+interpretation. The current production command cannot resume/reuse unsupported old
+checkpoints, even for a completed graph. Prefix-only, partial, or compatibility-counter
+formats fail before calls, archive/recovery/projection writes, or `kg_run.json` replacement;
+`overwrite=true` is no exception. Do not retrofit journals, inject defaults, or rewrite
+hashes. Complete current-format interrupted transactions remain recoverable. See the
+[full checkpoint boundary](../pipeline/learning-progressions.md#historical-graphs-versus-production-reuse).
+
 ## Resume after an interruption
 
-For an unchanged config and unchanged source, start with the least destructive option:
-rerun the command that failed with its stage `overwrite=false`.
+For unchanged material and supported checkpoint evidence, an authorized rerun can use
+`overwrite=false`. Investigate exhausted or uncertain LP attempts before retrying.
 
 | What happened                                                 | Recommended recovery                                                                                                                                            |
 |---------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -238,9 +275,9 @@ rerun the command that failed with its stage `overwrite=false`.
 | Verification has partial compile/postprocess/verified outputs | Prefer a full verification rerun with `overwrite=true`, or use the targeted recovery below only when pair reports are known-current                             |
 | Stitching failed before writing `document_ir.json`            | Fix the cause and rerun stitching; `overwrite=false` is sufficient when no DocumentIR exists                                                                    |
 | Stitching completed but you changed its inputs/config         | Set `document_ir.overwrite=true` and rerun stitching                                                                                                            |
-| KG construction stopped partway through                       | Rerun `create_kgs.py` with `kgs.overwrite=false`; compatible progress is reused                                                                                 |
+| KG construction stopped partway through | Use `kgs.overwrite=false` only for compatible material and supported LP checkpoint evidence; exhausted/uncertain attempts require investigation |
 | LC generation exceeded `lc_max_failure_rate`                  | Inspect `lc_generation_failures.json`, correct any transient/config issue, then rerun with `kgs.overwrite=false` to retry requests that did not complete        |
-| A resume check says existing artifacts are stale/misaligned   | First verify that the source/config did not change unintentionally; if the change was intentional, restart that stage with overwrite or use a fresh output root |
+| A resume check says existing artifacts are stale/misaligned | Verify the change, preserve evidence, and plan authorized regeneration; LP does not repair hashes or bypass unsupported formats with overwrite |
 
 ### Recovering partial verification state
 
@@ -283,6 +320,8 @@ changed stage should not be trusted merely because files already exist.
 | Academic Standards taxonomy, extraction policy, identity/code scope, dedup policy, hierarchy policy/instructions, or KG model | Academic Standards KG             | Run `create_kgs.py`; use `kgs.overwrite=true` when fresh semantic judgments are required                                 |
 | LC eligibility, generation instructions, validation instructions, dedup scope/blocking/judge policy, or KG model              | Learning Components               | Run `create_kgs.py`; use `kgs.overwrite=true` to guarantee fresh LC judgments, noting that AS LLM work is also restarted |
 | Delivery/export schema setting only                                                                                           | Final KG compilation              | Rerun `create_kgs.py`; upstream document stages do not need to be rerun                                                  |
+| LP policy, evidence limits, prompts, model, budgets, or concurrency | LP material identity | Preserve the old snapshot; plan authorized regeneration rather than reusing stale checkpoints |
+| Evaluator settings or selected population | Separate evaluator | Create a compatible fresh frozen schedule; preserve prior evidence and do not mutate production |
 | Documentation only                                                                                                            | None                              | No pipeline rerun                                                                                                        |
 
 For a high-stakes comparison between old and new semantic policy, prefer a new
@@ -329,6 +368,9 @@ Use this sequence rather than jumping directly to the final bundle.
 | A standard did not enter LC generation                         | `lc_eligibility_report.json` and `lc_eligible_sfis.json`                            | LC eligibility policy or unresolved ancestry                  |
 | Atomic decomposition is wrong                                  | LC request, producer draft, validation verdict, and final response                  | LC generation/validation policy                               |
 | Two LC texts were or were not merged correctly                 | `lc_dedup_candidate_pairs.jsonl`, `lc_dedup_verdicts.jsonl`, `lc_dedup_groups.json` | LC blocking/scope/semantic dedup                              |
+| An LP pair is missing or has an unexpected outcome | LP eligibility/candidate artifacts, bounded request, draft/verdict/final response, and `lp_final_claims.json` | Earliest incorrect policy, evidence, or adjudication stage; never patch the graph |
+| LP cycle, warning, count, or provenance validation fails | `lp_validation_report.json`, relationship provenance, final claims | Trace named endpoints/requests before any authorized rerun |
+| Separate evaluation is incomplete or raises concerns | `lp_eval_failures.jsonl`, usage, schedule, reports, and dispositions | Separate execution failure from ambiguity and quality concerns |
 | Final counts/endpoints/provenance do not reconcile             | AS validation report, LC summary, AS bundle, combined bundle                        | Finalization/validation; then trace to earliest failing input |
 
 The [Pipeline Overview](../pipeline/index.md#where-to-inspect-a-run) contains the compact
@@ -350,7 +392,9 @@ class of operational problem.
 | Existing SFI extraction result does not match the current window                    | KG extraction progress no longer aligns with the current window plan             | Confirm the DocumentIR/KG config change, then restart KG with overwrite or use a fresh output root                                  |
 | Academic Standards export validation fails                                          | Finalized AS entities/edges/mappings/provenance violate a deterministic contract | Start with `as_validation_report.json`, then trace the named inputs upstream                                                        |
 | LC generation failure rate exceeds `lc_max_failure_rate`                            | Too many eligible SFIs failed generation after retries                           | Inspect `lc_generation_failures.json`; rerun without KG overwrite after a transient fix, or adjust the actual LC policy/model issue |
-| Existing final bundle is reported as stale because fingerprints differ              | Current deterministic inputs differ from the saved delivery bundle               | Let the compiler rebuild it; investigate only if the input change was unexpected                                                    |
+| AS/AS+LC final bundle fingerprints differ | Current inputs differ | Inspect the change and upstream compiler behavior; LP final reuse instead rejects stale material |
+| LP checkpoint format is unsupported | Old/partial/unauthenticated evidence, possibly even with a successful final graph | Preserve it; use compatible read-only interpretation or a separately authorized fresh run, not forced overwrite |
+| Production LP retry budget is exhausted or an outcome is unknown | The current invocation has failed or lacks a reusable result for that stage | Inspect durable failure/usage evidence before an authorized resume; a new invocation can call unfinished stages again. Preserve all receipts and attempt history |
 | A resumed run reports little or no LLM usage                                        | Compatible semantic artifacts were reused                                        | Expected; usage in the current run record is not cumulative lifetime usage                                                          |
 
 ## Run records, status, and LLM usage
@@ -364,7 +408,9 @@ stitching/stitching_run.json
 kgs/kg_run.json
 ```
 
-On completion, the run record contains the current invocation's timestamps and status.
+LP unsupported-format preflight is a no-write exception: it preserves the existing run
+record and reports the incompatibility through the command error. Otherwise, on
+completion, the run record contains the current invocation's timestamps and status.
 When an exception escapes the stage, the record also captures an error type, message,
 and traceback under `extra.error`.
 
@@ -382,6 +428,10 @@ aggregate totals. Use these records to answer questions such as:
 
     Preserve earlier run records externally if you need historical/cumulative cost
     accounting; the stage `*_run.json` path is rewritten on later invocations.
+
+LP additionally keeps durable cross-invocation attempts in `lp_generation_usage.json`
+and separate `lp_generation` / `lp_generation_validation` buckets. Unknown outcomes
+remain explicit. Evaluator usage lives in `lp_eval_usage.json`, separately from production.
 
 For KG runs, `kg_run_manifest.json` is also a useful **preparation diagnostic**. It
 summarizes source/document characteristics such as segment counts, observed languages,
@@ -425,8 +475,9 @@ This costs more but provides the clearest audit boundary.
 Keep the same output root, set the earliest affected stage's `overwrite=true`, and
 regenerate all downstream stages whose inputs depend on it.
 
-This is appropriate when the source and run identity are unchanged and you intentionally
-want to replace derived artifacts in place.
+Use this only for intentional, authorized regeneration with supported evidence. LP
+format rejection occurs before archive or overwrite; it cannot be used to migrate an
+old checkpoint store.
 
 ### 3. Targeted artifact recovery — only for known partial state
 
@@ -437,7 +488,8 @@ pair reports while rebuilding deterministic derived outputs can be worthwhile.
 Avoid manually deleting arbitrary KG JSONL records. Several KG sub-stages rely on
 ordered prefixes, request IDs, aligned producer/checker artifacts, and cross-artifact
 consistency. When KG progress is genuinely stale, `kgs.overwrite=true` or a fresh output
-root is usually safer than artifact surgery.
+root is usually safer than artifact surgery. Neither option authorizes bypassing LP
+format rejection or deleting its locks, journals, receipts, or failure history.
 
 ## Before rerunning downstream
 
@@ -469,3 +521,6 @@ Use this short checklist:
   reconciliation, hierarchy, and export.
 - [Learning Components](../pipeline/learning-components.md) — LC eligibility,
   decomposition, validation, deduplication, provenance, and finalization.
+- [Learning Progressions](../pipeline/learning-progressions.md) — LP semantics and integrity.
+- [Evaluate LP](evaluating-learning-progressions.md) — CLI, frozen resume, reports, and
+  completion evidence still awaiting final review.
