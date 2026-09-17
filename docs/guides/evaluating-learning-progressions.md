@@ -141,6 +141,19 @@ component, condition, model, available input/output/reasoning/cache tokens, and
 available cost. Unknown usage or pricing is not zero. Missing pricing alone does not
 block completion.
 
+Execution allows up to **4 concurrent requests**, with a **180-second timeout per
+attempt** and **at most two retries after the initial attempt**, waiting **5 then 20
+seconds**. Timeouts, HTTP 429/5xx responses, and invalid structured output are
+retryable within that allowance. Input, authentication, configuration, and stale-cache
+failures are not retryable. SDK and output-validation retries share the same
+three-attempt maximum.
+
+After a terminal failure, already active calls finish without starting further calls.
+Validated successes remain reusable. Resume preserves attempt history and does not
+reset the retry allowance: exhausted, nonretryable, or unfinished attempts with
+uncertain outcomes prevent automatic dispatch. Restarting the command does not clear
+these conditions.
+
 ## What the judge assesses
 
 **Production-pair assessment** samples published `buildsTowards`, published

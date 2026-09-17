@@ -506,9 +506,9 @@ rare source layouts can surface issues that do not appear in a small slice.
 Separate [LP evaluation](evaluating-learning-progressions.md) accepts compatible
 completed snapshots without adding curriculum names or a fixed roster to generic code.
 Its command discovers the new snapshot only in a fresh selection; an existing frozen
-invocation cannot absorb it. Live execution needs separate authorization and the
-project gates. A subset or calibration report is not complete six-curriculum project
-evidence.
+invocation cannot absorb it. Evaluation can make external model calls. Results apply
+to the selected curricula, sampled pairs, and evidence conditions; a calibration or
+subset report does not establish quality across the full curriculum.
 
 ## Framework metadata checklist
 

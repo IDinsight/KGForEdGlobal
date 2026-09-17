@@ -524,5 +524,5 @@ Use this short checklist:
 - [Learning Components](../pipeline/learning-components.md) — LC eligibility,
   decomposition, validation, deduplication, provenance, and finalization.
 - [Learning Progressions](../pipeline/learning-progressions.md) — LP semantics and integrity.
-- [Evaluate LP](evaluating-learning-progressions.md) — CLI, frozen resume, reports, and
-  completion evidence still awaiting final review.
+- [Evaluate LP](evaluating-learning-progressions.md) — CLI, frozen selection,
+  resume behavior, assessment reports, and interpretation of results.

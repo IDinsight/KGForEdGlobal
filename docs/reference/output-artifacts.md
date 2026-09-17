@@ -87,8 +87,9 @@ failures cannot be tolerated as a percentage: any unresolved failed pair blocks 
 `needs_review` remains visible, nonpublishing, and nonblocking.
 
 Neither structural/process validity nor a separate evaluator's favorable assessments
-proves pedagogical correctness. Evaluation execution, concern disposition, and project
-review are separate obligations; see [evidence status](../guides/evaluating-learning-progressions.md#execution-evidence-and-project-completion).
+proves pedagogical correctness. See the
+[evaluation guide](../guides/evaluating-learning-progressions.md#cache-artifacts-and-interpretation)
+for interpreting assessment reports, disagreements, and uncertainty.
 
 ### A passed graph can still contain unresolved or excluded material
 
