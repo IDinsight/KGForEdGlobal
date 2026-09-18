@@ -51,10 +51,7 @@ from kgfeg.evals.lp_eval.schemas import (
     UpstreamEvidenceSource,
     resolve_evaluation_settings,
 )
-from tests.fixtures.lp_eval.snapshot_fixtures import (
-    build_snapshot,
-    load_historical_snapshot,
-)
+from tests.fixtures.lp_eval.snapshot_fixtures import build_snapshot
 from tests.kgfeg.kgs import test_lp_selection as selection_fixtures
 
 # Private pytest fixtures are used parameters, not intentionally ignored arguments.
@@ -107,9 +104,8 @@ def _frozen(tmp_path_factory: pytest.TempPathFactory) -> FrozenInputs:
     """
     repository = tmp_path_factory.mktemp("lp-evaluator-inputs").resolve()
     sources = repository / "synthetic-runs"
-    for count, identity in ((5, 10000), (6, 20000)):
+    for count, identity in ((5, 10000), (6, 20000), (5, 30000)):
         build_snapshot(count=count, identity=identity, root=sources)
-    load_historical_snapshot(sources)
     inventory = sampling.discover_lp_runs(
         evaluation_root=repository / "results/lp_evals", results_root=sources
     )
@@ -1199,7 +1195,7 @@ def test_execution_timeout_is_applied_per_attempt(
 def test_frozen_input_full_validation_and_byte_preservation(
     _frozen: FrozenInputs,
 ) -> None:
-    """Revalidate synthetic historical and current snapshots without production resume.
+    """Revalidate current synthetic snapshots without production resume.
 
     Parameters
     ----------
@@ -1221,8 +1217,7 @@ def test_frozen_input_full_validation_and_byte_preservation(
         }
     assert len(snapshots) == 3
     assert Counter(s.checkpoint_format for s in snapshots) == {
-        "historical_prefix": 1,
-        "journal_bearing": 2,
+        "journal_bearing": 3,
     }
     assert before == {
         path: hashlib.sha256(path.read_bytes()).hexdigest() for path in before
@@ -1266,7 +1261,7 @@ def test_frozen_source_detects_changed_missing_and_new_material(
                 name="material.json",
             ),
         ),
-        checkpoint_format="historical_prefix",
+        checkpoint_format="journal_bearing",
         config_json="{}",
         run=inventory.runs[0],
         source_artifact="material.json",
@@ -2087,7 +2082,7 @@ def test_settings_reject_invalid_counts(field: str, value: Any) -> None:
         resolve_evaluation_settings({field: value})
 
 
-@pytest.mark.parametrize("checkpoint_format", ["historical_prefix", "journal_bearing"])
+@pytest.mark.parametrize("checkpoint_format", ["journal_bearing"])
 @pytest.mark.parametrize(
     "mutation",
     ["source", "configuration", "response", "projection", "journal", "missing"],
@@ -2095,12 +2090,12 @@ def test_settings_reject_invalid_counts(field: str, value: Any) -> None:
 def test_snapshot_integrity_rejects_tampered_test_artifacts(
     _frozen: FrozenInputs, checkpoint_format: str, mutation: str, tmp_path: Path
 ) -> None:
-    """Require real validation to reject corrupt copies of both checkpoint formats.
+    """Require real validation to reject corrupt current-format copies.
 
     Parameters
     ----------
     _frozen
-        Authenticated synthetic historical and current snapshots.
+        Authenticated current synthetic snapshots.
     checkpoint_format
         Format whose full source/config/checkpoint bindings are challenged.
     mutation

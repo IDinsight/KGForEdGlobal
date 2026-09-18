@@ -41,9 +41,7 @@ judgments, provenance, reports, bundles, projections, and actual hashes must rec
 Unreadable/contradictory completion evidence, invalid completed inputs, or no completed
 inputs fails preparation before judge dispatch. A completed-looking snapshot whose
 generation lock is actively held also fails snapshot validation; a retained unlocked
-lock file is acceptable. Completed historical prefix evidence has a compatible
-read-only interpretation; this does not upgrade it or enable
-[production checkpoint reuse](../pipeline/learning-progressions.md#historical-graphs-versus-production-reuse).
+lock file is acceptable.
 
 ## Frozen selection and resume
 
@@ -51,7 +49,11 @@ Before calls, the evaluator freezes discovery inventory, exact selected paths an
 material hashes, input copies, effective settings, populations, samples, evidence
 views, and the complete request/condition/replicate schedule. Resume revalidates both
 frozen copies and selected source material. Missing, changed, or incompatible inputs
-fail; newly completed curricula cannot enter an existing invocation.
+fail; newly completed curricula cannot enter an existing invocation. Frozen inputs
+and resume must also satisfy the current projection, checkpoint, and configuration
+contract. Frozen inputs containing unsupported formats and incompatible schedules
+are rejected without upgrade, hash rewriting, or changes to source or prior
+evaluation evidence.
 
 Repeating a command automatically finds a matching frozen invocation by root and
 settings. Multiple matching invocations require explicit selection. To retain overrides

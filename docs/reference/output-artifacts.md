@@ -448,8 +448,8 @@ All names below are relative to the production `kgs/` directory.
 Checkpoint files form one authenticated store; they are not independently editable
 recovery controls. Missing journals do not mean empty work. Current production rejects
 unsupported old formats before effects, even with overwrite or a completed bundle.
-Historical graphs can still be read and validated under their compatible contract;
-see [historical consumption versus reuse](../pipeline/learning-progressions.md#historical-graphs-versus-production-reuse).
+The evaluator also requires current wire projections, supported journal-bearing
+checkpoints and exact captured current effective configuration with recorded capacity.
 
 ### Separate evaluator artifacts
 

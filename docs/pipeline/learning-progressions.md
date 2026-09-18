@@ -175,10 +175,6 @@ force reuse: retaining the same inode protects competing readers/writers.
 
 ### Historical graphs versus production reuse
 
-Completed historical graphs remain available for downstream reading and compatible
-read-only validation. This does not authorize the current production command to resume
-or reuse their unsupported checkpoints, even when a final bundle reports success.
-
 Current production requires authenticated successful prefixes, failure evidence,
 `lp_generation_pending_completions.json`, `lp_generation_usage.json`, and their
 checkpoint manifest. Empty journals must exist explicitly. Prefix-only stores,

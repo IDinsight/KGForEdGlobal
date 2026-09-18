@@ -256,15 +256,6 @@ writer. Never delete the lock file to force progress: competing processes must
 coordinate on the same inode. A compatible completed run can reuse its final bundle and
 rewrite projections without new LP model calls.
 
-Historical completed graphs can still be consumed or validated with compatible schema
-interpretation. The current production command cannot resume/reuse unsupported old
-checkpoints, even for a completed graph. Prefix-only, partial, or compatibility-counter
-formats fail before calls, archive/recovery/projection writes, or `kg_run.json`
-replacement; `overwrite=true` is no exception. Do not retrofit journals, inject
-defaults, or rewrite hashes. Complete current-format interrupted transactions remain
-recoverable. See the
-[full checkpoint boundary](../pipeline/learning-progressions.md#historical-graphs-versus-production-reuse).
-
 ## Resume after an interruption
 
 For unchanged material and supported checkpoint evidence, an authorized rerun can use

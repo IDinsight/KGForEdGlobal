@@ -80,16 +80,26 @@ def _write(root: Path, name: str, value: Any) -> None:
 
 
 def build_snapshot(
-    *, count: int, identity: int, root: Path, title: str | None = None
+    *,
+    capacity: int | None = None,
+    count: int,
+    identity: int,
+    overwrite: bool = False,
+    root: Path,
+    title: str | None = None,
 ) -> Path:
     """Create a complete small current-format run with four scripted outcomes.
 
     Parameters
     ----------
+    capacity
+        Optional explicit runtime capacity; omission exercises the runtime default.
     count
         Eligible same-rank SFI count; every unordered pair is admissible.
     identity
         Distinct framework identity for generic multi-curriculum discovery.
+    overwrite
+        Effective overwrite value omitted by execution metadata and recovered by hash.
     root
         Temporary parent directory, never the repository results directory.
     title
@@ -103,6 +113,12 @@ def build_snapshot(
     directory = root / f"synthetic-{identity}" / "kgs"
     directory.mkdir(parents=True)
     harness = claims._Harness(batch=3, count=count, root=directory)
+    runtime = harness.config.model_dump(mode="json")
+    runtime["lp"].pop("max_concurrent_requests")
+    if capacity is not None:
+        runtime["lp"]["max_concurrent_requests"] = capacity
+    runtime["overwrite"] = overwrite
+    harness.config = type(harness.config).model_validate(runtime)
     if title is not None:
         harness.config = harness.config.model_copy(
             update={
@@ -316,7 +332,7 @@ def load_historical_snapshot(root: Path) -> Path:
         destination = (directory / name).resolve()
         assert destination.is_relative_to(directory.parent.resolve())
         destination.write_text(text, encoding="utf-8")
-    # The compatible reader explicitly permits relocation of these two locations.
+    # Keep synthetic discovery locations valid so rejection tests reach format checks.
     manifest = json.loads((directory / "kg_run_manifest.json").read_bytes())
     manifest["kg_run_dir"] = str(directory)
     manifest["document_ir_fp"] = str(directory.parent / "document_ir.json")

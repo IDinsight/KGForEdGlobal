@@ -750,7 +750,7 @@ class FrozenSnapshot:
     artifacts
         Original names and byte identities, in deterministic name order.
     checkpoint_format
-        Validated historical-prefix or journal-bearing interpretation.
+        Validated current journal-bearing checkpoint contract.
     config_json
         Captured effective configuration in its original serialization shape.
     run
@@ -761,7 +761,7 @@ class FrozenSnapshot:
 
     absent_artifacts: tuple[str, ...]
     artifacts: tuple[FrozenArtifact, ...]
-    checkpoint_format: str
+    checkpoint_format: Literal["journal_bearing"]
     config_json: str
     run: DiscoveredRun
     source_artifact: str
@@ -1374,7 +1374,7 @@ class UpstreamEvidenceSource:
     Attributes
     ----------
     config_json
-        Captured effective configuration, preserving its historical field shape.
+        Exact current effective configuration, including resolved concurrency capacity.
     doc_key
         Validated document identity.
     framework_uuid
@@ -1448,7 +1448,7 @@ class ValidatedSnapshot:
     artifacts
         Exact captured material, sorted by run-relative name.
     checkpoint_format
-        Explicit historical-prefix or journal-bearing interpretation.
+        Supported current journal-bearing checkpoint contract.
     config_json
         Validated effective configuration in its original serialization shape.
     run
@@ -1459,7 +1459,7 @@ class ValidatedSnapshot:
 
     absent_artifacts: tuple[str, ...]
     artifacts: tuple[SnapshotArtifact, ...]
-    checkpoint_format: str
+    checkpoint_format: Literal["journal_bearing"]
     config_json: str
     run: DiscoveredRun
     source_artifact: str

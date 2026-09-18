@@ -1,4 +1,4 @@
-"""Validate historical and wire projections independently of checkpoint evidence."""
+"""Reject historical projections and checkpoints independently; preserve current inputs."""
 
 # Pytest fixtures intentionally use private names and retain parameter documentation.
 # pylint: disable=useless-param-doc
@@ -170,31 +170,26 @@ def _state(root: Path) -> dict[str, tuple[bytes, int, int]]:
     }
 
 
-@pytest.mark.parametrize(
-    argnames="checkpoint", argvalues=["historical_prefix", "journal_bearing"]
-)
-def test_corrupt_historical_boolean_cannot_be_frozen(
-    _sources: dict[str, Path], checkpoint: str, tmp_path: Path
+def test_corrupt_current_wire_property_cannot_be_frozen(
+    _sources: dict[str, Path], tmp_path: Path
 ) -> None:
-    """Reject numeric substitution for a boolean before publishing frozen evidence.
+    """Reject numeric substitution for a current wire property before publishing frozen evidence.
 
     Parameters
     ----------
     _sources
         Untouched source snapshots.
-    checkpoint
-        Checkpoint contract independent of the historical projection shape.
     tmp_path
         Temporary input and evaluator directory.
     """
     source = tmp_path / "source"
-    shutil.copytree(dst=source, src=_sources[checkpoint].parent)
+    shutil.copytree(dst=source, src=_sources["journal_bearing"].parent)
     directory = source / "kgs"
-    _format(directory=directory, projection="internal")
+    _format(directory=directory, projection="wire")
     path = directory / _NAMES[0]
     rows = [json.loads(line) for line in path.read_bytes().splitlines()]
-    assert rows[0]["is_current"] is True
-    rows[0]["is_current"] = 1
+    assert rows[0]["properties"]["isCurrent"] == "true"
+    rows[0]["properties"]["isCurrent"] = 1
     path.write_bytes(b"".join((json.dumps(row) + "\n").encode() for row in rows))
     inventory = sampling.discover_lp_runs(
         evaluation_root=tmp_path / "results/lp_evals", results_root=source
@@ -210,10 +205,10 @@ def test_corrupt_historical_boolean_cannot_be_frozen(
     argnames="checkpoint", argvalues=["historical_prefix", "journal_bearing"]
 )
 @pytest.mark.parametrize(argnames="projection", argvalues=["internal", "wire"])
-def test_each_projection_checkpoint_combination_freezes_original_hashes(
+def test_each_projection_checkpoint_combination_enforces_current_only(
     _sources: dict[str, Path], checkpoint: str, projection: str, tmp_path: Path
 ) -> None:
-    """Validate all four combinations read-only and bind their exact original bytes.
+    """Accept only current/current and reject each historical dimension without writes.
 
     Parameters
     ----------
@@ -231,6 +226,17 @@ def test_each_projection_checkpoint_combination_freezes_original_hashes(
     directory = source / "kgs"
     _format(directory=directory, projection=projection)
     before = _state(source)
+    if checkpoint != "journal_bearing" or projection != "wire":
+        with pytest.raises(sampling.LPSnapshotError):
+            sampling.validate_lp_snapshot(_run(directory))
+        inventory = sampling.discover_lp_runs(
+            evaluation_root=tmp_path / "results/lp_evals", results_root=source
+        )
+        with pytest.raises(sampling.LPSnapshotError):
+            sampling.freeze_lp_inputs(inventory=inventory, repository_root=tmp_path)
+        assert _state(source) == before
+        assert not (tmp_path / "results/lp_evals").exists()
+        return
     validated = sampling.validate_lp_snapshot(_run(directory))
     assert validated.checkpoint_format == checkpoint
     artifacts = {artifact.name: artifact for artifact in validated.artifacts}

@@ -25,19 +25,13 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from fractions import Fraction
 from itertools import islice
-from operator import itemgetter
 from pathlib import Path
 from random import Random
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
 # Third Party Library
-from pydantic import (
-    SerializationInfo,
-    SerializerFunctionWrapHandler,
-    TypeAdapter,
-    model_serializer,
-)
+from pydantic import TypeAdapter
 
 # Package Library
 from kgfeg.evals.lp_eval.output import judge_output_contract
@@ -116,7 +110,6 @@ from kgfeg.kgs.lp_requests import (
     _bounded_text,
     _request_sfi,
     build_lp_generation_requests,
-    build_lp_request_id,
     canonical_lp_json,
     lp_material_content_hash,
 )
@@ -173,37 +166,6 @@ UPSTREAM_DIAGNOSTIC_TAGS = (
     *PRODUCTION_DIAGNOSTIC_TAGS[1:-1],
     "reconstructed_evidence_truncation",
 )
-
-
-class _CapturedKGConfig(CreateKGConfig):
-    """Interpret a captured configuration without serializing later operational defaults."""
-
-    @model_serializer(mode="wrap")
-    def _serialize_captured(
-        self, handler: SerializerFunctionWrapHandler, info: SerializationInfo
-    ) -> dict[str, Any]:
-        """Preserve the original configuration's capacity-field presence.
-
-        Parameters
-        ----------
-        handler
-            Ordinary schema serialization.
-        info
-            Requested alias and exclusion settings.
-
-        Returns
-        -------
-        dict[str, Any]
-            Configuration in its captured historical shape.
-        """
-
-        material = handler(self)
-        key = "lp" if info.by_alias is not False else "learning_progressions"
-
-        if "max_concurrent_requests" not in self.learning_progressions.model_fields_set:
-            material.get(key, {}).pop("max_concurrent_requests", None)
-
-        return material
 
 
 @dataclass(frozen=True, slots=True)
@@ -560,7 +522,7 @@ class UpstreamEvidenceBuilder:
     production candidates, requests, judgments or nomination state are accessible.
     """
 
-    _config: _CapturedKGConfig
+    _config: CreateKGConfig
     _framework_title: str
     _graph_index: LPGraphIndex
     _input_content_hash: str
@@ -1216,6 +1178,44 @@ def _completion_status(
     raise ValueError("unrecognized or contradictory status/timestamp fields")
 
 
+def _current_config(raw: dict[str, Any]) -> CreateKGConfig:
+    """Validate exact captured effective configuration without filling defaults.
+
+    Parameters
+    ----------
+    raw
+        Complete serialized configuration, including resolved execution capacity.
+
+    Returns
+    -------
+    CreateKGConfig
+        Current configuration whose serialization exactly matches captured material.
+
+    Raises
+    ------
+    ValueError
+        Captured fields are missing, unsupported, coerced or silently defaulted.
+    """
+
+    if not isinstance(raw, dict) or not isinstance(raw.get("lp"), dict):
+        raise ValueError("Captured configuration requires the current LP namespace")
+
+    capacity = raw["lp"].get("max_concurrent_requests")
+
+    if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
+        raise ValueError(
+            "Captured configuration requires resolved concurrency capacity"
+        )
+
+    config = CreateKGConfig.model_validate(raw)
+    _equal(
+        actual=canonical_lp_json(config.model_dump(mode="json")),
+        expected=canonical_lp_json(raw),
+        label="Captured current effective configuration",
+    )
+    return config
+
+
 def _decode_snapshot_json(payload: bytes) -> Any:
     """Decode finite JSON with unique object keys.
 
@@ -1643,7 +1643,7 @@ def _frozen_snapshot_layout(snapshot: FrozenSnapshot) -> None:
     ):
         raise ValueError("Frozen source or absence coverage is inconsistent")
 
-    if snapshot.checkpoint_format not in {"historical_prefix", "journal_bearing"}:
+    if snapshot.checkpoint_format != "journal_bearing":
         raise ValueError("Unsupported frozen checkpoint interpretation")
 
     for artifact in snapshot.artifacts:
@@ -3423,12 +3423,12 @@ def _schedule_variants(
     return tuple(variants)
 
 
-def _snapshot_config(reader: _SnapshotReader) -> _CapturedKGConfig:
+def _snapshot_config(reader: _SnapshotReader) -> CreateKGConfig:
     """Recover the captured effective configuration and verify both hash conventions.
 
-    The execution metadata omits the overwrite flag. Its value is recovered only
-    when exactly one boolean choice matches the recorded effective-config digest.
-    A later concurrency default is never included in historical serialized material.
+    The execution metadata omits the overwrite flag. Its value is recovered only when
+    exactly one boolean choice matches the recorded effective-config digest. All other
+    effective fields must already be captured in their current shape.
 
     Parameters
     ----------
@@ -3437,7 +3437,7 @@ def _snapshot_config(reader: _SnapshotReader) -> _CapturedKGConfig:
 
     Returns
     -------
-    _CapturedKGConfig
+    CreateKGConfig
         Validated policy whose serialized bytes retain their original shape.
 
     Raises
@@ -3455,7 +3455,7 @@ def _snapshot_config(reader: _SnapshotReader) -> _CapturedKGConfig:
     matches = []
 
     for overwrite in (False, True):
-        config = _CapturedKGConfig.model_validate({**raw, "overwrite": overwrite})
+        config = _current_config({**raw, "overwrite": overwrite})
         dumped = config.model_dump(mode="json")
         _equal(
             actual={key: dumped[key] for key in raw},
@@ -3474,11 +3474,11 @@ def _snapshot_config(reader: _SnapshotReader) -> _CapturedKGConfig:
 
 def _snapshot_execution(
     *,
-    config: _CapturedKGConfig,
+    config: CreateKGConfig,
     population: LPRequestPopulation,
     reader: _SnapshotReader,
-) -> tuple[str, dict[str, list[_LPCheckpoint]]]:
-    """Validate completed historical prefixes or complete journal-bearing execution.
+) -> dict[str, list[_LPCheckpoint]]:
+    """Validate completed execution with complete supported journal-bearing evidence.
 
     Parameters
     ----------
@@ -3491,8 +3491,8 @@ def _snapshot_execution(
 
     Returns
     -------
-    tuple[str, dict[str, list[_LPCheckpoint]]]
-        Explicit format interpretation and ordered producer/checker/final rows.
+    dict[str, list[_LPCheckpoint]]
+        Ordered producer/checker/final rows backed by authenticated journals.
 
     Raises
     ------
@@ -3501,7 +3501,7 @@ def _snapshot_execution(
     """
 
     receipt = reader.read("lp_generation_checkpoint_manifest.json")
-    _snapshot_receipt_fields(config=config, receipt=receipt)
+    _snapshot_receipt_fields(receipt)
     material = receipt["material"]
 
     for name in ("producer_instructions", "checker_instructions"):
@@ -3561,34 +3561,16 @@ def _snapshot_execution(
     reader.check_hashes(receipt["artifact_byte_hashes"])
     _snapshot_failures(population=population, reader=reader, rows=rows)
 
-    if "max_concurrent_requests" in material:
-        _equal(
-            actual=material["max_concurrent_requests"],
-            expected=config.model_dump(mode="json")["lp"]["max_concurrent_requests"],
-            label="Captured execution capacity",
-        )
-        store = LPGenerationCheckpoints(
-            material=material, population=population, read_only=True, root=reader.root
-        )
-        store.verify_bytes()
-        return "journal_bearing", rows
-
-    expected_files = {*_STAGE_FILES.values(), "lp_generation_failures.json"}
     _equal(
-        actual=set(receipt["artifact_byte_hashes"]),
-        expected=expected_files,
-        label="Historical prefix receipt coverage",
+        actual=material["max_concurrent_requests"],
+        expected=config.learning_progressions.max_concurrent_requests,
+        label="Captured execution capacity",
     )
-
-    for name in ("lp_generation_usage.json", "lp_generation_pending_completions.json"):
-        reader.optional(name)
-
-        if name not in reader.absent:
-            raise ValueError(
-                "Historical prefix receipt has unauthenticated journal material"
-            )
-
-    return "historical_prefix", rows
+    store = LPGenerationCheckpoints(
+        material=material, population=population, read_only=True, root=reader.root
+    )
+    store.verify_bytes()
+    return rows
 
 
 def _snapshot_failures(
@@ -3645,11 +3627,11 @@ def _snapshot_failures(
 def _snapshot_graphs(
     *,
     artifacts: LPStandaloneArtifacts,
-    config: _CapturedKGConfig,
+    config: CreateKGConfig,
     reader: _SnapshotReader,
     upstream: AcademicStandardsLCKGBundle,
 ) -> None:
-    """Reconcile the graph, reports and explicit historical or current projections.
+    """Reconcile the graph, reports and current Learning Commons wire projections.
 
     Parameters
     ----------
@@ -3743,55 +3725,10 @@ def _snapshot_graphs(
     actual_nodes = reader.read("as_lc_lp_nodes.jsonl")
     actual_edges = reader.read("as_lc_lp_relationships.jsonl")
 
-    if (
-        actual_nodes
-        and all(
-            isinstance(row, dict) and row.get("type") == "node" for row in actual_nodes
-        )
-        and all(
-            isinstance(row, dict) and row.get("type") == "relationship"
-            for row in actual_edges
-        )
-    ):
-        nodes, edges = build_lp_delivery_records(
-            bundle=combined,
-            grade_level_mapping=config.academic_standards.grade_level_mapping,
-        )
-    elif (
-        actual_nodes
-        and all(
-            isinstance(row, dict) and "entity_type" in row and "type" not in row
-            for row in actual_nodes
-        )
-        and all(
-            isinstance(row, dict) and "relationship_type" in row and "type" not in row
-            for row in actual_edges
-        )
-    ):
-        # Historical projection shape is independent of checkpoint journal support.
-        nodes = [{**material["framework"], "entity_type": "StandardsFramework"}]
-
-        for field, identity, entity in (
-            ("items", "case_identifier_uuid", "StandardsFrameworkItem"),
-            ("learning_components", "identifier", "LearningComponent"),
-        ):
-            nodes.extend(
-                {**row, "entity_type": entity}
-                for row in sorted(material[field], key=itemgetter(identity))
-            )
-
-        edges = [
-            row
-            for field in (
-                "relationships_has_child",
-                "relationships_supports",
-                "relationships_builds_towards",
-                "relationships_relates_to",
-            )
-            for row in sorted(material[field], key=lambda row: row["identifier"])
-        ]
-    else:
-        raise ValueError("Mixed or unsupported combined projection format")
+    nodes, edges = build_lp_delivery_records(
+        bundle=combined,
+        grade_level_mapping=config.academic_standards.grade_level_mapping,
+    )
 
     # Compare JSON values without Python's boolean/number equality coercion.
     _equal(
@@ -3808,7 +3745,7 @@ def _snapshot_graphs(
 
 @contextmanager
 def _snapshot_ownership(reader: _SnapshotReader) -> Iterator[None]:
-    """Observe an existing writer lock without creating one for a historical copy.
+    """Observe an existing writer lock without creating one in source evidence.
 
     Parameters
     ----------
@@ -3849,22 +3786,17 @@ def _snapshot_ownership(reader: _SnapshotReader) -> Iterator[None]:
 
 def _snapshot_population(
     *,
-    config: _CapturedKGConfig,
+    config: CreateKGConfig,
     doc_key: str,
     reader: _SnapshotReader,
     upstream: AcademicStandardsLCKGBundle,
 ) -> LPRequestPopulation:
-    """Reconstruct requests with the captured configuration's historical hash shape.
-
-    The shared pure builder copies configuration through the current schema. Its
-    evidence construction is unchanged; only newly computed configuration-dependent
-    identities are rebound here when that copy adds a later capacity default. Saved
-    requests, receipts and their hashes are never changed.
+    """Independently reconstruct and byte-match current bounded request material.
 
     Parameters
     ----------
     config
-        Captured policy with original field presence.
+        Exact captured current effective policy.
     doc_key
         Source document identity.
     reader
@@ -3886,68 +3818,25 @@ def _snapshot_population(
     population = build_lp_generation_requests(
         as_lc_bundle=upstream, doc_key=doc_key, kg_config=config
     )
-    config_hash = lp_material_content_hash(config.model_dump(mode="json"))
-    summary = population.candidates.summary.model_copy(
-        update={"config_content_hash": config_hash}
-    )
-    candidates = replace(population.candidates, summary=summary)
-    summary_hash = lp_material_content_hash(summary.model_dump(mode="json"))
-    requests = []
-
-    for request in population.requests:
-        material = request.model_dump(
-            exclude={"request_content_hash", "request_id"}, mode="json"
-        )
-        material.update(
-            config_content_hash=config_hash, candidate_summary_content_hash=summary_hash
-        )
-        digest = lp_material_content_hash(material)
-        requests.append(
-            LPGenerationRequest.model_validate(
-                {
-                    **material,
-                    "request_content_hash": digest,
-                    "request_id": build_lp_request_id(digest),
-                }
-            )
-        )
-
-    payloads = _artifact_payloads(candidates=candidates, requests=tuple(requests))
-    manifest = population.manifest.model_copy(
-        update={
-            "artifact_byte_hashes": {
-                name: hashlib.sha256(raw).hexdigest() for name, raw in payloads.items()
-            },
-            "candidate_summary_content_hash": summary_hash,
-            "config_content_hash": config_hash,
-            "request_ids": tuple(request.request_id for request in requests),
-            "requests_content_hash": lp_material_content_hash(
-                [request.model_dump(mode="json") for request in requests]
-            ),
-        }
+    payloads = _artifact_payloads(
+        candidates=population.candidates, requests=population.requests
     )
     payloads["lp_generation_requests_manifest.json"] = (
-        canonical_lp_json(manifest.model_dump(mode="json")) + "\n"
+        canonical_lp_json(population.manifest.model_dump(mode="json")) + "\n"
     ).encode()
 
     for name, expected in payloads.items():
         reader.read(name)
         _equal(actual=reader.artifacts[name].payload, expected=expected, label=name)
 
-    return LPRequestPopulation(
-        candidates=candidates, manifest=manifest, requests=tuple(requests)
-    )
+    return population
 
 
-def _snapshot_receipt_fields(
-    *, config: _CapturedKGConfig, receipt: dict[str, Any]
-) -> None:
-    """Require one recognized complete execution format without adding missing fields.
+def _snapshot_receipt_fields(receipt: dict[str, Any]) -> None:
+    """Require the complete current execution format without adding missing fields.
 
     Parameters
     ----------
-    config
-        Captured configuration and original capacity-field presence.
     receipt
         Recorded completed checkpoint receipt.
 
@@ -3973,6 +3862,7 @@ def _snapshot_receipt_fields(
     expected = {
         "checker_instructions",
         "config_content_hash",
+        "max_concurrent_requests",
         "model_config",
         "model_settings",
         "producer_instructions",
@@ -3982,10 +3872,6 @@ def _snapshot_receipt_fields(
         "retry_limits",
         "verdict_schema_content_hash",
     }
-
-    if "max_concurrent_requests" in config.model_dump(mode="json")["lp"]:
-        expected.add("max_concurrent_requests")
-
     _equal(
         actual=set(receipt["material"]),
         expected=expected,
@@ -3996,7 +3882,7 @@ def _snapshot_receipt_fields(
 def _snapshot_relationships(
     *,
     claims: LPFinalClaims,
-    config: _CapturedKGConfig,
+    config: CreateKGConfig,
     reader: _SnapshotReader,
     upstream: AcademicStandardsLCKGBundle,
 ) -> LPRelationships:
@@ -4039,11 +3925,6 @@ def _snapshot_relationships(
             kg_config=config,
         )
 
-        # Preserve the original LP configuration hash, without adding a later capacity.
-        proof.effective_lp_config_content_hash = content_hash(
-            config.model_dump(mode="json")["lp"]
-        )
-        edge.metadata = proof.model_dump(mode="json")
         edges.append(edge)
         provenance[str(edge.identifier)] = proof
 
@@ -4082,7 +3963,7 @@ def _snapshot_relationships(
 
 
 def _snapshot_source(
-    *, config: _CapturedKGConfig, reader: _SnapshotReader, run: DiscoveredRun
+    *, config: CreateKGConfig, reader: _SnapshotReader, run: DiscoveredRun
 ) -> str:
     """Bind original source identity while supporting relocated result directories.
 
@@ -4149,7 +4030,7 @@ def _snapshot_source(
 def _snapshot_standalone(
     *,
     claims: LPFinalClaims,
-    config: _CapturedKGConfig,
+    config: CreateKGConfig,
     reader: _SnapshotReader,
     relationships: LPRelationships,
     upstream: AcademicStandardsLCKGBundle,
@@ -4328,7 +4209,7 @@ def _snapshot_standalone(
 
 
 def _snapshot_upstream(
-    *, config: _CapturedKGConfig, reader: _SnapshotReader
+    *, config: CreateKGConfig, reader: _SnapshotReader
 ) -> AcademicStandardsLCKGBundle:
     """Validate AS+LC graph structure, source preservation, provenance and wire
     projections.
@@ -4481,7 +4362,7 @@ def _snapshot_upstream(
 def _snapshot_upstream_bindings(
     *,
     academic: AcademicStandardsKGBundle,
-    config: _CapturedKGConfig,
+    config: CreateKGConfig,
     reader: _SnapshotReader,
     upstream: AcademicStandardsLCKGBundle,
 ) -> None:
@@ -5493,8 +5374,7 @@ def build_production_evidence_builder(
     """Index exact original requests, claims and policy without upstream retrieval.
 
     Use a snapshot from load_frozen_lp_inputs. Original source bytes are rechecked
-    here, and historical receipts are interpreted read-only without production
-    checkpoint loading, migration, recovery or generation.
+    here; supported receipts remain read-only without checkpoint recovery or generation.
 
     Parameters
     ----------
@@ -5554,7 +5434,9 @@ def build_production_evidence_builder(
         ):
             raise ValueError("Original claim and bounded request bindings disagree.")
 
-    config = _CapturedKGConfig.model_validate_json(snapshot.config_json)
+    config = _current_config(
+        _decode_snapshot_json(snapshot.config_json.encode("utf-8"))
+    )
     lp = config.learning_progressions
     policy = {
         "builds_towards": lp.builds_towards.model_dump(mode="json"),
@@ -5734,9 +5616,7 @@ def build_upstream_evidence_builder(
     bundle = AcademicStandardsLCKGBundle.model_validate(
         _decode_snapshot_json(artifact.payload)
     )
-    config = _CapturedKGConfig.model_validate(
-        _decode_snapshot_json(source.config_json.encode("utf-8"))
-    )
+    config = _current_config(_decode_snapshot_json(source.config_json.encode("utf-8")))
     if bundle.framework.case_identifier_uuid != source.framework_uuid:
         raise ValueError("Upstream evidence framework does not match its binding.")
 
@@ -5990,6 +5870,24 @@ def load_frozen_lp_inputs(reference: FrozenInputs) -> tuple[ValidatedSnapshot, .
 
         for snapshot in manifest.snapshots:
             _frozen_source_check(snapshot)
+            current = validate_lp_snapshot(snapshot.run)
+            _equal(
+                actual=FrozenSnapshot(
+                    absent_artifacts=current.absent_artifacts,
+                    artifacts=tuple(
+                        FrozenArtifact(
+                            fingerprint=artifact.fingerprint, name=artifact.name
+                        )
+                        for artifact in current.artifacts
+                    ),
+                    checkpoint_format=current.checkpoint_format,
+                    config_json=current.config_json,
+                    run=current.run,
+                    source_artifact=current.source_artifact,
+                ),
+                expected=snapshot,
+                label="Frozen current-format snapshot bindings",
+            )
             artifacts = tuple(
                 SnapshotArtifact(
                     fingerprint=artifact.fingerprint,
@@ -6515,7 +6413,7 @@ def validate_lp_snapshot(run: DiscoveredRun) -> ValidatedSnapshot:
             ):
                 reader.read(name)
 
-            format_name, rows = _snapshot_execution(
+            rows = _snapshot_execution(
                 config=config, population=population, reader=reader
             )
             claims = LPFinalClaims.model_validate(reader.read("lp_final_claims.json"))
@@ -6561,7 +6459,7 @@ def validate_lp_snapshot(run: DiscoveredRun) -> ValidatedSnapshot:
             artifacts=tuple(
                 reader.artifacts[name] for name in sorted(reader.artifacts)
             ),
-            checkpoint_format=format_name,
+            checkpoint_format="journal_bearing",
             config_json=canonical_lp_json(config.model_dump(mode="json")),
             run=run,
             source_artifact=source_name,
