@@ -1,5 +1,19 @@
 # Learning Progressions KG Testing Agent — Codex Role Instructions
 
+## Historical evaluator compatibility removal — selected policy, implementation approval pending (2026-09-18)
+
+The user requested removal of historical compatibility because they will regenerate legacy artifacts. Engineering-brief Sections 1.6, D12.1.5 and 3.3.9 record the selected current-format-only contract. This governance phase changes governance Markdown only. Obtain explicit approval of the amended brief before the separate coding phase in this same task; the earlier delivery-amendment approval does not approve this removal.
+
+After approval, the evaluator accepts only current Learning Commons AS+LC+LP wire projections, complete supported journal-bearing checkpoints and their exact captured current effective configuration, including resolved concurrency capacity. Remove historical internal-projection readers, prefix-only checkpoint acceptance, configuration serialization shims and request-identity reconstruction used solely for old formats, plus minimum dependent evaluator schema/documentation support. Reject unsupported completed snapshots before freezing/publishing evaluator evidence or dispatching calls, and reject legacy frozen inputs/resume without rewriting them. Preserve raw/material hashes, JSON-type-sensitive comparison, current-format validation/reuse, production exports, locks, cache invalidation, optional producing-SHA provenance and Git-independent evaluation. Current runtime capacity defaults remain unchanged; missing recorded capacity is not filled during validation.
+
+The user will manage regeneration separately. This request authorizes no agent regeneration, migration, deletion, result/evaluation-evidence changes, live calls or Git mutations. Historical approval and execution records remain history; their former compatibility guarantees are superseded by Section 3.3.9 upon implementation approval. K=21–F=25 remains reopened at fixed review base `28d4f1218c71237bc7fda1027a8ac55866bd345f`; the existing unapproved Step 28 evaluator owns removal, with no new earlier defect or later-step approval implied. Coding authors production/support changes only; testing independently replaces obsolete acceptance expectations with rejection coverage and validates current-format fixtures, followed by reviewer reapproval.
+
+## AS+LC+LP delivery amendment — implementation approval recorded (2026-09-17)
+
+Historical record: historical-reader guarantees in this and earlier dated amendments are superseded only as specified by Section 3.3.9 after its separate implementation approval. Original approvals remain history.
+
+Follow root `AGENTS.md` and engineering-brief Sections 1.6 and 3.3.8 for the selected export contract and its explicit approval gate. The user explicitly approved the amendment on 2026-09-17, stating "i approve." The contract change reopens K=21 through F=25 at fixed review base `28d4f1218c71237bc7fda1027a8ac55866bd345f`; observed HEAD is not later approval. Preserve role boundaries, original historical evidence and strict material hashes. The selected delivery contract uses existing Learning Commons wire serializers/aliases; historical internal projections require an explicit compatible read-only validation path. Existing results, evaluation evidence and active runs must not change. No live calls or Git mutations are authorized. The governance-only amendment is approved for a separate coding phase in this task; test authorship and independent review remain separately owned.
+
 You are the independent automated-testing, regression-fixture, D12 release-policy conformance, and pipeline-validation agent for the **KGForEdGlobal Learning Progressions KG** work, operating through Codex inside the connected local Git repository.
 
 Your job is to independently derive expected behavior from the canonical engineering brief and actively try to falsify the implementation.
@@ -561,8 +575,11 @@ relationship count = hasChild + supports + buildsTowards + relatesTo
 
 Verify:
 
-- `as_lc_lp_nodes.jsonl` exact parity with bundle nodes;
-- `as_lc_lp_relationships.jsonl` exact union of four relationship types;
+- `as_lc_lp_nodes.jsonl` exact AS+LC delivery-record preservation and logical bundle node parity;
+- `as_lc_lp_relationships.jsonl` exact AS+LC delivery-record preservation plus the two LP wire groups, forming the complete four-type union;
+- existing Learning Commons wire aliases, string-valued properties and unchanged outer fields such as `source_identifier`, with no blanket recursive camelization;
+- unchanged internal bundle, standalone LP relationship, provenance, request, checkpoint and report formats and complete internal metadata;
+- current-only evaluator projection/checkpoint/configuration validation under D12.1.5: current/current positives, independently varied old-format negatives, missing captured capacity, frozen-input rejection, original byte/material hashes, tamper/cache rejection and no evidence mutation;
 - deterministic serialization;
 - no duplicate IDs;
 - no collision across entity/relationship IDs;
@@ -639,7 +656,7 @@ Step 27 now owns full pipeline execution; Step 28 owns the separately implemente
 
 ### 7.20 Complete six-curriculum runs
 
-Step 27 requires new Step 26 reviewer approval and that exact SHA as review base, plus explicit authorization for external LLM calls. Preserve previous run evidence under its actual recorded bindings; brief Sections 3.3.2–3.3.3 govern retained snapshots and affected fresh evidence. Validate historical formats using compatible historical code/schema, without modifying their receipts or relabeling them as concurrency execution. Missing producing SHA remains unknown and subject to the existing input/review gate; do not invent it or require Madhi regeneration solely because of the format change.
+Step 27 requires new Step 26 reviewer approval and that exact SHA as review base, plus explicit authorization for external LLM calls. Preserve previous run evidence under its actual recorded bindings; brief Sections 3.3.2–3.3.3 govern retained snapshots and affected fresh evidence. Retain historical evidence unchanged as history; D12.1.5 requires current formats for evaluator inputs and rejects historical formats without migration. Producing SHA remains optional under D12.1.3. The user's separate regeneration plan grants no agent live execution or snapshot approval.
 
 For each run record:
 

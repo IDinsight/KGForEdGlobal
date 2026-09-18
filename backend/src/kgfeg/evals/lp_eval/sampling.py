@@ -104,6 +104,7 @@ from kgfeg.kgs.lp_export import (
     _combined_counts,
     _merge_material,
     _validate_combined_material,
+    build_lp_delivery_records,
 )
 from kgfeg.kgs.lp_finalization import LPFinalClaim, LPFinalClaims, LPRelationships
 from kgfeg.kgs.lp_index import LPGraphIndex, build_lp_graph_index
@@ -3648,7 +3649,7 @@ def _snapshot_graphs(
     reader: _SnapshotReader,
     upstream: AcademicStandardsLCKGBundle,
 ) -> None:
-    """Reconcile the additive combined graph, reports and exact internal projections.
+    """Reconcile the graph, reports and explicit historical or current projections.
 
     Parameters
     ----------
@@ -3739,35 +3740,68 @@ def _snapshot_graphs(
     if not report["passed"] or report["errors"]:
         raise ValueError("Combined graph reports failed validation")
 
-    nodes = [{**material["framework"], "entity_type": "StandardsFramework"}]
+    actual_nodes = reader.read("as_lc_lp_nodes.jsonl")
+    actual_edges = reader.read("as_lc_lp_relationships.jsonl")
 
-    for field, identity, entity in (
-        ("items", "case_identifier_uuid", "StandardsFrameworkItem"),
-        ("learning_components", "identifier", "LearningComponent"),
+    if (
+        actual_nodes
+        and all(
+            isinstance(row, dict) and row.get("type") == "node" for row in actual_nodes
+        )
+        and all(
+            isinstance(row, dict) and row.get("type") == "relationship"
+            for row in actual_edges
+        )
     ):
-        nodes.extend(
-            {**row, "entity_type": entity}
-            for row in sorted(material[field], key=itemgetter(identity))
+        nodes, edges = build_lp_delivery_records(
+            bundle=combined,
+            grade_level_mapping=config.academic_standards.grade_level_mapping,
         )
+    elif (
+        actual_nodes
+        and all(
+            isinstance(row, dict) and "entity_type" in row and "type" not in row
+            for row in actual_nodes
+        )
+        and all(
+            isinstance(row, dict) and "relationship_type" in row and "type" not in row
+            for row in actual_edges
+        )
+    ):
+        # Historical projection shape is independent of checkpoint journal support.
+        nodes = [{**material["framework"], "entity_type": "StandardsFramework"}]
 
-    edges = [
-        row
-        for field in (
-            "relationships_has_child",
-            "relationships_supports",
-            "relationships_builds_towards",
-            "relationships_relates_to",
-        )
-        for row in sorted(material[field], key=lambda row: row["identifier"])
-    ]
+        for field, identity, entity in (
+            ("items", "case_identifier_uuid", "StandardsFrameworkItem"),
+            ("learning_components", "identifier", "LearningComponent"),
+        ):
+            nodes.extend(
+                {**row, "entity_type": entity}
+                for row in sorted(material[field], key=itemgetter(identity))
+            )
+
+        edges = [
+            row
+            for field in (
+                "relationships_has_child",
+                "relationships_supports",
+                "relationships_builds_towards",
+                "relationships_relates_to",
+            )
+            for row in sorted(material[field], key=lambda row: row["identifier"])
+        ]
+    else:
+        raise ValueError("Mixed or unsupported combined projection format")
+
+    # Compare JSON values without Python's boolean/number equality coercion.
     _equal(
-        actual=reader.read("as_lc_lp_nodes.jsonl"),
-        expected=nodes,
+        actual=canonical_lp_json(actual_nodes),
+        expected=canonical_lp_json(nodes),
         label="Combined node projection",
     )
     _equal(
-        actual=reader.read("as_lc_lp_relationships.jsonl"),
-        expected=edges,
+        actual=canonical_lp_json(actual_edges),
+        expected=canonical_lp_json(edges),
         label="Combined edge projection",
     )
 

@@ -462,29 +462,46 @@ def _settings(provider: str) -> Any:
     )
 
 
+@pytest.mark.parametrize(
+    argnames="arrival_order",
+    argvalues=[(0, 1, 2, 3), (3, 2, 1, 0), (1, 3, 0, 2)],
+)
 @pytest.mark.parametrize(argnames="provider", argvalues=["anthropic", "openai"])
 def test_concurrent_http_attempts_isolate_raw_output_and_usage(
-    monkeypatch: pytest.MonkeyPatch, provider: str
+    arrival_order: tuple[int, ...], monkeypatch: pytest.MonkeyPatch, provider: str
 ) -> None:
-    """Overlap four actual SDK requests with distinct success and failure evidence.
+    """Keep overlapping SDK response evidence bound to its submitted request.
 
     Parameters
     ----------
+    arrival_order
+        Controlled HTTP arrival order, independent of task submission order.
     monkeypatch
         Restoring mocked network transport.
     provider
-        Actual provider adapter.
+        Actual SDK adapter.
     """
     request = _request("classification")
+    attempt_prompts = [
+        prompts.render_classification_prompt(
+            evidence=request.evidence,
+            request_id=hashlib.sha256(
+                f"concurrent-attempt-{index}".encode()
+            ).hexdigest(),
+        )
+        for index in range(4)
+    ]
     replies: list[Any] = []
-    calls: list[Any] = []
+    calls: list[int] = []
 
     async def _exercise() -> None:
-        """Hold requests at a barrier and verify task-local capture slots."""
+        """Control request arrival while retaining four overlapping HTTP calls."""
         barrier = asyncio.Event()
+        gates = [asyncio.Event() for _ in range(4)]
+        gates[arrival_order[0]].set()
 
         async def _handler(wire: httpx.Request) -> httpx.Response:
-            """Return distinct counters after all four requests overlap.
+            """Bind distinct counters and output to the identity in the HTTP body.
 
             Parameters
             ----------
@@ -496,12 +513,21 @@ def test_concurrent_http_attempts_isolate_raw_output_and_usage(
             httpx.Response
                 Valid or extra-output envelope with unique raw evidence.
             """
-            index = len(calls)
-            calls.append(json.loads(wire.content))
+            matches = [
+                index
+                for index, prompt in enumerate(attempt_prompts)
+                if prompt.request_id.encode() in wire.content
+            ]
+            assert len(matches) == 1
+            index = matches[0]
+            assert index == arrival_order[len(calls)]
+            calls.append(index)
             if len(calls) == 4:
                 barrier.set()
-            await asyncio.wait_for(barrier.wait(), timeout=2)
-            raw = _existing._reply(request.prompt).response_json.replace(
+            else:
+                gates[arrival_order[len(calls)]].set()
+            await asyncio.wait_for(barrier.wait(), timeout=10)
+            raw = _existing._reply(attempt_prompts[index]).response_json.replace(
                 "Synthetic uncertainty retained.", f"attempt-{index}"
             )
             material = _envelope(provider=provider, raw=raw, task="classification")
@@ -514,24 +540,44 @@ def test_concurrent_http_attempts_isolate_raw_output_and_usage(
 
         _http(handler=_handler, monkeypatch=monkeypatch)
         async with judge.open_judge_transport(_settings(provider)) as transport:
+
+            async def _invoke(index: int) -> Any:
+                """Submit one identified attempt when its arrival gate opens.
+
+                Parameters
+                ----------
+                index
+                    Stable request identity in task submission order.
+
+                Returns
+                -------
+                Any
+                    Actual provider reply before scheduled validation.
+                """
+                await asyncio.wait_for(gates[index].wait(), timeout=10)
+                return await transport.judge(attempt_prompts[index])
+
             replies.extend(
                 await asyncio.gather(
-                    *(transport.judge(request.prompt) for _ in range(4)),
+                    *(_invoke(index) for index in range(4)),
                     return_exceptions=True,
                 )
             )
 
     asyncio.run(_exercise())
-    assert len(calls) == len(replies) == 4
+    assert tuple(calls) == arrival_order
+    assert len(replies) == 4
     for index, reply in enumerate(replies):
         if index % 2:
             assert isinstance(reply, judge.JudgeCallError)
+            assert reply.category == "invalid_output"
             raw = reply.raw_response
             assert f"extra-{index}" in raw
         else:
             assert not isinstance(reply, BaseException)
             raw = reply.response_json
         assert reply.usage.input_tokens == 100 + index
+        assert attempt_prompts[index].request_id in raw
         assert f"attempt-{index}" in raw
         assert all(
             f"attempt-{other}" not in raw for other in range(4) if other != index

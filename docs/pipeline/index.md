@@ -362,8 +362,9 @@ Python owns endpoint/coverage checks, deterministic IDs, counts, provenance, rel
 exclusivity, and whole-graph acyclicity. No upstream nodes or relationships are replaced.
 
 **Primary handoff:** `kgs/as_lc_lp_kg_bundle.json`, `kgs/as_lc_lp_nodes.jsonl`, and
-`kgs/as_lc_lp_relationships.jsonl`. The JSONL uses internal snake_case records, unlike
-the AS/AS+LC delivery wire pairs.
+`kgs/as_lc_lp_relationships.jsonl`. The JSONL preserves AS+LC delivery records and
+appends the two LP relationship groups through the same Learning Commons wire schema.
+The bundle and standalone audit artifacts retain complete internal metadata.
 
 **Audit starting points:** `lp_eligibility_report.json`, `lp_candidate_pairs.jsonl`,
 `lp_generation_requests.jsonl`, draft/verdict/response checkpoints, failures and usage,

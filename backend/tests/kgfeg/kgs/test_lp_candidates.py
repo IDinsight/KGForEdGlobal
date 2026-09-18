@@ -193,6 +193,11 @@ def _bundle(
         Schema-valid bundle with complete roots and reconciled population counts.
     """
 
+    components = deepcopy(components)
+    for component in components:
+        component["metadata"].setdefault(
+            "identity", {"identity_key": f"synthetic-lc-{component['identifier']}"}
+        )
     hierarchy = list(edges)
     attached = {str(edge["target_entity_value"]) for edge in hierarchy}
     for item in items:

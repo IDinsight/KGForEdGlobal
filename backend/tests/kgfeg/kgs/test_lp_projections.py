@@ -1,4 +1,4 @@
-"""Red-team complete internal graph projections through offline artifact boundaries."""
+"""Red-team Learning Commons graph delivery through offline artifact boundaries."""
 
 # Future Library
 from __future__ import annotations
@@ -22,10 +22,8 @@ from kgfeg.config import Settings
 from kgfeg.kgs import lp_export
 from kgfeg.kgs.schemas import (
     AcademicStandardsLCLPKGBundle,
-    LearningComponent,
-    Relationship,
-    StandardsFramework,
-    StandardsFrameworkItem,
+    LearningCommonsNode,
+    LearningCommonsRelationship,
 )
 from tests.kgfeg.kgs import test_lp_export as _export
 from tests.kgfeg.kgs import test_lp_finalization as _claims
@@ -83,7 +81,7 @@ def _assert_projection(
     assert len(edges) == sum(len(expected[group]) for group in _GROUPS)
     assert result.summary.total_node_count == len(nodes)
     assert result.summary.total_relationship_count == len(edges)
-    actual_counts = Counter(row["relationship_type"] for row in edges)
+    actual_counts = Counter(row["label"] for row in edges)
     assert actual_counts == Counter(
         {
             "hasChild": len(expected["relationships_has_child"]),
@@ -93,25 +91,34 @@ def _assert_projection(
         }
     )
     identifiers = []
-    schemas = {
-        "LearningComponent": LearningComponent,
-        "StandardsFramework": StandardsFramework,
-        "StandardsFrameworkItem": StandardsFrameworkItem,
-    }
     for node in nodes:
-        entity = node.pop("entity_type")
-        assert schemas[entity].model_validate(node).model_dump(mode="json") == node
-        identifiers.append(
-            node[
-                (
-                    "identifier"
-                    if entity == "LearningComponent"
-                    else "case_identifier_uuid"
-                )
-            ]
+        assert (
+            LearningCommonsNode.model_validate(node).model_dump(
+                by_alias=True, exclude_none=True, mode="json"
+            )
+            == node
         )
+        assert set(node) == {"type", "identifier", "labels", "properties"}
+        assert all(isinstance(value, str) for value in node["properties"].values())
+        identifiers.append(node["identifier"])
     for edge in edges:
-        assert Relationship.model_validate(edge).model_dump(mode="json") == edge
+        assert (
+            LearningCommonsRelationship.model_validate(edge).model_dump(
+                by_alias=True, exclude_none=True, mode="json"
+            )
+            == edge
+        )
+        assert set(edge) == {
+            "type",
+            "identifier",
+            "label",
+            "properties",
+            "source_identifier",
+            "source_labels",
+            "target_identifier",
+            "target_labels",
+        }
+        assert all(isinstance(value, str) for value in edge["properties"].values())
         identifiers.append(edge["identifier"])
     assert len(identifiers) == len(set(identifiers))
     persisted = json.loads((harness.root / _export._BUNDLE).read_bytes())
@@ -158,7 +165,7 @@ def _corrupt_payload(*, attack: str, payload: bytes) -> bytes:
     elif attack == "duplicate":
         rows.append(deepcopy(rows[0]))
     elif attack == "metadata":
-        rows[0]["metadata"]["lost_content"] = True
+        rows[0]["properties"]["description"] = "Corrupted delivery description"
     elif attack == "reorder":
         rows.reverse()
     encoded = b"".join(_export._bytes(row) for row in rows)
@@ -223,10 +230,10 @@ def _rich_harness(root: Path) -> _claims._Harness:
     return harness
 
 
-def test_all_four_groups_retain_exact_internal_fields_and_upstream_bytes(
+def test_all_four_groups_retain_wire_fields_internal_metadata_and_upstream_bytes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Keep every internal field, direct edge, and prior consumer file unchanged.
+    """Preserve upstream delivery and keep complete metadata in internal artifacts.
 
     Parameters
     ----------
@@ -242,8 +249,6 @@ def test_all_four_groups_retain_exact_internal_fields_and_upstream_bytes(
         "as_nodes.jsonl",
         "as_relationships.jsonl",
         "as_lc_kg_bundle.json",
-        "as_lc_nodes.jsonl",
-        "as_lc_relationships.jsonl",
     ):
         (tmp_path / name).write_bytes(b"opaque prior consumer bytes\r\n")
     before = _export._snapshot(tmp_path)
@@ -261,39 +266,57 @@ def test_all_four_groups_retain_exact_internal_fields_and_upstream_bytes(
         json.loads(line)
         for line in (tmp_path / _RELATIONSHIPS).read_bytes().splitlines()
     ]
-    assert Counter(row["entity_type"] for row in nodes) == {
+    assert Counter(row["labels"][0] for row in nodes) == {
         "StandardsFramework": 1,
         "StandardsFrameworkItem": 5,
         "LearningComponent": 2,
     }
-    assert [row["relationship_type"] for row in edges] == (
+    assert [row["label"] for row in edges] == (
         ["hasChild"] * 5 + ["supports"] * 4 + ["buildsTowards"] * 3 + ["relatesTo"] * 2
     )
-    for row in (*nodes, *edges[:9]):
-        assert row["metadata"]["projection_audit"] == _SENTINEL
-        assert row["date_created"] is row["date_modified"] is None
-    for row in edges[9:]:
-        assert (
-            row["metadata"]
-            == result.entity_provenance[
-                (
-                    "relationships_builds_towards"
-                    if row["relationship_type"] == "buildsTowards"
-                    else "relationships_relates_to"
-                )
-            ][row["identifier"]]
-        )
-        assert (
-            row["source_entity_key"]
-            == row["target_entity_key"]
-            == "case_identifier_uuid"
-        )
-        if row["relationship_type"] == "relatesTo":
-            assert row["source_entity_value"] < row["target_entity_value"]
-    assert "é e\u0301 漢字 🧭".encode("utf-8") in (tmp_path / _NODES).read_bytes()
+    assert (tmp_path / _NODES).read_bytes() == before["as_lc_nodes.jsonl"]
     assert (
-        "é e\u0301 漢字 🧭".encode("utf-8") in (tmp_path / _RELATIONSHIPS).read_bytes()
+        (tmp_path / _RELATIONSHIPS)
+        .read_bytes()
+        .startswith(before["as_lc_relationships.jsonl"])
     )
+    for row in (*nodes, *edges):
+        assert "metadata" not in row["properties"]
+        assert "dateCreated" not in row["properties"]
+        assert "dateModified" not in row["properties"]
+    material = result.model_dump(mode="json")
+    for row in (
+        material["framework"],
+        *material["items"],
+        *material["learning_components"],
+        *material["relationships_has_child"],
+        *material["relationships_supports"],
+    ):
+        assert row["metadata"]["projection_audit"] == _SENTINEL
+    for row in edges[9:]:
+        properties = row["properties"]
+        assert (
+            properties["sourceEntityKey"]
+            == properties["targetEntityKey"]
+            == "caseIdentifierUUID"
+        )
+        assert properties["author"] == "LLM generated"
+        assert properties["provider"] == "IDinsight"
+        assert properties["license"] == material["framework"]["license"]
+        group = (
+            "relationships_builds_towards"
+            if row["label"] == "buildsTowards"
+            else "relationships_relates_to"
+        )
+        internal = next(
+            edge for edge in material[group] if edge["identifier"] == row["identifier"]
+        )
+        assert (
+            internal["metadata"]
+            == material["entity_provenance"][group][row["identifier"]]
+        )
+        if row["label"] == "relatesTo":
+            assert properties["sourceEntityValue"] < properties["targetEntityValue"]
 
 
 @pytest.mark.slow
@@ -325,23 +348,23 @@ def test_curriculum_context_survives_complete_projections(
         json.loads(line)
         for line in (tmp_path / _RELATIONSHIPS).read_bytes().splitlines()
     ]
-    hierarchy = [edge for edge in edges if edge["relationship_type"] == "hasChild"]
+    hierarchy = [edge for edge in edges if edge["label"] == "hasChild"]
     if profile == "pratham_science":
         parents: dict[str, set[str]] = {}
         for edge in hierarchy:
-            parents.setdefault(edge["target_entity_value"], set()).add(
-                edge["source_entity_value"]
+            parents.setdefault(edge["properties"]["targetEntityValue"], set()).add(
+                edge["properties"]["sourceEntityValue"]
             )
         assert any(len(values) > 1 for values in parents.values())
     if profile == "ghana_math":
         assert any(
-            edge["metadata"].get("unresolved_root_fallback") for edge in hierarchy
+            edge["properties"].get("resolutionStatus") == "unresolvedRootFallback"
+            for edge in hierarchy
         )
         assert result.validation_report.warnings
         assert any(
             edge["metadata"]["claim"]["judgment"]["warnings"]
-            for edge in edges
-            if edge["relationship_type"] == "relatesTo"
+            for edge in result.model_dump(mode="json")["relationships_relates_to"]
         )
 
 
@@ -421,7 +444,10 @@ def test_projection_count_mismatch_fails_before_output_write(
     before = _export._snapshot(tmp_path)
     setattr(result.summary, field, getattr(result.summary, field) + 1)
     with pytest.raises(expected_exception=ValueError, match="projection counts"):
-        lp_export._write_projections(bundle=result, root=tmp_path)
+        lp_export.build_lp_delivery_records(
+            bundle=result,
+            grade_level_mapping=harness.config.academic_standards.grade_level_mapping,
+        )
     assert _export._snapshot(tmp_path) == before
 
 
@@ -521,9 +547,7 @@ def test_projection_persistence_failures_propagate_through_public_compiler(
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize(
-    argnames="group", argvalues=["items", "learning_components", *_GROUPS]
-)
+@pytest.mark.parametrize(argnames="group", argvalues=list(_GROUPS[2:]))
 def test_reordered_bundle_groups_have_identical_projection_bytes(
     group: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -546,16 +570,19 @@ def test_reordered_bundle_groups_have_identical_projection_bytes(
     assert len(rows) >= 2
     setattr(result, group, list(reversed(rows)))
     reordered = result.model_dump(mode="json")
-    lp_export._write_projections(bundle=result, root=tmp_path)
+    delivery = lp_export._prepare_delivery(
+        bundle=result, kg_config=harness.config, root=tmp_path
+    )
+    lp_export._write_projections(delivery=delivery, root=tmp_path)
     assert result.model_dump(mode="json") == reordered
     assert _export._snapshot(tmp_path) == before
 
 
 @pytest.mark.slow
-def test_reordered_upstream_fresh_runs_preserve_identical_complete_projections(
+def test_reordered_upstream_fresh_runs_preserve_each_upstream_delivery_order(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Regenerate valid authority for reordered inputs and retain every projected byte.
+    """Preserve each upstream encounter order while maintaining the same logical graph.
 
     Parameters
     ----------
@@ -580,7 +607,16 @@ def test_reordered_upstream_fresh_runs_preserve_identical_complete_projections(
     _assert_projection(harness=first, result=first_result)
     _assert_projection(harness=second, result=second_result)
     for name in (_NODES, _RELATIONSHIPS):
-        assert (first.root / name).read_bytes() == (second.root / name).read_bytes()
+        first_rows = [
+            json.loads(line) for line in (first.root / name).read_bytes().splitlines()
+        ]
+        second_rows = [
+            json.loads(line) for line in (second.root / name).read_bytes().splitlines()
+        ]
+        assert sorted(first_rows, key=lambda row: row["identifier"]) == sorted(
+            second_rows, key=lambda row: row["identifier"]
+        )
+        assert first_rows != second_rows
     assert (
         first_result.validation_report.input_content_hashes["as_lc_bundle"]
         != second_result.validation_report.input_content_hashes["as_lc_bundle"]

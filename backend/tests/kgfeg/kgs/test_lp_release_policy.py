@@ -583,16 +583,30 @@ def test_needs_review_releases_without_semantic_inputs_and_survives_reuse(
         "lp_relationships_relates_to.jsonl",
         "as_lc_lp_relationships.jsonl",
     ):
+        wire = name == "as_lc_lp_relationships.jsonl"
         rows = [
             row
             for row in _artifacts._rows(harness.root / name)
-            if row["relationship_type"] in {"buildsTowards", "relatesTo"}
+            if row["label" if wire else "relationship_type"]
+            in {"buildsTowards", "relatesTo"}
         ]
         assert len(rows) == (int(mixed) if "relates_to" not in name else 0)
-        assert {
-            (UUID(row["source_entity_value"]).int, UUID(row["target_entity_value"]).int)
+        endpoints = {
+            (
+                UUID(
+                    row["properties"]["sourceEntityValue"]
+                    if wire
+                    else row["source_entity_value"]
+                ).int,
+                UUID(
+                    row["properties"]["targetEntityValue"]
+                    if wire
+                    else row["target_entity_value"]
+                ).int,
+            )
             for row in rows
-        } == ({(1, 2)} if rows else set())
+        }
+        assert endpoints == ({(1, 2)} if rows else set())
     for report in (
         _json(harness.root / "lp_validation_report.json"),
         bundle["validation_report"],

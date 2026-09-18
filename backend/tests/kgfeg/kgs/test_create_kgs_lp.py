@@ -29,6 +29,7 @@ from kgfeg.kgs.lp_generation import LPGenerationFailed
 from kgfeg.kgs.schemas import AcademicStandardsLCLPKGBundle
 from kgfeg.kgs.utils import KGDirs, KGInputs
 from kgfeg.schemas import RunCtx
+from tests.fixtures.lp.delivery import delivery_records, write_upstream
 from tests.kgfeg.kgs import test_lp_finalization as _claims
 from tests.kgfeg.kgs import test_lp_generation as _fixtures
 from tests.kgfeg.kgs import test_lp_orchestration as _storage
@@ -232,6 +233,8 @@ class _Harness:
                 raise self.error
             if operation is not None:
                 return operation(**kwargs)
+            if name == "compile_as_lc_kg":
+                write_upstream(harness=self)
             return self.results[name]
 
         return _invoke
@@ -613,8 +616,6 @@ def test_create_real_lp_preserves_upstream_graph_and_projection_content(
         "as_nodes.jsonl",
         "as_relationships.jsonl",
         "as_lc_kg_bundle.json",
-        "as_lc_nodes.jsonl",
-        "as_lc_relationships.jsonl",
     )
     before = {name: (name + " opaque upstream sentinel\n").encode() for name in names}
     for name, payload in before.items():
@@ -642,31 +643,13 @@ def test_create_real_lp_preserves_upstream_graph_and_projection_content(
         assert combined["summary"][layer] == upstream["summary"][layer]
     assert {name: (harness.root / name).read_bytes() for name in names} == before
     nodes = _storage._rows(harness.root / "as_lc_lp_nodes.jsonl")
-    expected_nodes = [{**upstream["framework"], "entity_type": "StandardsFramework"}]
-    for key, entity in (
-        ("items", "StandardsFrameworkItem"),
-        ("learning_components", "LearningComponent"),
-    ):
-        expected_nodes.extend({**item, "entity_type": entity} for item in upstream[key])
-    assert sorted(json.dumps(obj=row, sort_keys=True) for row in nodes) == sorted(
-        json.dumps(obj=row, sort_keys=True) for row in expected_nodes
-    )
     edges = _storage._rows(harness.root / "as_lc_lp_relationships.jsonl")
-    expected_edges: list[dict[str, Any]] = sum(
-        (
-            combined[key]
-            for key in (
-                "relationships_has_child",
-                "relationships_supports",
-                "relationships_builds_towards",
-                "relationships_relates_to",
-            )
-        ),
-        [],
+    expected_nodes, expected_edges = delivery_records(
+        grade_mapping=harness.config.academic_standards.grade_level_mapping,
+        material=combined,
     )
-    assert sorted(json.dumps(obj=row, sort_keys=True) for row in edges) == sorted(
-        json.dumps(obj=row, sort_keys=True) for row in expected_edges
-    )
+    assert nodes == expected_nodes
+    assert edges == expected_edges
     assert combined["summary"]["total_node_count"] == len(nodes)
     assert combined["summary"]["total_relationship_count"] == len(edges)
     assert combined["relationships_relates_to"]

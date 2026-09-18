@@ -28,6 +28,7 @@ from kgfeg.kgs.lp_generation import LPGenerationFailed
 from kgfeg.kgs.schemas import AcademicStandardsLCLPKGBundle
 from kgfeg.kgs.utils import KGDirs
 from kgfeg.page_ir_extraction.validators import QualityError
+from tests.fixtures.lp.delivery import projection_bytes, write_upstream
 from tests.kgfeg.kgs import test_lp_artifacts as _artifacts
 from tests.kgfeg.kgs import test_lp_finalization as _claims
 from tests.kgfeg.kgs import test_lp_generation as _fixtures
@@ -146,12 +147,13 @@ def _persist(
     LPStandaloneArtifacts
         Authenticated standalone records from their public writer.
     """
+    write_upstream(harness=harness)
     relationships = _artifacts._complete(harness=harness, monkeypatch=monkeypatch)
     return _artifacts._write(harness=harness, relationships=relationships)
 
 
 def _projection_bytes(material: dict[str, Any]) -> dict[str, bytes]:
-    """Derive complete ordered internal rows independently from authoritative material.
+    """Derive aliased delivery rows independently from authoritative material.
 
     Parameters
     ----------
@@ -161,30 +163,9 @@ def _projection_bytes(material: dict[str, Any]) -> dict[str, bytes]:
     Returns
     -------
     dict[str, bytes]
-        Exact two-file projection oracle, including nulls and nested metadata.
+        Exact two-file wire oracle with supported properties and resolved endpoints.
     """
-    nodes = [{**material["framework"], "entity_type": "StandardsFramework"}]
-    for group, entity, identifier in (
-        ("items", "StandardsFrameworkItem", "case_identifier_uuid"),
-        ("learning_components", "LearningComponent", "identifier"),
-    ):
-        indexed = {row[identifier]: row for row in material[group]}
-        assert len(indexed) == len(material[group])
-        nodes.extend({**indexed[key], "entity_type": entity} for key in sorted(indexed))
-    relationships: list[dict[str, Any]] = []
-    for group in (
-        "relationships_has_child",
-        "relationships_supports",
-        "relationships_builds_towards",
-        "relationships_relates_to",
-    ):
-        indexed = {row["identifier"]: row for row in material[group]}
-        assert len(indexed) == len(material[group])
-        relationships.extend(indexed[key] for key in sorted(indexed))
-    return {
-        "as_lc_lp_nodes.jsonl": b"".join(_bytes(row) for row in nodes),
-        "as_lc_lp_relationships.jsonl": b"".join(_bytes(row) for row in relationships),
-    }
+    return projection_bytes(material=material)
 
 
 def _snapshot(root: Path) -> dict[str, bytes]:
@@ -280,14 +261,12 @@ def test_complete_upstream_content_and_standalone_audit_shapes_survive(  # pylin
     upstream = harness.bundle.model_dump(mode="json")
     config = harness.config.model_dump(by_alias=True, mode="json")
     standalone = _persist(harness=harness, monkeypatch=monkeypatch)
-    # These existing consumer files are opaque compiler inputs and must remain intact.
+    # Earlier consumer files remain unchanged; AS+LC delivery is validated separately.
     for name in (
         "as_kg_bundle.json",
         "as_nodes.jsonl",
         "as_relationships.jsonl",
         "as_lc_kg_bundle.json",
-        "as_lc_nodes.jsonl",
-        "as_lc_relationships.jsonl",
     ):
         (tmp_path / name).write_bytes(b"upstream consumer artifact\n")
     before = _snapshot(tmp_path)
@@ -442,7 +421,7 @@ def test_empty_candidate_and_relationship_populations_compile_without_calls(
     harness = _claims._Harness(count=count, root=tmp_path)
     _persist(harness=harness, monkeypatch=monkeypatch)
     result = _compile(harness=harness)
-    assert harness.calls == []
+    assert not harness.calls
     assert result.validation_report.passed
     assert result.summary.total_node_count == 1 + count
     assert result.summary.total_relationship_count == count
@@ -557,7 +536,11 @@ def test_hashes_bind_actual_graph_inputs_and_every_evidence_file(
         "lp_unresolved_items": _hash(json.loads(before["lp_unresolved_items.json"])),
         "lp_validation_report": _hash(json.loads(before["lp_validation_report.json"])),
     }
-    expected_names = {name for name in before if name.endswith((".json", ".jsonl"))}
+    expected_names = {
+        name
+        for name in before
+        if name.startswith("lp_") and name.endswith((".json", ".jsonl"))
+    }
     assert set(report["artifact_byte_hashes"]) == expected_names
     for name in expected_names:
         assert (
@@ -751,6 +734,7 @@ def test_optional_eligibility_appearance_after_authentication_is_rejected(
     relationships = _artifacts._complete(harness=harness, monkeypatch=monkeypatch)
     (tmp_path / name).unlink()
     _artifacts._write(harness=harness, relationships=relationships)
+    write_upstream(harness=harness)
     _compile(harness=harness)
     before = (tmp_path / _BUNDLE).read_bytes()
     reader = lp_export.read_lp_artifacts

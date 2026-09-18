@@ -647,8 +647,6 @@ def test_exact_reuse_preserves_full_curriculum_content_and_only_rewrites_project
         "as_nodes.jsonl",
         "as_relationships.jsonl",
         "as_lc_kg_bundle.json",
-        "as_lc_nodes.jsonl",
-        "as_lc_relationships.jsonl",
     ):
         (tmp_path / name).write_bytes(b"opaque upstream consumer artifact\n")
     before = _state(tmp_path)

@@ -16,31 +16,32 @@ For operational recovery and artifact-first debugging, see
 
 ## Choose the output that matches your consumer
 
-| Need                                                                                                | Recommended artifact                                            | Shape                                                                                                                        |
-|-----------------------------------------------------------------------------------------------------|-----------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------|
-| Complete validated Academic Standards graph, including provenance and unresolved state              | `kgs/as_kg_bundle.json`                                         | One structured JSON bundle using the pipeline's internal export models                                                       |
-| Academic Standards in the Learning Commons-shaped JSONL delivery format                             | `kgs/as_nodes.jsonl` + `kgs/as_relationships.jsonl`             | Compact aliased JSONL records for `StandardsFramework`, `StandardsFrameworkItem`, and `hasChild`                             |
-| Complete validated Academic Standards + Learning Components graph                                   | `kgs/as_lc_kg_bundle.json`                                      | One structured JSON bundle containing AS, LCs, `hasChild`, `supports`, provenance, unresolved state, and validation          |
-| Academic Standards **and** Learning Components in the Learning Commons-shaped JSONL delivery format | `kgs/as_lc_nodes.jsonl` + `kgs/as_lc_relationships.jsonl`       | The same wire records as the pair above, with `LearningComponent` nodes and `supports` edges appended                        |
-| Complete AS + LC + LP graph                                                                         | `kgs/as_lc_lp_kg_bundle.json`                                   | Additive bundle with both LP relationship groups, provenance, summaries, unresolved state, and validation                    |
-| Flat AS + LC + LP records                                                                           | `kgs/as_lc_lp_nodes.jsonl` + `kgs/as_lc_lp_relationships.jsonl` | Internal snake_case projection with node `entity_type` and full relationship metadata; **not** the delivery wire shape above |
+| Need                                                                                                | Recommended artifact                                            | Shape                                                                                                               |
+|-----------------------------------------------------------------------------------------------------|-----------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------|
+| Complete validated Academic Standards graph, including provenance and unresolved state              | `kgs/as_kg_bundle.json`                                         | One structured JSON bundle using the pipeline's internal export models                                              |
+| Academic Standards in the Learning Commons-shaped JSONL delivery format                             | `kgs/as_nodes.jsonl` + `kgs/as_relationships.jsonl`             | Compact aliased JSONL records for `StandardsFramework`, `StandardsFrameworkItem`, and `hasChild`                    |
+| Complete validated Academic Standards + Learning Components graph                                   | `kgs/as_lc_kg_bundle.json`                                      | One structured JSON bundle containing AS, LCs, `hasChild`, `supports`, provenance, unresolved state, and validation |
+| Academic Standards **and** Learning Components in the Learning Commons-shaped JSONL delivery format | `kgs/as_lc_nodes.jsonl` + `kgs/as_lc_relationships.jsonl`       | The same wire records as the pair above, with `LearningComponent` nodes and `supports` edges appended               |
+| Complete AS + LC + LP graph                                                                         | `kgs/as_lc_lp_kg_bundle.json`                                   | Additive bundle with both LP relationship groups, provenance, summaries, unresolved state, and validation           |
+| Flat AS + LC + LP records                                                                           | `kgs/as_lc_lp_nodes.jsonl` + `kgs/as_lc_lp_relationships.jsonl` | Same AS+LC wire records, with `buildsTowards` and `relatesTo` relationships appended                                |
 
 For most programmatic integrations, start with a bundle. Bundles are self-contained,
 carry validation and unresolved-state information with the graph, and avoid requiring a
 consumer to join several working artifacts correctly.
 
 If a downstream system specifically expects the Learning Commons-shaped wire format,
-use the AS or AS+LC JSONL pairs. Those two pairs use the **same** wire models. The
-AS+LC+LP pair has a different internal projection contract and needs its own reader.
+use the AS, AS+LC or AS+LC+LP JSONL pair for the layers required. All three use the
+same Learning Commons wire models. Complete internal metadata remains in the bundles
+and standalone provenance artifacts.
 
 !!! note "Which JSONL pair to take"
     `as_nodes.jsonl` / `as_relationships.jsonl` carry the **Academic Standards layer
     only** — framework, items, and `hasChild`. `as_lc_nodes.jsonl` /
     `as_lc_relationships.jsonl` carry **the same records byte for byte**, with
     the Learning Components layer appended: `LearningComponent` nodes and `supports`
-    edges. The subject-suffixed pair is the delivery artifact; take it whenever the run
-    produced Learning Components. The Academic Standards lines are identical in both, so
-    the LC layer is provably additive.
+    edges. The AS+LC+LP pair preserves those AS+LC records and adds `buildsTowards` and
+    `relatesTo` relationships. Choose it when the run includes Learning Progressions.
+    Its node file is byte-identical to the AS+LC node file.
 
 ---
 
@@ -400,14 +401,25 @@ artifact to ingest.
 The node count is `1 + SFI count + LC count`; the relationship count is
 `hasChild + supports + buildsTowards + relatesTo`. LP creates no nodes.
 
-### Internal AS+LC+LP projections
+### AS+LC+LP delivery projections
 
-`as_lc_lp_nodes.jsonl` contains the bundle's internal node records with `entity_type`
-set to `StandardsFramework`, `StandardsFrameworkItem`, or `LearningComponent`.
-`as_lc_lp_relationships.jsonl` contains the internal relationships from all four groups,
-including snake_case endpoint fields and metadata. It does not use the outer
-`type`/`labels`/`properties` wire envelope of AS/AS+LC JSONL. Node membership is equal
-across AS+LC and AS+LC+LP, but serialized rows are not byte-identical across those formats.
+`as_lc_lp_nodes.jsonl` preserves `as_lc_nodes.jsonl` byte for byte. Node records use
+`type`, `identifier`, `labels` and `properties`. `as_lc_lp_relationships.jsonl`
+preserves all AS+LC delivery records and appends `buildsTowards`, then `relatesTo`,
+with each added group sorted by relationship identifier.
+
+The same wire serializers provide camelCase properties such as `relationshipType`,
+`sourceEntityKey` and `caseIdentifierUUID`. Established outer fields such as
+`source_identifier`, `target_identifier`, `source_labels` and `target_labels` retain
+underscores. Internal SFI CASE UUID endpoints resolve to the corresponding delivery
+node identifiers; no identity or direction is reminted. `relatesTo` remains one
+canonical row per pair and must be queried from both endpoint positions.
+
+The combined bundle, standalone LP relationships, provenance, requests, checkpoints
+and reports retain their internal schemas and complete metadata. Use those artifacts
+for fields outside the delivery schema. Export and completed-bundle reuse validate
+upstream wire records against the bundle, preserve their bytes, and verify the written
+outputs; missing or inconsistent upstream delivery fails validation.
 
 ### Standalone LP and checkpoint files
 

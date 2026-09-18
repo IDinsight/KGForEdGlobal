@@ -194,7 +194,12 @@ retrofit journals or edit historical hashes to make old evidence appear current.
 The additive delivery is `as_lc_lp_kg_bundle.json`, `as_lc_lp_nodes.jsonl`, and
 `as_lc_lp_relationships.jsonl`. Node membership equals AS+LC; relationships contain
 `hasChild`, `supports`, `buildsTowards`, and `relatesTo`. Existing AS and AS+LC outputs
-retain their contracts.
+retain their contracts. The node JSONL preserves the AS+LC node file byte for byte;
+the relationship JSONL preserves AS+LC records and appends `buildsTowards`, then
+`relatesTo`, each sorted by relationship identifier. Both use the existing Learning
+Commons wire models: properties such as `relationshipType` use their declared aliases,
+while outer fields such as `source_identifier` retain underscores. Endpoint mapping
+preserves identifiers and canonical direction.
 
 LP edges identify `LLM generated` as author and `IDinsight` as provider and approving
 organization. They inherit the source-framework license and disclose that the inferred

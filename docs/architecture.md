@@ -577,8 +577,9 @@ semantics, historical compatibility, failures, and accepted limitations.
 
 The compiler preserves AS+LC content and adds LP provenance, summaries, unresolved
 judgments, and two relationship groups to `as_lc_lp_kg_bundle.json`. Its JSONL
-projections are internal snake_case records; the AS/AS+LC delivery wire formats remain
-unchanged.
+delivery preserves the AS+LC wire records and appends LP relationships using the same
+Learning Commons serializers and aliases. Complete internal metadata remains in the
+bundle and standalone audit artifacts.
 
 ## Separate LP evaluation
 
