@@ -225,7 +225,9 @@ def validate_historical_failures(
         Attempts have gaps, duplicates, invalid exhaustion, or continue after the
         exhausted failure that ended a historical serial execution run, or an exhausted
         failure lacks recovery in a later run, or failures for one request disagree
-        about its recovery run across attempts, stages or execution runs.
+        about its recovery run across attempts, stages or execution runs. Request or
+        stage progress regresses, or a later request starts before recorded recovery of
+        the preceding request.
     """
 
     seen: set[tuple[int, int, str, int]] = set()
@@ -258,6 +260,22 @@ def validate_historical_failures(
             or (failure.attempt > 1 and predecessor not in seen)
         ):
             raise ValueError("Historical failure order or retry contract differs")
+
+        # Resume reuses saved stages and finishes each request before the next.
+        # Advancing the run may reset attempts, but cannot move this progress back.
+        if order[1:3] < previous_order[1:3]:
+            raise ValueError("Historical request or stage progress regresses")
+
+        if (
+            failure.request_index > previous_order[1]
+            and previous_order[1] in recovery_runs
+        ):
+            previous_recovery = recovery_runs[previous_order[1]]
+
+            if previous_recovery is None or previous_recovery > failure.run_number:
+                raise ValueError(
+                    "Historical later request precedes earlier request recovery"
+                )
 
         previous_order = order
         seen.add(key)
