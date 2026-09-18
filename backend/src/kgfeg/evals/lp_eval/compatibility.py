@@ -224,12 +224,14 @@ def validate_historical_failures(
     ValueError
         Attempts have gaps, duplicates, invalid exhaustion, or continue after the
         exhausted failure that ended a historical serial execution run, or an exhausted
-        failure lacks recovery in a later run.
+        failure lacks recovery in a later run, or failures for one request disagree
+        about its recovery run across attempts, stages or execution runs.
     """
 
     seen: set[tuple[int, int, str, int]] = set()
     exhausted_runs: set[int] = set()
     previous_order = (0, -1, -1, 0)
+    recovery_runs: dict[int, int | None] = {}
 
     for failure in failures:
         key = (
@@ -259,6 +261,18 @@ def validate_historical_failures(
 
         previous_order = order
         seen.add(key)
+
+        # Appending the final response resolves every outstanding failure together.
+        # Completed requests are skipped on resume, so all stages and attempts for one
+        # request must share that single recovery run.
+        recovery_run = recovery_runs.setdefault(
+            failure.request_index, failure.resolved_run_number
+        )
+
+        if failure.resolved_run_number != recovery_run:
+            raise ValueError(
+                "Historical failures for one request disagree on the recovery run"
+            )
 
         if failure.exhausted:
             if (
