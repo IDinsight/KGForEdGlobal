@@ -167,8 +167,15 @@ def _source(tmp_path_factory: pytest.TempPathFactory) -> Path:
         "transaction_next_failure_zero",
     ],
 )
+@pytest.mark.parametrize(
+    argnames="projection", argvalues=["internal", "converted", "wire"]
+)
 def test_checkpoint_contract_rejects_before_effects(
-    _source: Path, attack: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    _source: Path,
+    attack: str,
+    monkeypatch: pytest.MonkeyPatch,
+    projection: str,
+    tmp_path: Path,
 ) -> None:
     """Reject corrupted journals even when their receipt hashes are resealed.
 
@@ -180,10 +187,14 @@ def test_checkpoint_contract_rejects_before_effects(
         One absent, partial, legacy or unauthenticated checkpoint property.
     monkeypatch
         Restoring publication and call guards.
+    projection
+        Independently selected supported projection family.
     tmp_path
         Isolated evidence copy.
     """
     directory = _copy(source=_source, target=tmp_path)
+    projections._format(directory=directory, projection=projection)
+    sampling.validate_lp_snapshot(projections._run(directory))
     checkpoints._attack(attack=attack, root=directory)
     _reject(directory=directory, monkeypatch=monkeypatch, root=tmp_path)
 
@@ -204,8 +215,15 @@ def test_checkpoint_contract_rejects_before_effects(
         "wrong_overwrite_hash",
     ],
 )
+@pytest.mark.parametrize(
+    argnames="projection", argvalues=["internal", "converted", "wire"]
+)
 def test_configuration_requires_exact_captured_effective_material(
-    _source: Path, attack: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    _source: Path,
+    attack: str,
+    monkeypatch: pytest.MonkeyPatch,
+    projection: str,
+    tmp_path: Path,
 ) -> None:
     """Do not default, coerce, normalize or repair captured effective configuration.
 
@@ -217,10 +235,14 @@ def test_configuration_requires_exact_captured_effective_material(
         Single unsupported configuration change.
     monkeypatch
         Restoring publication and call guards.
+    projection
+        Independently selected supported projection family.
     tmp_path
         Isolated evidence root.
     """
     directory = _copy(source=_source, target=tmp_path)
+    projections._format(directory=directory, projection=projection)
+    sampling.validate_lp_snapshot(projections._run(directory))
     path = directory / "kg_run.json"
     run = json.loads(path.read_bytes())
     lp = run["extra"]["lp"]
@@ -387,7 +409,7 @@ def test_current_runtime_defaults_overwrite_recovery_and_optional_provenance(
 @pytest.mark.parametrize(
     argnames="mutation", argvalues=["capacity", "prefix", "projection"]
 )
-def test_old_frozen_inputs_cannot_be_relabelled_current(
+def test_old_frozen_inputs_cannot_be_relabelled_current(  # pylint: disable=too-many-statements
     _source: Path, label: str, mutation: str, tmp_path: Path
 ) -> None:
     """Reject byte-authenticated obsolete synthetic manifests regardless of label.
@@ -456,11 +478,14 @@ def test_old_frozen_inputs_cannot_be_relabelled_current(
         content_hash=digest, manifest_path=destination / "manifest.json"
     )
     before = projections._state(tmp_path)
-    expected = (
-        "journal_bearing"
-        if label == "historical_prefix"
-        else "Invalid completed LP snapshot"
-    )
+    if (label == "historical_prefix") != (mutation == "capacity"):
+        expected = "Frozen checkpoint and configuration interpretations differ"
+    elif mutation == "capacity":
+        expected = "Captured effective configuration has no unique hash binding"
+    elif mutation == "projection":
+        expected = "Frozen interpreted snapshot bindings"
+    else:
+        expected = "Invalid completed LP snapshot"
     with pytest.raises(expected_exception=sampling.LPSnapshotError, match=expected):
         sampling.load_frozen_lp_inputs(obsolete)
     assert projections._state(tmp_path) == before
@@ -476,8 +501,15 @@ def test_old_frozen_inputs_cannot_be_relabelled_current(
         "lp_relationship_provenance.json",
     ],
 )
+@pytest.mark.parametrize(
+    argnames="projection", argvalues=["internal", "converted", "wire"]
+)
 def test_reconstruction_rejects_changed_request_and_provenance_material(
-    _source: Path, monkeypatch: pytest.MonkeyPatch, name: str, tmp_path: Path
+    _source: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    projection: str,
+    tmp_path: Path,
 ) -> None:
     """Retain current request byte matching and authoritative provenance reconstruction.
 
@@ -489,10 +521,14 @@ def test_reconstruction_rejects_changed_request_and_provenance_material(
         Restoring publication and call guards.
     name
         Current artifact whose bytes or provenance are independently changed.
+    projection
+        Independently selected supported projection family.
     tmp_path
         Isolated evidence root.
     """
     directory = _copy(source=_source, target=tmp_path)
+    projections._format(directory=directory, projection=projection)
+    sampling.validate_lp_snapshot(projections._run(directory))
     path = directory / name
     if name == "lp_relationship_provenance.json":
         value = json.loads(path.read_bytes())
@@ -540,7 +576,7 @@ def test_resume_rejects_changed_captured_capacity_before_transport(
     with pytest.raises(ValueError):
         asyncio.run(
             entry.run_evaluation(
-                provenance=ReportProvenance(evidence_mode="development"),
+                provenance=ReportProvenance(evidence_kind="development"),
                 reference=reference,
                 transport_factory=guard,
             )

@@ -955,9 +955,13 @@ def build_lp_generation_requests(
     bundle = AcademicStandardsLCKGBundle.model_validate_json(
         as_lc_bundle.model_dump_json()
     )
-    config = CreateKGConfig.model_validate_json(
+
+    # Preserve the exact validated captured schema for read-only evaluator replay.
+    # Production callers still pass CreateKGConfig and retain current defaults.
+    config = type(kg_config).model_validate_json(
         kg_config.model_dump_json(by_alias=True)
     )
+
     population = validate_lp_candidate_population(
         as_lc_bundle=bundle,
         doc_key=doc_key,

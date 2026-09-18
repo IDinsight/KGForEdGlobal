@@ -1228,12 +1228,14 @@ def test_frozen_input_full_validation_and_byte_preservation(
     "mutation", ["changed", "missing", "appeared", "lock_appeared"]
 )
 def test_frozen_source_detects_changed_missing_and_new_material(
-    mutation: str, tmp_path: Path
+    _frozen: FrozenInputs, mutation: str, tmp_path: Path
 ) -> None:
     """Check selected-source byte and absence bindings on isolated synthetic evidence.
 
     Parameters
     ----------
+    _frozen
+        Valid captured configuration and interpretation for the source check.
     mutation
         Deliberate corruption applied only to isolated test material.
     tmp_path
@@ -1249,6 +1251,7 @@ def test_frozen_source_detects_changed_missing_and_new_material(
     inventory = sampling.discover_lp_runs(
         evaluation_root=tmp_path / "out", results_root=tmp_path
     )
+    validated = sampling.load_frozen_lp_inputs(_frozen)[0]
     snapshot = FrozenSnapshot(
         absent_artifacts=(".lp_generation.lock", "later.json"),
         artifacts=(
@@ -1262,7 +1265,10 @@ def test_frozen_source_detects_changed_missing_and_new_material(
             ),
         ),
         checkpoint_format="journal_bearing",
-        config_json="{}",
+        config_json=validated.config_json,
+        interpretation_version=validated.interpretation_version,
+        projection_format=validated.projection_format,
+        reader_fingerprints=validated.reader_fingerprints,
         run=inventory.runs[0],
         source_artifact="material.json",
     )

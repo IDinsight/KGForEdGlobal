@@ -304,25 +304,36 @@ def test_incompatible_material_preserves_ledger_and_exhausted_attempts(
                 target=judge,
                 value=lambda: fingerprints,
             )
-        fresh = sampling.prepare_evaluation_schedule(
-            inputs=_schedule.inputs,
-            judge=_schedule.judge,
-            settings=_schedule.settings,
-        )
-        old_critic = next(
-            r for c in _schedule.curricula for r in c.requests if r.role == "critique"
-        )
-        new_critic = next(
-            r for c in fresh.curricula for r in c.requests if r.role == "critique"
-        )
-        assert fresh.material_content_hash != _schedule.material_content_hash
-        assert new_critic.material_content_hash != old_critic.material_content_hash
-        assert (
-            new_critic.prompt.material_content_hash
-            != old_critic.prompt.material_content_hash
-        )
-        if mutation != "prompt":
-            assert new_critic.prompt.request_id != old_critic.prompt.request_id
+        if mutation in {"prompts_source", "sampling_source"}:
+            with pytest.raises(ValueError, match="reader implementation"):
+                sampling.prepare_evaluation_schedule(
+                    inputs=_schedule.inputs,
+                    judge=_schedule.judge,
+                    settings=_schedule.settings,
+                )
+        else:
+            fresh = sampling.prepare_evaluation_schedule(
+                inputs=_schedule.inputs,
+                judge=_schedule.judge,
+                settings=_schedule.settings,
+            )
+            old_critic = next(
+                r
+                for c in _schedule.curricula
+                for r in c.requests
+                if r.role == "critique"
+            )
+            new_critic = next(
+                r for c in fresh.curricula for r in c.requests if r.role == "critique"
+            )
+            assert fresh.material_content_hash != _schedule.material_content_hash
+            assert new_critic.material_content_hash != old_critic.material_content_hash
+            assert (
+                new_critic.prompt.material_content_hash
+                != old_critic.prompt.material_content_hash
+            )
+            if mutation != "prompt":
+                assert new_critic.prompt.request_id != old_critic.prompt.request_id
         with pytest.raises(ValueError, match="implementation|reproduced"):
             with judge.open_evaluation_store(store):
                 pytest.fail("Incompatible schedule exposed the writable cache")

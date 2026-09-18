@@ -447,9 +447,13 @@ All names below are relative to the production `kgs/` directory.
 
 Checkpoint files form one authenticated store; they are not independently editable
 recovery controls. Missing journals do not mean empty work. Current production rejects
-unsupported old formats before effects, even with overwrite or a completed bundle.
-The evaluator also requires current wire projections, supported journal-bearing
-checkpoints and exact captured current effective configuration with recorded capacity.
+unsupported old formats before effects, even with overwrite or a completed bundle. The
+evaluator independently supports original flat snake_case, converted flat camelCase and
+current wire projections, crossed with complete historical prefix checkpoints or
+current journal-bearing checkpoints. Historical captured capacity remains absent;
+current capacity must be exact. All combinations require complete integrity validation.
+See the [snapshot format contract](../guides/evaluating-learning-progressions.md#supported-snapshot-formats). This downstream read-only compatibility does
+not permit production checkpoint reuse.
 
 ### Separate evaluator artifacts
 

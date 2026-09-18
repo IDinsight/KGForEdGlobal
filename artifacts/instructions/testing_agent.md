@@ -1,6 +1,18 @@
 # Learning Progressions KG Testing Agent — Codex Role Instructions
 
-## Historical evaluator compatibility removal — implementation approval recorded (2026-09-18)
+## Step 28 historical and current snapshot compatibility — implementation approval recorded (2026-09-18)
+
+The user reverses the current-only evaluator policy and requests the complete compatibility extension in engineering-brief Sections 1.6, D12.1.5 and 3.3.10. On 2026-09-18, after reviewing the synchronized proposal and its artifact-format explanation, the user stated: "ok i approve of these changes then." This explicitly approves Sections 1.6, D12.1.5 and 3.3.10, with independent validation under Section 5.5. This governance-only approval record precedes a distinct coding phase in this same task. No further specification approval is pending; independent testing and reviewer reassessment remain required.
+
+The selected scope is three independent projection readers (original flat snake_case, user-converted flat camelCase with preserved nested metadata, and current Learning Commons wire) crossed with two checkpoint readers (complete historical prefixes with captured capacity absent, and complete current journals with exact recorded capacity). All six combinations require full evidence validation. Casing, journal presence or a success marker alone cannot determine validity. Converted flat projections use the finite top-level and endpoint-key-value mapping in D12.1.5; reconcile the entire projection against the authoritative bundle without dropping metadata or bypassing any recorded hash. Preserve raw bytes, captured configuration/request identities and material hashes; bind interpretation identity/version and actual reader implementation hashes into manifests, caches, source revalidation and reports. No capacity retrofit, journal fabrication, resealing, migration or silent repair is permitted. Unsupported or ambiguous formats fail before evidence publication or calls; existing frozen evidence is never upgraded in place.
+
+Fixed review base remains `28d4f1218c71237bc7fda1027a8ac55866bd345f`. Observed HEAD `e0400e598217cb06ea420415fe8816d741f58a75` and earlier approvals certify neither this extension nor final Step 28 completion. Step 28 owns evaluator compatibility; independently reassess affected K=21–F=25 export/reuse/orchestration, release-policy and structural paths without extending production checkpoint resume/reuse support. Preserve D13-C3/Z, current wire exports, locks, active-run protection, deterministic schedules, optional producing SHA and Git-independent evaluation. Coding owns production/support/consumer documentation; independent testing owns tests/fixtures and validation, followed by reviewer reassessment. Live evaluation and final completion retain their separate gates.
+
+Read-only inspection of `results/kg_for_ed_orig` is authorized; observations in Section 3.3.10 are not validation verdicts. No changes to results, `data/`, `graveyard/`, active runs or existing evaluation evidence, no live calls and no Git mutations are authorized. Historical approval records below remain history; the separately approved new packet supersedes their conflicting evaluator acceptance clauses only.
+
+## Historical record — evaluator compatibility removal approval (2026-09-18)
+
+This removal approval remains history. Section 3.3.10 records its separately approved reversal. The following paragraphs record the former contract and do not authorize new compatibility code.
 
 The user requested removal of historical compatibility because they will regenerate legacy artifacts. Engineering-brief Sections 1.6, D12.1.5 and 3.3.9 record the selected current-format-only contract. On 2026-09-18 the user explicitly approved implementation of Sections 1.6, D12.1.5 and 3.3.9 and authorized a governance-only approval record followed by a distinct coding phase in this same task. No further specification approval is pending for this scope; independent testing and reviewer reassessment remain required.
 
@@ -579,7 +591,7 @@ Verify:
 - `as_lc_lp_relationships.jsonl` exact AS+LC delivery-record preservation plus the two LP wire groups, forming the complete four-type union;
 - existing Learning Commons wire aliases, string-valued properties and unchanged outer fields such as `source_identifier`, with no blanket recursive camelization;
 - unchanged internal bundle, standalone LP relationship, provenance, request, checkpoint and report formats and complete internal metadata;
-- current-only evaluator projection/checkpoint/configuration validation under D12.1.5: current/current positives, independently varied old-format negatives, missing captured capacity, frozen-input rejection, original byte/material hashes, tamper/cache rejection and no evidence mutation;
+- after Section 3.3.10 approval and coding, all six D12.1.5 projection/checkpoint combinations and Section 5.5 lifecycle/negative coverage, distinguishing permitted historical capacity absence from invalid current capacity omission; preserve raw/material/interpretation identities, strict converted-flat metadata parity, no-write rejection and current production gates;
 - deterministic serialization;
 - no duplicate IDs;
 - no collision across entity/relationship IDs;
@@ -656,7 +668,7 @@ Step 27 now owns full pipeline execution; Step 28 owns the separately implemente
 
 ### 7.20 Complete six-curriculum runs
 
-Step 27 requires new Step 26 reviewer approval and that exact SHA as review base, plus explicit authorization for external LLM calls. Preserve previous run evidence under its actual recorded bindings; brief Sections 3.3.2–3.3.3 govern retained snapshots and affected fresh evidence. Retain historical evidence unchanged as history; D12.1.5 requires current formats for evaluator inputs and rejects historical formats without migration. Producing SHA remains optional under D12.1.3. The user's separate regeneration plan grants no agent live execution or snapshot approval.
+Step 27 requires new Step 26 reviewer approval and that exact SHA as review base, plus explicit authorization for external LLM calls. Preserve previous run evidence under its actual recorded bindings; brief Sections 3.3.2–3.3.3 govern retained snapshots and affected fresh evidence. Retain historical evidence unchanged; after Section 3.3.10 approval D12.1.5 permits strict read-only historical/current evaluation without production resume/reuse compatibility. Producing SHA remains optional under D12.1.3. Format support grants no live execution or snapshot approval.
 
 For each run record:
 

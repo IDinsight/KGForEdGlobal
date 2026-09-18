@@ -43,6 +43,43 @@ inputs fails preparation before judge dispatch. A completed-looking snapshot who
 generation lock is actively held also fails snapshot validation; a retained unlocked
 lock file is acceptable.
 
+## Supported snapshot formats
+
+Projection and checkpoint formats are independent. Every combination below is
+supported only when all source, configuration, request, checkpoint, claim, provenance,
+report and bundle evidence validates.
+
+| Projection pair               | Historical complete prefix, capacity absent | Current complete journals, exact recorded capacity |
+|-------------------------------|---------------------------------------------|----------------------------------------------------|
+| Original flat snake_case      | Supported                                   | Supported                                          |
+| Converted flat camelCase      | Supported                                   | Supported                                          |
+| Current Learning Commons wire | Supported                                   | Supported                                          |
+
+The original flat files contain full internal records and nested metadata. Converted
+flat files retain that structure and use a finite set of top-level aliases, plus
+`case_identifier_uuid` → `caseIdentifierUUID` for endpoint-key values. Nested metadata
+is unchanged. These are distinct from wire records with `type`, `properties` and
+delivery identifiers. The exact mapping is governed by engineering-brief D12.1.5.
+
+The evaluator reconstructs each complete expected projection from the authenticated
+combined bundle and requires exactly one format to match, including JSON types, nulls,
+ordering, metadata and endpoints. It also verifies every recorded artifact hash and
+captures the actual projection bytes. Conversion never excuses a mismatched recorded
+hash. Unknown aliases, mixed formats or dropped metadata fail validation.
+
+Historical checkpoints require all three complete ordered stage files and the failure
+file under their original four-file receipt. Both journals and captured capacity must
+be absent. Current checkpoints require the six-file receipt, complete pending/usage
+journals and matching positive recorded capacity in configuration, execution material
+and usage. Neither format permits an unfinished transaction. A missing current journal
+cannot select the historical reader.
+
+Historical configuration is validated against its exact schema without adding today's
+default capacity. Original requests are reconstructed and byte-compared; their recorded
+identities are never rewritten. No reader repairs, migrates or reseals inputs. This
+read-only evaluator compatibility does not enable historical production checkpoint
+resume or reuse.
+
 ## Frozen selection and resume
 
 Before calls, the evaluator freezes discovery inventory, exact selected paths and
@@ -50,10 +87,16 @@ material hashes, input copies, effective settings, populations, samples, evidenc
 views, and the complete request/condition/replicate schedule. Resume revalidates both
 frozen copies and selected source material. Missing, changed, or incompatible inputs
 fail; newly completed curricula cannot enter an existing invocation. Frozen inputs
-and resume must also satisfy the current projection, checkpoint, and configuration
-contract. Frozen inputs containing unsupported formats and incompatible schedules
-are rejected without upgrade, hash rewriting, or changes to source or prior
-evaluation evidence.
+and resume must also satisfy the recorded projection, checkpoint and configuration
+contracts. Frozen inputs containing unsupported formats and incompatible schedules are
+rejected without upgrade, hash rewriting, or changes to source or prior evaluation
+evidence. Each frozen snapshot requires its projection/checkpoint interpretation,
+`lp_snapshot_v2` contract version and actual reader/dependency fingerprints. Together
+with raw-byte hashes these bind the manifest, schedule and cache. Earlier manifests
+lacking this descriptor are rejected without rewriting. Reader changes invalidate
+frozen interpretation; report-only scoring changes retain the existing scoring
+exception. JSON/Markdown reports identify each format and show historical concurrency
+capacity as “not recorded.”
 
 Repeating a command automatically finds a matching frozen invocation by root and
 settings. Multiple matching invocations require explicit selection. To retain overrides

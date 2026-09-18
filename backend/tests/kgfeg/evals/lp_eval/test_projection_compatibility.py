@@ -1,4 +1,4 @@
-"""Reject historical projections and checkpoints independently; preserve current inputs."""
+"""Validate independent projection and checkpoint families without changing evidence."""
 
 # Pytest fixtures intentionally use private names and retain parameter documentation.
 # pylint: disable=useless-param-doc
@@ -31,7 +31,52 @@ from tests.fixtures.lp_eval.snapshot_fixtures import (
     load_historical_snapshot,
 )
 
+_ALIASES = {
+    "academic_subject": "academicSubject",
+    "adoption_status": "adoptionStatus",
+    "alternate_statement_code": "alternateStatementCode",
+    "attribution_statement": "attributionStatement",
+    "case_identifier_uri": "caseIdentifierURI",
+    "case_identifier_uuid": "caseIdentifierUUID",
+    "date_created": "dateCreated",
+    "date_modified": "dateModified",
+    "entity_type": "entityType",
+    "grade_level": "gradeLevel",
+    "in_language": "inLanguage",
+    "is_current": "isCurrent",
+    "normalized_statement_type": "normalizedStatementType",
+    "relationship_type": "relationshipType",
+    "source_entity": "sourceEntity",
+    "source_entity_key": "sourceEntityKey",
+    "source_entity_value": "sourceEntityValue",
+    "statement_code": "statementCode",
+    "statement_type": "statementType",
+    "target_entity": "targetEntity",
+    "target_entity_key": "targetEntityKey",
+    "target_entity_value": "targetEntityValue",
+}
+
 _NAMES = ("as_lc_lp_nodes.jsonl", "as_lc_lp_relationships.jsonl")
+
+
+def _converted(row: dict[str, Any]) -> dict[str, Any]:
+    """Apply the independent finite field map without changing nested metadata.
+
+    Parameters
+    ----------
+    row
+        Complete bundle-derived flat record.
+
+    Returns
+    -------
+    dict[str, Any]
+        Converted top-level fields and the two endpoint-key enum values.
+    """
+    mapped = {_ALIASES.get(key, key): value for key, value in row.items()}
+    for key in ("sourceEntityKey", "targetEntityKey"):
+        if mapped.get(key) == "case_identifier_uuid":
+            mapped[key] = "caseIdentifierUUID"
+    return mapped
 
 
 def _format(*, directory: Path, projection: str) -> None:
@@ -70,6 +115,9 @@ def _format(*, directory: Path, projection: str) -> None:
             )
             for row in sorted(material[group], key=lambda row: row["identifier"])
         ]
+        if projection == "converted":
+            nodes = [_converted(row) for row in nodes]
+            edges = [_converted(row) for row in edges]
         payloads = {
             name: b"".join(
                 (
@@ -157,16 +205,16 @@ def _state(root: Path) -> dict[str, tuple[bytes, int, int]]:
     Returns
     -------
     dict[str, tuple[bytes, int, int]]
-        Complete stable file evidence excluding access times.
+        File bytes, modification times and inodes, plus directory membership/inodes.
     """
     return {
         str(path.relative_to(root)): (
-            path.read_bytes(),
-            path.stat().st_mtime_ns,
+            path.read_bytes() if path.is_file() else b"",
+            path.stat().st_mtime_ns if path.is_file() else 0,
             path.stat().st_ino,
         )
         for path in root.rglob("*")
-        if path.is_file()
+        if path.is_file() or path.is_dir()
     }
 
 
@@ -204,11 +252,13 @@ def test_corrupt_current_wire_property_cannot_be_frozen(
 @pytest.mark.parametrize(
     argnames="checkpoint", argvalues=["historical_prefix", "journal_bearing"]
 )
-@pytest.mark.parametrize(argnames="projection", argvalues=["internal", "wire"])
-def test_each_projection_checkpoint_combination_enforces_current_only(
+@pytest.mark.parametrize(
+    argnames="projection", argvalues=["internal", "converted", "wire"]
+)
+def test_each_projection_checkpoint_combination_preserves_evidence(
     _sources: dict[str, Path], checkpoint: str, projection: str, tmp_path: Path
 ) -> None:
-    """Accept only current/current and reject each historical dimension without writes.
+    """Accept all independent format combinations while preserving exact source bytes.
 
     Parameters
     ----------
@@ -226,19 +276,19 @@ def test_each_projection_checkpoint_combination_enforces_current_only(
     directory = source / "kgs"
     _format(directory=directory, projection=projection)
     before = _state(source)
-    if checkpoint != "journal_bearing" or projection != "wire":
-        with pytest.raises(sampling.LPSnapshotError):
-            sampling.validate_lp_snapshot(_run(directory))
-        inventory = sampling.discover_lp_runs(
-            evaluation_root=tmp_path / "results/lp_evals", results_root=source
-        )
-        with pytest.raises(sampling.LPSnapshotError):
-            sampling.freeze_lp_inputs(inventory=inventory, repository_root=tmp_path)
-        assert _state(source) == before
-        assert not (tmp_path / "results/lp_evals").exists()
-        return
     validated = sampling.validate_lp_snapshot(_run(directory))
     assert validated.checkpoint_format == checkpoint
+    assert (
+        validated.projection_format
+        == {
+            "internal": "historical_flat_snake_case",
+            "converted": "historical_flat_camel_case",
+            "wire": "learning_commons_wire",
+        }[projection]
+    )
+    assert ("max_concurrent_requests" in json.loads(validated.config_json)["lp"]) == (
+        checkpoint == "journal_bearing"
+    )
     artifacts = {artifact.name: artifact for artifact in validated.artifacts}
     for name in _NAMES:
         assert (
@@ -277,7 +327,9 @@ def test_each_projection_checkpoint_combination_enforces_current_only(
 @pytest.mark.parametrize(
     argnames="checkpoint", argvalues=["historical_prefix", "journal_bearing"]
 )
-@pytest.mark.parametrize(argnames="projection", argvalues=["internal", "wire"])
+@pytest.mark.parametrize(
+    argnames="projection", argvalues=["internal", "converted", "wire"]
+)
 def test_malformed_projection_never_falls_back_or_rewrites_evidence(  # pylint: disable=too-complex
     _sources: dict[str, Path],
     attack: str,
@@ -310,7 +362,7 @@ def test_malformed_projection_never_falls_back_or_rewrites_evidence(  # pylint: 
     if attack in ("mixed_files", "mixed_rows"):
         _format(
             directory=directory,
-            projection="wire" if projection == "internal" else "internal",
+            projection="internal" if projection == "wire" else "wire",
         )
         if attack == "mixed_files":
             path.write_bytes(payload)
@@ -331,17 +383,29 @@ def test_malformed_projection_never_falls_back_or_rewrites_evidence(  # pylint: 
             old, new = (
                 ("caseIdentifierUUID", "case_identifier_uuid")
                 if projection == "wire"
-                else ("case_identifier_uuid", "caseIdentifierUUID")
+                else (
+                    ("caseIdentifierUUID", "case_identifier_uuid")
+                    if projection == "converted"
+                    else ("case_identifier_uuid", "caseIdentifierUUID")
+                )
             )
             owner[new] = owner.pop(old)
         elif attack == "property_type":
             owner = rows[0]["properties"] if projection == "wire" else rows[0]
-            owner["isCurrent" if projection == "wire" else "is_current"] = 1
+            owner["is_current" if projection == "internal" else "isCurrent"] = 1
         elif attack == "wrong_endpoint":
             edge_path = directory / _NAMES[1]
             edges = [json.loads(line) for line in edge_path.read_bytes().splitlines()]
             edges[0][
-                "source_identifier" if projection == "wire" else "source_entity_value"
+                (
+                    "source_identifier"
+                    if projection == "wire"
+                    else (
+                        "sourceEntityValue"
+                        if projection == "converted"
+                        else "source_entity_value"
+                    )
+                )
             ] = "wrong"
             edge_path.write_bytes(
                 b"".join((json.dumps(row) + "\n").encode() for row in edges)
@@ -360,7 +424,16 @@ def test_malformed_projection_never_falls_back_or_rewrites_evidence(  # pylint: 
     assert _state(source) == before
 
 
-@pytest.mark.parametrize(argnames="filename", argvalues=["lp_export.py", "sampling.py"])
+@pytest.mark.parametrize(
+    argnames="filename",
+    argvalues=[
+        "compatibility.py",
+        "lp_export.py",
+        "lp_requests.py",
+        "sampling.py",
+        "schemas.py",
+    ],
+)
 def test_projection_implementation_changes_invalidate_saved_schedule(
     _sources: dict[str, Path],
     filename: str,
@@ -408,6 +481,9 @@ def test_projection_implementation_changes_invalidate_saved_schedule(
     before = _state(tmp_path)
     monkeypatch.setattr(
         name="_schedule_implementation", target=judge, value=lambda: changed
+    )
+    monkeypatch.setattr(
+        name="_schedule_implementation", target=sampling, value=lambda: changed
     )
     with pytest.raises(expected_exception=ValueError, match="implementation"):
         with judge.open_evaluation_store(reference):

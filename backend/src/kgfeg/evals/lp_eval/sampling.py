@@ -34,6 +34,12 @@ from uuid import UUID, uuid4
 from pydantic import TypeAdapter
 
 # Package Library
+from kgfeg.evals.lp_eval.compatibility import (
+    ProjectionFormat,
+    read_captured_config,
+    read_snapshot_projections,
+    validate_historical_failures,
+)
 from kgfeg.evals.lp_eval.output import judge_output_contract
 from kgfeg.evals.lp_eval.prompts import (
     build_synthetic_controls,
@@ -943,6 +949,14 @@ def _checkpoint_claims(
         )
         draft = LPGenerationResponse.model_validate(draft_row.payload)
         verdict = LPGenerationValidationVerdict.model_validate(verdict_row.payload)
+
+        for raw, parsed in ((draft_row.payload, draft), (verdict_row.payload, verdict)):
+            _equal(
+                actual=raw,
+                expected=parsed.model_dump(mode="json"),
+                label=f"Exact checkpoint payload schema {index}",
+            )
+
         verify_lp_generation_validation_integrity(
             draft_response=draft,
             lp_generation_request=request,
@@ -1178,44 +1192,6 @@ def _completion_status(
     raise ValueError("unrecognized or contradictory status/timestamp fields")
 
 
-def _current_config(raw: dict[str, Any]) -> CreateKGConfig:
-    """Validate exact captured effective configuration without filling defaults.
-
-    Parameters
-    ----------
-    raw
-        Complete serialized configuration, including resolved execution capacity.
-
-    Returns
-    -------
-    CreateKGConfig
-        Current configuration whose serialization exactly matches captured material.
-
-    Raises
-    ------
-    ValueError
-        Captured fields are missing, unsupported, coerced or silently defaulted.
-    """
-
-    if not isinstance(raw, dict) or not isinstance(raw.get("lp"), dict):
-        raise ValueError("Captured configuration requires the current LP namespace")
-
-    capacity = raw["lp"].get("max_concurrent_requests")
-
-    if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
-        raise ValueError(
-            "Captured configuration requires resolved concurrency capacity"
-        )
-
-    config = CreateKGConfig.model_validate(raw)
-    _equal(
-        actual=canonical_lp_json(config.model_dump(mode="json")),
-        expected=canonical_lp_json(raw),
-        label="Captured current effective configuration",
-    )
-    return config
-
-
 def _decode_snapshot_json(payload: bytes) -> Any:
     """Decode finite JSON with unique object keys.
 
@@ -1258,7 +1234,12 @@ def _equal(*, actual: Any, expected: Any, label: str) -> None:
         Material differs.
     """
 
-    if actual != expected:
+    if isinstance(actual, (dict, list)) and isinstance(expected, (dict, list)):
+        matches = canonical_lp_json(actual) == canonical_lp_json(expected)
+    else:
+        matches = type(actual) is type(expected) and actual == expected
+
+    if not matches:
         raise ValueError(f"{label} differs from its source material")
 
 
@@ -1462,6 +1443,40 @@ def _frozen_directory(path: Path) -> Iterator[int]:
         os.close(descriptor)
 
 
+def _frozen_interpretation(snapshot: FrozenSnapshot) -> None:
+    """Reject changed reader implementations or incompatible captured schemas.
+
+    Parameters
+    ----------
+    snapshot
+        Frozen interpretation and original effective configuration.
+
+    Raises
+    ------
+    ValueError
+        The recorded contract, implementation or capacity interpretation differs.
+    """
+
+    if snapshot.checkpoint_format not in {"historical_prefix", "journal_bearing"}:
+        raise ValueError("Unsupported frozen checkpoint interpretation")
+
+    if snapshot.interpretation_version != "lp_snapshot_v2":
+        raise ValueError("Unsupported frozen snapshot interpretation version")
+
+    _equal(
+        actual=snapshot.reader_fingerprints,
+        expected=_schedule_implementation(),
+        label="Frozen snapshot reader implementation",
+    )
+    captured = read_captured_config(
+        _decode_snapshot_json(snapshot.config_json.encode())
+    )
+    has_capacity = "max_concurrent_requests" in captured.model_dump(mode="json")["lp"]
+
+    if has_capacity != (snapshot.checkpoint_format == "journal_bearing"):
+        raise ValueError("Frozen checkpoint and configuration interpretations differ")
+
+
 def _frozen_layout(manifest: FrozenInputManifest) -> None:
     """Check unique selection, safe material locations and manifest coverage.
 
@@ -1643,8 +1658,7 @@ def _frozen_snapshot_layout(snapshot: FrozenSnapshot) -> None:
     ):
         raise ValueError("Frozen source or absence coverage is inconsistent")
 
-    if snapshot.checkpoint_format != "journal_bearing":
-        raise ValueError("Unsupported frozen checkpoint interpretation")
+    _frozen_interpretation(snapshot)
 
     for artifact in snapshot.artifacts:
         _frozen_artifact_layout(artifact=artifact, run=snapshot.run)
@@ -1687,6 +1701,7 @@ def _frozen_source_check(snapshot: FrozenSnapshot) -> None:
         Original material or completion metadata changed.
     """
 
+    _frozen_interpretation(snapshot)
     reader = _SnapshotReader(snapshot.run.kgs_directory)
 
     with _snapshot_ownership(reader):
@@ -3428,7 +3443,7 @@ def _snapshot_config(reader: _SnapshotReader) -> CreateKGConfig:
 
     The execution metadata omits the overwrite flag. Its value is recovered only when
     exactly one boolean choice matches the recorded effective-config digest. All other
-    effective fields must already be captured in their current shape.
+    effective fields must already be captured in their original schema.
 
     Parameters
     ----------
@@ -3455,7 +3470,7 @@ def _snapshot_config(reader: _SnapshotReader) -> CreateKGConfig:
     matches = []
 
     for overwrite in (False, True):
-        config = _current_config({**raw, "overwrite": overwrite})
+        config = read_captured_config({**raw, "overwrite": overwrite})
         dumped = config.model_dump(mode="json")
         _equal(
             actual={key: dumped[key] for key in raw},
@@ -3478,7 +3493,7 @@ def _snapshot_execution(
     population: LPRequestPopulation,
     reader: _SnapshotReader,
 ) -> dict[str, list[_LPCheckpoint]]:
-    """Validate completed execution with complete supported journal-bearing evidence.
+    """Validate complete prefixes or journals against their respective contracts.
 
     Parameters
     ----------
@@ -3492,7 +3507,7 @@ def _snapshot_execution(
     Returns
     -------
     dict[str, list[_LPCheckpoint]]
-        Ordered producer/checker/final rows backed by authenticated journals.
+        Ordered producer/checker/final rows authenticated under their recorded contract.
 
     Raises
     ------
@@ -3501,7 +3516,7 @@ def _snapshot_execution(
     """
 
     receipt = reader.read("lp_generation_checkpoint_manifest.json")
-    _snapshot_receipt_fields(receipt)
+    checkpoint_format = _snapshot_receipt_fields(receipt)
     material = receipt["material"]
 
     for name in ("producer_instructions", "checker_instructions"):
@@ -3547,6 +3562,14 @@ def _snapshot_execution(
         stage: [_LPCheckpoint.model_validate(row) for row in reader.read(name)]
         for stage, name in _STAGE_FILES.items()
     }
+
+    for stage, name in _STAGE_FILES.items():
+        _equal(
+            actual=[row.model_dump(mode="json") for row in rows[stage]],
+            expected=reader.read(name),
+            label=f"Exact {stage} checkpoint schema",
+        )
+
     expected_counts = {stage: len(population.requests) for stage in _STAGE_FILES}
     _equal(
         actual=receipt["stage_counts"],
@@ -3561,15 +3584,55 @@ def _snapshot_execution(
     reader.check_hashes(receipt["artifact_byte_hashes"])
     _snapshot_failures(population=population, reader=reader, rows=rows)
 
-    _equal(
-        actual=material["max_concurrent_requests"],
-        expected=config.learning_progressions.max_concurrent_requests,
-        label="Captured execution capacity",
-    )
-    store = LPGenerationCheckpoints(
-        material=material, population=population, read_only=True, root=reader.root
-    )
-    store.verify_bytes()
+    captured_lp = config.model_dump(mode="json")["lp"]
+
+    if checkpoint_format == "journal_bearing":
+        _equal(
+            actual=material["max_concurrent_requests"],
+            expected=captured_lp.get("max_concurrent_requests"),
+            label="Captured execution capacity",
+        )
+        store = LPGenerationCheckpoints(
+            material=material, population=population, read_only=True, root=reader.root
+        )
+        store.verify_bytes()
+    else:
+        if "max_concurrent_requests" in captured_lp:
+            raise ValueError("Historical prefix cannot claim a recorded capacity")
+
+        for name in (
+            *receipt["artifact_byte_hashes"],
+            "lp_generation_checkpoint_manifest.json",
+        ):
+            raw = reader.read(name)
+            expected_bytes = (
+                "".join(canonical_lp_json(row) + "\n" for row in raw)
+                if name.endswith(".jsonl")
+                else canonical_lp_json(raw) + "\n"
+            ).encode("utf-8")
+            _equal(
+                actual=reader.artifacts[name].payload,
+                expected=expected_bytes,
+                label=f"Historical checkpoint serialization {name}",
+            )
+
+        validate_historical_failures(
+            failures=[
+                _LPFailure.model_validate(value)
+                for value in reader.read("lp_generation_failures.json")
+            ],
+            retry_limits=material["retry_limits"],
+        )
+
+        for name in (
+            "lp_generation_pending_completions.json",
+            "lp_generation_usage.json",
+        ):
+            reader.optional(name)
+
+            if name not in reader.absent:
+                raise ValueError("Historical prefix has unsupported journal evidence")
+
     return rows
 
 
@@ -3600,6 +3663,11 @@ def _snapshot_failures(
 
     for value in reader.read("lp_generation_failures.json"):
         failure = _LPFailure.model_validate(value)
+        _equal(
+            actual=failure.model_dump(mode="json"),
+            expected=value,
+            label="Exact failure schema",
+        )
         request = population.requests[failure.request_index]
         expected = {
             "pair_ids": [pair.pair_id for pair in request.pairs],
@@ -3630,8 +3698,8 @@ def _snapshot_graphs(
     config: CreateKGConfig,
     reader: _SnapshotReader,
     upstream: AcademicStandardsLCKGBundle,
-) -> None:
-    """Reconcile the graph, reports and current Learning Commons wire projections.
+) -> ProjectionFormat:
+    """Reconcile the graph, reports and one independent projection interpretation.
 
     Parameters
     ----------
@@ -3643,6 +3711,11 @@ def _snapshot_graphs(
         Stable input reader.
     upstream
         Validated upstream bundle.
+
+    Returns
+    -------
+    ProjectionFormat
+        Unique projection interpretation reconciled against the complete bundle.
 
     Raises
     ------
@@ -3725,21 +3798,14 @@ def _snapshot_graphs(
     actual_nodes = reader.read("as_lc_lp_nodes.jsonl")
     actual_edges = reader.read("as_lc_lp_relationships.jsonl")
 
-    nodes, edges = build_lp_delivery_records(
+    return read_snapshot_projections(
         bundle=combined,
-        grade_level_mapping=config.academic_standards.grade_level_mapping,
-    )
-
-    # Compare JSON values without Python's boolean/number equality coercion.
-    _equal(
-        actual=canonical_lp_json(actual_nodes),
-        expected=canonical_lp_json(nodes),
-        label="Combined node projection",
-    )
-    _equal(
-        actual=canonical_lp_json(actual_edges),
-        expected=canonical_lp_json(edges),
-        label="Combined edge projection",
+        edges=actual_edges,
+        nodes=actual_nodes,
+        wire_records=build_lp_delivery_records(
+            bundle=combined,
+            grade_level_mapping=config.academic_standards.grade_level_mapping,
+        ),
     )
 
 
@@ -3791,12 +3857,12 @@ def _snapshot_population(
     reader: _SnapshotReader,
     upstream: AcademicStandardsLCKGBundle,
 ) -> LPRequestPopulation:
-    """Independently reconstruct and byte-match current bounded request material.
+    """Independently reconstruct and byte-match the captured bounded request material.
 
     Parameters
     ----------
     config
-        Exact captured current effective policy.
+        Exact captured effective policy in its validated historical or current schema.
     doc_key
         Source document identity.
     reader
@@ -3832,19 +3898,33 @@ def _snapshot_population(
     return population
 
 
-def _snapshot_receipt_fields(receipt: dict[str, Any]) -> None:
-    """Require the complete current execution format without adding missing fields.
+def _snapshot_receipt_fields(
+    receipt: dict[str, Any],
+) -> Literal["historical_prefix", "journal_bearing"]:
+    """Require one exact checkpoint schema without adding missing fields.
 
     Parameters
     ----------
     receipt
         Recorded completed checkpoint receipt.
 
+    Returns
+    -------
+    Literal["historical_prefix", "journal_bearing"]
+        Independently identified execution contract.
+
     Raises
     ------
     ValueError
         Receipt or execution fields are incomplete or unknown.
     """
+
+    if (
+        not isinstance(receipt, dict)
+        or not isinstance(receipt.get("material"), dict)
+        or not isinstance(receipt.get("artifact_byte_hashes"), dict)
+    ):
+        raise ValueError("Checkpoint receipt requires object material and byte hashes")
 
     _equal(
         actual=set(receipt),
@@ -3862,7 +3942,6 @@ def _snapshot_receipt_fields(receipt: dict[str, Any]) -> None:
     expected = {
         "checker_instructions",
         "config_content_hash",
-        "max_concurrent_requests",
         "model_config",
         "model_settings",
         "producer_instructions",
@@ -3872,11 +3951,30 @@ def _snapshot_receipt_fields(receipt: dict[str, Any]) -> None:
         "retry_limits",
         "verdict_schema_content_hash",
     }
+    current = "max_concurrent_requests" in receipt["material"]
+    files = {*_STAGE_FILES.values(), "lp_generation_failures.json"}
+
+    if current:
+        expected.add("max_concurrent_requests")
+        files.update(
+            {"lp_generation_pending_completions.json", "lp_generation_usage.json"}
+        )
+        capacity = receipt["material"]["max_concurrent_requests"]
+
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
+            raise ValueError("Invalid recorded checkpoint capacity")
+
+    _equal(
+        actual=set(receipt["artifact_byte_hashes"]),
+        expected=files,
+        label="Exact checkpoint artifact coverage",
+    )
     _equal(
         actual=set(receipt["material"]),
         expected=expected,
         label="Captured execution fields",
     )
+    return "journal_bearing" if current else "historical_prefix"
 
 
 def _snapshot_relationships(
@@ -5434,7 +5532,7 @@ def build_production_evidence_builder(
         ):
             raise ValueError("Original claim and bounded request bindings disagree.")
 
-    config = _current_config(
+    config = read_captured_config(
         _decode_snapshot_json(snapshot.config_json.encode("utf-8"))
     )
     lp = config.learning_progressions
@@ -5616,7 +5714,10 @@ def build_upstream_evidence_builder(
     bundle = AcademicStandardsLCKGBundle.model_validate(
         _decode_snapshot_json(artifact.payload)
     )
-    config = _current_config(_decode_snapshot_json(source.config_json.encode("utf-8")))
+    config = read_captured_config(
+        _decode_snapshot_json(source.config_json.encode("utf-8"))
+    )
+
     if bundle.framework.case_identifier_uuid != source.framework_uuid:
         raise ValueError("Upstream evidence framework does not match its binding.")
 
@@ -5799,6 +5900,9 @@ def freeze_lp_inputs(
                     ),
                     checkpoint_format=snapshot.checkpoint_format,
                     config_json=snapshot.config_json,
+                    interpretation_version=snapshot.interpretation_version,
+                    projection_format=snapshot.projection_format,
+                    reader_fingerprints=snapshot.reader_fingerprints,
                     run=snapshot.run,
                     source_artifact=snapshot.source_artifact,
                 )
@@ -5882,11 +5986,14 @@ def load_frozen_lp_inputs(reference: FrozenInputs) -> tuple[ValidatedSnapshot, .
                     ),
                     checkpoint_format=current.checkpoint_format,
                     config_json=current.config_json,
+                    interpretation_version=current.interpretation_version,
+                    projection_format=current.projection_format,
+                    reader_fingerprints=current.reader_fingerprints,
                     run=current.run,
                     source_artifact=current.source_artifact,
                 ),
                 expected=snapshot,
-                label="Frozen current-format snapshot bindings",
+                label="Frozen interpreted snapshot bindings",
             )
             artifacts = tuple(
                 SnapshotArtifact(
@@ -5904,6 +6011,9 @@ def load_frozen_lp_inputs(reference: FrozenInputs) -> tuple[ValidatedSnapshot, .
                     artifacts=artifacts,
                     checkpoint_format=snapshot.checkpoint_format,
                     config_json=snapshot.config_json,
+                    interpretation_version=snapshot.interpretation_version,
+                    projection_format=snapshot.projection_format,
+                    reader_fingerprints=snapshot.reader_fingerprints,
                     run=snapshot.run,
                     source_artifact=snapshot.source_artifact,
                 )
@@ -6376,6 +6486,7 @@ def validate_lp_snapshot(run: DiscoveredRun) -> ValidatedSnapshot:
         if run.status != "completed_candidate":
             raise ValueError("Only completed candidates may be validated")
 
+        reader_fingerprints = _schedule_implementation()
         reader = _SnapshotReader(run.kgs_directory)
 
         for fingerprint in run.fingerprints:
@@ -6449,18 +6560,28 @@ def validate_lp_snapshot(run: DiscoveredRun) -> ValidatedSnapshot:
                 relationships=relationships,
                 upstream=upstream,
             )
-            _snapshot_graphs(
+            projection_format = _snapshot_graphs(
                 artifacts=artifacts, config=config, reader=reader, upstream=upstream
             )
             reader.check_unchanged()
+            _equal(
+                actual=_schedule_implementation(),
+                expected=reader_fingerprints,
+                label="Snapshot reader stability",
+            )
 
         return ValidatedSnapshot(
             absent_artifacts=tuple(sorted(reader.absent)),
             artifacts=tuple(
                 reader.artifacts[name] for name in sorted(reader.artifacts)
             ),
-            checkpoint_format="journal_bearing",
+            checkpoint_format=_snapshot_receipt_fields(
+                reader.read("lp_generation_checkpoint_manifest.json")
+            ),
             config_json=canonical_lp_json(config.model_dump(mode="json")),
+            interpretation_version="lp_snapshot_v2",
+            projection_format=projection_format,
+            reader_fingerprints=reader_fingerprints,
             run=run,
             source_artifact=source_name,
         )

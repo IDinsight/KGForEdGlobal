@@ -1,6 +1,18 @@
 # Learning Progressions KG Reviewer Agent — Codex Role Instructions
 
-## Historical evaluator compatibility removal — implementation approval recorded (2026-09-18)
+## Step 28 historical and current snapshot compatibility — implementation approval recorded (2026-09-18)
+
+The user reverses the current-only evaluator policy and requests the complete compatibility extension in engineering-brief Sections 1.6, D12.1.5 and 3.3.10. On 2026-09-18, after reviewing the synchronized proposal and its artifact-format explanation, the user stated: "ok i approve of these changes then." This explicitly approves Sections 1.6, D12.1.5 and 3.3.10, with independent validation under Section 5.5. This governance-only approval record precedes a distinct coding phase in this same task. No further specification approval is pending; independent testing and reviewer reassessment remain required.
+
+The selected scope is three independent projection readers (original flat snake_case, user-converted flat camelCase with preserved nested metadata, and current Learning Commons wire) crossed with two checkpoint readers (complete historical prefixes with captured capacity absent, and complete current journals with exact recorded capacity). All six combinations require full evidence validation. Casing, journal presence or a success marker alone cannot determine validity. Converted flat projections use the finite top-level and endpoint-key-value mapping in D12.1.5; reconcile the entire projection against the authoritative bundle without dropping metadata or bypassing any recorded hash. Preserve raw bytes, captured configuration/request identities and material hashes; bind interpretation identity/version and actual reader implementation hashes into manifests, caches, source revalidation and reports. No capacity retrofit, journal fabrication, resealing, migration or silent repair is permitted. Unsupported or ambiguous formats fail before evidence publication or calls; existing frozen evidence is never upgraded in place.
+
+Fixed review base remains `28d4f1218c71237bc7fda1027a8ac55866bd345f`. Observed HEAD `e0400e598217cb06ea420415fe8816d741f58a75` and earlier approvals certify neither this extension nor final Step 28 completion. Step 28 owns evaluator compatibility; independently reassess affected K=21–F=25 export/reuse/orchestration, release-policy and structural paths without extending production checkpoint resume/reuse support. Preserve D13-C3/Z, current wire exports, locks, active-run protection, deterministic schedules, optional producing SHA and Git-independent evaluation. Coding owns production/support/consumer documentation; independent testing owns tests/fixtures and validation, followed by reviewer reassessment. Live evaluation and final completion retain their separate gates.
+
+Read-only inspection of `results/kg_for_ed_orig` is authorized; observations in Section 3.3.10 are not validation verdicts. No changes to results, `data/`, `graveyard/`, active runs or existing evaluation evidence, no live calls and no Git mutations are authorized. Historical approval records below remain history; the separately approved new packet supersedes their conflicting evaluator acceptance clauses only.
+
+## Historical record — evaluator compatibility removal approval (2026-09-18)
+
+This removal approval remains history. Section 3.3.10 records its separately approved reversal. The following paragraphs record the former contract and do not authorize new compatibility code.
 
 The user requested removal of historical compatibility because they will regenerate legacy artifacts. Engineering-brief Sections 1.6, D12.1.5 and 3.3.9 record the selected current-format-only contract. On 2026-09-18 the user explicitly approved implementation of Sections 1.6, D12.1.5 and 3.3.9 and authorized a governance-only approval record followed by a distinct coding phase in this same task. No further specification approval is pending for this scope; independent testing and reviewer reassessment remain required.
 
@@ -394,7 +406,7 @@ Verify unsupported prefix-only/previously upgraded formats and old/mixed transac
 
 Require affected SDK, shutdown, accounting, six-curriculum and D12 regression evidence plus full-suite `--run-slow`. Preserve local-model support, the actual-transport dispatch gate and all R1/R2 routing/retry/drain/cleanup and zero-versus-unknown-usage protections. Do not restore the unused checker wrapper or its removed tests. Confirm unchanged candidate, graph, prompt and model semantics.
 
-Serial or prefix-only historical execution is not an earlier defect. Preserve historical Madhi evidence unchanged; D12.1.5 removes historical-reader support from the current evaluator. Apply current-format input/completion gates and optional producing provenance without inferring Step 27/28 completion or executing the user's separate regeneration plan. Earlier-owner defects need explicit reopening. Step 27 progression still requires exact Step 26 reviewer approval; early independent Step 28 work keeps its fixed base.
+Serial or prefix-only historical execution is not an earlier defect. Preserve historical Madhi evidence unchanged; after Section 3.3.10 approval, D12.1.5 requires strict historical/current evaluator readers. Apply format-specific integrity and unchanged completion gates with optional producing provenance, without inferring Step 27/28 completion or authorizing regeneration. Earlier-owner defects need explicit reopening. Step 27 progression still requires exact Step 26 reviewer approval; early independent Step 28 work keeps its fixed base.
 
 ### 5.10 Finalization and semantic policy
 
@@ -448,7 +460,7 @@ A report saying `passed=true` is not enough. Inspect the validator and independe
 
 ### 5.13 Resume, reuse, and run status
 
-Verify code-owned prefix-safe resume and stale-input rejection without runtime checkpoint, resume, fingerprint-selection, or mismatch-policy fields. New Step 26 production requires the approved supported-format gate under D13-C3 before recovery, reuse, overwrite or any artifact/run-manifest mutation. Require the current evaluator to reject unsupported historical formats under D12.1.5 without changing prior evidence or waiving production reuse checks.
+Verify code-owned prefix-safe resume and stale-input rejection without runtime checkpoint, resume, fingerprint-selection, or mismatch-policy fields. New Step 26 production requires the approved supported-format gate under D13-C3 before recovery, reuse, overwrite or any artifact/run-manifest mutation. After Section 3.3.10 approval, require evaluator acceptance only through D12.1.5's explicit historical/current readers; reject unsupported combinations without changing prior evidence or waiving production reuse checks.
 
 Test/review changes to:
 
@@ -477,7 +489,7 @@ as_lc_lp_relationships.jsonl
   = all hasChild + all supports + all buildsTowards + all relatesTo
 ```
 
-Confirm no duplicate nodes/relationships, stable serialization, and logical bundle parity. Under amended Section 1.6, AS+LC+LP JSONL preserves existing AS+LC delivery records and appends the two LP relationship groups through the existing Learning Commons wire serializers/aliases. Check raw wire equality, camelCase properties, unchanged outer fields such as `source_identifier`, endpoint resolution and canonical direction. Existing AS-only and AS+LC delivery formats remain unchanged. The combined bundle and all other internal artifacts retain their formats and complete metadata. Require independent coverage of current wire/current checkpoint/current captured-configuration acceptance and rejection of historical or mixed formats under D12.1.5, including frozen input/resume, without hash exemptions, evidence rewrites or checkpoint-reuse waivers. Review the full K=21/F=25 revalidation range and affected existing downstream consumers under Section 3.3.8; later commits are not implied approvals.
+Confirm no duplicate nodes/relationships, stable serialization, and logical bundle parity. Under amended Section 1.6, AS+LC+LP JSONL preserves existing AS+LC delivery records and appends the two LP relationship groups through the existing Learning Commons wire serializers/aliases. Check raw wire equality, camelCase properties, unchanged outer fields such as `source_identifier`, endpoint resolution and canonical direction. Existing AS-only and AS+LC delivery formats remain unchanged. The combined bundle and all other internal artifacts retain their formats and complete metadata. After Section 3.3.10 approval, require independent Section 5.5 coverage of all six D12.1.5 projection/checkpoint combinations, complete converted-flat alias/metadata reconciliation, strict negatives and the whole freeze/source/resume/cache/report lifecycle. Preserve raw/material/interpretation identities without hash exemptions, evidence rewrites or production checkpoint-reuse waivers. Review the full K=21/F=25 revalidation range and affected existing downstream consumers under Section 3.3.8; later commits are not implied approvals.
 
 ### 5.15 D12 release policy and six-curriculum evidence
 

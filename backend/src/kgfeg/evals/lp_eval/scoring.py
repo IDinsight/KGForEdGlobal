@@ -978,6 +978,21 @@ def _report_files(
     material["excluded_runs"] = sum(
         run.status != "completed_candidate" for run in frozen.inventory.runs
     )
+    material["snapshot_interpretations"] = [
+        {
+            "doc_key": snapshot.run.doc_key,
+            "checkpoint_format": snapshot.checkpoint_format,
+            "projection_format": snapshot.projection_format,
+            "interpretation_version": snapshot.interpretation_version,
+            "reader_fingerprints": TypeAdapter(Any).dump_python(
+                snapshot.reader_fingerprints, mode="json"
+            ),
+            "recorded_concurrency_capacity": json.loads(snapshot.config_json)["lp"].get(
+                "max_concurrent_requests"
+            ),
+        }
+        for snapshot in frozen.snapshots
+    ]
     samples = []
 
     for curriculum in schedule.curricula:
@@ -1578,6 +1593,26 @@ def render_evaluation_markdown(report: dict[str, Any]) -> str:
         lines.append(
             f"| {curriculum['doc_key']} | {curriculum['planned']} | {curriculum['valid']} | {curriculum['missing']} |"
         )
+
+    if report.get("snapshot_interpretations"):
+        lines.extend(
+            [
+                "",
+                "## Snapshot formats",
+                "",
+                "| Document | Projection | Checkpoint | Recorded capacity | Reader contract |",
+                "| -------- | ---------- | ---------- | ----------------- | --------------- |",
+            ]
+        )
+
+        for snapshot in report["snapshot_interpretations"]:
+            capacity = snapshot["recorded_concurrency_capacity"]
+            capacity_text = "not recorded" if capacity is None else str(capacity)
+            lines.append(
+                f"| {snapshot['doc_key']} | {snapshot['projection_format']} | "
+                f"{snapshot['checkpoint_format']} | {capacity_text} | "
+                f"{snapshot['interpretation_version']} |"
+            )
 
     lines.extend(_markdown_metrics(report))
     lines.extend(_markdown_operations(report))

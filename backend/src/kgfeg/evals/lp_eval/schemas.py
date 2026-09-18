@@ -750,9 +750,15 @@ class FrozenSnapshot:
     artifacts
         Original names and byte identities, in deterministic name order.
     checkpoint_format
-        Validated current journal-bearing checkpoint contract.
+        Validated historical prefix or current journal-bearing checkpoint contract.
     config_json
         Captured effective configuration in its original serialization shape.
+    interpretation_version
+        Explicit reader contract version, required even for current inputs.
+    projection_format
+        Independently validated complete projection format.
+    reader_fingerprints
+        Actual evaluator and dependency bytes, excluding report-only scoring.
     run
         Original completion and framework identity.
     source_artifact
@@ -761,8 +767,15 @@ class FrozenSnapshot:
 
     absent_artifacts: tuple[str, ...]
     artifacts: tuple[FrozenArtifact, ...]
-    checkpoint_format: Literal["journal_bearing"]
+    checkpoint_format: Literal["historical_prefix", "journal_bearing"]
     config_json: str
+    interpretation_version: Literal["lp_snapshot_v2"]
+    projection_format: Literal[
+        "historical_flat_snake_case",
+        "historical_flat_camel_case",
+        "learning_commons_wire",
+    ]
+    reader_fingerprints: tuple[FileFingerprint, ...]
     run: DiscoveredRun
     source_artifact: str
 
@@ -1448,9 +1461,15 @@ class ValidatedSnapshot:
     artifacts
         Exact captured material, sorted by run-relative name.
     checkpoint_format
-        Supported current journal-bearing checkpoint contract.
+        Supported historical prefix or current journal-bearing checkpoint contract.
     config_json
         Validated effective configuration in its original serialization shape.
+    interpretation_version
+        Explicit reader contract version, required even for current inputs.
+    projection_format
+        Independently validated complete projection format.
+    reader_fingerprints
+        Actual evaluator and dependency bytes, excluding report-only scoring.
     run
         Original discovery identity and completion evidence.
     source_artifact
@@ -1459,8 +1478,15 @@ class ValidatedSnapshot:
 
     absent_artifacts: tuple[str, ...]
     artifacts: tuple[SnapshotArtifact, ...]
-    checkpoint_format: Literal["journal_bearing"]
+    checkpoint_format: Literal["historical_prefix", "journal_bearing"]
     config_json: str
+    interpretation_version: Literal["lp_snapshot_v2"]
+    projection_format: Literal[
+        "historical_flat_snake_case",
+        "historical_flat_camel_case",
+        "learning_commons_wire",
+    ]
+    reader_fingerprints: tuple[FileFingerprint, ...]
     run: DiscoveredRun
     source_artifact: str
 
