@@ -984,9 +984,6 @@ def _report_files(
             "checkpoint_format": snapshot.checkpoint_format,
             "projection_format": snapshot.projection_format,
             "interpretation_version": snapshot.interpretation_version,
-            "reader_fingerprints": TypeAdapter(Any).dump_python(
-                snapshot.reader_fingerprints, mode="json"
-            ),
             "recorded_concurrency_capacity": json.loads(snapshot.config_json)["lp"].get(
                 "max_concurrent_requests"
             ),
@@ -1275,13 +1272,18 @@ def _usage_reports(
             **{key: row[key] for key in ("doc_key", "component", "condition")},
             "requested_model": schedule.judge.model,
             "observed_model": usage.get("provider_model"),
-            "attempt_kind": "initial" if event.attempt_number == 1 else "retry",
+            "attempt_kind": (
+                "initial" if (event.attempt_number - 1) % 3 == 0 else "retry"
+            ),
             "outcome": terminal.event if terminal else "unfinished",
         }
         attempt = {
             **dimensions,
             "request_id": event.request_id,
             "attempt_number": event.attempt_number,
+            "cycle_attempt": (event.attempt_number - 1) % 3 + 1,
+            "cycle_number": (event.attempt_number - 1) // 3 + 1,
+            "execution_number": event.execution_number,
             "usage": usage,
             "started_at": event.timestamp.isoformat(),
             "finished_at": terminal.timestamp.isoformat() if terminal else None,
@@ -1297,6 +1299,12 @@ def _usage_reports(
             for key, value in sorted(groups.items())
         ],
         "events": [event.model_dump(mode="json") for event in cache.events],
+        "executions": [
+            record.model_dump(
+                exclude={"implementation_content_hash"}, exclude_none=True, mode="json"
+            )
+            for record in cache.executions
+        ],
         "interpretation": "Known subtotals are not totals when any attempt has unknown usage.",
     }
 
@@ -1377,7 +1385,10 @@ def _validate_cache(*, cache: EvaluationCache, schedule: EvaluationSchedule) -> 
 
     with closing(sqlite3.connect(":memory:")) as connection:
         replay = EvaluationSession(
-            connection=connection, events=cache.events, schedule=schedule
+            connection=connection,
+            events=cache.events,
+            executions=cache.executions,
+            schedule=schedule,
         ).snapshot()
 
     if replay != cache:
@@ -1594,6 +1605,10 @@ def render_evaluation_markdown(report: dict[str, Any]) -> str:
             f"| {curriculum['doc_key']} | {curriculum['planned']} | {curriculum['valid']} | {curriculum['missing']} |"
         )
 
+    if report.get("execution_errors"):
+        lines.extend(["", "## Execution blockers", ""])
+        lines.extend(f"- {message}" for message in report["execution_errors"])
+
     if report.get("snapshot_interpretations"):
         lines.extend(
             [
@@ -1703,13 +1718,11 @@ def score_evaluation(
     cache_hash = lp_material_content_hash(
         TypeAdapter(EvaluationCache).dump_python(cache, mode="json")
     )
-    scorer_hash = hashlib.sha256(_store_read(Path(__file__).resolve())).hexdigest()
     usage = _usage_reports(cache=cache, rows=rows, schedule=schedule)
     valid = sum(row["assessment"] is not None for row in rows)
     material = {
         "schedule_content_hash": schedule.material_content_hash,
         "cache_content_hash": cache_hash,
-        "scorer_sha256": scorer_hash,
         "report_inputs_content_hash": lp_material_content_hash(asdict(inputs)),
         "settings": TypeAdapter(type(schedule.settings)).dump_python(
             schedule.settings, mode="json"
@@ -1757,7 +1770,6 @@ def score_evaluation(
         judgments_jsonl=_jsonl([row for row in rows if row["assessment"] is not None]),
         report_json=_json(material),
         schedule_content_hash=schedule.material_content_hash,
-        scorer_sha256=scorer_hash,
         usage_json=_json(usage),
     )
 
@@ -1811,10 +1823,6 @@ def write_evaluation_reports(
             "inputs": asdict(session.schedule.inputs),
             "schedule_content_hash": report.schedule_content_hash,
             "cache_content_hash": report.cache_content_hash,
-            "scorer_sha256": report.scorer_sha256,
-            "implementation_fingerprints": TypeAdapter(Any).dump_python(
-                session.schedule.implementation_fingerprints, mode="json"
-            ),
             "judge": asdict(session.schedule.judge),
             "settings": TypeAdapter(Any).dump_python(
                 session.schedule.settings, mode="json"
@@ -1835,12 +1843,6 @@ def write_evaluation_reports(
         _frozen_output_boundary(inventory=inventory, output=directory)
         files["lp_eval_manifest.json"] = manifest_bytes
         watch.check()
-
-        if (
-            hashlib.sha256(_store_read(Path(__file__).resolve())).hexdigest()
-            != report.scorer_sha256
-        ):
-            raise ValueError("Scoring implementation changed during report generation.")
 
         _publish_files(directory=directory, files=files)
         artifacts = EvaluationReportArtifacts(

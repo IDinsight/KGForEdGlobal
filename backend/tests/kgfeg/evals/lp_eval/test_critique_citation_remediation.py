@@ -218,7 +218,7 @@ def test_classification_does_not_consult_critique_policy_references(
     argnames="mutation",
     argvalues=["references", "prompt", "prompts_source", "sampling_source"],
 )
-def test_incompatible_material_preserves_ledger_and_exhausted_attempts(
+def test_incompatible_material_preserves_ledger_and_exhausted_attempts(  # pylint: disable=too-many-statements
     _schedule: Any,
     monkeypatch: pytest.MonkeyPatch,
     mutation: str,
@@ -285,32 +285,38 @@ def test_incompatible_material_preserves_ledger_and_exhausted_attempts(
             )
         else:
             filename = "prompts.py" if mutation == "prompts_source" else "sampling.py"
-            fingerprints = tuple(
-                (
-                    replace(item, sha256="0" * 64)
-                    if item.path == Path(sampling.__file__).with_name(filename)
-                    else item
+            original_read = Path.read_bytes
+
+            def _source_edit(path: Path) -> bytes:
+                """Return changed source bytes while preserving frozen inputs.
+
+                Parameters
+                ----------
+                path
+                    Requested source or artifact.
+
+                Returns
+                -------
+                bytes
+                    Harmless source edit or original artifact bytes.
+                """
+                payload = original_read(path)
+                return (
+                    payload + b"\n# Source revision\n"
+                    if path.name == filename
+                    else payload
                 )
-                for item in _schedule.implementation_fingerprints
-            )
-            assert fingerprints != _schedule.implementation_fingerprints
-            changed.setattr(
-                name="_schedule_implementation",
-                target=sampling,
-                value=lambda: fingerprints,
-            )
-            changed.setattr(
-                name="_schedule_implementation",
-                target=judge,
-                value=lambda: fingerprints,
-            )
+
+            changed.setattr(name="read_bytes", target=Path, value=_source_edit)
         if mutation in {"prompts_source", "sampling_source"}:
-            with pytest.raises(ValueError, match="reader implementation"):
+            assert (
                 sampling.prepare_evaluation_schedule(
                     inputs=_schedule.inputs,
                     judge=_schedule.judge,
                     settings=_schedule.settings,
                 )
+                == _schedule
+            )
         else:
             fresh = sampling.prepare_evaluation_schedule(
                 inputs=_schedule.inputs,
@@ -334,20 +340,22 @@ def test_incompatible_material_preserves_ledger_and_exhausted_attempts(
             )
             if mutation != "prompt":
                 assert new_critic.prompt.request_id != old_critic.prompt.request_id
-        with pytest.raises(ValueError, match="implementation|reproduced"):
-            with judge.open_evaluation_store(store):
-                pytest.fail("Incompatible schedule exposed the writable cache")
+        if mutation in {"prompts_source", "sampling_source"}:
+            with judge.open_evaluation_store(store) as unchanged:
+                assert unchanged.snapshot() == saved
+        else:
+            with pytest.raises(ValueError, match="reproduced"):
+                with judge.open_evaluation_store(store):
+                    pytest.fail("Incompatible schedule exposed the writable cache")
         assert {
             p.name: p.read_bytes() for p in directory.iterdir() if p.is_file()
         } == before
     with judge.open_evaluation_store(store) as session:
         assert session.snapshot() == saved
-        with pytest.raises(ValueError):
-            session.start_attempt(request.prompt.request_id)
-        assert session.snapshot() == saved
-    assert {
-        p.name: p.read_bytes() for p in directory.iterdir() if p.is_file()
-    } == before
+        recovered = session.start_attempt(request.prompt.request_id)
+        assert recovered.attempt_number == 4
+        assert recovered.execution_number == len(saved.executions) + 1
+        assert session.snapshot().events[: len(saved.events)] == saved.events
 
 
 @pytest.mark.parametrize(

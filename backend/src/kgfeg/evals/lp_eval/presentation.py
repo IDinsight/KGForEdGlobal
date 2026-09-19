@@ -37,7 +37,6 @@ from kgfeg.evals.lp_eval.schemas import (
     ScheduledRequest,
 )
 from kgfeg.evals.lp_eval.utils import _publish_files, _validated_report_manifest
-from kgfeg.kgs import lp_requests
 from kgfeg.kgs.lp_requests import canonical_lp_json, lp_material_content_hash
 
 _GUIDE = (
@@ -297,7 +296,7 @@ def _claim_rows(
             parent = by_id[row["request_id"]]
             claims.append(
                 {
-                    "Ref": f"R{len(claims)+1:05d}",
+                    "Ref": f"R{len(claims) + 1:05d}",
                     "Curriculum": parent["Curriculum"],
                     "Judgment": parent["Ref"],
                     "Pair": parent["Pair"],
@@ -445,7 +444,7 @@ def _comparison_rows(
                 "Pair ID": item["pair_id"],
                 "First request ID": item["first_request_id"],
                 "Second request ID": item["second_request_id"],
-                "Source": f"lp_eval_report.json#/comparisons/{index-1}",
+                "Source": f"lp_eval_report.json#/comparisons/{index - 1}",
             }
         )
     baseline_refs = _baseline_comparison_refs(comparisons=results, judgments=judgments)
@@ -495,7 +494,7 @@ def _concern_rows(
                 "Authority": item["authority"],
                 "Personal notes (not a disposition)": "",
                 "Concern ID": item["concern_id"],
-                "Source": f"lp_eval_report.json#/concerns/{index-1}",
+                "Source": f"lp_eval_report.json#/concerns/{index - 1}",
             }
         )
 
@@ -824,7 +823,8 @@ def _destination(
     Parameters
     ----------
     identity
-        Source and renderer identity for the default content-addressed destination.
+        Source and rendered output identity for the default content-addressed
+        destination.
     output_directory
         Optional isolated destination selected by the caller.
     report
@@ -1403,7 +1403,7 @@ def _judgment_row(
         "Document key": row["doc_key"],
         "Evidence hash": row["evidence_content_hash"],
         "Production request ID": production.get("request_id"),
-        "Source": f"lp_eval_report.json#/assessments/{index-1}",
+        "Source": f"lp_eval_report.json#/assessments/{index - 1}",
         "Saved request": request,
     }
 
@@ -2270,24 +2270,10 @@ def render_evaluation_presentations(
         requests=requests,
         source_hash=reference.manifest_sha256,
     )
-    renderer = {
-        str(path.relative_to(Path(__file__).resolve().parents[2])): hashlib.sha256(
-            _store_read(path)
-        ).hexdigest()
-        for path in (
-            Path(__file__).resolve(),
-            Path(__file__).with_name("judge.py").resolve(),
-            Path(__file__).with_name("schemas.py").resolve(),
-            Path(__file__).with_name("utils.py").resolve(),
-            Path(__file__).with_name("sampling.py").resolve(),
-            Path(lp_requests.__file__).resolve(),
-        )
-    }
     identity = {
         "source_report_directory": str(source),
         "source_manifest_sha256": reference.manifest_sha256,
         "source_files": manifest["files"],
-        "renderer_sources": renderer,
         "dependencies": {
             "python": platform.python_version(),
             "xlsxwriter": version("xlsxwriter"),
@@ -2298,18 +2284,10 @@ def render_evaluation_presentations(
             for key in (
                 "schedule_content_hash",
                 "cache_content_hash",
-                "scorer_sha256",
                 "inputs",
-                "implementation_fingerprints",
             )
         },
     }
-    destination = _destination(
-        identity=identity,
-        output_directory=output_directory,
-        report=report,
-        source=source,
-    )
     data = {
         "identity": identity,
         "tables": tables,
@@ -2330,16 +2308,14 @@ def render_evaluation_presentations(
         }
         for name, payload in artifacts.items()
     }
+    destination = _destination(
+        identity=identity,
+        output_directory=output_directory,
+        report=report,
+        source=source,
+    )
     artifacts["presentation_manifest.json"] = canonical_lp_json(identity).encode()
     _validated_report_manifest(reference)
-
-    if renderer != {
-        name: hashlib.sha256(
-            _store_read(Path(__file__).resolve().parents[2] / name)
-        ).hexdigest()
-        for name in renderer
-    }:
-        raise ValueError("Renderer changed during generation.")
 
     _publish_files(directory=destination, files=artifacts)
     return destination

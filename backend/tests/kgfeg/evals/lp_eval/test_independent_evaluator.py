@@ -385,6 +385,9 @@ def _session(*, path: str = ":memory:", schedule: Any) -> Any:
         "CREATE TABLE events (sequence INTEGER PRIMARY KEY, payload TEXT NOT NULL, content_hash TEXT NOT NULL)"
     )
     connection.execute(
+        "CREATE TABLE executions (sequence INTEGER PRIMARY KEY, payload TEXT NOT NULL, content_hash TEXT NOT NULL)"
+    )
+    connection.execute(
         "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
     )
     connection.execute(
@@ -395,8 +398,25 @@ def _session(*, path: str = ":memory:", schedule: Any) -> Any:
         "INSERT INTO metadata VALUES (?, ?)",
         ("head", _dump({"count": 0, "hash": schedule.material_content_hash})),
     )
+    connection.executemany(
+        "INSERT INTO metadata VALUES (?, ?)",
+        [
+            (
+                "execution_head",
+                _dump({"count": 0, "hash": schedule.material_content_hash}),
+            ),
+            ("manifest", "c" * 64),
+        ],
+    )
     connection.commit()
-    return judge.EvaluationSession(connection=connection, events=(), schedule=schedule)
+    return judge.EvaluationSession(
+        connection=connection,
+        events=(),
+        executions=judge._database_executions(
+            connection=connection, schedule_hash=schedule.material_content_hash
+        ),
+        schedule=schedule,
+    )
 
 
 def _small_schedule(schedule: Any) -> Any:
@@ -925,7 +945,13 @@ def test_execution_concurrency_four_and_cached_resume(_schedule: Any) -> None:
         )
         cache = await execution.run()
         replay = judge.EvaluationSession(
-            connection=session._connection, events=cache.events, schedule=reduced
+            connection=session._connection,
+            events=cache.events,
+            executions=judge._database_executions(
+                connection=session._connection,
+                schedule_hash=reduced.material_content_hash,
+            ),
+            schedule=reduced,
         )
         resumed = judge._Execution(
             check_material=lambda: None,
@@ -1285,7 +1311,7 @@ def test_frozen_source_detects_changed_missing_and_new_material(
         sampling._frozen_source_check(snapshot)
 
 
-@pytest.mark.parametrize("mutation", ["mode", "schema", "sdk", "source"])
+@pytest.mark.parametrize("mutation", ["mode", "schema", "sdk"])
 def test_incompatible_store_is_rejected_without_evidence_writes(
     _schedule: Any, monkeypatch: pytest.MonkeyPatch, mutation: str
 ) -> None:
@@ -1298,7 +1324,7 @@ def test_incompatible_store_is_rejected_without_evidence_writes(
     monkeypatch
         Restoring simulated runtime material changes.
     mutation
-        Output or implementation identity changed after freezing.
+        Structured output material changed after freezing.
     """
     frozen_manifest = json.loads(_schedule.inputs.manifest_path.read_text())
     repository = Path(frozen_manifest["inventory"]["evaluation_root"]).parents[1]
@@ -1311,30 +1337,19 @@ def test_incompatible_store_is_rejected_without_evidence_writes(
         for path in directory.rglob("*")
         if path.is_file()
     }
-    assert any(
-        item.path.name == "output.py" for item in _schedule.implementation_fingerprints
-    )
-    if mutation == "source":
-        monkeypatch.setattr(
-            name="_schedule_implementation", target=judge, value=lambda: ()
-        )
-        expected = "implementation"
+    contract = json.loads(_schedule.judge.output_contract_json)
+    if mutation == "mode":
+        contract["mode"] = "tool"
+    elif mutation == "schema":
+        contract["schemas"]["classification"]["schema"]["required"].append("new_field")
     else:
-        contract = json.loads(_schedule.judge.output_contract_json)
-        if mutation == "mode":
-            contract["mode"] = "tool"
-        elif mutation == "schema":
-            contract["schemas"]["classification"]["schema"]["required"].append(
-                "new_field"
-            )
-        else:
-            contract["sdk_versions"]["anthropic"] = "new-sdk-version"
-        monkeypatch.setattr(
-            name="judge_output_contract",
-            target=sampling,
-            value=lambda config: _dump(contract),
-        )
-        expected = "structured output contract"
+        contract["sdk_versions"]["anthropic"] = "new-sdk-version"
+    monkeypatch.setattr(
+        name="judge_output_contract",
+        target=sampling,
+        value=lambda config: _dump(contract),
+    )
+    expected = "structured output contract"
     with pytest.raises(ValueError, match=expected):
         with judge.open_evaluation_store(reference):
             raise AssertionError("Incompatible frozen invocation was opened.")
@@ -1359,7 +1374,7 @@ def test_incomplete_cache_cannot_report_completion(
         Complete default development request schedule.
     """
     report = scoring.score_evaluation(
-        cache=EvaluationCache(events=(), judgments=(), unfinished=()),
+        cache=EvaluationCache(events=(), executions=(), judgments=(), unfinished=()),
         inputs=_report_inputs,
         schedule=_schedule,
     )
@@ -1481,10 +1496,10 @@ def test_judge_uses_independent_binding_and_shared_settings() -> None:
     assert settings.llm_config("kgs").model == "openai:gpt-5.2"
 
 
-def test_ledger_crash_keeps_success_and_blocks_uncertain_attempt(
+def test_ledger_crash_keeps_success_and_recovers_uncertain_attempt(
     _schedule: Any, tmp_path: Path
 ) -> None:
-    """Reopen committed success plus a start-only crash without duplicating dispatch.
+    """Preserve success and recover an unknown outcome only in a new execution.
 
     Parameters
     ----------
@@ -1509,14 +1524,29 @@ def test_ledger_crash_keeps_success_and_blocks_uncertain_attempt(
             connection=connection, schedule_hash=_schedule.material_content_hash
         )
         replay = judge.EvaluationSession(
-            connection=connection, events=events, schedule=_schedule
+            connection=connection,
+            events=events,
+            executions=judge._database_executions(
+                connection=connection, schedule_hash=_schedule.material_content_hash
+            ),
+            schedule=_schedule,
         )
         assert replay.snapshot() == saved
         assert len(saved.judgments) == len(saved.unfinished) == 1
         with pytest.raises(ValueError):
             replay.start_attempt(requests[0].prompt.request_id)
-        with pytest.raises(ValueError):
-            replay.start_attempt(requests[1].prompt.request_id)
+        recovered = replay.start_attempt(requests[1].prompt.request_id)
+        cache = replay.snapshot()
+        assert recovered.attempt_number == 2
+        assert recovered.execution_number == 2
+        assert cache.events[: len(saved.events)] == saved.events
+        interrupted = cache.events[-2]
+        assert interrupted.event == "failed"
+        assert interrupted.failure_category == "interrupted"
+        assert interrupted.execution_number == 1
+        assert interrupted.usage == JudgeUsage()
+        assert cache.executions[-1].event_count == len(saved.events) + 1
+        assert cache.judgments == saved.judgments
 
 
 def test_ledger_dependency_duplicate_and_durable_replay(
@@ -1560,7 +1590,13 @@ def test_ledger_dependency_duplicate_and_durable_replay(
             schedule_hash=_schedule.material_content_hash,
         )
         replay = judge.EvaluationSession(
-            connection=session._connection, events=events, schedule=_schedule
+            connection=session._connection,
+            events=events,
+            executions=judge._database_executions(
+                connection=session._connection,
+                schedule_hash=_schedule.material_content_hash,
+            ),
+            schedule=_schedule,
         )
         assert replay.snapshot() == saved
     finally:
@@ -1944,16 +1980,7 @@ def test_schedule_counts_overlap_repetitions_and_identities(_schedule: Any) -> N
     material = TypeAdapter(EvaluationSchedule).dump_python(_schedule, mode="json")
     recorded_hash = material.pop("material_content_hash")
     assert hashlib.sha256(_dump(material).encode()).hexdigest() == recorded_hash
-    implementation = material["implementation_fingerprints"]
-    implementation_hash = hashlib.sha256(_dump(implementation).encode()).hexdigest()
-    expected_paths = set((_ROOT / "backend/src/kgfeg").rglob("*.py")) - {
-        _ROOT / "backend/src/kgfeg/evals/lp_eval/scoring.py"
-    }
-    assert {Path(item["path"]) for item in implementation} == expected_paths
-    for item in implementation:
-        payload = Path(item["path"]).read_bytes()
-        assert hashlib.sha256(payload).hexdigest() == item["sha256"]
-        assert len(payload) == item["size_bytes"]
+    assert material["implementation_fingerprints"] == []
     for request in requests:
         identity = {
             "canonical_endpoint_uuids": [
@@ -1961,7 +1988,6 @@ def test_schedule_counts_overlap_repetitions_and_identities(_schedule: Any) -> N
             ],
             "component": request.component,
             "evidence_content_hash": request.evidence.material_content_hash,
-            "implementation_hash": implementation_hash,
             "judge": material["judge"],
             "replicate": request.replicate,
             "role": request.role,
@@ -2004,7 +2030,7 @@ def test_schedule_counts_overlap_repetitions_and_identities(_schedule: Any) -> N
                 )
 
 
-def test_schedule_runs_without_git_and_binds_source_changes(
+def test_schedule_runs_without_git_or_source_hash_gates(
     _schedule: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Validate material identities while Git queries are unavailable.
@@ -2020,10 +2046,8 @@ def test_schedule_runs_without_git_and_binds_source_changes(
     monkeypatch.setattr(name="run", target=subprocess, value=guard)
     monkeypatch.setattr(name="check_output", target=subprocess, value=guard)
     monkeypatch.setattr(name="Popen", target=subprocess, value=guard)
-    # The full schedule was prepared independently; a changed source binding fails first.
-    changed = replace(_schedule, implementation_fingerprints=())
-    with pytest.raises(ValueError, match="implementation"):
-        judge._validate_schedule(changed)
+    assert _schedule.implementation_fingerprints == ()
+    judge._validate_schedule(_schedule)
     source = _source()
     sampling.sample_independent_pairs(
         population=sampling.build_admissible_population(source),

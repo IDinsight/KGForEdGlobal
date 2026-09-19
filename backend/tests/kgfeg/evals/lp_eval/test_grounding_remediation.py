@@ -160,7 +160,13 @@ def test_cache_revalidates_grounding_even_with_matching_event_identity(
         )
         saved = session.snapshot()
         replay = judge.EvaluationSession(
-            connection=session._connection, events=saved.events, schedule=schedule
+            connection=session._connection,
+            events=saved.events,
+            executions=judge._database_executions(
+                connection=session._connection,
+                schedule_hash=schedule.material_content_hash,
+            ),
+            schedule=schedule,
         )
         assert replay.snapshot() == saved
         invalid = _response(
@@ -172,6 +178,10 @@ def test_cache_revalidates_grounding_even_with_matching_event_identity(
             judge.EvaluationSession(
                 connection=session._connection,
                 events=(*saved.events[:-1], changed),
+                executions=judge._database_executions(
+                    connection=session._connection,
+                    schedule_hash=schedule.material_content_hash,
+                ),
                 schedule=schedule,
             )
         assert session.snapshot() == saved
@@ -311,7 +321,13 @@ def test_grounding_validation_retries_share_total_allowance(
             assert len(cache.judgments) == 1
             assert cache.judgments[0].grounding == "ambiguous"
             replay = judge.EvaluationSession(
-                connection=session._connection, events=cache.events, schedule=schedule
+                connection=session._connection,
+                events=cache.events,
+                executions=judge._database_executions(
+                    connection=session._connection,
+                    schedule_hash=schedule.material_content_hash,
+                ),
+                schedule=schedule,
             )
             asyncio.run(
                 judge._Execution(

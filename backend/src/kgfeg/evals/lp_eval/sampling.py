@@ -243,7 +243,7 @@ class _SampleReservoir:
 class _ScheduleContext:
     """Invocation-wide immutable identity for individual scheduled requests."""
 
-    implementation_hash: str
+    implementation_hash: str | None
     judge: ResolvedJudgeSettings
     settings: EvaluationSettings
 
@@ -1444,7 +1444,7 @@ def _frozen_directory(path: Path) -> Iterator[int]:
 
 
 def _frozen_interpretation(snapshot: FrozenSnapshot) -> None:
-    """Reject changed reader implementations or incompatible captured schemas.
+    """Reject incompatible captured schemas and format interpretations.
 
     Parameters
     ----------
@@ -1454,7 +1454,7 @@ def _frozen_interpretation(snapshot: FrozenSnapshot) -> None:
     Raises
     ------
     ValueError
-        The recorded contract, implementation or capacity interpretation differs.
+        The recorded contract or capacity interpretation differs.
     """
 
     if snapshot.checkpoint_format not in {"historical_prefix", "journal_bearing"}:
@@ -1463,11 +1463,6 @@ def _frozen_interpretation(snapshot: FrozenSnapshot) -> None:
     if snapshot.interpretation_version != "lp_snapshot_v2":
         raise ValueError("Unsupported frozen snapshot interpretation version")
 
-    _equal(
-        actual=snapshot.reader_fingerprints,
-        expected=_schedule_implementation(),
-        label="Frozen snapshot reader implementation",
-    )
     captured = read_captured_config(
         _decode_snapshot_json(snapshot.config_json.encode())
     )
@@ -2747,7 +2742,7 @@ def _schedule_call(
     replicate: int,
     role: Literal["base", "identical_repeat", "variant", "critique", "control"],
 ) -> ScheduledRequest:
-    """Bind one exact request to its condition, replicate, model and implementation.
+    """Bind one exact request to its condition, replicate, model and material evidence.
 
     Parameters
     ----------
@@ -2756,7 +2751,7 @@ def _schedule_call(
     component
         Required assessment component.
     context
-        Effective invocation settings and actual implementation identity.
+        Effective invocation settings and any original saved request namespace.
     dependencies
         Blind results which must freeze before dispatch.
     evidence
@@ -2777,20 +2772,22 @@ def _schedule_call(
         If the evidence cannot be rendered under the required response schema.
     """
 
-    request_id = lp_material_content_hash(
-        {
-            "canonical_endpoint_uuids": [str(item) for item in canonical_endpoints],
-            "component": component,
-            "evidence_content_hash": evidence.material_content_hash,
-            "implementation_hash": context.implementation_hash,
-            "judge": TypeAdapter(ResolvedJudgeSettings).dump_python(
-                context.judge, mode="json"
-            ),
-            "replicate": replicate,
-            "role": role,
-            "settings": context.settings.model_dump(mode="json"),
-        }
-    )
+    identity = {
+        "canonical_endpoint_uuids": [str(item) for item in canonical_endpoints],
+        "component": component,
+        "evidence_content_hash": evidence.material_content_hash,
+        "judge": TypeAdapter(ResolvedJudgeSettings).dump_python(
+            context.judge, mode="json"
+        ),
+        "replicate": replicate,
+        "role": role,
+        "settings": context.settings.model_dump(mode="json"),
+    }
+
+    if context.implementation_hash is not None:
+        identity["implementation_hash"] = context.implementation_hash
+
+    request_id = lp_material_content_hash(identity)
     renderer = (
         render_critique_prompt
         if evidence.view == "critique"
@@ -3169,46 +3166,6 @@ def _schedule_evidence(
     material = TypeAdapter(ScheduledEvidence).dump_python(result, mode="json")
     del material["material_content_hash"]
     return replace(result, material_content_hash=lp_material_content_hash(material))
-
-
-def _schedule_implementation() -> tuple[FileFingerprint, ...]:
-    """Capture actual package Python bytes without Git mutations or secret reads.
-
-    Returns
-    -------
-    tuple[FileFingerprint, ...]
-        Stable ordered source identities, including shared evidence/rendering helpers.
-
-    Raises
-    ------
-    ValueError
-        If a source file changes while its bytes are captured.
-    """
-
-    root = Path(__file__).resolve().parents[2]
-    fingerprints = []
-
-    for path in sorted(root.rglob("*.py")):
-        # Report-only scoring changes do not invalidate identical judge requests.
-        if path == root / "evals" / "lp_eval" / "scoring.py":
-            continue
-
-        before = path.stat()
-        payload = path.read_bytes()
-        after = path.stat()
-
-        if _stat_identity(before) != _stat_identity(after):
-            raise ValueError("Implementation changed during schedule preparation.")
-
-        fingerprints.append(
-            FileFingerprint(
-                path=path,
-                sha256=hashlib.sha256(payload).hexdigest(),
-                size_bytes=len(payload),
-            )
-        )
-
-    return tuple(fingerprints)
 
 
 def _schedule_nomination_removal(
@@ -5988,7 +5945,7 @@ def load_frozen_lp_inputs(reference: FrozenInputs) -> tuple[ValidatedSnapshot, .
                     config_json=current.config_json,
                     interpretation_version=current.interpretation_version,
                     projection_format=current.projection_format,
-                    reader_fingerprints=current.reader_fingerprints,
+                    reader_fingerprints=snapshot.reader_fingerprints,
                     run=current.run,
                     source_artifact=current.source_artifact,
                 ),
@@ -6051,6 +6008,7 @@ def normalize_evaluation_text(text: str) -> str:
 
 def prepare_evaluation_schedule(
     *,
+    identity: EvaluationSchedule | None = None,
     inputs: FrozenInputs,
     judge: ResolvedJudgeSettings,
     settings: ResolvedEvaluationSettings,
@@ -6063,6 +6021,8 @@ def prepare_evaluation_schedule(
 
     Parameters
     ----------
+    identity
+        Original schedule namespace for reproduction only; no source files are read.
     inputs
         Exact validated frozen selection; newly completed runs cannot be absorbed.
     judge
@@ -6107,12 +6067,19 @@ def prepare_evaluation_schedule(
     if not snapshots:
         raise ValueError("Evaluation requires at least one frozen selected curriculum.")
 
-    implementation = _schedule_implementation()
+    # Saved namespaces preserve original request IDs without consulting source files.
+    implementation = (
+        identity.implementation_fingerprints if identity is not None else ()
+    )
     context = _ScheduleContext(
-        implementation_hash=lp_material_content_hash(
-            TypeAdapter(tuple[FileFingerprint, ...]).dump_python(
-                implementation, mode="json"
+        implementation_hash=(
+            lp_material_content_hash(
+                TypeAdapter(tuple[FileFingerprint, ...]).dump_python(
+                    implementation, mode="json"
+                )
             )
+            if implementation
+            else None
         ),
         judge=judge,
         settings=effective,
@@ -6145,9 +6112,6 @@ def prepare_evaluation_schedule(
                     }
                 )
             ] += 1
-
-    if _schedule_implementation() != implementation:
-        raise ValueError("Implementation changed while the schedule was prepared.")
 
     load_frozen_lp_inputs(inputs)
     schedule = EvaluationSchedule(
@@ -6486,7 +6450,6 @@ def validate_lp_snapshot(run: DiscoveredRun) -> ValidatedSnapshot:
         if run.status != "completed_candidate":
             raise ValueError("Only completed candidates may be validated")
 
-        reader_fingerprints = _schedule_implementation()
         reader = _SnapshotReader(run.kgs_directory)
 
         for fingerprint in run.fingerprints:
@@ -6564,11 +6527,6 @@ def validate_lp_snapshot(run: DiscoveredRun) -> ValidatedSnapshot:
                 artifacts=artifacts, config=config, reader=reader, upstream=upstream
             )
             reader.check_unchanged()
-            _equal(
-                actual=_schedule_implementation(),
-                expected=reader_fingerprints,
-                label="Snapshot reader stability",
-            )
 
         return ValidatedSnapshot(
             absent_artifacts=tuple(sorted(reader.absent)),
@@ -6581,7 +6539,7 @@ def validate_lp_snapshot(run: DiscoveredRun) -> ValidatedSnapshot:
             config_json=canonical_lp_json(config.model_dump(mode="json")),
             interpretation_version="lp_snapshot_v2",
             projection_format=projection_format,
-            reader_fingerprints=reader_fingerprints,
+            reader_fingerprints=(),
             run=run,
             source_artifact=source_name,
         )

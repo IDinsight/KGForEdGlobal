@@ -98,8 +98,20 @@ frozen interpretation; report-only scoring changes retain the existing scoring
 exception. JSON/Markdown reports identify each format and show historical concurrency
 capacity as “not recorded.”
 
-Repeating a command automatically finds a matching frozen invocation by root and
-settings. Multiple matching invocations require explicit selection. To retain overrides
+Repeating the same command automatically selects the newest matching incomplete
+invocation by canonical starting directory and effective sampling, repetition and judge
+settings. Ordering uses the immutable UTC creation time, then the schedule identifier
+for ties. Matching stores are validated before selection; a locked, stale, corrupt or
+unsupported store blocks recovery with a specific error, never silent fresh discovery.
+If every match is complete, the newest validated complete invocation is returned
+without repeating calls. The command prints the selected manifest, reused judgments,
+remaining work and execution progress. A command lock covers selection through
+reporting, and the invocation writer lock protects the attempt ledger.
+
+New evaluations use the `lp_evaluation_store_v2` format with durable execution
+boundaries. Earlier evaluator stores cannot be resumed or imported. Remove unwanted old
+evaluator results separately before starting fresh; the command never deletes them.
+Historical/current production snapshot support is unchanged. To retain overrides
 without repeating them, use the exact invocation manifest printed by the command:
 
 ```bash
@@ -191,13 +203,27 @@ attempt** and **at most two retries after the initial attempt**, waiting **5 the
 seconds**. Timeouts, HTTP 429/5xx responses, and invalid structured output are
 retryable within that allowance. Input, authentication, configuration, and stale-cache
 failures are not retryable. SDK and output-validation retries share the same
-three-attempt maximum.
+three-attempt maximum within each retry cycle.
 
 After a terminal failure, already active calls finish without starting further calls.
-Validated successes remain reusable. Resume preserves attempt history and does not
-reset the retry allowance: exhausted, nonretryable, or unfinished attempts with
-uncertain outcomes prevent automatic dispatch. Restarting the command does not clear
-these conditions.
+Validated successes remain reusable without repeating their calls. Each deliberate
+rerun may retry any previously failed request, including a transport or authentication
+failure. Previously exhausted cycles receive one new bounded cycle. A partially
+consumed cycle resumes with its remaining allowance; exhausting that cycle stops the
+execution without opening another. The waits are 5 and 20 seconds within each cycle.
+Lifetime attempt numbers never reset: after three failures, the next rerun starts at
+lifetime attempt 4, cycle attempt 1. Execution boundaries, prior failures, later
+dispositions and all usage remain in the append-only ledger and reports. Progress logs
+identify lifetime and cycle attempts.
+
+A historical failure never permanently blocks a deliberate rerun. Unfinished starts
+receive an appended interrupted record with unknown remote outcome and usage before the
+new execution begins. Rerunning authorizes a possible duplicate provider call/cost; it
+does not erase the earlier attempt or assert that the provider cancelled it. Transport,
+interruption and authentication/configuration failures still stop the current
+execution; they do not cause automatic retry loops. Current configuration, inputs,
+cache integrity and exclusive ownership must pass validation before new dispatch. The
+CLI and Markdown report show the reason when execution is blocked.
 
 ## What the judge assesses
 
@@ -273,8 +299,8 @@ results/lp_evals/
     dispositions/<disposition-hash>/lp_eval_dispositions.json
 ```
 
-Reports are immutable generations with file hashes. A scorer-only change may generate a
-new report from compatible judgments with the new scorer hash; it does not relabel old
+Reports and presentations are immutable generations identified by their output bytes.
+Scoring changes may generate new reports from compatible judgments while preserving old
 evidence. Production graphs and `kg_run.json` remain untouched.
 
 Read raw numerators/denominators, sample membership, shortfalls, all replicates,

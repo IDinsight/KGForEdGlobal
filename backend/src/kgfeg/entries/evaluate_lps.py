@@ -65,7 +65,7 @@ from kgfeg.evals.lp_eval.judge import (
     _store_write,
     execute_evaluation,
     find_evaluation_store,
-    load_evaluation_schedule,
+    open_evaluation_command,
     open_evaluation_store,
     open_judge_transport,
     persist_evaluation_schedule,
@@ -269,8 +269,8 @@ def _render_report(
         typer.echo(f"Presentation rendering failed: {_error_message(error)}", err=True)
         raise typer.Exit(code=1) from error
 
-    typer.echo(f'Workbook: {directory / "learning_progressions_evaluation.xlsx"}')
-    typer.echo(f'Visualization: {directory / "report.html"}')
+    typer.echo(f"Workbook: {directory / 'learning_progressions_evaluation.xlsx'}")
+    typer.echo(f"Visualization: {directory / 'report.html'}")
 
 
 def _report_result(
@@ -350,11 +350,12 @@ def _resume_selection(
     Raises
     ------
     ValueError
-        If root, settings, model, selected inputs or implementation differ.
+        If root, settings, model or selected input material differ.
     """
 
-    schedule = load_evaluation_schedule(reference)
-    inventory = _frozen_manifest(schedule.inputs).inventory
+    with open_evaluation_store(reference) as session:
+        schedule = session.schedule
+        inventory = _frozen_manifest(schedule.inputs).inventory
 
     if (
         inventory.results_root != results_root
@@ -404,7 +405,7 @@ def _setting_help(name: str) -> str:
         "without judging, rescoring or resuming."
     ),
     epilog=(
-        "Resumes a matching frozen invocation without adding newly completed runs. "
+        "Resumes the newest matching incomplete invocation using its frozen schedule. "
         "Use --new-invocation to discover again or --resume-manifest to select a run. "
         "Without --render-report this command can make live API calls. "
         "Offline callers use prepare_evaluation() "
@@ -575,22 +576,24 @@ def evaluate(
 
     try:
         repository_root = Path(__file__).resolve().parents[4]
-        typer.echo("Preflight and frozen preparation...")
-        reference = prepare_evaluation(
-            new_invocation=new_invocation,
-            overrides=overrides,
-            repository_root=repository_root,
-            results_root=results_root,
-            resume_manifest=resume_manifest,
-        )
-        typer.echo(f"Frozen invocation: {reference.manifest_path}")
-        result = asyncio.run(
-            run_evaluation(
-                progress=typer.echo,
-                provenance=ReportProvenance(evidence_kind="evaluation"),
-                reference=reference,
+
+        with open_evaluation_command(repository_root):
+            typer.echo("Preflight and frozen preparation...")
+            reference = prepare_evaluation(
+                new_invocation=new_invocation,
+                overrides=overrides,
+                repository_root=repository_root,
+                results_root=results_root,
+                resume_manifest=resume_manifest,
             )
-        )
+            typer.echo(f"Frozen invocation: {reference.manifest_path}")
+            result = asyncio.run(
+                run_evaluation(
+                    progress=typer.echo,
+                    provenance=ReportProvenance(evidence_kind="evaluation"),
+                    reference=reference,
+                )
+            )
     except (KeyboardInterrupt, asyncio.CancelledError) as error:
         typer.echo(
             "Evaluation interrupted; durable attempts and completed judgments remain available.",
@@ -755,8 +758,12 @@ async def run_evaluation(
 
         if progress is not None:
             progress(
-                f"Selected curricula: {len(session.schedule.curricula)}; "
-                f"cached judgments: {len(cache.judgments)}/{session.schedule.total_requests}."
+                f"{'Resuming' if cache.executions else 'Starting'} evaluation: "
+                f"{reference.manifest_path}; "
+                f"selected curricula: {len(session.schedule.curricula)}; "
+                f"reused judgments: {len(cache.judgments)}; "
+                f"remaining: {session.schedule.total_requests - len(cache.judgments)}; "
+                f"prior executions: {len(cache.executions)}."
             )
 
     errors: tuple[str, ...] = ()
@@ -788,6 +795,9 @@ async def run_evaluation(
             )
 
     if progress is not None:
+        for message in errors:
+            progress(f"Execution blocked: {message}")
+
         progress("Validating judgments and writing immutable reports...")
 
     artifacts = write_evaluation_reports(

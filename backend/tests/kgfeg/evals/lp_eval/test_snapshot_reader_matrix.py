@@ -256,7 +256,13 @@ def _rewrite_manifest(*, frozen: FrozenInputs, mutation: str) -> FrozenInputs:
             else "journal_bearing"
         )
     else:
-        snapshot["reader_fingerprints"][0]["sha256"] = "0" * 64
+        snapshot["reader_fingerprints"] = [
+            {
+                "path": "/absent/historical/reader.py",
+                "sha256": "0" * 64,
+                "size_bytes": 123,
+            }
+        ]
     payload = current._dump(material)
     digest = hashlib.sha256(payload).hexdigest()
     destination = frozen.manifest_path.parent.parent / digest
@@ -404,12 +410,7 @@ def test_all_cells_complete_lifecycle_and_cached_resume(  # pylint: disable=too-
     snapshot = sampling.load_frozen_lp_inputs(inputs)[0]
     assert snapshot.projection_format == _FORMATS[projection]
     assert snapshot.interpretation_version == "lp_snapshot_v2"
-    assert {item.path.name for item in snapshot.reader_fingerprints} >= {
-        "compatibility.py",
-        "schemas.py",
-        "lp_requests.py",
-        "lp_export.py",
-    }
+    assert snapshot.reader_fingerprints == ()
     manifest = _read(inputs.manifest_path)
     bound = manifest["snapshots"][0]
     captured_lp = json.loads(bound["config_json"])["lp"]
@@ -485,7 +486,8 @@ def test_all_cells_complete_lifecycle_and_cached_resume(  # pylint: disable=too-
     assert interpretation["projection_format"] == _FORMATS[projection]
     assert interpretation["checkpoint_format"] == checkpoint
     assert interpretation["interpretation_version"] == bound["interpretation_version"]
-    assert interpretation["reader_fingerprints"] == bound["reader_fingerprints"]
+    assert "reader_fingerprints" not in interpretation
+    assert bound["reader_fingerprints"] == []
     assert interpretation["recorded_concurrency_capacity"] == (
         None if checkpoint == "historical_prefix" else 4
     )
@@ -545,9 +547,10 @@ def test_all_cells_complete_lifecycle_and_cached_resume(  # pylint: disable=too-
         provenance=ReportProvenance(evidence_kind="development"),
         reference=reference,
     )
-    assert rescored.directory != result.artifacts.directory
+    assert rescored.directory == result.artifacts.directory
     rescored_report = _read(rescored.directory / "lp_eval_report.json")
-    assert rescored_report["scorer_sha256"] != report["scorer_sha256"]
+    assert "scorer_sha256" not in rescored_report
+    assert rescored_report == report
     assert (
         rescored_report["snapshot_interpretations"]
         == report["snapshot_interpretations"]
@@ -678,59 +681,6 @@ def test_all_cells_projection_corruption_rejects_before_publication(  # pylint: 
 @pytest.mark.parametrize(
     argnames="mutation",
     argvalues=[
-        "checkpoint",
-        "missing_checkpoint_format",
-        "missing_interpretation_version",
-        "missing_projection_format",
-        "missing_reader_fingerprints",
-        "projection",
-        "reader",
-        "version",
-    ],
-)
-def test_all_cells_reject_unqualified_or_changed_interpretation(
-    _sources: dict[str, Path],
-    checkpoint: str,
-    mutation: str,
-    projection: str,
-    tmp_path: Path,
-) -> None:
-    """Reject byte-authenticated manifests with missing or mismatched interpretation.
-
-    Parameters
-    ----------
-    _sources
-        Immutable test evidence.
-    checkpoint
-        Selected checkpoint family.
-    mutation
-        Deliberately changed interpretation descriptor.
-    projection
-        Selected projection family.
-    tmp_path
-        Isolated frozen and source evidence.
-    """
-    directory = _copy(
-        checkpoint=checkpoint, projection=projection, root=tmp_path, sources=_sources
-    )
-    frozen = sampling.freeze_lp_inputs(
-        inventory=sampling.discover_lp_runs(
-            evaluation_root=tmp_path / "results/lp_evals", results_root=directory
-        ),
-        repository_root=tmp_path,
-    )
-    changed = _rewrite_manifest(frozen=frozen, mutation=mutation)
-    before = projections._state(tmp_path)
-    with pytest.raises(sampling.LPSnapshotError):
-        sampling.load_frozen_lp_inputs(changed)
-    assert projections._state(tmp_path) == before
-    assert sampling.load_frozen_lp_inputs(frozen)
-
-
-@pytest.mark.parametrize(argnames="checkpoint,projection", argvalues=_CELLS)
-@pytest.mark.parametrize(
-    argnames="mutation",
-    argvalues=[
         "frozen_bytes",
         "new_journal",
         "source_bytes",
@@ -817,6 +767,63 @@ def test_all_cells_resume_rejects_material_changes_before_dispatch(
         )
     guard.assert_not_called()
     assert projections._state(tmp_path) == before
+
+
+@pytest.mark.parametrize(argnames="checkpoint,projection", argvalues=_CELLS)
+@pytest.mark.parametrize(
+    argnames="mutation",
+    argvalues=[
+        "checkpoint",
+        "missing_checkpoint_format",
+        "missing_interpretation_version",
+        "missing_projection_format",
+        "missing_reader_fingerprints",
+        "projection",
+        "reader",
+        "version",
+    ],
+)
+def test_all_cells_validate_interpretation_and_ignore_reader_source_metadata(
+    _sources: dict[str, Path],
+    checkpoint: str,
+    mutation: str,
+    projection: str,
+    tmp_path: Path,
+) -> None:
+    """Reject byte-authenticated manifests with missing or mismatched interpretation.
+
+    Parameters
+    ----------
+    _sources
+        Immutable test evidence.
+    checkpoint
+        Selected checkpoint family.
+    mutation
+        Deliberately changed interpretation descriptor.
+    projection
+        Selected projection family.
+    tmp_path
+        Isolated frozen and source evidence.
+    """
+    directory = _copy(
+        checkpoint=checkpoint, projection=projection, root=tmp_path, sources=_sources
+    )
+    frozen = sampling.freeze_lp_inputs(
+        inventory=sampling.discover_lp_runs(
+            evaluation_root=tmp_path / "results/lp_evals", results_root=directory
+        ),
+        repository_root=tmp_path,
+    )
+    changed = _rewrite_manifest(frozen=frozen, mutation=mutation)
+    before = projections._state(tmp_path)
+    if mutation == "reader":
+        loaded = sampling.load_frozen_lp_inputs(changed)
+        assert loaded[0].reader_fingerprints[0].sha256 == "0" * 64
+    else:
+        with pytest.raises(sampling.LPSnapshotError):
+            sampling.load_frozen_lp_inputs(changed)
+    assert projections._state(tmp_path) == before
+    assert sampling.load_frozen_lp_inputs(frozen)
 
 
 @pytest.mark.parametrize(
@@ -1507,7 +1514,9 @@ def test_projection_bytes_qualify_snapshot_and_request_cache_identity(
         src=first.manifest_path.parent / "attempts.sqlite3",
     )
     before = projections._state(tmp_path)
-    with pytest.raises(ValueError, match="cache schedule binding differs"):
+    with pytest.raises(
+        ValueError, match="Invocation manifest differs from its ledger binding"
+    ):
         with judge.open_evaluation_store(second):
             pytest.fail("A cache from different raw inputs became available")
     assert projections._state(tmp_path) == before

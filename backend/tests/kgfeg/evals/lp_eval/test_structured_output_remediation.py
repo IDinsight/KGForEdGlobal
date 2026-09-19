@@ -154,24 +154,33 @@ def _assert_http_failure(
         session._connection.close()
 
     # Reopen the physical ledger: terminal history must survive connection lifetime.
-    before = ledger.read_bytes()
     connection = sqlite3.connect(ledger)
     try:
         events = judge._database_events(
             connection=connection, schedule_hash=schedule.material_content_hash
         )
         replay = judge.EvaluationSession(
-            connection=connection, events=events, schedule=schedule
+            connection=connection,
+            events=events,
+            executions=judge._database_executions(
+                connection=connection, schedule_hash=schedule.material_content_hash
+            ),
+            schedule=schedule,
         )
         assert replay.snapshot() == saved
         asyncio.run(_exercise(replay))
-        assert replay.snapshot() == saved
+        resumed = replay.snapshot()
+        assert resumed.events[: len(saved.events)] == saved.events
+        assert len(resumed.executions) == 2
+        assert [
+            e.attempt_number for e in resumed.events if e.event == "started"
+        ] == list(range(1, 2 * attempts + 1))
+        assert all(e.execution_number == 2 for e in resumed.events[len(saved.events) :])
     finally:
         connection.close()
-    assert ledger.read_bytes() == before
-    assert len(calls) == attempts
+    assert len(calls) == 2 * attempts
     assert all(call == calls[0] for call in calls)
-    assert waits == ([5, 20] if attempts == 3 else [])
+    assert waits == ([5, 20, 5, 20] if attempts == 3 else [])
     assert judge._ATTEMPT_OUTPUT.get() is None
     assert judge._ATTEMPT_USAGE.get() is None
 
@@ -588,7 +597,7 @@ def test_concurrent_http_attempts_isolate_raw_output_and_usage(
 
 @pytest.mark.parametrize(argnames="provider", argvalues=["anthropic", "openai"])
 @pytest.mark.parametrize(argnames="recovers", argvalues=[False, True])
-def test_http_retries_are_durable_and_exhaustion_never_resets(
+def test_http_retries_are_durable_and_reruns_renew_exhausted_cycles(
     monkeypatch: pytest.MonkeyPatch, provider: str, recovers: bool, tmp_path: Path
 ) -> None:
     """Count actual SDK requests through the durable attempt loop and offline replay.
@@ -652,8 +661,8 @@ def test_http_retries_are_durable_and_exhaustion_never_resets(
         """
         waits.append(delay)
 
-    async def _exercise() -> None:
-        """Execute and replay the same completed or exhausted durable ledger."""
+    async def _exercise() -> Any:
+        """Return replayed success or a separately bounded renewed retry cycle."""
         async with judge.open_judge_transport(settings) as transport:
             execution = judge._Execution(
                 check_material=lambda: None,
@@ -672,7 +681,13 @@ def test_http_retries_are_durable_and_exhaustion_never_resets(
                 schedule_hash=schedule.material_content_hash,
             )
             replay = judge.EvaluationSession(
-                connection=session._connection, events=events, schedule=schedule
+                connection=session._connection,
+                events=events,
+                executions=judge._database_executions(
+                    connection=session._connection,
+                    schedule_hash=schedule.material_content_hash,
+                ),
+                schedule=schedule,
             )
             resumed = judge._Execution(
                 check_material=lambda: None,
@@ -685,20 +700,22 @@ def test_http_retries_are_durable_and_exhaustion_never_resets(
             else:
                 with pytest.raises(judge.JudgeExecutionError):
                     await resumed.run()
-            assert replay.snapshot() == saved
+            cache = replay.snapshot()
+            assert cache.events[: len(saved.events)] == saved.events
+            assert len(cache.executions) == (1 if recovers else 2)
+            return cache
 
     _http(handler=_handler, monkeypatch=monkeypatch)
     try:
-        asyncio.run(_exercise())
-        assert len(calls) == 3
-        assert waits == [5, 20]
-        events = [
-            event for event in session.snapshot().events if event.event != "started"
-        ]
-        assert len(events) == 3
-        assert sum(event.usage.input_tokens for event in events) == 51
-        assert sum(event.usage.output_tokens for event in events) == 27
-        assert len(session.snapshot().judgments) == int(recovers)
+        cache = asyncio.run(_exercise())
+        attempts = 3 if recovers else 6
+        assert len(calls) == attempts
+        assert waits == [5, 20] * (1 if recovers else 2)
+        events = [event for event in cache.events if event.event != "started"]
+        assert [e.attempt_number for e in events] == list(range(1, attempts + 1))
+        assert sum(event.usage.input_tokens for event in events) == 17 * attempts
+        assert sum(event.usage.output_tokens for event in events) == 9 * attempts
+        assert len(cache.judgments) == int(recovers)
         assert all(event.raw_response for event in events)
         assert calls[0] == calls[1] == calls[2]
     finally:

@@ -12,7 +12,6 @@ import json
 import shutil
 import socket
 
-from dataclasses import replace
 from operator import itemgetter
 from pathlib import Path
 from typing import Any
@@ -434,13 +433,13 @@ def test_malformed_projection_never_falls_back_or_rewrites_evidence(  # pylint: 
         "schemas.py",
     ],
 )
-def test_projection_implementation_changes_invalidate_saved_schedule(
+def test_projection_implementation_changes_preserve_saved_schedule(
     _sources: dict[str, Path],
     filename: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Reject cached schedules when either projection validation dependency changes.
+    """Ignore source edits while retaining exact material schedule validation.
 
     Parameters
     ----------
@@ -472,20 +471,31 @@ def test_projection_implementation_changes_invalidate_saved_schedule(
     reference = judge.persist_evaluation_schedule(
         repository_root=tmp_path, schedule=schedule
     )
-    original = schedule.implementation_fingerprints
-    assert sum(item.path.name == filename for item in original) >= 1
-    changed = tuple(
-        replace(item, sha256="0" * 64) if item.path.name == filename else item
-        for item in original
-    )
+    assert not schedule.implementation_fingerprints
     before = _state(tmp_path)
-    monkeypatch.setattr(
-        name="_schedule_implementation", target=judge, value=lambda: changed
-    )
-    monkeypatch.setattr(
-        name="_schedule_implementation", target=sampling, value=lambda: changed
-    )
-    with pytest.raises(expected_exception=ValueError, match="implementation"):
-        with judge.open_evaluation_store(reference):
-            raise AssertionError("Incompatible schedule was opened")
+    original_read = Path.read_bytes
+
+    def _changed_source(path: Path) -> bytes:
+        """Simulate a source edit without changing any input or saved evidence.
+
+        Parameters
+        ----------
+        path
+            Requested material path.
+
+        Returns
+        -------
+        bytes
+            Source bytes with a harmless comment, or unchanged artifact bytes.
+        """
+        payload = original_read(path)
+        return (
+            payload + b"\n# Offline source revision\n"
+            if path.name == filename
+            else payload
+        )
+
+    monkeypatch.setattr(name="read_bytes", target=Path, value=_changed_source)
+    with judge.open_evaluation_store(reference) as session:
+        assert session.schedule == schedule
     assert _state(tmp_path) == before

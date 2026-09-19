@@ -54,10 +54,10 @@ from kgfeg.evals.lp_eval.output import (
 from kgfeg.evals.lp_eval.prompts import _resolve_evidence_reference
 from kgfeg.evals.lp_eval.sampling import (
     _decode_snapshot_json,
+    _frozen_bytes,
     _frozen_manifest,
     _frozen_output_boundary,
     _read_snapshot_bytes,
-    _schedule_implementation,
     _stat_identity,
     prepare_evaluation_schedule,
 )
@@ -70,6 +70,9 @@ from kgfeg.evals.lp_eval.schemas import (
     EvaluationSchedule,
     EvaluationStore,
     EvaluationStoreManifest,
+    ExecutionRecord,
+    FrozenInputManifest,
+    FrozenInputs,
     JudgePrompt,
     JudgeReply,
     JudgeUsage,
@@ -89,6 +92,7 @@ _ATTEMPT_USAGE: ContextVar[list[JudgeUsage | None] | None] = ContextVar(
 )
 _CACHE_SCHEMA = {
     "events": "CREATE TABLE events (sequence INTEGER PRIMARY KEY, payload TEXT NOT NULL, content_hash TEXT NOT NULL)",
+    "executions": "CREATE TABLE executions (sequence INTEGER PRIMARY KEY, payload TEXT NOT NULL, content_hash TEXT NOT NULL)",
     "metadata": "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
 }
 _OUTPUT_VALIDATION_REASONS = frozenset(
@@ -230,13 +234,16 @@ class _Execution:
         self._attempts_started += 1
 
         logger.info(
-            "LP evaluation attempt started: request={}/{}; attempt={}/{}; "
+            "LP evaluation attempt started: request={}/{}; lifetime_attempt={}; cycle_attempt={}/{}; "
+            "execution={}; "
             "attempts_this_invocation={}; completed={}/{}; "
             "component={}; task={}; request_id={}",
             self._request_numbers[request.prompt.request_id],
             self._total_requests,
             attempt.attempt_number,
+            (attempt.attempt_number - 1) % 3 + 1,
             JUDGE_MAX_RETRIES + 1,
+            attempt.execution_number,
             self._attempts_started,
             len(self._completed),
             self._total_requests,
@@ -378,12 +385,15 @@ class _Execution:
             self._stop.set()
 
         logger.warning(
-            "LP evaluation attempt failed: request={}/{}; attempt={}/{}; "
+            "LP evaluation attempt failed: request={}/{}; lifetime_attempt={}; cycle_attempt={}/{}; "
+            "execution={}; "
             "completed={}/{}; retryable={}; category={}; reason={}; request_id={}",
             self._request_numbers[event.request_id],
             self._total_requests,
             event.attempt_number,
+            (event.attempt_number - 1) % 3 + 1,
             JUDGE_MAX_RETRIES + 1,
+            event.execution_number,
             len(self._completed),
             self._total_requests,
             _retryable_event(event),
@@ -410,9 +420,11 @@ class _Execution:
             while not self._stop.is_set():
                 previous = self._latest.get(request.prompt.request_id)
 
-                if previous is not None:
+                if previous is not None and _retryable_event(previous):
                     await _wait_for_retry(
-                        delay=JUDGE_RETRY_WAITS_SECONDS[previous.attempt_number - 1],
+                        delay=JUDGE_RETRY_WAITS_SECONDS[
+                            (previous.attempt_number - 1) % 3
+                        ],
                         sleep=self._sleep,
                         stop=self._stop,
                     )
@@ -427,24 +439,16 @@ class _Execution:
             raise
 
     def _resume_ready(self) -> None:
-        """Reject uncertain or terminal prior attempts before any further calls.
+        """Report prior failures without treating history as a dispatch prohibition."""
 
-        Raises
-        ------
-        JudgeExecutionError
-            If an unfinished or nonretryable prior attempt requires reconciliation.
-        """
-
-        blocked = [
-            event
-            for event in self._latest.values()
-            if event.event != "succeeded" and not _retryable_event(event)
+        failed = [
+            event for event in self._latest.values() if event.event != "succeeded"
         ]
-
-        if blocked:
-            raise JudgeExecutionError(
-                cache=self._session.snapshot(),
-                message="Prior unfinished or terminal attempts prevent automatic dispatch.",
+        if failed:
+            logger.info(
+                "LP evaluation recovery: {} prior failed/interrupted requests may be retried; "
+                "unknown remote outcomes and usage remain recorded.",
+                len(failed),
             )
 
     async def run(self) -> EvaluationCache:
@@ -536,7 +540,6 @@ class _MaterialWatch:
             reference.manifest_path,
             reference.manifest_path.parent / "schedule.json.gz",
             schedule.inputs.manifest_path,
-            *(item.path for item in schedule.implementation_fingerprints),
         }
         self._absent: list[Path] = []
 
@@ -787,6 +790,7 @@ class EvaluationSession:
         *,
         connection: sqlite3.Connection,
         events: tuple[AttemptEvent, ...],
+        executions: tuple[ExecutionRecord, ...],
         schedule: EvaluationSchedule,
     ) -> None:
         """Initialize an already locked session and replay its validated evidence.
@@ -797,6 +801,8 @@ class EvaluationSession:
             Open transactional database held under the invocation writer lock.
         events
             Verified ordered ledger events.
+        executions
+            Durable execution boundaries bound to the event chain.
         schedule
             Exact persisted and regenerated schedule.
         """
@@ -813,10 +819,29 @@ class EvaluationSession:
         self.schedule = schedule
         self._head = schedule.material_content_hash
 
-        for event in events:
-            judgment = self._validate_event(event)
-            self._remember(event=event, judgment=judgment)
-            self._head = _event_hash(event=event, previous=self._head)
+        self._execution_started = False
+        self._executions: list[ExecutionRecord] = []
+        self._execution_head = schedule.material_content_hash
+        pending = iter(executions)
+        boundary = next(pending, None)
+
+        for index in range(len(events) + 1):
+            while boundary is not None and boundary.event_count == index:
+                self._validate_execution(boundary)
+                self._executions.append(boundary)
+                self._execution_head = _execution_hash(
+                    previous=self._execution_head, record=boundary
+                )
+                boundary = next(pending, None)
+
+            if index < len(events):
+                event = events[index]
+                judgment = self._validate_event(event)
+                self._remember(event=event, judgment=judgment)
+                self._head = _event_hash(event=event, previous=self._head)
+
+        if boundary is not None:
+            raise ValueError("Execution boundary lies outside the attempt history.")
 
     def _append(self, event: AttemptEvent) -> None:
         """Commit one validated event and its chain head atomically.
@@ -924,6 +949,14 @@ class EvaluationSession:
 
         previous = self._latest.get(event.request_id)
 
+        if not self._executions or (
+            event.execution_number != self._executions[-1].execution_number
+            or event.timestamp < self._executions[-1].timestamp
+        ):
+            raise ValueError(
+                "Attempt does not belong to the active recorded execution."
+            )
+
         if event.event == "started":
             _validate_attempt_start(
                 event=event,
@@ -938,6 +971,7 @@ class EvaluationSession:
             previous is None
             or previous.event != "started"
             or previous.attempt_number != event.attempt_number
+            or previous.execution_number != event.execution_number
         ):
             raise ValueError(
                 "Terminal event requires exactly one matching durable start."
@@ -962,6 +996,82 @@ class EvaluationSession:
             return judgment
 
         return None
+
+    def _validate_execution(self, record: ExecutionRecord) -> None:
+        """Require an ordered boundary over complete, safely retryable prior work.
+
+        Parameters
+        ----------
+        record
+            Proposed execution boundary.
+
+        Raises
+        ------
+        ValueError
+            If history, chronology or prior outcomes cannot support safe execution.
+        """
+
+        if (
+            record.execution_number != len(self._executions) + 1
+            or record.event_count != len(self._events)
+            or record.event_head != self._head
+            or record.timestamp.utcoffset() is None
+            or (self._executions and record.timestamp < self._executions[-1].timestamp)
+            or any(
+                record.timestamp < event.timestamp for event in self._latest.values()
+            )
+        ):
+            raise ValueError(
+                "Execution boundary differs from recorded attempt history."
+            )
+
+    def begin_execution(self) -> None:
+        """Record at most one new execution opportunity during this locked session.
+
+        Raises
+        ------
+        ValueError
+            If current material or execution history cannot be validated.
+        """
+
+        if self._execution_started:
+            return
+
+        for attempt in self.snapshot().unfinished:
+            self.record_failure(
+                attempt=attempt,
+                category="interrupted",
+                message="A user rerun superseded this unfinished attempt; remote outcome and usage remain unknown.",
+                usage=JudgeUsage(),
+            )
+
+        record = ExecutionRecord(
+            event_count=len(self._events),
+            event_head=self._head,
+            execution_number=len(self._executions) + 1,
+            timestamp=datetime.now(UTC),
+        )
+        self._validate_execution(record)
+        payload = canonical_lp_json(record.model_dump(exclude_none=True, mode="json"))
+        digest = _execution_hash(previous=self._execution_head, record=record)
+
+        with self._connection:
+            self._connection.execute(
+                "INSERT INTO executions VALUES (?, ?, ?)",
+                (record.execution_number, payload, digest),
+            )
+            self._connection.execute(
+                "UPDATE metadata SET value = ? WHERE key = 'execution_head'",
+                (
+                    canonical_lp_json(
+                        {"count": record.execution_number, "hash": digest}
+                    ),
+                ),
+            )
+
+        self._executions.append(record)
+        self._execution_head = digest
+        self._execution_started = True
 
     def record_failure(
         self,
@@ -1010,6 +1120,7 @@ class EvaluationSession:
             AttemptEvent(
                 attempt_number=attempt.attempt_number,
                 event="failed",
+                execution_number=attempt.execution_number,
                 failure_category=category,
                 failure_message=message,
                 raw_response=raw_response,
@@ -1061,6 +1172,7 @@ class EvaluationSession:
             AttemptEvent(
                 attempt_number=attempt.attempt_number,
                 event="succeeded",
+                execution_number=attempt.execution_number,
                 judgment_json=canonical_lp_json(judgment.model_dump(mode="json")),
                 raw_response=response_json,
                 request_content_hash=attempt.request_content_hash,
@@ -1082,6 +1194,7 @@ class EvaluationSession:
 
         return EvaluationCache(
             events=tuple(self._events),
+            executions=tuple(self._executions),
             judgments=tuple(self._judgments[key] for key in sorted(self._judgments)),
             unfinished=tuple(
                 self._latest[key]
@@ -1115,10 +1228,12 @@ class EvaluationSession:
         if request is None:
             raise ValueError("Unknown scheduled request.")
 
+        self.begin_execution()
         previous = self._latest.get(request_id)
         event = AttemptEvent(
             attempt_number=1 if previous is None else previous.attempt_number + 1,
             event="started",
+            execution_number=len(self._executions),
             request_content_hash=request.material_content_hash,
             request_id=request_id,
             timestamp=datetime.now(UTC),
@@ -1504,7 +1619,10 @@ def _database_events(
 
     metadata = dict(connection.execute("SELECT key, value FROM metadata").fetchall())
 
-    if set(metadata) != {"head", "schedule"} or metadata["schedule"] != schedule_hash:
+    if (
+        set(metadata) != {"execution_head", "head", "manifest", "schedule"}
+        or metadata["schedule"] != schedule_hash
+    ):
         raise ValueError("Evaluation cache schedule binding differs.")
 
     events = []
@@ -1535,6 +1653,62 @@ def _database_events(
         raise ValueError("Evaluation cache head does not cover its complete ledger.")
 
     return tuple(events)
+
+
+def _database_executions(
+    *, connection: sqlite3.Connection, schedule_hash: str
+) -> tuple[ExecutionRecord, ...]:
+    """Validate the complete append-only execution chain and its committed head.
+
+    Parameters
+    ----------
+    connection
+        Existing database under exclusive ownership.
+    schedule_hash
+        Original frozen schedule identity.
+
+    Returns
+    -------
+    tuple[ExecutionRecord, ...]
+        Ordered boundaries for state-machine replay.
+
+    Raises
+    ------
+    ValueError
+        If sequence, canonical bytes or committed chain head differ.
+    """
+
+    records = []
+    digest = schedule_hash
+
+    for expected, (sequence, payload, recorded_hash) in enumerate(
+        connection.execute(
+            "SELECT sequence, payload, content_hash FROM executions ORDER BY sequence"
+        ),
+        start=1,
+    ):
+        record = ExecutionRecord.model_validate_json(payload)
+        digest = _execution_hash(previous=digest, record=record)
+
+        if (
+            sequence != expected
+            or record.execution_number != expected
+            or payload
+            != canonical_lp_json(record.model_dump(exclude_none=True, mode="json"))
+            or digest != recorded_hash
+        ):
+            raise ValueError("Evaluation execution history is altered or out of order.")
+
+        records.append(record)
+
+    head = connection.execute(
+        "SELECT value FROM metadata WHERE key = 'execution_head'"
+    ).fetchone()
+
+    if head != (canonical_lp_json({"count": len(records), "hash": digest}),):
+        raise ValueError("Execution head does not cover the complete history.")
+
+    return tuple(records)
 
 
 def _event_hash(*, event: AttemptEvent, previous: str) -> str:
@@ -1617,6 +1791,30 @@ def _exclusive_store_lock(path: Path) -> Iterator[None]:
         os.close(descriptor)
 
 
+def _execution_hash(*, previous: str, record: ExecutionRecord) -> str:
+    """Bind an execution record to its preceding committed boundary.
+
+    Parameters
+    ----------
+    previous
+        Prior chain hash, initially the schedule hash.
+    record
+        Boundary containing the attempt-chain count and head.
+
+    Returns
+    -------
+    str
+        Deterministic content identity.
+    """
+
+    return lp_material_content_hash(
+        {
+            "previous": previous,
+            "record": record.model_dump(exclude_none=True, mode="json"),
+        }
+    )
+
+
 def _is_timeout(error: BaseException) -> bool:
     """Recognize timeouts wrapped by Pydantic AI and its provider clients.
 
@@ -1664,20 +1862,7 @@ def _load_store_manifest(reference: EvaluationStore) -> EvaluationStoreManifest:
         If bytes, canonical structure or output location differ.
     """
 
-    raw = _store_read(reference.manifest_path)
-
-    if hashlib.sha256(raw).hexdigest() != reference.content_hash:
-        raise ValueError("Evaluation store manifest content differs.")
-
-    material = _decode_snapshot_json(raw)
-    manifest = TypeAdapter(EvaluationStoreManifest).validate_json(raw)
-
-    if (
-        material
-        != TypeAdapter(EvaluationStoreManifest).dump_python(manifest, mode="json")
-        or raw != canonical_lp_json(material).encode()
-    ):
-        raise ValueError("Evaluation store manifest is not exact canonical material.")
+    manifest = _store_manifest(reference)
 
     inventory = _frozen_manifest(manifest.inputs).inventory
     directory = (
@@ -1932,8 +2117,9 @@ def _publish_store(
     compressed = gzip.compress(_schedule_bytes(schedule), mtime=0)
     _store_write(path=staging / "schedule.json.gz", payload=compressed)
     manifest = EvaluationStoreManifest(
+        created_at=datetime.now(UTC),
         inputs=schedule.inputs,
-        kind="lp_evaluation_store_v1",
+        kind="lp_evaluation_store_v2",
         schedule_content_hash=schedule.material_content_hash,
         schedule_sha256=hashlib.sha256(compressed).hexdigest(),
         selector_hash=_store_selector(
@@ -1964,6 +2150,13 @@ def _publish_store(
                             {"count": 0, "hash": schedule.material_content_hash}
                         ),
                     ),
+                    (
+                        "execution_head",
+                        canonical_lp_json(
+                            {"count": 0, "hash": schedule.material_content_hash}
+                        ),
+                    ),
+                    ("manifest", hashlib.sha256(payload).hexdigest()),
                     ("schedule", schedule.material_content_hash),
                 ],
             )
@@ -1992,12 +2185,12 @@ def _retryable_event(event: AttemptEvent) -> bool:
     Returns
     -------
     bool
-        True for only timeout, rate-limit, server or output failures below three attempts.
+        True for retryable failures with allowance remaining in their current cycle.
     """
 
     return (
         event.event == "failed"
-        and event.attempt_number <= JUDGE_MAX_RETRIES
+        and (event.attempt_number - 1) % (JUDGE_MAX_RETRIES + 1) < JUDGE_MAX_RETRIES
         and event.failure_category
         in {"timeout", "rate_limit", "server_error", "invalid_output"}
     )
@@ -2069,6 +2262,105 @@ def _store_directory_sync(directory: Path) -> None:
         os.close(descriptor)
 
 
+def _store_inventory(
+    *, inputs: FrozenInputs, reference: EvaluationStore
+) -> DiscoveryInventory:
+    """Read authenticated lookup metadata without validating unrelated live inputs.
+
+    Parameters
+    ----------
+    inputs
+        Exact input-manifest identity recorded by the saved schedule.
+    reference
+        Invocation whose output root contains the frozen manifest.
+
+    Returns
+    -------
+    DiscoveryInventory
+        Original root and selection metadata for lookup only.
+
+    Raises
+    ------
+    ValueError
+        If path, bytes, schema or canonical identity differs.
+    """
+
+    evaluation_root = reference.manifest_path.parents[2]
+    expected = evaluation_root / "inputs" / inputs.content_hash / "manifest.json"
+
+    if inputs.manifest_path != expected:
+        raise ValueError("Lookup input manifest is outside its evaluation store.")
+
+    raw = _store_read(expected)
+
+    if hashlib.sha256(raw).hexdigest() != inputs.content_hash:
+        raise ValueError("Lookup input manifest hash differs.")
+
+    manifest = TypeAdapter(FrozenInputManifest).validate_json(raw)
+
+    if (
+        _frozen_bytes(manifest) != raw
+        or manifest.inventory.evaluation_root != evaluation_root
+    ):
+        raise ValueError("Lookup input manifest has inconsistent canonical metadata.")
+
+    return manifest.inventory
+
+
+def _store_manifest(reference: EvaluationStore) -> EvaluationStoreManifest:
+    """Validate stored manifest bytes independently of current snapshot readers.
+
+    Parameters
+    ----------
+    reference
+        Exact manifest path and byte identity.
+
+    Returns
+    -------
+    EvaluationStoreManifest
+        Canonical lookup record, requiring full validation before reuse.
+
+    Raises
+    ------
+    ValueError
+        If metadata is unsupported, corrupt or bound to another directory.
+    """
+
+    raw = _store_read(reference.manifest_path)
+
+    if hashlib.sha256(raw).hexdigest() != reference.content_hash:
+        raise ValueError("Evaluation store manifest content differs.")
+
+    material = _decode_snapshot_json(raw)
+
+    if (
+        not isinstance(material, dict)
+        or material.get("kind") != "lp_evaluation_store_v2"
+    ):
+        raise ValueError(
+            f"Unsupported evaluator store: {reference.manifest_path}. "
+            f"This version requires a fresh evaluation; old progress cannot be imported. "
+            f"Remove the old evaluator results separately before rerunning."
+        )
+
+    manifest = TypeAdapter(EvaluationStoreManifest).validate_json(raw)
+
+    if manifest.created_at.utcoffset() is None:
+        raise ValueError("Invocation creation time must include a timezone.")
+
+    if (
+        material
+        != TypeAdapter(EvaluationStoreManifest).dump_python(manifest, mode="json")
+        or raw != canonical_lp_json(material).encode()
+    ):
+        raise ValueError("Evaluation store manifest is not exact canonical material.")
+
+    if reference.manifest_path.parent.name != manifest.schedule_content_hash:
+        raise ValueError("Invocation directory differs from its schedule identity.")
+
+    return manifest
+
+
 def _store_path(path: Path) -> None:
     """Reject path aliases and shared/nonregular files before evaluator I/O.
 
@@ -2119,6 +2411,62 @@ def _store_read(path: Path) -> bytes:
     return raw
 
 
+def _store_schedule(reference: EvaluationStore) -> EvaluationSchedule:
+    """Validate stored lookup identity before classifying an invocation as a match.
+
+    Parameters
+    ----------
+    reference
+        Pinned manifest whose schedule and settings must agree.
+
+    Returns
+    -------
+    EvaluationSchedule
+        Canonical recorded schedule, pending full input and material revalidation.
+
+    Raises
+    ------
+    ValueError
+        If recorded bytes, hashes, selection or lookup identity differ.
+    """
+
+    manifest = _store_manifest(reference)
+    compressed = _store_read(reference.manifest_path.parent / "schedule.json.gz")
+
+    if hashlib.sha256(compressed).hexdigest() != manifest.schedule_sha256:
+        raise ValueError("Persisted compressed schedule bytes differ.")
+
+    raw = gzip.decompress(compressed)
+    schedule = TypeAdapter(EvaluationSchedule).validate_json(raw)
+
+    if (
+        _schedule_bytes(schedule) != raw
+        or schedule.inputs != manifest.inputs
+        or schedule.material_content_hash != manifest.schedule_content_hash
+    ):
+        raise ValueError(
+            "Persisted schedule has extra, missing or noncanonical material."
+        )
+
+    material = TypeAdapter(EvaluationSchedule).dump_python(schedule, mode="json")
+    del material["material_content_hash"]
+
+    if lp_material_content_hash(material) != schedule.material_content_hash:
+        raise ValueError("Lookup schedule material hash differs.")
+
+    inventory = _store_inventory(inputs=schedule.inputs, reference=reference)
+    selector = _store_selector(
+        judge=schedule.judge,
+        results_root=inventory.results_root,
+        settings=schedule.settings,
+    )
+
+    if manifest.selector_hash != selector:
+        raise ValueError("Invocation lookup identity differs from its frozen settings.")
+
+    return schedule
+
+
 def _store_selector(
     *,
     judge: ResolvedJudgeSettings,
@@ -2132,7 +2480,7 @@ def _store_selector(
     judge
         Effective non-secret model configuration.
     results_root
-        Physical starting directory; its contents are not scanned here.
+        Canonical starting directory recorded at preparation; no filesystem lookup.
     settings
         Effective sampling and repetition controls.
 
@@ -2142,10 +2490,13 @@ def _store_selector(
         Lookup identity independent of later directory contents.
     """
 
+    if not results_root.is_absolute() or ".." in results_root.parts:
+        raise ValueError("Lookup root must be an absolute canonical recorded path.")
+
     return lp_material_content_hash(
         {
             "judge": TypeAdapter(ResolvedJudgeSettings).dump_python(judge, mode="json"),
-            "results_root": str(results_root.resolve(strict=True)),
+            "results_root": str(results_root),
             "settings": settings.settings.model_dump(mode="json"),
         }
     )
@@ -2223,6 +2574,14 @@ def _validate_attempt_start(
         If dependencies, concurrency, retry eligibility, sequence or time differ.
     """
 
+    if any(
+        item.event == "failed"
+        and not _retryable_event(item)
+        and item.execution_number == event.execution_number
+        for item in latest.values()
+    ):
+        raise ValueError("Execution has stopped; only active calls may finish.")
+
     if not set(request.dependencies) <= judgments.keys():
         raise ValueError("Associated blind judgments must be frozen before critique.")
 
@@ -2235,21 +2594,20 @@ def _validate_attempt_start(
 
         return
 
-    if previous.event != "failed" or previous.failure_category not in {
-        "timeout",
-        "rate_limit",
-        "server_error",
-        "invalid_output",
-    }:
-        raise ValueError(
-            "A successful, unfinished or permanent failure cannot be retried."
-        )
+    if previous.event != "failed":
+        raise ValueError("A successful or unfinished request cannot be retried.")
 
     if (
         event.attempt_number != previous.attempt_number + 1
         or event.timestamp < previous.timestamp
     ):
         raise ValueError("Retry sequence or timestamp differs from prior evidence.")
+
+    if (
+        not _retryable_event(previous)
+        and event.execution_number <= previous.execution_number
+    ):
+        raise ValueError("Exhausted retry cycle requires a new user execution.")
 
 
 def _validate_schedule(schedule: EvaluationSchedule) -> None:
@@ -2263,11 +2621,8 @@ def _validate_schedule(schedule: EvaluationSchedule) -> None:
     Raises
     ------
     ValueError
-        If implementation, inputs or any schedule field differ.
+        If inputs or any material schedule field differ.
     """
-
-    if schedule.implementation_fingerprints != _schedule_implementation():
-        raise ValueError("Evaluation implementation differs from the frozen schedule.")
 
     material = TypeAdapter(EvaluationSchedule).dump_python(schedule, mode="json")
     del material["material_content_hash"]
@@ -2276,7 +2631,10 @@ def _validate_schedule(schedule: EvaluationSchedule) -> None:
         raise ValueError("Evaluation schedule material hash differs.")
 
     expected = prepare_evaluation_schedule(
-        inputs=schedule.inputs, judge=schedule.judge, settings=schedule.settings
+        identity=schedule,
+        inputs=schedule.inputs,
+        judge=schedule.judge,
+        settings=schedule.settings,
     )
 
     if expected.material_content_hash != schedule.material_content_hash:
@@ -2467,6 +2825,7 @@ async def execute_evaluation(
 
         # Preflight may wait on the network. Recheck material before any generation.
         _validate_schedule(session.schedule)
+        session.begin_execution()
         cache = await execution.run()
         _validate_schedule(session.schedule)
         watch.check()
@@ -2496,13 +2855,13 @@ def find_evaluation_store(
     Returns
     -------
     EvaluationStore | None
-        Sole matching frozen invocation, or None when none exists.
+        Newest validated incomplete match, then newest complete match, or None.
 
     Raises
     ------
     ValueError
-        If published metadata is corrupt or multiple exact selectors match. The caller
-        must select an explicit manifest in the latter case.
+        If a matching invocation is unsupported, locked, corrupt or stale. Such a
+        blocker never permits fallback to fresh discovery.
     """
 
     root = repository_root.resolve(strict=True) / "results" / "lp_evals" / "invocations"
@@ -2512,7 +2871,7 @@ def find_evaluation_store(
         return None
 
     selector = _store_selector(
-        judge=judge, results_root=results_root, settings=settings
+        judge=judge, results_root=results_root.resolve(strict=True), settings=settings
     )
     matches = []
 
@@ -2526,15 +2885,27 @@ def find_evaluation_store(
             content_hash=hashlib.sha256(raw).hexdigest(),
             manifest_path=directory / "manifest.json",
         )
-        manifest = _load_store_manifest(reference)
+        manifest = _store_manifest(reference)
+        _store_schedule(reference)
 
-        if manifest.selector_hash == selector:
-            matches.append(reference)
+        if manifest.selector_hash != selector:
+            continue
 
-    if len(matches) > 1:
-        raise ValueError("Multiple frozen invocations match; select an exact manifest.")
+        try:
+            with open_evaluation_store(reference) as session:
+                incomplete = (
+                    len(session.snapshot().judgments) < session.schedule.total_requests
+                )
+        except (ValueError, OSError, sqlite3.Error) as error:
+            raise ValueError(
+                f"Cannot resume matching invocation {reference.manifest_path}: {error}"
+            ) from error
 
-    return matches[0] if matches else None
+        matches.append(
+            (incomplete, manifest.created_at, manifest.schedule_content_hash, reference)
+        )
+
+    return max(matches, key=lambda item: item[:3])[3] if matches else None
 
 
 def load_evaluation_schedule(reference: EvaluationStore) -> EvaluationSchedule:
@@ -2556,39 +2927,40 @@ def load_evaluation_schedule(reference: EvaluationStore) -> EvaluationSchedule:
     Raises
     ------
     ValueError
-        If serialized data, implementation, inputs or complete schedule differ.
+        If serialized data, inputs or complete schedule differ.
     """
 
-    manifest = _load_store_manifest(reference)
-    compressed = _store_read(reference.manifest_path.parent / "schedule.json.gz")
-
-    if hashlib.sha256(compressed).hexdigest() != manifest.schedule_sha256:
-        raise ValueError("Persisted compressed schedule bytes differ.")
-
-    raw = gzip.decompress(compressed)
-    schedule = TypeAdapter(EvaluationSchedule).validate_json(raw)
-
-    if (
-        _schedule_bytes(schedule) != raw
-        or schedule.inputs != manifest.inputs
-        or schedule.material_content_hash != manifest.schedule_content_hash
-    ):
-        raise ValueError(
-            "Persisted schedule has extra, missing or noncanonical material."
-        )
-
-    inventory = _frozen_manifest(schedule.inputs).inventory
-    selector = _store_selector(
-        judge=schedule.judge,
-        results_root=inventory.results_root,
-        settings=schedule.settings,
-    )
-
-    if manifest.selector_hash != selector:
-        raise ValueError("Invocation lookup identity differs from its frozen settings.")
-
+    schedule = _store_schedule(reference)
     _validate_schedule(schedule)
     return schedule
+
+
+@contextmanager
+def open_evaluation_command(repository_root: Path) -> Iterator[None]:
+    """Keep selection, preparation, execution and reporting under one command lock.
+
+    Parameters
+    ----------
+    repository_root
+        Repository owning the separate evaluator output directory.
+
+    Yields
+    ------
+    None
+        Exclusive command ownership; another command fails instead of dispatching.
+
+    Raises
+    ------
+    ValueError
+        If output paths are unsafe or another command already owns the lock.
+    """
+
+    output = repository_root.resolve(strict=True) / "results" / "lp_evals"
+    _store_path(output)
+    output.mkdir(parents=True, exist_ok=True)
+
+    with _exclusive_store_lock(output / ".command.lock"):
+        yield
 
 
 @contextmanager
@@ -2640,12 +3012,25 @@ def open_evaluation_store(reference: EvaluationStore) -> Iterator[EvaluationSess
                     "Evaluation cache requires rollback-journal transactions."
                 )
 
+            manifest_hash = connection.execute(
+                "SELECT value FROM metadata WHERE key = 'manifest'"
+            ).fetchone()
+
+            if manifest_hash != (reference.content_hash,):
+                raise ValueError("Invocation manifest differs from its ledger binding.")
+
             events = _database_events(
                 connection=connection,
                 schedule_hash=schedule.material_content_hash,
             )
+            executions = _database_executions(
+                connection=connection, schedule_hash=schedule.material_content_hash
+            )
             yield EvaluationSession(
-                connection=connection, events=events, schedule=schedule
+                connection=connection,
+                events=events,
+                executions=executions,
+                schedule=schedule,
             )
         finally:
             connection.close()

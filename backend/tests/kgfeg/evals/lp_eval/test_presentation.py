@@ -998,9 +998,7 @@ def test_reuse_hashes_and_embedded_data(_saved: dict[str, Any]) -> None:
         payload = (destination / name).read_bytes()
         assert hashlib.sha256(payload).hexdigest() == fingerprint["sha256"]
         assert len(payload) == fingerprint["size_bytes"]
-    package = Path(presentation.__file__).resolve().parents[2]
-    for name, digest in manifest["renderer_sources"].items():
-        assert hashlib.sha256((package / name).read_bytes()).hexdigest() == digest
+    assert "renderer_sources" not in manifest
     html = (destination / "report.html").read_text()
     match = re.search(r"[A-Za-z0-9+/]{100,}={0,2}", html)
     assert match is not None

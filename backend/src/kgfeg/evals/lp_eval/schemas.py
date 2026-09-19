@@ -22,8 +22,9 @@ class AttemptEvent(BaseModel):
     attempt. It cannot be mistaken for an unattempted request or a success.
     """
 
-    attempt_number: int = Field(ge=1, le=3)
+    attempt_number: int = Field(ge=1)
     event: Literal["started", "succeeded", "failed"]
+    execution_number: int = Field(ge=1)
     failure_category: (
         Literal[
             "timeout",
@@ -390,6 +391,8 @@ class EvaluationCache:
     ----------
     events
         Ordered, immutable start and terminal events, including every failed attempt.
+    executions
+        Ordered user execution boundaries binding the existing attempt history.
     judgments
         Successful scheduled responses, retaining every replicate separately.
     unfinished
@@ -397,6 +400,7 @@ class EvaluationCache:
     """
 
     events: tuple[AttemptEvent, ...]
+    executions: tuple[ExecutionRecord, ...]
     judgments: tuple[ClassificationJudgment | CritiqueJudgment, ...]
     unfinished: tuple[AttemptEvent, ...]
 
@@ -433,8 +437,6 @@ class EvaluationReport:
         Complete counts, comparisons, baseline rankings and concern memberships.
     schedule_content_hash
         Exact frozen schedule scored.
-    scorer_sha256
-        Actual scoring source byte identity.
     usage_json
         Every attempt and grouped known/unknown accounting.
     """
@@ -444,7 +446,6 @@ class EvaluationReport:
     judgments_jsonl: str
     report_json: str
     schedule_content_hash: str
-    scorer_sha256: str
     usage_json: str
 
 
@@ -473,7 +474,7 @@ class EvaluationSchedule:
     curricula
         All selected curricula and every required component.
     implementation_fingerprints
-        Actual local package source files used to construct this plan.
+        Inert original namespace metadata for saved plans; empty for fresh plans.
     inputs
         Exact frozen input manifest; no discovery or selection expansion on resume.
     judge
@@ -650,6 +651,8 @@ class EvaluationStoreManifest:
 
     Attributes
     ----------
+    created_at
+        Immutable timezone-aware creation time used for automatic selection.
     inputs
         Original frozen input selection.
     kind
@@ -659,14 +662,31 @@ class EvaluationStoreManifest:
     schedule_sha256
         SHA-256 of the compressed schedule bytes.
     selector_hash
-        Starting-directory and effective-settings identity, never a latest-run hint.
+        Starting-directory and effective-settings identity for compatible invocation lookup.
     """
 
+    created_at: datetime
     inputs: FrozenInputs
-    kind: Literal["lp_evaluation_store_v1"]
+    kind: Literal["lp_evaluation_store_v2"]
     schedule_content_hash: str
     schedule_sha256: str
     selector_hash: str
+
+
+class ExecutionRecord(BaseModel):
+    """Durable user-initiated execution boundary bound to the existing attempt head."""
+
+    event_count: int = Field(ge=0)
+    event_head: str = Field(pattern=r"^[0-9a-f]{64}$")
+    execution_number: int = Field(ge=1)
+
+    # Accepted only to preserve existing execution-chain bytes; new records omit it.
+    implementation_content_hash: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    timestamp: datetime
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -758,7 +778,7 @@ class FrozenSnapshot:
     projection_format
         Independently validated complete projection format.
     reader_fingerprints
-        Actual evaluator and dependency bytes, excluding report-only scoring.
+        Inert metadata from existing evidence; empty for newly frozen inputs.
     run
         Original completion and framework identity.
     source_artifact
@@ -1469,7 +1489,7 @@ class ValidatedSnapshot:
     projection_format
         Independently validated complete projection format.
     reader_fingerprints
-        Actual evaluator and dependency bytes, excluding report-only scoring.
+        Inert metadata from existing evidence; empty for newly frozen inputs.
     run
         Original discovery identity and completion evidence.
     source_artifact
