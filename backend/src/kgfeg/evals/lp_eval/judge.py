@@ -26,6 +26,7 @@ from uuid import uuid4
 # Third Party Library
 import httpx
 
+from loguru import logger
 from pydantic import TypeAdapter, ValidationError
 from pydantic_ai import Agent, capture_run_messages
 from pydantic_ai.exceptions import AgentRunError, UnexpectedModelBehavior, UserError
@@ -143,6 +144,27 @@ class _Execution:
         cache = session.snapshot()
         self._latest = {event.request_id: event for event in cache.events}
         self._completed = {judgment.request_id for judgment in cache.judgments}
+        self._total_requests = session.schedule.total_requests
+        self._attempts_started = 0
+        self._request_numbers = {
+            request.prompt.request_id: index
+            for index, request in enumerate(
+                (
+                    request
+                    for curriculum in session.schedule.curricula
+                    for request in curriculum.requests
+                ),
+                start=1,
+            )
+        }
+
+        logger.info(
+            "LP evaluation: scheduled={}; cached={}; remaining={}; concurrency={}",
+            self._total_requests,
+            len(self._completed),
+            self._total_requests - len(self._completed),
+            JUDGE_CONCURRENCY,
+        )
 
     def _admit(
         self, *, active: set[asyncio.Task[None]], pending: list[ScheduledRequest]
@@ -205,6 +227,24 @@ class _Execution:
             ) from None
 
         attempt = self._session.start_attempt(request.prompt.request_id)
+        self._attempts_started += 1
+
+        logger.info(
+            "LP evaluation attempt started: request={}/{}; attempt={}/{}; "
+            "attempts_this_invocation={}; completed={}/{}; "
+            "component={}; task={}; request_id={}",
+            self._request_numbers[request.prompt.request_id],
+            self._total_requests,
+            attempt.attempt_number,
+            JUDGE_MAX_RETRIES + 1,
+            self._attempts_started,
+            len(self._completed),
+            self._total_requests,
+            request.component,
+            request.prompt.task,
+            request.prompt.request_id,
+        )
+
         reply = await self._dispatch(attempt=attempt, prompt=request.prompt)
 
         if reply is None:
@@ -229,6 +269,18 @@ class _Execution:
             return False
 
         self._completed.add(request.prompt.request_id)
+
+        logger.info(
+            "LP evaluation request completed: request={}/{}; "
+            "completed={}/{}; remaining={}; request_id={}",
+            self._request_numbers[request.prompt.request_id],
+            self._total_requests,
+            len(self._completed),
+            self._total_requests,
+            self._total_requests - len(self._completed),
+            request.prompt.request_id,
+        )
+
         return True
 
     async def _dispatch(
@@ -324,6 +376,21 @@ class _Execution:
 
         if not _retryable_event(event):
             self._stop.set()
+
+        logger.warning(
+            "LP evaluation attempt failed: request={}/{}; attempt={}/{}; "
+            "completed={}/{}; retryable={}; category={}; reason={}; request_id={}",
+            self._request_numbers[event.request_id],
+            self._total_requests,
+            event.attempt_number,
+            JUDGE_MAX_RETRIES + 1,
+            len(self._completed),
+            self._total_requests,
+            _retryable_event(event),
+            error.category,
+            str(error),
+            event.request_id,
+        )
 
     async def _request(self, request: ScheduledRequest) -> None:
         """Run remaining attempts using durable history and fixed retry waits.
