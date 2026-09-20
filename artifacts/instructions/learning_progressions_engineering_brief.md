@@ -1926,7 +1926,15 @@ Rationale grounding is reported separately as grounded (all material claims supp
 
 The user explicitly removed dollar, total-token, and total-API-attempt budgets. Do not add mandatory budget configuration, budget-based termination, cost reservations, spending-ceiling approvals, or a required pricing/estimated-cost preflight gate. Usage and available cost reporting remain required; unavailable accounting must be explicit.
 
-The user separately approved these execution settings: concurrency 4; at most 2 retries after the initial attempt per scheduled judgment retry cycle; 180-second timeout per attempt; retry waits of 5 then 20 seconds. Provider/SDK and output-validation retries count within that same three-attempt cycle rather than multiplying it. Under Section 3.3.11, each user-initiated rerun may renew an exhausted retryable request once; interrupted partial cycles retain their remaining allowance. Persist execution boundaries, lifetime attempt numbering, prior failures, dispositions and usage. No execution may automatically renew an exhausted cycle. A user-initiated rerun authorizes retry of prior failed or uncertain outcomes under Section 3.3.11, preserving unknown usage and possible duplicate-call accounting; it is not proof that the earlier remote call did not happen. Retries are permitted for timeout, HTTP 429/5xx, or invalid structured output; invalid current inputs, auth/config failures, and stale cache fail immediately; a historical failure alone does not prohibit a later explicitly initiated execution after current preflight succeeds. The evaluator remains bounded by its explicit sample/condition/replicate schedule, evidence limits and finite retries, without an aggregate spending budget.
+Current evaluator execution settings are governed by Section 3.3.12: concurrency 4, a
+180-second timeout per attempt, and at most 10 retries after the initial attempt. Retry
+waits are 5, 10, 20, 30, 60, 120, 180, 200, 300 and 300 seconds. Timeout,
+HTTP 400/429/5xx and invalid structured output permit retries within the same
+11-attempt cycle; hidden SDK/output-validation retries remain disabled. Other
+configuration, authentication, transport and integrity failures retain their
+immediate-stop behavior. Preserve Section 3.3.11 recovery, execution boundaries,
+lifetime accounting and explicit-rerun authorization, as amended by Section 3.3.12.
+There is no aggregate evaluation spending budget.
 
 Live evaluation still needs explicit user authorization for the fixed-input execution and effective settings; recording policy or approving implementation is not itself authorization to call an external LLM. Do not reintroduce budget approval as a condition of that authorization.
 
@@ -2334,6 +2342,9 @@ All five completed runs have flat camelCase projections, not current wire wrappe
 
 ### 3.3.11 Step 28 automatic recovery — implementation authorized, 2026-09-19
 
+The retry-count, wait-schedule and HTTP 400 automatic-retry clauses below are
+superseded by Section 3.3.12; its other recovery requirements remain applicable.
+
 The user authorized governance followed by a separate coding phase in this task for automatic recovery of newly created evaluator invocations, then explicitly accepted starting fresh without backward compatibility for saved evaluator state. Fixed source-review base remains `28d4f1218c71237bc7fda1027a8ac55866bd345f`. This amendment changes current unapproved Step 28 only; F1 remains withdrawn and F2–F4 resolved. No production contract or earlier approval is reopened.
 
 Rerunning the same command selects the most recent matching incomplete invocation for the canonical starting directory and equal effective sampling, repetition and judge settings. Order by immutable UTC creation time, then schedule identifier for ties. Validate matching candidates before selecting; a corrupt, unsupported, materially stale or locked candidate is a specific blocker, never a reason to silently rediscover or fall back to fresh work. If all matches are complete, return the most recent validated complete invocation without repeating calls. Explicit new-discovery and manifest controls remain optional. Resume uses only the original frozen inputs and schedule and reuses every validated success.
@@ -2345,6 +2356,40 @@ Use a new evaluator storage contract. Old saved evaluator invocations are unsupp
 The user subsequently approved removing evaluator implementation hashes entirely. Do not collect, compare or require Python source hashes, reader implementation hashes, execution implementation hashes, scorer hashes, renderer hashes or a source-transition allowlist for evaluator preparation, execution, resume or reporting. Delete recovery_transition.json and its transition machinery. Source edits alone never block evaluation. Preserve frozen raw input/configuration/prompt/response-schema/model/request/schedule/ledger/output identities, interpretation format/version, strict response validation and execution locks. Existing saved implementation fields remain inert historical metadata only where needed to read unchanged evidence and reproduce existing request IDs; never compare them with current source or assign them to new attempts. Fresh evaluation records contain no implementation digests. The existing invocation must continue automatically with validated successes and original request IDs intact, without rewriting prior evidence. Regenerated reports and presentations are identified by their actual output bytes. This supersedes conflicting evaluator implementation-hash clauses in earlier approval records and generic role instructions; production requirements and the fixed source-review base are unchanged. This approval authorizes governance followed by coding in the same task; independent testing/review and separate live execution gates remain.
 
 Coding owns source/support/consumer documentation and existing offline checks; independent testing owns new regression coverage and validation, followed by reviewer reassessment. No live calls, test authorship, Git mutations, final Step 28 completion or later-step advancement are authorized. The user's explicit approval of this plan supplies implementation authorization; no further specification approval is pending.
+
+### 3.3.12 Step 28 retry expansion and provider-error diagnostics — 2026-09-20
+
+The user selected and manually implemented the following evaluator-only change: 10
+retries after the initial attempt, giving 11 attempts per cycle, with retry waits of 5,
+10, 20, 30, 60, 120, 180, 200, 300 and 300 seconds. Concurrency remains 4, each attempt
+retains its 180-second timeout, and hidden SDK/output-validation retries remain
+disabled. This supersedes the two-retry, three-attempt and 5/20-second clauses in D12-B
+and Section 3.3.11.
+
+Timeouts, HTTP 400/429/5xx and invalid structured output, including citations, permit
+bounded automatic retries. HTTP 400 remains recorded as configuration failure but is
+retryable. The current implementation recognizes it through the configuration category
+and the exact failure-message prefix "Judge provider returned HTTP 400.". This applies
+to all HTTP 400 responses, not only the provider message "Invalid request data". Other
+configuration, authentication, transport and integrity failures retain their existing
+automatic-stop behavior.
+
+Preserve frozen requests, validated-success reuse, lifetime attempt numbering,
+append-only execution boundaries, unknown-usage accounting, exclusive ownership and
+stop-and-drain. Explicit reruns renew exhausted cycles once; partially consumed cycles
+retain their remaining allowance. No execution automatically renews an exhausted cycle.
+Reports calculate cycle progress from the saved execution settings.
+
+Capture only string-valued provider error type/message fields when present, redact the
+active API key, bound them to 200/4,000 characters respectively before adding
+truncation markers, and JSON-escape the saved diagnostics. Retain the provider request
+ID in usage evidence. Do not claim complete sensitive-data redaction or save full error
+bodies/request headers through this path.
+
+The changed retry count and waits are material execution settings. Do not rewrite old
+schedules or attempt history to make them compatible. The user selected fresh
+evaluation for the changed settings; matching ten-retry invocations remain resumable.
+Historical evidence remains unchanged.
 
 # 4. Invariants
 
@@ -2595,5 +2640,12 @@ D12.1.5 and Section 3.3.10 govern this evaluator-only extension; implementation 
 - Verify recorded projection byte-hash mismatches fail even if bundle parity holds; absence of a historical projection-byte receipt is not a missing required artifact when that format never recorded it. Freeze actual converted bytes without claiming original snake_case raw hashes. Corrupt authoritative bundles, provenance, reports, AS+LC preservation and standalone relationships to prove converted projections cannot conceal inconsistent evidence.
 - Reject invalid completed candidates before any evaluator evidence publication or transport dispatch. Assert unchanged bytes and directory membership for source and existing evaluation evidence, including no `kg_run.json`, receipt, config, journal, lock or projection repair. Preserve incomplete/active-run exclusion, zero valid-input failure, duplicate-framework conflicts, locks, path/symlink protections and detection of source changes during validation/freezing/use.
 - Reassess affected K=21–F=25 export/reuse/orchestration, release-policy and structural regressions plus all retained evaluator grounding/citation/structured-output, deterministic scheduling and material binding. Prove production still rejects historical checkpoints before effects, including overwrite and completed-bundle reuse, and still exports current wire records. Preserve D12 evidence-condition separation, Git-independent operation, optional producing SHA and live/final gates. Include applicable existing slow integration checks; report exact commands, counts, skips/deselections and limitations.
+- For Section 3.3.12, independently verify all ten retry waits, success on late
+  attempts, exhaustion at attempt 11, explicit-rerun continuation at attempt 12,
+  partial-cycle recovery, HTTP 400 retry eligibility and unchanged stop behavior
+  for other permanent failures. Verify provider-error capture, active-key
+  redaction, truncation, malformed/missing error bodies, provider request IDs,
+  saved-setting-based usage reporting, validated-success reuse and stop-and-drain.
+  Earlier three-attempt test results do not validate this amendment.
 
 Coding supplies the independent-testing handoff in chat after implementation; this governance proposal is not a testing verdict or execution authorization.

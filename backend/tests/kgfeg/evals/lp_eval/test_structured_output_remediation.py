@@ -27,8 +27,11 @@ from kgfeg.evals.lp_eval import judge, prompts, sampling
 from kgfeg.evals.lp_eval.schemas import EvaluationSettings, ScheduledRequest
 from tests.kgfeg.evals.lp_eval import test_independent_evaluator as _existing
 
+_EXPECTED_RETRY_WAITS = [5, 10, 20, 30, 60, 120, 180, 200, 300, 300]
+_EXPECTED_ATTEMPTS_PER_CYCLE = 11
 
-def _assert_http_failure(
+
+def _assert_http_failure(  # pylint: disable=R0915
     *,
     attempts: int,
     body: bytes,
@@ -38,6 +41,7 @@ def _assert_http_failure(
     status: int,
     task: str,
     tmp_path: Path,
+    expected_error: dict[str, str] | None = None,
 ) -> None:
     """Challenge HTTP decoding, accounting and durable exhaustion through real SDKs.
 
@@ -59,6 +63,8 @@ def _assert_http_failure(
         Scheduled classification or critique.
     tmp_path
         Isolated test ledger directory.
+    expected_error
+        Expected retained error fields, or None when no diagnostic fields are usable.
     """
     calls: list[bytes] = []
     waits: list[float] = []
@@ -146,7 +152,14 @@ def _assert_http_failure(
                 for key, value in event.usage.model_dump().items()
                 if key != "provider_request_id"
             )
-            assert event.raw_response is None
+            if expected_error is None:
+                assert event.raw_response is None
+            else:
+                assert event.raw_response is not None
+                assert json.loads(event.raw_response) == {"error": expected_error}
+                assert event.raw_response in (event.failure_message or "")
+
+            assert "offline-synthetic-key" not in event.model_dump_json()
             assert event.judgment_json is None
             assert event.failure_message
             assert "PRIVATE_BODY" not in event.model_dump_json()
@@ -180,7 +193,9 @@ def _assert_http_failure(
         connection.close()
     assert len(calls) == 2 * attempts
     assert all(call == calls[0] for call in calls)
-    assert waits == ([5, 20, 5, 20] if attempts == 3 else [])
+    assert waits == (
+        _EXPECTED_RETRY_WAITS * 2 if attempts == _EXPECTED_ATTEMPTS_PER_CYCLE else []
+    )
     assert judge._ATTEMPT_OUTPUT.get() is None
     assert judge._ATTEMPT_USAGE.get() is None
 
@@ -643,7 +658,7 @@ def test_http_retries_are_durable_and_reruns_renew_exhausted_cycles(
         calls.append(json.loads(wire.content))
         raw = (
             _existing._reply(request.prompt).response_json
-            if recovers and len(calls) == 3
+            if recovers and len(calls) == _EXPECTED_ATTEMPTS_PER_CYCLE
             else "{}"
         )
         return httpx.Response(
@@ -708,16 +723,16 @@ def test_http_retries_are_durable_and_reruns_renew_exhausted_cycles(
     _http(handler=_handler, monkeypatch=monkeypatch)
     try:
         cache = asyncio.run(_exercise())
-        attempts = 3 if recovers else 6
+        attempts = _EXPECTED_ATTEMPTS_PER_CYCLE * (1 if recovers else 2)
         assert len(calls) == attempts
-        assert waits == [5, 20] * (1 if recovers else 2)
+        assert waits == _EXPECTED_RETRY_WAITS * (1 if recovers else 2)
         events = [event for event in cache.events if event.event != "started"]
         assert [e.attempt_number for e in events] == list(range(1, attempts + 1))
         assert sum(event.usage.input_tokens for event in events) == 17 * attempts
         assert sum(event.usage.output_tokens for event in events) == 9 * attempts
         assert len(cache.judgments) == int(recovers)
         assert all(event.raw_response for event in events)
-        assert calls[0] == calls[1] == calls[2]
+        assert all(call == calls[0] for call in calls)
     finally:
         session._connection.close()
 
@@ -859,7 +874,7 @@ def test_malformed_http_body_is_retryable_invalid_output(
         Isolated durable test storage.
     """
     _assert_http_failure(
-        attempts=3,
+        attempts=_EXPECTED_ATTEMPTS_PER_CYCLE,
         body=body,
         category="invalid_output",
         monkeypatch=monkeypatch,
@@ -877,11 +892,13 @@ def test_malformed_http_body_is_retryable_invalid_output(
 @pytest.mark.parametrize(
     argnames=("status", "category", "attempts"),
     argvalues=[
-        (400, "configuration", 1),
+        (400, "configuration", 11),
         (401, "authentication", 1),
         (403, "authentication", 1),
-        (429, "rate_limit", 3),
-        (500, "server_error", 3),
+        (404, "configuration", 1),
+        (422, "configuration", 1),
+        (429, "rate_limit", 11),
+        (500, "server_error", 11),
     ],
 )
 @pytest.mark.parametrize(argnames="task", argvalues=["classification", "critique"])
@@ -1122,3 +1139,74 @@ def test_provider_wire_rejections_preserve_accounting(
     _http(handler=_handler, monkeypatch=monkeypatch)
     asyncio.run(_exercise())
     assert calls == ["POST"]
+
+
+@pytest.mark.parametrize(argnames="provider", argvalues=["anthropic", "openai"])
+@pytest.mark.parametrize(argnames="task", argvalues=["classification", "critique"])
+@pytest.mark.parametrize(
+    argnames=("error", "expected_error"),
+    argvalues=[
+        (
+            {
+                "type": "invalid_request_error",
+                "message": "Invalid request data",
+                "extra": "PRIVATE_BODY",
+            },
+            {
+                "type": "invalid_request_error",
+                "message": "Invalid request data",
+            },
+        ),
+        (
+            {
+                "type": "offline-synthetic-key",
+                "message": "Rejected offline-synthetic-key\nTry again",
+            },
+            {
+                "type": "[REDACTED]",
+                "message": "Rejected [REDACTED]\nTry again",
+            },
+        ),
+        (
+            {
+                "type": "T" * 201,
+                "message": "offline-synthetic-key" + "X" * 4001,
+            },
+            {
+                "type": "T" * 200 + "... [truncated]",
+                "message": "[REDACTED]" + "X" * 3990 + "... [truncated]",
+            },
+        ),
+        (
+            {"type": 123, "message": {"secret": "PRIVATE_BODY"}},
+            None,
+        ),
+        (
+            {"type": "", "message": "   "},
+            None,
+        ),
+        (None, None),
+    ],
+)
+def test_provider_error_details_survive_durable_retries(  # pylint: disable=R0917
+    error: Any,
+    expected_error: dict[str, str] | None,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    task: str,
+    tmp_path: Path,
+) -> None:
+    """Preserve bounded error details without retaining keys or extra fields."""
+    body = json.dumps({"error": error, "extra": "PRIVATE_BODY"}).encode()
+
+    _assert_http_failure(
+        attempts=_EXPECTED_ATTEMPTS_PER_CYCLE,
+        body=body,
+        category="configuration",
+        expected_error=expected_error,
+        monkeypatch=monkeypatch,
+        provider=provider,
+        status=400,
+        task=task,
+        tmp_path=tmp_path,
+    )

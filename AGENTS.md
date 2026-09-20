@@ -1,5 +1,22 @@
 # KGForEdGlobal Learning Progressions Project Instructions
 
+## Step 28 retry expansion — user-selected amendment, 2026-09-20
+
+Engineering-brief Section 3.3.12 supersedes earlier evaluator two-retry,
+three-attempt and 5/20-second wait clauses. Current settings are 10 retries
+after the initial attempt, 11 attempts per cycle, and waits of
+5/10/20/30/60/120/180/200/300/300 seconds. HTTP 400 is now automatically
+retryable within that allowance while retaining its configuration category.
+Preserve provider-error diagnostics, frozen execution identities, bounded
+recovery, truthful history/usage, validated successes and stop-and-drain.
+Other configuration/authentication/transport/integrity failures retain their
+existing automatic-stop behavior.
+
+The user manually implemented this change. Independent testing and reviewer
+reassessment remain outstanding at fixed base
+28d4f1218c71237bc7fda1027a8ac55866bd345f. Earlier approval records remain history.
+No production contract or final Step 28/later-step approval is changed.
+
 ## Step 28 automatic recovery amendment — implementation authorized, 2026-09-19
 
 The user authorized governance followed by a separate coding phase in this task for automatic recovery of newly created evaluator invocations, then explicitly accepted starting fresh without backward compatibility for saved evaluator state. Fixed source-review base remains `28d4f1218c71237bc7fda1027a8ac55866bd345f`. This amendment changes current unapproved Step 28 only; F1 remains withdrawn and F2–F4 resolved. No production contract or earlier approval is reopened.

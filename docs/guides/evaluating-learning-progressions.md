@@ -199,31 +199,49 @@ available cost. Unknown usage or pricing is not zero. Missing pricing alone does
 block completion.
 
 Execution allows up to **4 concurrent requests**, with a **180-second timeout per
-attempt** and **at most two retries after the initial attempt**, waiting **5 then 20
-seconds**. Timeouts, HTTP 429/5xx responses, and invalid structured output are
-retryable within that allowance. Input, authentication, configuration, and stale-cache
-failures are not retryable. SDK and output-validation retries share the same
-three-attempt maximum within each retry cycle.
+attempt** and **at most 10 retries after the initial attempt: 11 attempts per cycle**.
+The waits before retries are **5, 10, 20, 30, 60, 120, 180, 200, 300 and 300 seconds**,
+in that order. These settings are code-owned; there is no retry CLI flag.
 
-After a terminal failure, already active calls finish without starting further calls.
-Validated successes remain reusable without repeating their calls. Each deliberate
-rerun may retry any previously failed request, including a transport or authentication
-failure. Previously exhausted cycles receive one new bounded cycle. A partially
-consumed cycle resumes with its remaining allowance; exhausting that cycle stops the
-execution without opening another. The waits are 5 and 20 seconds within each cycle.
-Lifetime attempt numbers never reset: after three failures, the next rerun starts at
-lifetime attempt 4, cycle attempt 1. Execution boundaries, prior failures, later
-dispositions and all usage remain in the append-only ledger and reports. Progress logs
-identify lifetime and cycle attempts.
+Timeouts, HTTP 400/429/5xx responses, and invalid structured output, including invalid
+citations, permit automatic retries within the allowance. HTTP 400 remains recorded
+under the configuration category but is eligible for retry. This applies to all HTTP
+400 responses, including persistent invalid requests. Other configuration errors,
+authentication failures, transport errors and integrity failures do not receive
+automatic retries.
 
-A historical failure never permanently blocks a deliberate rerun. Unfinished starts
-receive an appended interrupted record with unknown remote outcome and usage before the
-new execution begins. Rerunning authorizes a possible duplicate provider call/cost; it
-does not erase the earlier attempt or assert that the provider cancelled it. Transport,
-interruption and authentication/configuration failures still stop the current
-execution; they do not cause automatic retry loops. Current configuration, inputs,
-cache integrity and exclusive ownership must pass validation before new dispatch. The
-CLI and Markdown report show the reason when execution is blocked.
+Each retry makes a new provider call using the same frozen evaluation request, prompt,
+evidence, response schema and model settings. It does not resample pairs or change the
+sampling seed. The evaluator request ID stays unchanged; lifetime attempt numbers
+increase. A new provider call can succeed after an earlier failure, but repeated
+attempts do not repair a consistently invalid request.
+
+After an exhausted or non-retryable failure, already active calls finish without
+starting further calls. Validated successes remain reusable. Each deliberate rerun may
+retry previously failed requests, including transport or authentication failures, after
+current validation succeeds. An exhausted request receives one new bounded cycle; a
+partially consumed cycle retains only its remaining allowance. No execution
+automatically opens another cycle after exhaustion.
+
+Lifetime attempt numbers never reset: after 11 failed attempts, the next explicit rerun
+starts at lifetime attempt 12, cycle attempt 1. Execution boundaries, earlier failures,
+later dispositions and usage remain in the append-only history. Reports derive cycle
+numbering from the invocation's recorded retry limit.
+
+For unsuccessful HTTP responses with a structured error object, the evaluator captures
+string-valued error type and message fields when present. It redacts the active
+provider API key, limits the type to 200 characters and message to 4,000 characters
+before adding a truncation marker, and escapes them as JSON. The details appear in the
+failure message and saved raw_response. The provider request ID remains in usage
+evidence. The full response body and request headers are not captured by this
+diagnostic path. Generic provider messages may still be insufficient to establish the
+underlying cause.
+
+Unfinished starts receive an appended interrupted record with unknown remote outcome
+and usage before a new execution begins. Rerunning authorizes possible duplicate
+provider execution/cost; it does not assert that the earlier call was cancelled.
+Current configuration, inputs, cache integrity and exclusive ownership must pass
+validation before dispatch.
 
 ## What the judge assesses
 

@@ -6053,8 +6053,8 @@ def prepare_evaluation_schedule(
     expected_execution = {
         "attempt_timeout_seconds": 180,
         "concurrency": 4,
-        "max_retries": 2,
-        "retry_waits_seconds": [5, 20],
+        "max_retries": 10,
+        "retry_waits_seconds": [5, 10, 20, 30, 60, 120, 180, 200, 300, 300],
         "sdk_max_retries": 0,
     }
     _equal(

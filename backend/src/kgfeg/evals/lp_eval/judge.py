@@ -110,8 +110,8 @@ _OUTPUT_VALIDATION_REASONS = frozenset(
 )
 JUDGE_ATTEMPT_TIMEOUT_SECONDS = 180
 JUDGE_CONCURRENCY = 4
-JUDGE_MAX_RETRIES = 2
-JUDGE_RETRY_WAITS_SECONDS = (5, 20)
+JUDGE_MAX_RETRIES = 10
+JUDGE_RETRY_WAITS_SECONDS = (5, 10, 20, 30, 60, 120, 180, 200, 300, 300)
 
 
 class _Execution:
@@ -241,7 +241,7 @@ class _Execution:
             self._request_numbers[request.prompt.request_id],
             self._total_requests,
             attempt.attempt_number,
-            (attempt.attempt_number - 1) % 3 + 1,
+            (attempt.attempt_number - 1) % (JUDGE_MAX_RETRIES + 1) + 1,
             JUDGE_MAX_RETRIES + 1,
             attempt.execution_number,
             self._attempts_started,
@@ -391,7 +391,7 @@ class _Execution:
             self._request_numbers[event.request_id],
             self._total_requests,
             event.attempt_number,
-            (event.attempt_number - 1) % 3 + 1,
+            (event.attempt_number - 1) % (JUDGE_MAX_RETRIES + 1) + 1,
             JUDGE_MAX_RETRIES + 1,
             event.execution_number,
             len(self._completed),
@@ -423,7 +423,7 @@ class _Execution:
                 if previous is not None and _retryable_event(previous):
                     await _wait_for_retry(
                         delay=JUDGE_RETRY_WAITS_SECONDS[
-                            (previous.attempt_number - 1) % 3
+                            (previous.attempt_number - 1) % (JUDGE_MAX_RETRIES + 1)
                         ],
                         sleep=self._sleep,
                         stop=self._stop,
@@ -2188,11 +2188,18 @@ def _retryable_event(event: AttemptEvent) -> bool:
         True for retryable failures with allowance remaining in their current cycle.
     """
 
+    retryable_http_400 = event.failure_category == "configuration" and (
+        event.failure_message or ""
+    ).startswith("Judge provider returned HTTP 400.")
+
     return (
         event.event == "failed"
         and (event.attempt_number - 1) % (JUDGE_MAX_RETRIES + 1) < JUDGE_MAX_RETRIES
-        and event.failure_category
-        in {"timeout", "rate_limit", "server_error", "invalid_output"}
+        and (
+            event.failure_category
+            in {"timeout", "rate_limit", "server_error", "invalid_output"}
+            or retryable_http_400
+        )
     )
 
 
@@ -2778,7 +2785,7 @@ async def execute_evaluation(
     reference
         Exact persisted invocation; no discovery occurs during execution.
     sleep
-        Retry wait seam, defaulting to actual asynchronous 5/20-second waits.
+        Retry wait seam, defaulting to the configured asynchronous retry waits.
     transport
         Fresh-context, single-attempt provider boundary with frozen settings.
 
@@ -3037,7 +3044,7 @@ def open_evaluation_store(reference: EvaluationStore) -> Iterator[EvaluationSess
 
 
 @asynccontextmanager
-async def open_judge_transport(
+async def open_judge_transport(  # pylint: disable=R1260
     settings: ResolvedJudgeSettings,
 ) -> AsyncIterator[JudgeTransport]:
     """Create isolated Pydantic AI providers with all hidden retries disabled.
@@ -3104,6 +3111,45 @@ async def open_judge_transport(
             or response.headers.get("x-request-id"),
         )
         output = _ATTEMPT_OUTPUT.get()
+
+        if response.is_error and output is not None:
+            provider_error = (
+                material.get("error") if isinstance(material, dict) else None
+            )
+            details: dict[str, str] = {}
+
+            if isinstance(provider_error, dict):
+                for field, limit in (("type", 200), ("message", 4000)):
+                    value = provider_error.get(field)
+
+                    if isinstance(value, str) and value.strip():
+                        # Redact the active API key before truncation or storage.
+                        cleaned = value.replace(api_key, "[REDACTED]")
+                        details[field] = (
+                            cleaned
+                            if len(cleaned) <= limit
+                            else cleaned[:limit] + "... [truncated]"
+                        )
+
+            status_failure = _status_failure(response.status_code)
+            raw_error = (
+                json.dumps({"error": details}, ensure_ascii=True, sort_keys=True)
+                if details
+                else None
+            )
+            message = str(status_failure)
+
+            if raw_error is not None:
+                message += f" Provider details: {raw_error}"
+
+            failure = JudgeCallError(
+                category=status_failure.category,
+                message=message,
+                raw_response=raw_error,
+                usage=observed[0],
+            )
+            output[0] = _ProviderOutput(failure=failure, raw_response=raw_error)
+            return
 
         if response.is_success and output is not None:
             if isinstance(material, dict):

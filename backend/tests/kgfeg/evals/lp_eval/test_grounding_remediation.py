@@ -29,6 +29,9 @@ from kgfeg.evals.lp_eval.schemas import (
 )
 from tests.kgfeg.evals.lp_eval import test_independent_evaluator as _existing
 
+_EXPECTED_RETRY_WAITS = [5, 10, 20, 30, 60, 120, 180, 200, 300, 300]
+_EXPECTED_ATTEMPTS_PER_CYCLE = 11
+
 
 @pytest.fixture(autouse=True)
 def _offline(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -234,7 +237,7 @@ def test_grounding_claim_support_matrix(
             judge.validate_judge_response(request=request, response_json=response)
 
 
-@pytest.mark.parametrize(argnames="invalid_attempts", argvalues=[1, 2, 3])
+@pytest.mark.parametrize(argnames="invalid_attempts", argvalues=list(range(1, 12)))
 def test_grounding_validation_retries_share_total_allowance(
     invalid_attempts: int,
 ) -> None:
@@ -297,13 +300,18 @@ def test_grounding_validation_retries_share_total_allowance(
             sleep=_sleep,
             transport=_Transport(),
         )
-        if invalid_attempts == 3:
+        if invalid_attempts == _EXPECTED_ATTEMPTS_PER_CYCLE:
             with pytest.raises(judge.JudgeExecutionError):
                 asyncio.run(execution.run())
         else:
             asyncio.run(execution.run())
-        assert len(calls) == min(invalid_attempts + 1, 3)
-        assert waits == ([5] if invalid_attempts == 1 else [5, 20])
+        assert len(calls) == min(invalid_attempts + 1, _EXPECTED_ATTEMPTS_PER_CYCLE)
+        assert (
+            waits
+            == _EXPECTED_RETRY_WAITS[
+                : min(invalid_attempts, _EXPECTED_ATTEMPTS_PER_CYCLE - 1)
+            ]
+        )
         cache = session.snapshot()
         failed = [event for event in cache.events if event.event == "failed"]
         terminal = [event for event in cache.events if event.event != "started"]
@@ -313,7 +321,7 @@ def test_grounding_validation_retries_share_total_allowance(
         assert sum(event.usage.input_tokens for event in terminal) == 11 * len(calls)
         assert sum(event.usage.output_tokens for event in terminal) == 5 * len(calls)
         assert not cache.unfinished
-        if invalid_attempts == 3:
+        if invalid_attempts == _EXPECTED_ATTEMPTS_PER_CYCLE:
             assert not cache.judgments
             with pytest.raises(ValueError):
                 session.start_attempt(request.prompt.request_id)
@@ -338,7 +346,13 @@ def test_grounding_validation_retries_share_total_allowance(
                 ).run()
             )
             assert replay.snapshot() == cache
-            assert len(calls) == invalid_attempts + 1
+            assert len(calls) == min(invalid_attempts + 1, _EXPECTED_ATTEMPTS_PER_CYCLE)
+            assert (
+                waits
+                == _EXPECTED_RETRY_WAITS[
+                    : min(invalid_attempts, _EXPECTED_ATTEMPTS_PER_CYCLE - 1)
+                ]
+            )
     finally:
         session._connection.close()
 

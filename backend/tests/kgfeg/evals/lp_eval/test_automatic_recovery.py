@@ -29,6 +29,8 @@ from tests.kgfeg.evals.lp_eval import test_independent_evaluator as support
 # Private pytest fixture parameters are intentionally documented.
 # pylint: disable=useless-param-doc
 
+_EXPECTED_RETRY_WAITS = [5, 10, 20, 30, 60, 120, 180, 200, 300, 300]
+_EXPECTED_ATTEMPTS_PER_CYCLE = 11
 _OVERRIDES = {
     "additional_diagnostic_replicates": 1,
     "diagnostic_pairs_per_cohort": 1,
@@ -76,6 +78,12 @@ class _Transport:
         self.calls.append(prompt.request_id)
         if prompt.request_id == self.target and self.failures:
             category = self.failures.pop(0)
+            if category == "http_400":
+                raise judge.JudgeCallError(
+                    category="configuration",
+                    message="Judge provider returned HTTP 400.",
+                    usage=JudgeUsage(input_tokens=11, output_tokens=2),
+                )
             if category == "citation":
                 reply = support._reply(prompt)
                 raw = json.loads(reply.response_json)
@@ -405,6 +413,7 @@ def test_execution_boundary_tampering_fails_before_dispatch(
         "configuration",
         "invalid_input",
         "interrupted",
+        "http_400",
     ],
 )
 def test_explicit_reruns_preserve_partial_cycles_and_lifetime_usage(
@@ -426,23 +435,26 @@ def test_explicit_reruns_preserve_partial_cycles_and_lifetime_usage(
         "server_error",
         "invalid_output",
         "citation",
+        "http_400",
     }
-    first_count = 3 if retryable else 1
+    first_count = _EXPECTED_ATTEMPTS_PER_CYCLE if retryable else 1
     first = _Transport(failures=[category] * first_count, schedule=schedule)
     waits: list[float] = []
     with pytest.raises(judge.JudgeExecutionError):
         _run(reference=_invocation, transport=first, waits=waits)
     _, saved = _read(_invocation)
     assert first.calls.count(first.target) == first_count
-    assert waits == ([5, 20] if retryable else [])
-    second_count = 3 if retryable else 2
+    assert waits == (_EXPECTED_RETRY_WAITS if retryable else [])
+    second_count = _EXPECTED_ATTEMPTS_PER_CYCLE if retryable else 10
     second = _Transport(failures=["server_error"] * second_count, schedule=schedule)
     second_waits: list[float] = []
     with pytest.raises(judge.JudgeExecutionError):
         _run(reference=_invocation, transport=second, waits=second_waits)
     _, renewed = _read(_invocation)
     assert second.calls.count(second.target) == second_count
-    assert second_waits == ([5, 20] if retryable else [20])
+    assert second_waits == (
+        _EXPECTED_RETRY_WAITS if retryable else _EXPECTED_RETRY_WAITS[1:]
+    )
     assert renewed.events[: len(saved.events)] == saved.events
     assert renewed.executions[: len(saved.executions)] == saved.executions
     successes = {j.request_id for j in saved.judgments}
@@ -469,9 +481,18 @@ def test_explicit_reruns_preserve_partial_cycles_and_lifetime_usage(
     )
     usage = json.loads(report.usage_json)
     target_rows = [r for r in usage["attempts"] if r["request_id"] == third.target]
-    assert [r["cycle_attempt"] for r in target_rows] == [1, 2, 3] * (
-        len(starts) // 3
-    ) + [1]
+    assert [r["cycle_attempt"] for r in target_rows] == [
+        (number - 1) % _EXPECTED_ATTEMPTS_PER_CYCLE + 1
+        for number in range(1, len(starts) + 1)
+    ]
+    assert [r["cycle_number"] for r in target_rows] == [
+        (number - 1) // _EXPECTED_ATTEMPTS_PER_CYCLE + 1
+        for number in range(1, len(starts) + 1)
+    ]
+    assert [r["attempt_kind"] for r in target_rows] == [
+        "initial" if (number - 1) % _EXPECTED_ATTEMPTS_PER_CYCLE == 0 else "retry"
+        for number in range(1, len(starts) + 1)
+    ]
     terminals = [e for e in completed.events if e.event != "started"]
     assert usage["totals"]["tokens"]["input_tokens"]["known_subtotal"] == sum(
         e.usage.input_tokens for e in terminals
@@ -928,7 +949,7 @@ def test_stop_and_drain_preserves_active_successes_and_blocks_waiting_retries(
     assert len(completed.judgments) == schedule.total_requests
 
 
-@pytest.mark.parametrize(argnames="prior_attempts", argvalues=[1, 2, 3])
+@pytest.mark.parametrize(argnames="prior_attempts", argvalues=list(range(1, 12)))
 def test_unfinished_start_is_closed_before_new_execution(
     _invocation: Any, prior_attempts: int
 ) -> None:

@@ -257,7 +257,7 @@ def test_incompatible_material_preserves_ledger_and_exhausted_attempts(  # pylin
             session.record_success(
                 attempt=attempt, response_json=reply.response_json, usage=reply.usage
             )
-        for _ in range(3):
+        for _ in range(11):
             attempt = session.start_attempt(request.prompt.request_id)
             session.record_failure(
                 attempt=attempt,
@@ -266,6 +266,8 @@ def test_incompatible_material_preserves_ledger_and_exhausted_attempts(  # pylin
                 raw_response="noncanonical policy citation",
                 usage=JudgeUsage(input_tokens=7),
             )
+        with pytest.raises(ValueError):
+            session.start_attempt(request.prompt.request_id)
         saved = session.snapshot()
     directory = store.manifest_path.parent
     before = {p.name: p.read_bytes() for p in directory.iterdir() if p.is_file()}
@@ -353,7 +355,7 @@ def test_incompatible_material_preserves_ledger_and_exhausted_attempts(  # pylin
     with judge.open_evaluation_store(store) as session:
         assert session.snapshot() == saved
         recovered = session.start_attempt(request.prompt.request_id)
-        assert recovered.attempt_number == 4
+        assert recovered.attempt_number == 12
         assert recovered.execution_number == len(saved.executions) + 1
         assert session.snapshot().events[: len(saved.events)] == saved.events
 

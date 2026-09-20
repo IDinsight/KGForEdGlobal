@@ -57,7 +57,8 @@ from tests.kgfeg.kgs import test_lp_selection as selection_fixtures
 # Private pytest fixtures are used parameters, not intentionally ignored arguments.
 # pylint: disable=useless-param-doc
 
-
+_EXPECTED_RETRY_WAITS = [5, 10, 20, 30, 60, 120, 180, 200, 300, 300]
+_EXPECTED_ATTEMPTS_PER_CYCLE = 11
 _ROOT = Path(__file__).resolve().parents[5]
 # Two five-SFI and one six-SFI fixtures yield 10, 10 and 15 unordered pairs. Both default
 # cohorts select all pairs. Per curriculum: 2P + I + 7(min(P,12)+min(I,12)) + 75.
@@ -1052,7 +1053,7 @@ def test_execution_failure_drains_active_calls_without_new_admission(
 def test_execution_finite_attempts_waits_and_usage(
     _schedule: Any, category: str, retryable: bool
 ) -> None:
-    """Count retryable failures inside one three-attempt allowance with known usage.
+    """Count retryable failures inside one eleven-attempt allowance with known usage.
 
     Parameters
     ----------
@@ -1121,8 +1122,8 @@ def test_execution_finite_attempts_waits_and_usage(
         )
         with pytest.raises(judge.JudgeExecutionError):
             asyncio.run(execution.run())
-        assert len(calls) == (3 if retryable else 1)
-        assert waits == ([5, 20] if retryable else [])
+        assert len(calls) == (_EXPECTED_ATTEMPTS_PER_CYCLE if retryable else 1)
+        assert waits == (_EXPECTED_RETRY_WAITS if retryable else [])
         failures = [e for e in session.snapshot().events if e.event == "failed"]
         assert len(failures) == len(calls)
         assert sum(e.usage.input_tokens for e in failures) == len(calls) * 11
@@ -1197,7 +1198,7 @@ def test_execution_timeout_is_applied_per_attempt(
         delay
             Requested retry delay or attempt timeout in seconds.
         """
-        assert delay in (5, 20)
+        assert delay in _EXPECTED_RETRY_WAITS
 
     monkeypatch.setattr(name="timeout", target=judge.asyncio, value=_timeout)
     try:
@@ -1210,10 +1211,10 @@ def test_execution_timeout_is_applied_per_attempt(
                     transport=_Transport(),
                 ).run()
             )
-        assert observed == [180, 180, 180]
+        assert observed == [180] * _EXPECTED_ATTEMPTS_PER_CYCLE
         assert [
             e.failure_category for e in session.snapshot().events if e.event == "failed"
-        ] == ["timeout"] * 3
+        ] == ["timeout"] * _EXPECTED_ATTEMPTS_PER_CYCLE
     finally:
         session._connection.close()
 
@@ -1489,8 +1490,8 @@ def test_judge_uses_independent_binding_and_shared_settings() -> None:
     assert json.loads(resolved.execution_json) == {
         "attempt_timeout_seconds": 180,
         "concurrency": 4,
-        "max_retries": 2,
-        "retry_waits_seconds": [5, 20],
+        "max_retries": 10,
+        "retry_waits_seconds": _EXPECTED_RETRY_WAITS,
         "sdk_max_retries": 0,
     }
     assert settings.llm_config("kgs").model == "openai:gpt-5.2"

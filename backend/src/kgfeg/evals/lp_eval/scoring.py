@@ -1256,6 +1256,7 @@ def _usage_reports(
     }
     attempts = []
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    attempts_per_cycle = json.loads(schedule.judge.execution_json)["max_retries"] + 1
 
     for event in cache.events:
         if event.event != "started":
@@ -1273,7 +1274,9 @@ def _usage_reports(
             "requested_model": schedule.judge.model,
             "observed_model": usage.get("provider_model"),
             "attempt_kind": (
-                "initial" if (event.attempt_number - 1) % 3 == 0 else "retry"
+                "initial"
+                if (event.attempt_number - 1) % attempts_per_cycle == 0
+                else "retry"
             ),
             "outcome": terminal.event if terminal else "unfinished",
         }
@@ -1281,8 +1284,8 @@ def _usage_reports(
             **dimensions,
             "request_id": event.request_id,
             "attempt_number": event.attempt_number,
-            "cycle_attempt": (event.attempt_number - 1) % 3 + 1,
-            "cycle_number": (event.attempt_number - 1) // 3 + 1,
+            "cycle_attempt": (event.attempt_number - 1) % attempts_per_cycle + 1,
+            "cycle_number": (event.attempt_number - 1) // attempts_per_cycle + 1,
             "execution_number": event.execution_number,
             "usage": usage,
             "started_at": event.timestamp.isoformat(),
