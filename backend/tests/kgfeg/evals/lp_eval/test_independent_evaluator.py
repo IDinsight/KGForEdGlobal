@@ -27,7 +27,10 @@ from uuid import UUID
 # Third Party Library
 import pytest
 
+from click import Argument, Option
+from click.utils import strip_ansi
 from pydantic import TypeAdapter, ValidationError
+from typer.main import get_command
 from typer.testing import CliRunner
 
 # Package Library
@@ -670,16 +673,36 @@ def test_blind_view_retains_facts_and_original_critique_boundary(
 
 
 def test_cli_help_has_one_argument_all_controls_and_no_offline_mode() -> None:
-    """Check the Typer contract without resolving credentials or dispatching calls."""
-    result = CliRunner().invoke(
-        app=entry.cli, args=["--help"], color=False, env={"COLUMNS": "240"}
-    )
-    assert result.exit_code == 0
-    text = result.stdout.replace("\x1b", "")
+    """Check help and registered CLI controls independently of terminal formatting."""
+    result = CliRunner().invoke(app=entry.cli, args=["--help"], color=False)
+    assert result.exit_code == 0, result.output
+
+    text = strip_ansi(result.stdout)
     assert "RESULTS_ROOT" in text
     assert "--offline" not in text
-    for name in dict(EvaluationSettings.model_fields.items()):
-        assert "--" + name.replace("_", "-") in text
+
+    command = get_command(entry.cli)
+    arguments = [
+        parameter for parameter in command.params if isinstance(parameter, Argument)
+    ]
+    assert len(arguments) == 1
+    assert arguments[0].name == "results_root"
+    assert arguments[0].required
+    assert arguments[0].nargs == 1
+
+    options = {
+        flag
+        for parameter in command.params
+        if isinstance(parameter, Option)
+        for flag in (*parameter.opts, *parameter.secondary_opts)
+    }
+    assert "--offline" not in options
+
+    expected_options = {
+        "--" + name.replace("_", "-")
+        for name in dict(EvaluationSettings.model_fields.items())
+    }
+    assert expected_options <= options, expected_options - options
 
 
 @pytest.mark.parametrize(
