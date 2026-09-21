@@ -80,9 +80,7 @@ python src/kgfeg/entries/create_kgs.py <config.json>
 
 Six conceptual production stages use these four commands: `create_kgs.py` builds AS,
 then LC, then LP from the validated AS+LC bundle. `kgs` requires `as`, `lc`, `lp`, and
-`metadata`. Production uses `LLM_KG_MODEL`. The separate
-[LP evaluation command](evaluating-learning-progressions.md) is live-capable and writes
-under repository-root `results/lp_evals/`; it is not a production success gate.
+`metadata`. Production uses `LLM_KG_MODEL`.
 
 ## Understand `overwrite` before resuming
 
@@ -240,8 +238,7 @@ staleness, or missing authenticated journals fails closed. Production retry limi
 apply per invocation: restarting gives unfinished stages a new configured allowance,
 including after earlier exhaustion or an unknown outcome. Prior attempts and failures
 remain in the durable history; do not delete or edit them. Inspect that history before
-authorizing a resume, which can make new calls. The evaluator has separate
-[resume restrictions](evaluating-learning-progressions.md#model-and-bounded-execution).
+authorizing a resume, which can make new calls.
 
 `kgs.lp.max_concurrent_requests` defaults to 4 admitted request batches, including
 retry waits; 1 is serial. Batch size is independent. Each checker waits for its own
@@ -314,7 +311,6 @@ changed stage should not be trusted merely because files already exist.
 | LC eligibility, generation instructions, validation instructions, dedup scope/blocking/judge policy, or KG model              | Learning Components               | Run `create_kgs.py`; use `kgs.overwrite=true` to guarantee fresh LC judgments, noting that AS LLM work is also restarted |
 | Delivery/export schema setting only                                                                                           | Final KG compilation              | Rerun `create_kgs.py`; upstream document stages do not need to be rerun                                                  |
 | LP policy, evidence limits, prompts, model, budgets, or concurrency                                                           | LP material identity              | Preserve the old snapshot; plan authorized regeneration rather than reusing stale checkpoints                            |
-| Evaluator settings or selected population                                                                                     | Separate evaluator                | Create a compatible fresh frozen schedule; preserve prior evidence and do not mutate production                          |
 | Documentation only                                                                                                            | None                              | No pipeline rerun                                                                                                        |
 
 For a high-stakes comparison between old and new semantic policy, prefer a new
@@ -363,7 +359,6 @@ Use this sequence rather than jumping directly to the final bundle.
 | Two LC texts were or were not merged correctly                 | `lc_dedup_candidate_pairs.jsonl`, `lc_dedup_verdicts.jsonl`, `lc_dedup_groups.json`                           | LC blocking/scope/semantic dedup                                                  |
 | An LP pair is missing or has an unexpected outcome             | LP eligibility/candidate artifacts, bounded request, draft/verdict/final response, and `lp_final_claims.json` | Earliest incorrect policy, evidence, or adjudication stage; never patch the graph |
 | LP cycle, warning, count, or provenance validation fails       | `lp_validation_report.json`, relationship provenance, final claims                                            | Trace named endpoints/requests before any authorized rerun                        |
-| Separate evaluation is incomplete or raises concerns           | `lp_eval_failures.jsonl`, usage, schedule, reports, and dispositions                                          | Separate execution failure from ambiguity and quality concerns                    |
 | Final counts/endpoints/provenance do not reconcile             | AS validation report, LC summary, AS bundle, combined bundle                                                  | Finalization/validation; then trace to earliest failing input                     |
 
 The [Pipeline Overview](../pipeline/index.md#where-to-inspect-a-run) contains the
@@ -424,7 +419,7 @@ aggregate totals. Use these records to answer questions such as:
 
 LP additionally keeps durable cross-invocation attempts in `lp_generation_usage.json`
 and separate `lp_generation` / `lp_generation_validation` buckets. Unknown outcomes
-remain explicit. Evaluator usage lives in `lp_eval_usage.json`, separately from production.
+remain explicit.
 
 For KG runs, `kg_run_manifest.json` is also a useful **preparation diagnostic**. It
 summarizes source/document characteristics such as segment counts, observed languages,
@@ -515,5 +510,3 @@ Use this short checklist:
 - [Learning Components](../pipeline/learning-components.md) — LC eligibility,
   decomposition, validation, deduplication, provenance, and finalization.
 - [Learning Progressions](../pipeline/learning-progressions.md) — LP semantics and integrity.
-- [Evaluate LP](evaluating-learning-progressions.md) — CLI, frozen selection,
-  resume behavior, assessment reports, and interpretation of results.

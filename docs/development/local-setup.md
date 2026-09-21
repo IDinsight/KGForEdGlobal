@@ -48,8 +48,8 @@ The curriculum-document processing pipeline converts a source curriculum PDF int
 validated knowledge graph. It has **six conceptual stages implemented through four
 main CLI entry points**. The first three reconstruct the document; `create_kgs.py`
 builds AS, LC, and LP. When `kgs` is configured, `as`, `lc`, `lp`, and `metadata` are
-required. See [Learning Progressions](../pipeline/learning-progressions.md) and the
-separate [LP evaluator](../guides/evaluating-learning-progressions.md).
+required. See [Learning Progressions](../pipeline/learning-progressions.md) for LP
+configuration and behavior.
 
 All commands below are run from the `backend` directory and consume the same runtime
 configuration JSON file. For a detailed description of each stage and its artifacts,

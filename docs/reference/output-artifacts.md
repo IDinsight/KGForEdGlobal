@@ -87,10 +87,8 @@ for successful execution and reconcile the recorded material identities. LP proc
 failures cannot be tolerated as a percentage: any unresolved failed pair blocks success.
 `needs_review` remains visible, nonpublishing, and nonblocking.
 
-Neither structural/process validity nor a separate evaluator's favorable assessments
-proves pedagogical correctness. See the
-[evaluation guide](../guides/evaluating-learning-progressions.md#cache-artifacts-and-interpretation)
-for interpreting assessment reports, disagreements, and uncertainty.
+Structural/process validity and producer/checker agreement do not prove pedagogical
+correctness.
 
 ### A passed graph can still contain unresolved or excluded material
 
@@ -447,24 +445,7 @@ All names below are relative to the production `kgs/` directory.
 
 Checkpoint files form one authenticated store; they are not independently editable
 recovery controls. Missing journals do not mean empty work. Current production rejects
-unsupported old formats before effects, even with overwrite or a completed bundle. The
-evaluator independently supports original flat snake_case, converted flat camelCase and
-current wire projections, crossed with complete historical prefix checkpoints or
-current journal-bearing checkpoints. Historical captured capacity remains absent;
-current capacity must be exact. All combinations require complete integrity validation.
-See the [snapshot format contract](../guides/evaluating-learning-progressions.md#supported-snapshot-formats). This downstream read-only compatibility does
-not permit production checkpoint reuse.
-
-### Separate evaluator artifacts
-
-Evaluation artifacts belong under repository-root `results/lp_evals/`, not `kgs/`.
-The [evaluator output layout](../guides/evaluating-learning-progressions.md#cache-artifacts-and-interpretation)
-distinguishes the invocation `manifest.json` used for resume from the report
-`lp_eval_manifest.json`. Report generations include populations, samples, requests,
-judgments, failures, usage, inputs, and JSON/Markdown reports; dispositions are separate
-immutable records. These are evidence artifacts, not additions to the graph or its
-production success schema. Actual hashes bind them; an evaluator Git SHA and a known
-producing commit are not prerequisites.
+unsupported old formats before effects, even with overwrite or a completed bundle.
 
 ---
 

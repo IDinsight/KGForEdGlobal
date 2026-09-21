@@ -57,9 +57,7 @@ python src/kgfeg/entries/create_kgs.py <config.json>
 ```
 
 `create_kgs.py` owns all three KG phases: AS → LC → LP. Each consumes the validated
-upstream bundle. The separate [LP evaluator](../guides/evaluating-learning-progressions.md)
-uses `evaluate_lps.py RESULTS_ROOT` after completed snapshots are available; it is not
-a production stage or a prerequisite for production success.
+upstream bundle.
 
 ---
 
@@ -445,7 +443,6 @@ For resume behavior, overwrite decisions, partial-run recovery, and rerun scope,
 | Were two skills merged or kept separate incorrectly?  | `lc_dedup_candidate_pairs.jsonl`, `lc_dedup_verdicts.jsonl`, and `lc_dedup_groups.json`                       |
 | Why was an LP pair omitted or classified this way?    | Eligibility, candidates, bounded requests, producer/checker judgments, and `lp_final_claims.json`             |
 | Does the final graph reconcile?                       | AS/LP validation reports, LC/LP summaries, and all three bundles                                              |
-| What does separate judge evidence say?                | `lp_eval_report.md` and JSON report, sample/condition denominators, failures, usage, and concern dispositions |
 
 ---
 
@@ -463,7 +460,6 @@ docs/pipeline/learning-progressions.md
 ```
 
 - [Learning Progressions](learning-progressions.md)
-- [Separate LP evaluation](../guides/evaluating-learning-progressions.md)
 
 These pages provide the implementation details, configuration behavior, validation
 rules, and artifact contracts that this overview intentionally keeps concise.

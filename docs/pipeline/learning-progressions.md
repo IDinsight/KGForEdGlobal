@@ -19,7 +19,7 @@ python src/kgfeg/entries/create_kgs.py <config.json>
 
 `kgs` is optional in the global configuration. When supplied, it requires `as`, `lc`,
 `lp`, and `metadata`; there is no LP-disable switch. Production AS, LC, and LP use
-`LLM_KG_MODEL`. The separate Learning Progressions evaluator has its own model setting.
+`LLM_KG_MODEL`.
 
 The following fields live under `kgs.lp`. Except for concurrency, these values must
 be supplied explicitly; examples are curriculum policy, not universal defaults.
@@ -136,7 +136,7 @@ per-SFI exceptions.
 
 Confidence is audit data, not an acceptance threshold. Invalid or missing responses are
 failures, not ambiguous judgments. Production success checks structure and process; it
-does not read evaluator scores or require a human gold set.
+requires neither a semantic score threshold nor a human gold set.
 
 ## Concurrency, checkpoints, and failure
 
@@ -155,8 +155,7 @@ saved draft whose checker has not finished. Attempt and failure history is retai
 but each new production invocation gives unfinished stages a new configured retry
 allowance. A restart can therefore make new calls after earlier exhaustion or an
 unknown outcome; inspect that history before authorizing a resume. Durable successful
-stages are reused. This differs from the
-[Learning Progressions evaluator's resume restrictions](../guides/evaluating-learning-progressions.md#model-and-bounded-execution).
+stages are reused.
 
 After the first observed exhausted failure, no new producer, checker, or retry API call
 starts. Already active calls may finish; their valid results and observed usage are
@@ -208,8 +207,7 @@ and actual upstream/config/request/prompt/model content identities.
 - Edges remain within one framework. There are no LC-to-LC progression edges or named
   pathway entities, and no claim of empirical prerequisite truth.
 - Closed-world type matrices and bounded non-embedding nomination omit possible
-  relationships. Sampled judge-positive nomination coverage does not establish
-  curriculum-wide recall.
+  relationships.
 - One ordered local axis cannot represent genuine multi-axis development. Acyclicity
   can represent spiral or mutually reinforcing learning less richly.
 - Upstream extraction, hierarchy, scope, and LC errors can influence LP. The
@@ -219,10 +217,8 @@ and actual upstream/config/request/prompt/model content identities.
   retrieval have not been validated by those examples.
 - Symmetric lookup is required for `relatesTo`; direct edges may coexist with alternate
   multi-hop paths. Neither storage convention supplies an instructional sequence.
-- Structural/process validity, producer/checker agreement, and fallible judge
-  assessments do not prove pedagogical correctness. Sampling, bounded evidence, and
-  correlated model errors remain limitations even with favorable controls or stable
-  replicates.
+- Structural/process validity and producer/checker agreement do not prove pedagogical
+  correctness. Bounded evidence and correlated model errors remain limitations.
 - There are no forced semantic edge overrides. Confirmed errors require an authorized
   repair at the earliest incorrect stage and affected reruns, potentially further model
   calls and iterations; never hand-edit final graphs.
@@ -230,7 +226,6 @@ and actual upstream/config/request/prompt/model content identities.
 
 ## Related documentation
 
-- [Evaluate Learning Progressions](../guides/evaluating-learning-progressions.md)
 - [Run, resume, and debug](../guides/running-and-debugging.md)
 - [Add a curriculum](../guides/adding-a-curriculum.md)
 - [Output artifacts](../reference/output-artifacts.md)

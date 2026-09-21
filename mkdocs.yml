@@ -32,7 +32,6 @@ nav:
   - Guides:
       - Add a new curriculum: guides/adding-a-curriculum.md
       - Run, resume, and debug: guides/running-and-debugging.md
-      - Evaluating Learning Progressions: guides/evaluating-learning-progressions.md
 
   - Reference:
       - Output artifacts and integration contract: reference/output-artifacts.md

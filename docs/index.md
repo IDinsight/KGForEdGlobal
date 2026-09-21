@@ -65,15 +65,12 @@ single curriculum or country.
   deterministic invariants, and relationship between the major representations.
 - **Pipeline** documents the operational flow from PDF extraction through the final
   Academic Standards + Learning Components + Learning Progressions graph.
-- **[Learning Progressions evaluation](guides/evaluating-learning-progressions.md)**
-  explains the separate judge workflow, frozen inputs, assessment reports, and
-  interpretation of results.
 - **Development** contains local development and contributor-oriented material.
 
 !!! note
     Production builds `hasChild`, `supports`, `buildsTowards`, and `relatesTo`.
     Learning Progressions adds relationships, not nodes. Structural/process validation
-    and fallible judge assessments do not establish pedagogical correctness.
+    and producer/checker agreement do not establish pedagogical correctness.
 
 !!! question "Have a use case or feature request?"
     If you are working with curriculum data in government, education, research, or the

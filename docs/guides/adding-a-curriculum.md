@@ -503,13 +503,6 @@ Treat the full run as another review step rather than assuming calibration guara
 success. Corpus-wide deduplication, repeated codes, long-range hierarchy patterns, and
 rare source layouts can surface issues that do not appear in a small slice.
 
-Separate [LP evaluation](evaluating-learning-progressions.md) accepts compatible
-completed snapshots without adding curriculum names or a fixed roster to generic code.
-Its command discovers the new snapshot only in a fresh selection; an existing frozen
-invocation cannot absorb it. Evaluation can make external model calls. Results apply
-to the selected curricula, sampled pairs, and evidence conditions; a calibration or
-subset report does not establish quality across the full curriculum.
-
 ## Framework metadata checklist
 
 Before publishing or handing off a final graph, verify that `kgs.metadata` accurately
@@ -581,4 +574,3 @@ of the curriculum. One surprising pair is not enough evidence for a corpus-wide 
 - [Learning Components](../pipeline/learning-components.md) — detailed LC generation,
   validation, deduplication, and export behavior.
 - [Learning Progressions](../pipeline/learning-progressions.md) — policy and limitations.
-- [LP evaluation](evaluating-learning-progressions.md) — separate frozen-input assessment.

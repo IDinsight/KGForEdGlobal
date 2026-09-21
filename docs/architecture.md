@@ -28,7 +28,6 @@ flowchart TD
     E -->|Validated Academic Standards KG| F[5. Learning Components construction]
     F -->|Validated AS + LC bundle| G[6. Learning Progressions]
     G --> H[Combined AS + LC + LP KG]
-    H -. Frozen completed snapshots .-> I[Separate LP evaluation]
 ```
 
 | Stage                              | Main CLI entry point                                     | Primary input                                            | Primary output                         |
@@ -145,8 +144,7 @@ kgs
 
 The KG section is optional at the `RunConfig` schema level, allowing the extraction,
 verification, and stitching stages to be used without constructing a KG. When `kgs` is
-present, `as`, `lc`, `lp`, and `metadata` are required. Production uses `LLM_KG_MODEL`;
-the separate evaluator resolves `LLM_LP_EVAL_JUDGE_MODEL` independently.
+present, `as`, `lc`, `lp`, and `metadata` are required. Production uses `LLM_KG_MODEL`.
 
 For a source PDF, the pipeline computes a stable document key and stores stage outputs
 under that document-specific result directory. The main stage directories are:
@@ -573,22 +571,13 @@ completions and attempt accounting. `kgs.lp.max_concurrent_requests` defaults to
 after exhausted failure, only already active calls drain. Material changes or
 unsupported checkpoint formats fail closed, including during final reuse. See
 [Learning Progressions](pipeline/learning-progressions.md) for configuration,
-semantics, historical compatibility, failures, and accepted limitations.
+semantics, checkpoint requirements, failures, and accepted limitations.
 
 The compiler preserves AS+LC content and adds LP provenance, summaries, unresolved
 judgments, and two relationship groups to `as_lc_lp_kg_bundle.json`. Its JSONL
 delivery preserves the AS+LC wire records and appends LP relationships using the same
 Learning Commons serializers and aliases. Complete internal metadata remains in the
 bundle and standalone audit artifacts.
-
-## Separate LP evaluation
-
-[The evaluator](guides/evaluating-learning-progressions.md) discovers completed
-snapshots, freezes inputs and the complete schedule, and assesses production pairs,
-independently sampled upstream pairs, and synthetic controls. Blind classification and
-original-rationale critique use distinct evidence views and calls. Reports and user
-concern dispositions are separate immutable evidence under `results/lp_evals/` and are
-not production release inputs.
 
 ---
 
@@ -646,7 +635,6 @@ allowed to enter the system.
 | Academic Standards KG            | Curriculum statement types, global SFI identity, direct hierarchy, normalized grades/metadata | Atomic skill decomposition                                     |
 | Learning Components              | Atomic skills, LC identity/deduplication, `supports` alignment                                | Reinterpretation of the source document hierarchy              |
 | Learning Progressions            | Bounded SFI pair adjudication, developmental/coherence edges, provenance                      | New nodes, cross-framework edges, empirical prerequisite truth |
-| Learning Progressions evaluation | Frozen sampling, fallible judge assessments, reports and concern records                      | Graph mutation, automatic semantic release threshold           |
 
 This separation reduces the amount of semantic inference required at any one stage,
 makes errors easier to localize, and preserves an auditable path from the final graph
@@ -665,9 +653,10 @@ The production architecture documented here has several deliberate boundaries:
 - Learning Components are downstream of the Academic Standards graph and do not bypass
   it to extract skills directly from PDF pages.
 - Learning Progressions preserves upstream AS/LC and adds only within-framework edges.
-- Learning Progressions evaluation remains separate from production success. Read the
+- Structural/process validation and producer/checker agreement do not establish
+  pedagogical correctness. Read the
   [accepted limitations](pipeline/learning-progressions.md#accepted-limitations) before
-  interpreting graph or judge output as evidence of instructional quality.
+  interpreting graph output as evidence of instructional quality.
 
 These boundaries should be preserved when adding new extraction policies, curriculum
 profiles, or downstream graph capabilities so each stage retains a clear and testable
