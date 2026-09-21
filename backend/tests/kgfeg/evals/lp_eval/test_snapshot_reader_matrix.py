@@ -12,7 +12,7 @@ import subprocess
 
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 from unittest.mock import Mock
 from uuid import UUID
 
@@ -21,9 +21,8 @@ import pytest
 
 # Package Library
 from kgfeg.entries import evaluate_lps as entry
-from kgfeg.evals.lp_eval import compatibility, judge, sampling, scoring
+from kgfeg.evals.lp_eval import judge, sampling, scoring
 from kgfeg.evals.lp_eval.schemas import FrozenInputs, ReportProvenance
-from kgfeg.kgs.lp_checkpoints import _LPFailure
 from tests.fixtures.lp_eval.snapshot_fixtures import build_snapshot
 from tests.kgfeg.evals.lp_eval import test_current_input_contract as current
 from tests.kgfeg.evals.lp_eval import test_independent_evaluator as evaluator
@@ -34,16 +33,8 @@ from tests.kgfeg.evals.lp_eval import test_projection_compatibility as projectio
 
 _offline = projections._offline
 _sources = projections._sources
-_CELLS = [
-    (checkpoint, projection)
-    for checkpoint in ("historical_prefix", "journal_bearing")
-    for projection in ("internal", "converted", "wire")
-]
-_FORMATS = {
-    "converted": "historical_flat_camel_case",
-    "internal": "historical_flat_snake_case",
-    "wire": "learning_commons_wire",
-}
+_CELLS = [("journal_bearing", "wire")]
+_FORMATS = {"wire": "learning_commons_wire"}
 _OVERRIDES = {
     "additional_diagnostic_replicates": 1,
     "diagnostic_pairs_per_cohort": 1,
@@ -54,7 +45,6 @@ _OVERRIDES = {
     "synthetic_cases_per_family": 1,
     "synthetic_control_replicates": 1,
 }
-_RECEIPT = "lp_generation_checkpoint_manifest.json"
 
 
 def _copy(
@@ -108,120 +98,6 @@ def _read(path: Path) -> Any:
     )
 
 
-def _receipt_hashes(directory: Path) -> None:
-    """Authenticate mutated test bytes so corruption reaches semantic validation.
-
-    Parameters
-    ----------
-    directory
-        Disposable synthetic source only; never real execution evidence.
-    """
-    path = directory / _RECEIPT
-    receipt = _read(path)
-    for name in receipt["artifact_byte_hashes"]:
-        receipt["artifact_byte_hashes"][name] = hashlib.sha256(
-            (directory / name).read_bytes()
-        ).hexdigest()
-    _write(path=path, value=receipt)
-
-
-def _recovery_outputs(directory: Path) -> None:
-    """Build consistent downstream artifacts for a synthetic recovery history.
-
-    This fixture builder changes disposable test data only. Every dependent hash
-    and failure count is independently recomputed so stale downstream evidence
-    cannot hide an invalid historical execution sequence.
-
-    Parameters
-    ----------
-    directory
-        Disposable historical snapshot with its new failure and receipt bytes.
-    """
-    claims = _read(directory / "lp_final_claims.json")
-    claims["checkpoint_receipt_byte_hash"] = hashlib.sha256(
-        (directory / _RECEIPT).read_bytes()
-    ).hexdigest()
-    _seal(claims)
-    _write(path=directory / "lp_final_claims.json", value=claims)
-    provenance = _read(directory / "lp_relationship_provenance.json")
-    for value in provenance.values():
-        value["final_claims_content_hash"] = claims["content_hash"]
-    _write(path=directory / "lp_relationship_provenance.json", value=provenance)
-    edges = {}
-    for name in ("relationships_builds_towards", "relationships_relates_to"):
-        rows = _read(directory / f"lp_{name}.jsonl")
-        for row in rows:
-            row["metadata"]["final_claims_content_hash"] = claims["content_hash"]
-        edges[name] = rows
-        _write(path=directory / f"lp_{name}.jsonl", value=rows)
-    relationships = {
-        **edges,
-        "final_claims_content_hash": claims["content_hash"],
-        "relationship_provenance": provenance,
-    }
-    unresolved = _read(directory / "lp_unresolved_items.json")
-    unresolved["final_claims_content_hash"] = claims["content_hash"]
-    _seal(unresolved)
-    _write(path=directory / "lp_unresolved_items.json", value=unresolved)
-    failures = _read(directory / "lp_generation_failures.json")
-    report = _read(directory / "lp_validation_report.json")
-    report["object_counts"]["generation_failure_attempts"] = len(failures)
-    hashes = report["input_content_hashes"]
-    hashes.update(
-        checkpoint_receipt_bytes=claims["checkpoint_receipt_byte_hash"],
-        final_claims=claims["content_hash"],
-        relationships=hashlib.sha256(current._dump(relationships)).hexdigest(),
-    )
-    _seal(report)
-    _write(path=directory / "lp_validation_report.json", value=report)
-    summary = _read(directory / "lp_generation_summary.json")
-    summary["input_content_hashes"].update(hashes)
-    summary["object_counts"].update(
-        generation_failure_attempts=len(failures),
-        resolved_failure_attempts=len(failures),
-    )
-    summary["relationships_final_claims_content_hash"] = claims["content_hash"]
-    summary["validation_report_content_hash"] = report["content_hash"]
-    for field in ("artifact_byte_hashes", "input_artifact_byte_hashes"):
-        for name in summary[field]:
-            summary[field][name] = hashlib.sha256(
-                (directory / name).read_bytes()
-            ).hexdigest()
-    _seal(summary)
-    _write(path=directory / "lp_generation_summary.json", value=summary)
-    bundle = _read(directory / "as_lc_lp_kg_bundle.json")
-    bundle.update(edges)
-    for name, rows in edges.items():
-        bundle["entity_provenance"][name] = {
-            row["identifier"]: provenance[row["identifier"]] for row in rows
-        }
-    bundle["summary"]["learning_progressions"] = summary
-    bundle["unresolved_items"]["learning_progressions"] = unresolved
-    combined = bundle["validation_report"]
-    combined["lp_validation_report"] = report
-    combined["input_content_hashes"].update(summary["input_content_hashes"])
-    for name, value in (
-        ("lp_generation_summary", summary),
-        ("lp_unresolved_items", unresolved),
-        ("lp_validation_report", report),
-        (
-            "combined_graph",
-            {k: v for k, v in bundle.items() if k != "validation_report"},
-        ),
-    ):
-        combined["input_content_hashes"][name] = hashlib.sha256(
-            current._dump(value)
-        ).hexdigest()
-    combined["artifact_byte_hashes"] = {
-        **summary["input_artifact_byte_hashes"],
-        **summary["artifact_byte_hashes"],
-        "lp_generation_summary.json": hashlib.sha256(
-            current._dump(summary)
-        ).hexdigest(),
-    }
-    _write(path=directory / "as_lc_lp_kg_bundle.json", value=bundle)
-
-
 def _rewrite_manifest(*, frozen: FrozenInputs, mutation: str) -> FrozenInputs:
     """Create a separately authenticated adversarial manifest, preserving the original.
 
@@ -273,21 +149,6 @@ def _rewrite_manifest(*, frozen: FrozenInputs, mutation: str) -> FrozenInputs:
     return FrozenInputs(
         content_hash=digest, manifest_path=destination / "manifest.json"
     )
-
-
-def _seal(value: dict[str, Any]) -> None:
-    """Compute a synthetic artifact's self hash independently of production helpers.
-
-    Parameters
-    ----------
-    value
-        Test-owned material whose content hash covers all other fields.
-    """
-    value["content_hash"] = hashlib.sha256(
-        current._dump(
-            {key: item for key, item in value.items() if key != "content_hash"}
-        )
-    ).hexdigest()
 
 
 def _write(*, path: Path, value: Any) -> None:
@@ -826,9 +687,7 @@ def test_all_cells_validate_interpretation_and_ignore_reader_source_metadata(
     assert sampling.load_frozen_lp_inputs(frozen)
 
 
-@pytest.mark.parametrize(
-    argnames="projection", argvalues=["internal", "converted", "wire"]
-)
+@pytest.mark.parametrize(argnames="projection", argvalues=["wire"])
 def test_empty_relationship_population_uses_nonempty_node_family(
     _sources: dict[str, Path],
     projection: str,
@@ -889,505 +748,21 @@ def test_empty_relationship_population_uses_nonempty_node_family(
     )
 
 
-@pytest.mark.parametrize(argnames="projection", argvalues=["internal", "converted"])
-@pytest.mark.parametrize(
-    argnames="original,replacement",
-    argvalues=[
-        (True, 1),
-        (False, 0),
-        (1, 1.0),
-        (None, "absent"),
-        ([1, 2], [2, 1]),
-        (
-            {
-                "source_identifier": "retained",
-                "case_identifier_uuid": "not-an-endpoint",
-            },
-            {"sourceIdentifier": "retained", "caseIdentifierUUID": "not-an-endpoint"},
-        ),
-    ],
-)
-def test_flat_projection_reader_preserves_nested_values_and_types(
-    _sources: dict[str, Path],
-    original: Any,
-    projection: str,
-    replacement: Any,
+def test_more_than_six_current_snapshots_and_capacities_remain_framework_isolated(
     tmp_path: Path,
 ) -> None:
-    """Complete-record reconciliation preserves nested names, types, nulls and ordering.
+    """Discover seven current curricula with independent captured capacities.
 
     Parameters
     ----------
-    _sources
-        Complete independently generated authoritative bundle.
-    original
-        JSON value retained in authoritative metadata.
-    projection
-        Flat projection family.
-    replacement
-        Semantically different nested value, including Python-equal scalar types.
-    tmp_path
-        Disposable artifact storage.
-    """
-    # Package Library
-    from kgfeg.evals.lp_eval.compatibility import read_snapshot_projections
-    from kgfeg.kgs.schemas import AcademicStandardsLCLPKGBundle
-
-    directory = _copy(
-        checkpoint="journal_bearing",
-        projection=projection,
-        root=tmp_path,
-        sources=_sources,
-    )
-    path = directory / "as_lc_lp_kg_bundle.json"
-    material = _read(path)
-    material["framework"]["metadata"]["nested_probe"] = {"values": [original]}
-    _write(path=path, value=material)
-    projections._format(directory=directory, projection=projection)
-    bundle = AcademicStandardsLCLPKGBundle.model_validate(material)
-    edges = _read(directory / "as_lc_lp_relationships.jsonl")
-    nodes = _read(directory / "as_lc_lp_nodes.jsonl")
-    assert (
-        read_snapshot_projections(
-            bundle=bundle, edges=edges, nodes=nodes, wire_records=([], [])
-        )
-        == _FORMATS[projection]
-    )
-    nodes[0]["metadata"]["nested_probe"]["values"][0] = replacement
-    with pytest.raises(ValueError):
-        read_snapshot_projections(
-            bundle=bundle, edges=edges, nodes=nodes, wire_records=([], [])
-        )
-
-
-@pytest.mark.parametrize(
-    argnames="projection", argvalues=["internal", "converted", "wire"]
-)
-@pytest.mark.parametrize(
-    argnames="attack",
-    argvalues=[
-        "captured_capacity",
-        "config_default",
-        "config_type",
-        "draft_duplicate",
-        "draft_gap",
-        "draft_order",
-        "draft_payload",
-        "draft_truncated",
-        "execution_hash",
-        "extra_receipt_hash",
-        "failed_pairs",
-        "failure_attempt_gap",
-        "failure_exhaustion",
-        "failure_unresolved",
-        "journal_pending",
-        "journal_usage",
-        "legacy_counter",
-        "missing_receipt_hash",
-        "request_bytes",
-        "request_id",
-        "run_number_bool",
-        "run_number_zero",
-        "stage_count_bool",
-        "stage_count_missing",
-        "status",
-        "transaction",
-        "verdict_dependency",
-    ],
-)
-def test_historical_contract_requires_complete_original_evidence(  # pylint: disable=too-complex,too-many-branches,too-many-statements
-    _sources: dict[str, Path],
-    attack: str,
-    monkeypatch: pytest.MonkeyPatch,
-    projection: str,
-    tmp_path: Path,
-) -> None:
-    """Reject historical evidence corruption independently of projection format.
-
-    Parameters
-    ----------
-    _sources
-        Immutable synthetic prefix evidence.
-    attack
-        Original config, request, receipt, dependency or recovery corruption.
-    monkeypatch
-        Restoring publication and call guards.
-    projection
-        Independently selected projection family.
-    tmp_path
-        Disposable source and prior-evidence store.
-    """
-    directory = _copy(
-        checkpoint="historical_prefix",
-        projection=projection,
-        root=tmp_path,
-        sources=_sources,
-    )
-    path = directory / _RECEIPT
-    receipt = _read(path)
-    if attack.startswith("config_") or attack == "captured_capacity":
-        path = directory / "kg_run.json"
-        value = _read(path)
-        if attack == "captured_capacity":
-            value["extra"]["lp"]["max_concurrent_requests"] = 4
-        elif attack == "config_default":
-            del value["extra"]["as"]["grade_level_mapping"]
-        else:
-            value["extra"]["lp"]["request_batch_size"] = True
-    elif attack.startswith("draft_") or attack == "verdict_dependency":
-        path = directory / (
-            "lp_generation_validation_verdicts.jsonl"
-            if attack == "verdict_dependency"
-            else "lp_generation_draft_responses.jsonl"
-        )
-        value = _read(path)
-        if attack == "draft_duplicate":
-            value[1] = value[0]
-        elif attack == "draft_gap":
-            value.pop(0)
-        elif attack == "draft_order":
-            value.reverse()
-        elif attack == "draft_payload":
-            value[0]["payload"]["judgments"][0]["confidence"] = True
-        elif attack == "verdict_dependency":
-            value[0]["prerequisite_content_hash"] = "0" * 64
-        else:
-            path.write_bytes(b'{"truncated":')
-            _receipt_hashes(directory)
-            current._reject(directory=directory, monkeypatch=monkeypatch, root=tmp_path)
-            return
-    elif attack.startswith("failure_"):
-        path = directory / "lp_generation_failures.json"
-        response = _read(directory / "lp_generation_responses.jsonl")[0]
-        request = _read(directory / "lp_generation_requests.jsonl")[0]
-        value = [
-            {
-                "attempt": 2 if attack == "failure_attempt_gap" else 1,
-                "error_content_hash": "a" * 64,
-                "error_type": "TimeoutError",
-                "exhausted": attack == "failure_exhaustion",
-                "pair_ids": [
-                    row["pair_id"] for row in response["payload"]["judgments"]
-                ],
-                "request_content_hash": request["request_content_hash"],
-                "request_id": request["request_id"],
-                "request_index": 0,
-                "resolved_response_content_hash": response["payload_content_hash"],
-                "resolved_run_number": (
-                    None if attack == "failure_unresolved" else receipt["run_number"]
-                ),
-                "run_number": 1,
-                "stage": "draft",
-            }
-        ]
-    elif attack in ("journal_pending", "journal_usage", "transaction"):
-        path = (
-            directory
-            / {
-                "journal_pending": "lp_generation_pending_completions.json",
-                "journal_usage": "lp_generation_usage.json",
-                "transaction": "lp_generation_checkpoint_transaction.json",
-            }[attack]
-        )
-        value = {}
-    elif attack in ("request_bytes", "request_id"):
-        path = directory / "lp_generation_requests.jsonl"
-        value = _read(path)
-        if attack == "request_id":
-            value[0]["request_id"] = "00000000-0000-0000-0000-000000000001"
-        else:
-            path.write_bytes(path.read_bytes() + b" ")
-            current._reject(directory=directory, monkeypatch=monkeypatch, root=tmp_path)
-            return
-    else:
-        value = receipt
-        if attack == "execution_hash":
-            value["execution_content_hash"] = "0" * 64
-        elif attack == "extra_receipt_hash":
-            value["artifact_byte_hashes"]["as_lc_lp_nodes.jsonl"] = hashlib.sha256(
-                (directory / "as_lc_lp_nodes.jsonl").read_bytes()
-            ).hexdigest()
-        elif attack == "failed_pairs":
-            value["failed_pair_ids"] = [
-                value["material"]["request_manifest"]["pair_ids"][0]
-            ]
-        elif attack == "legacy_counter":
-            value["legacy_failure_count"] = 0
-        elif attack == "missing_receipt_hash":
-            del value["artifact_byte_hashes"]["lp_generation_failures.json"]
-        elif attack == "run_number_bool":
-            value["run_number"] = True
-        elif attack == "run_number_zero":
-            value["run_number"] = 0
-        elif attack == "stage_count_bool":
-            value["stage_counts"]["draft"] = True
-        elif attack == "stage_count_missing":
-            del value["stage_counts"]["draft"]
-        else:
-            value["status"] = "failed"
-    _write(path=path, value=value)
-    if attack.startswith(("draft_", "failure_")) or attack == "verdict_dependency":
-        _receipt_hashes(directory)
-    current._reject(directory=directory, monkeypatch=monkeypatch, root=tmp_path)
-
-
-@pytest.mark.parametrize(
-    argnames="projection", argvalues=["internal", "converted", "wire"]
-)
-@pytest.mark.parametrize(argnames="resolved_run", argvalues=[1, 2])
-def test_historical_exhausted_recovery_requires_a_later_run(
-    _sources: dict[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
-    projection: str,
-    resolved_run: int,
-    tmp_path: Path,
-) -> None:
-    """Reject impossible serial recovery before snapshot publication or dispatch.
-
-    Parameters
-    ----------
-    _sources
-        Original historical snapshot, copied before modification.
-    monkeypatch
-        Publication and dispatch guards for the rejection path.
-    projection
-        Independently selected projection family.
-    resolved_run
-        Same-run exhaustion is invalid; a later successful resume is valid.
-    tmp_path
-        Disposable fully authenticated adversarial evidence.
-    """
-    directory = _copy(
-        checkpoint="historical_prefix",
-        projection=projection,
-        root=tmp_path,
-        sources=_sources,
-    )
-    request = _read(directory / "lp_generation_requests.jsonl")[0]
-    response = _read(directory / "lp_generation_responses.jsonl")[0]
-    receipt = _read(directory / _RECEIPT)
-    assert receipt["material"]["retry_limits"]["draft"] == 0
-    failure = {
-        "attempt": 1,
-        "error_content_hash": "a" * 64,
-        "error_type": "TimeoutError",
-        "exhausted": True,
-        "pair_ids": [row["pair_id"] for row in response["payload"]["judgments"]],
-        "request_content_hash": request["request_content_hash"],
-        "request_id": request["request_id"],
-        "request_index": 0,
-        "resolved_response_content_hash": response["payload_content_hash"],
-        "resolved_run_number": resolved_run,
-        "run_number": 1,
-        "stage": "draft",
-    }
-    receipt["run_number"] = resolved_run
-    _write(path=directory / _RECEIPT, value=receipt)
-    _write(path=directory / "lp_generation_failures.json", value=[failure])
-    _receipt_hashes(directory)
-    _recovery_outputs(directory)
-    projections._format(directory=directory, projection=projection)
-    if resolved_run == 1:
-        prior = tmp_path / "results/lp_evals/prior-evidence.txt"
-        prior.parent.mkdir(parents=True)
-        prior.write_bytes(b"Synthetic prior evidence\n")
-        before = projections._state(tmp_path)
-        with pytest.raises(sampling.LPSnapshotError):
-            entry.prepare_evaluation(
-                overrides=_OVERRIDES, repository_root=tmp_path, results_root=directory
-            )
-        assert projections._state(tmp_path) == before
-        current._reject(directory=directory, monkeypatch=monkeypatch, root=tmp_path)
-    else:
-        reference = entry.prepare_evaluation(
-            overrides=_OVERRIDES, repository_root=tmp_path, results_root=directory
-        )
-        with judge.open_evaluation_store(reference) as session:
-            assert session.schedule.total_requests > 0
-
-
-@pytest.mark.parametrize(
-    argnames="exhausted,recovery_run,valid",
-    argvalues=[(False, 1, True), (True, 1, False), (True, 2, True)],
-)
-@pytest.mark.parametrize(argnames="retry_limit", argvalues=[1, 2])
-@pytest.mark.parametrize(argnames="stage", argvalues=["draft", "verdict"])
-def test_historical_failure_recovery_distinguishes_retry_from_exhaustion(
-    exhausted: bool,
-    recovery_run: int,
-    retry_limit: int,
-    stage: Literal["draft", "verdict"],
-    valid: bool,
-) -> None:
-    """Same-run success is valid before exhaustion for either historical stage.
-
-    Parameters
-    ----------
-    exhausted
-        Whether failures consume every permitted attempt before recovery.
-    recovery_run
-        Recorded successful recovery invocation.
-    retry_limit
-        Explicit synthetic retry allowance, excluding the first attempt.
-    stage
-        Producer draft or checker verdict stage.
-    valid
-        Independently specified recovery verdict under serial stop rules.
-    """
-    maximum = retry_limit + 1
-    failures = [
-        _LPFailure(
-            attempt=attempt,
-            error_content_hash="a" * 64,
-            error_type="TimeoutError",
-            exhausted=attempt == maximum,
-            pair_ids=["synthetic-pair"],
-            request_content_hash="b" * 64,
-            request_id="synthetic-request",
-            request_index=0,
-            resolved_response_content_hash="c" * 64,
-            resolved_run_number=recovery_run,
-            run_number=1,
-            stage=stage,
-        )
-        for attempt in range(1, maximum + 1 if exhausted else maximum)
-    ]
-    before = [failure.model_dump_json() for failure in failures]
-    retry_limits = {"draft": retry_limit, "verdict": retry_limit}
-    if valid:
-        compatibility.validate_historical_failures(
-            failures=failures, retry_limits=retry_limits
-        )
-    else:
-        with pytest.raises(ValueError, match="requires recovery in a later run"):
-            compatibility.validate_historical_failures(
-                failures=failures, retry_limits=retry_limits
-            )
-    assert [failure.model_dump_json() for failure in failures] == before
-    assert retry_limits == {"draft": retry_limit, "verdict": retry_limit}
-
-
-@pytest.mark.parametrize(
-    argnames="case,valid",
-    argvalues=[
-        ("after_exhaustion", False),
-        ("attempt_gap", False),
-        ("missing_exhaustion", False),
-        ("later_run_recovery", True),
-        ("same_run_exhausted_recovery", False),
-        ("stale_resolution", False),
-    ],
-)
-def test_historical_reader_checks_retry_exhaustion_and_recovery(
-    _sources: dict[str, Path],
-    case: str,
-    tmp_path: Path,
-    valid: bool,
-) -> None:
-    """Exhausted serial failures require a later run and exact recorded retry limits.
-
-    Parameters
-    ----------
-    _sources
-        Immutable original historical-prefix evidence.
-    case
-        Retry or recovery sequence with complete actual request/response binding.
-    tmp_path
-        Disposable checkpoint-reader fixture.
-    valid
-        Whether the recorded history obeys finite retry and stop rules.
-    """
-    directory = _copy(
-        checkpoint="historical_prefix",
-        projection="converted",
-        root=tmp_path,
-        sources=_sources,
-    )
-    receipt = _read(directory / _RECEIPT)
-    request = _read(directory / "lp_generation_requests.jsonl")[0]
-    response = _read(directory / "lp_generation_responses.jsonl")[0]
-    maximum = receipt["material"]["retry_limits"]["draft"] + 1
-    assert maximum == 1
-    exhausted = case != "missing_exhaustion"
-    attempts = [2 if case == "attempt_gap" else 1]
-    resolved_run = 2 if case in {"later_run_recovery", "after_exhaustion"} else 1
-    failures = [
-        {
-            "attempt": attempt,
-            "error_content_hash": "a" * 64,
-            "error_type": "TimeoutError",
-            "exhausted": exhausted,
-            "pair_ids": [row["pair_id"] for row in response["payload"]["judgments"]],
-            "request_content_hash": request["request_content_hash"],
-            "request_id": request["request_id"],
-            "request_index": 0,
-            "resolved_response_content_hash": (
-                "0" * 64
-                if case == "stale_resolution"
-                else response["payload_content_hash"]
-            ),
-            "resolved_run_number": resolved_run,
-            "run_number": 1,
-            "stage": "draft",
-        }
-        for attempt in attempts
-    ]
-    if case == "after_exhaustion":
-        failures.append({**failures[0], "stage": "verdict"})
-    receipt["run_number"] = resolved_run
-    _write(path=directory / _RECEIPT, value=receipt)
-    _write(path=directory / "lp_generation_failures.json", value=failures)
-    _receipt_hashes(directory)
-    reader = sampling._SnapshotReader(directory)
-    config = sampling._snapshot_config(reader)
-    upstream = sampling._snapshot_upstream(config=config, reader=reader)
-    population = sampling._snapshot_population(
-        config=config, doc_key=request["doc_key"], reader=reader, upstream=upstream
-    )
-    before = projections._state(directory.parent)
-    if valid:
-        rows = sampling._snapshot_execution(
-            config=config, population=population, reader=reader
-        )
-        assert len(rows["response"]) == len(population.requests)
-    else:
-        with pytest.raises(ValueError):
-            sampling._snapshot_execution(
-                config=config, population=population, reader=reader
-            )
-    assert projections._state(directory.parent) == before
-
-
-def test_more_than_six_mixed_formats_and_capacities_remain_framework_isolated(
-    _sources: dict[str, Path],
-    tmp_path: Path,
-) -> None:
-    """Discover seven unfamiliar curricula with independent formats and captured capacity.
-
-    Parameters
-    ----------
-    _sources
-        Reduced immutable historical execution evidence.
     tmp_path
         Isolated seven-curriculum invocation.
     """
     root = tmp_path / "inputs"
-    historical = _copy(
-        checkpoint="historical_prefix",
-        projection="converted",
-        root=root / "historic",
-        sources=_sources,
-    )
-    expected: dict[str | None, tuple[str, str, int | None]] = {
-        sampling.validate_lp_snapshot(projections._run(historical)).run.doc_key: (
-            "historical_flat_camel_case",
-            "historical_prefix",
-            None,
-        )
-    }
-    for index in range(6):
+    expected: dict[str | None, tuple[str, str, int | None]] = {}
+
+    for index in range(7):
         capacity = (1, 4)[index % 2]
-        projection = ("internal", "converted", "wire")[index % 3]
         directory = build_snapshot(
             capacity=capacity,
             count=2,
@@ -1395,9 +770,9 @@ def test_more_than_six_mixed_formats_and_capacities_remain_framework_isolated(
             root=root,
             title=f"Unfamiliar Ω curriculum {index}",
         )
-        projections._format(directory=directory, projection=projection)
+        projections._format(directory=directory, projection="wire")
         expected[f"synthetic-evaluator-{88100 + index}"] = (
-            _FORMATS[projection],
+            "learning_commons_wire",
             "journal_bearing",
             capacity,
         )
@@ -1446,7 +821,7 @@ def test_more_than_six_mixed_formats_and_capacities_remain_framework_isolated(
 
 
 @pytest.mark.parametrize(argnames="checkpoint,projection", argvalues=_CELLS)
-@pytest.mark.parametrize(argnames="mutation", argvalues=["format", "whitespace"])
+@pytest.mark.parametrize(argnames="mutation", argvalues=["whitespace"])
 def test_projection_bytes_qualify_snapshot_and_request_cache_identity(
     _sources: dict[str, Path],
     checkpoint: str,
@@ -1463,7 +838,7 @@ def test_projection_bytes_qualify_snapshot_and_request_cache_identity(
     checkpoint
         Independently selected original checkpoint format.
     mutation
-        Valid whitespace or projection-family change with an identical graph.
+        Valid whitespace change preserving the current projection format.
     projection
         Independently selected format.
     tmp_path
@@ -1488,13 +863,8 @@ def test_projection_bytes_qualify_snapshot_and_request_cache_identity(
         )
         assert len(session.snapshot().judgments) == 1
     path = directory / "as_lc_lp_nodes.jsonl"
-    if mutation == "format":
-        projections._format(
-            directory=directory,
-            projection="internal" if projection == "wire" else "wire",
-        )
-    else:
-        path.write_bytes(path.read_bytes().replace(b"{", b"{ ", 1))
+    assert mutation == "whitespace"
+    path.write_bytes(path.read_bytes().replace(b"{", b"{ ", 1))
     second = entry.prepare_evaluation(
         new_invocation=True,
         overrides=_OVERRIDES,

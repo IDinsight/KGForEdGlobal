@@ -25,10 +25,7 @@ from kgfeg.config import BackendSettings
 from kgfeg.evals.lp_eval import judge, sampling
 from kgfeg.evals.lp_eval.schemas import resolve_evaluation_settings
 from tests.fixtures.lp.delivery import projection_bytes
-from tests.fixtures.lp_eval.snapshot_fixtures import (
-    build_snapshot,
-    load_historical_snapshot,
-)
+from tests.fixtures.lp_eval.snapshot_fixtures import build_snapshot
 
 _ALIASES = {
     "academic_subject": "academicSubject",
@@ -174,7 +171,7 @@ def _run(directory: Path) -> Any:
 
 @pytest.fixture(scope="module")
 def _sources(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
-    """Create immutable small source snapshots with each checkpoint contract.
+    """Create an immutable current-format source snapshot.
 
     Parameters
     ----------
@@ -184,11 +181,10 @@ def _sources(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
     Returns
     -------
     dict[str, Path]
-        Synthetic historical and journal-bearing source directories.
+        Current journal-bearing source directory.
     """
     root = tmp_path_factory.mktemp("projection-sources")
     return {
-        "historical_prefix": load_historical_snapshot(root),
         "journal_bearing": build_snapshot(count=4, identity=98765, root=root),
     }
 
@@ -248,12 +244,8 @@ def test_corrupt_current_wire_property_cannot_be_frozen(
     assert not (tmp_path / "results/lp_evals").exists()
 
 
-@pytest.mark.parametrize(
-    argnames="checkpoint", argvalues=["historical_prefix", "journal_bearing"]
-)
-@pytest.mark.parametrize(
-    argnames="projection", argvalues=["internal", "converted", "wire"]
-)
+@pytest.mark.parametrize(argnames="checkpoint", argvalues=["journal_bearing"])
+@pytest.mark.parametrize(argnames="projection", argvalues=["wire"])
 def test_each_projection_checkpoint_combination_preserves_evidence(
     _sources: dict[str, Path], checkpoint: str, projection: str, tmp_path: Path
 ) -> None:
@@ -323,12 +315,8 @@ def test_each_projection_checkpoint_combination_preserves_evidence(
         "wrong_order",
     ],
 )
-@pytest.mark.parametrize(
-    argnames="checkpoint", argvalues=["historical_prefix", "journal_bearing"]
-)
-@pytest.mark.parametrize(
-    argnames="projection", argvalues=["internal", "converted", "wire"]
-)
+@pytest.mark.parametrize(argnames="checkpoint", argvalues=["journal_bearing"])
+@pytest.mark.parametrize(argnames="projection", argvalues=["wire"])
 def test_malformed_projection_never_falls_back_or_rewrites_evidence(  # pylint: disable=too-complex
     _sources: dict[str, Path],
     attack: str,

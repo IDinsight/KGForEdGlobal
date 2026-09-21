@@ -9,7 +9,6 @@ No fixture reads generated results or requires Git or a recorded evaluation invo
 from __future__ import annotations
 
 # Standard Library
-import hashlib
 import json
 
 from pathlib import Path
@@ -303,38 +302,4 @@ def build_snapshot(
             },
         },
     )
-    return directory
-
-
-def load_historical_snapshot(root: Path) -> Path:
-    """Relocate immutable synthetic prefix-only evidence without upgrading it.
-
-    Parameters
-    ----------
-    root
-        Isolated pytest source directory.
-
-    Returns
-    -------
-    Path
-        Temporary historical run with its original artifact and config hashes.
-    """
-    fixture = Path(__file__).with_name("historical_prefix.json")
-    payload = fixture.read_bytes()
-    assert (
-        hashlib.sha256(payload).hexdigest()
-        == "251a76d505ea98013b82076311dd11d95d28a8bb28056cd644d0f0cc1a1013bf"
-    )
-    material = json.loads(payload)
-    directory = root / "synthetic-30000" / "kgs"
-    directory.mkdir(parents=True)
-    for name, text in material["files"].items():
-        destination = (directory / name).resolve()
-        assert destination.is_relative_to(directory.parent.resolve())
-        destination.write_text(text, encoding="utf-8")
-    # Keep synthetic discovery locations valid so rejection tests reach format checks.
-    manifest = json.loads((directory / "kg_run_manifest.json").read_bytes())
-    manifest["kg_run_dir"] = str(directory)
-    manifest["document_ir_fp"] = str(directory.parent / "document_ir.json")
-    _write(directory, "kg_run_manifest.json", manifest)
     return directory

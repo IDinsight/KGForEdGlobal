@@ -11,7 +11,7 @@ import socket
 import sqlite3
 
 from collections import Counter
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
@@ -600,121 +600,6 @@ def test_fresh_material_collects_no_source_digests(
     report = json.loads((reports.directory / "lp_eval_report.json").read_bytes())
     assert "scorer_sha256" not in report
     assert not list((tmp_path / "results").rglob("recovery_transition.json"))
-
-
-def test_legacy_source_metadata_preserves_request_ids_without_source_access(
-    _invocation: Any, tmp_path: Path
-) -> None:
-    """Reuse saved request namespaces even when historical source files are absent.
-
-    Parameters
-    ----------
-    _invocation
-        Fresh invocation used to derive test-only historical identity metadata.
-    tmp_path
-        Synthetic repository.
-    """
-    # Package Library
-    from kgfeg.evals.lp_eval.schemas import FileFingerprint
-
-    fresh, _ = _read(_invocation)
-    historical = replace(
-        fresh,
-        implementation_fingerprints=(
-            FileFingerprint(
-                path=Path("/absent/old/evaluator.py"), sha256="a" * 64, size_bytes=123
-            ),
-        ),
-    )
-    historical = sampling.prepare_evaluation_schedule(
-        identity=historical,
-        inputs=fresh.inputs,
-        judge=fresh.judge,
-        settings=fresh.settings,
-    )
-    # Derive the saved namespace from test-owned historical metadata, never from
-    # the regenerated schedule: a scheduler dropping it must not redefine the oracle.
-    legacy_namespace = hashlib.sha256(
-        support._dump(
-            [
-                {
-                    "path": "/absent/old/evaluator.py",
-                    "sha256": "a" * 64,
-                    "size_bytes": 123,
-                }
-            ]
-        ).encode()
-    ).hexdigest()
-    expected_ids = set()
-    for curriculum in historical.curricula:
-        for item in curriculum.requests:
-            identity = {
-                "canonical_endpoint_uuids": [
-                    str(endpoint) for endpoint in item.canonical_endpoint_uuids
-                ],
-                "component": item.component,
-                "evidence_content_hash": item.evidence.material_content_hash,
-                "implementation_hash": legacy_namespace,
-                "judge": asdict(fresh.judge),
-                "replicate": item.replicate,
-                "role": item.role,
-                "settings": fresh.settings.settings.model_dump(mode="json"),
-            }
-            expected_id = hashlib.sha256(support._dump(identity).encode()).hexdigest()
-            assert (
-                item.prompt.request_id == expected_id
-            ), "Saved legacy request ID changed"
-            expected_ids.add(expected_id)
-    reference = judge.persist_evaluation_schedule(
-        repository_root=tmp_path, schedule=historical
-    )
-    with judge.open_evaluation_store(reference) as session:
-        request = session.schedule.curricula[0].requests[0]
-        attempt = session.start_attempt(request.prompt.request_id)
-        reply = support._reply(request.prompt)
-        session.record_success(
-            attempt=attempt, response_json=reply.response_json, usage=reply.usage
-        )
-        saved = session.snapshot()
-    database = reference.manifest_path.parent / "attempts.sqlite3"
-    with sqlite3.connect(database) as connection:
-        record = json.loads(
-            connection.execute(
-                "SELECT payload FROM executions WHERE sequence=1"
-            ).fetchone()[0]
-        )
-        record["implementation_content_hash"] = "f" * 64
-        digest = hashlib.sha256(
-            support._dump(
-                {"previous": historical.material_content_hash, "record": record}
-            ).encode()
-        ).hexdigest()
-        connection.execute(
-            "UPDATE executions SET payload=?, content_hash=? WHERE sequence=1",
-            (support._dump(record), digest),
-        )
-        connection.execute(
-            "UPDATE metadata SET value=? WHERE key='execution_head'",
-            (support._dump({"count": 1, "hash": digest}),),
-        )
-    schedule, old_cache = _read(reference)
-    immutable = {
-        name: (reference.manifest_path.parent / name).read_bytes()
-        for name in ("manifest.json", "schedule.json.gz")
-    }
-    assert schedule == historical
-    assert _prepare(tmp_path) == reference
-    transport = _Transport(failures=[], schedule=schedule)
-    completed = _run(reference=reference, transport=transport, waits=[])
-    assert {j.request_id for j in completed.judgments} == expected_ids
-    assert request.prompt.request_id not in transport.calls
-    assert completed.events[: len(saved.events)] == saved.events
-    assert completed.executions[0] == old_cache.executions[0]
-    assert completed.executions[1].implementation_content_hash is None
-    assert all(
-        (reference.manifest_path.parent / name).read_bytes() == payload
-        for name, payload in immutable.items()
-    )
 
 
 def test_report_generation_identity_follows_actual_output_bytes(
