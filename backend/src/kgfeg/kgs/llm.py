@@ -9,10 +9,11 @@ returns a complete corrected result.
 
 # Standard Library
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 # Third Party Library
 from loguru import logger
+from pydantic_ai.usage import RunUsage
 
 # Package Library
 from kgfeg.config import Settings
@@ -20,6 +21,8 @@ from kgfeg.kgs.agents import (
     create_lc_dedup_agent,
     create_lc_generation_agent,
     create_lc_generation_validation_agent,
+    create_lp_generation_agent,
+    create_lp_generation_validation_agent,
     create_sfi_dedup_agent,
     create_sfi_dedup_validation_agent,
     create_sfi_extraction_agent,
@@ -27,13 +30,17 @@ from kgfeg.kgs.agents import (
     create_sfi_has_child_agent,
     create_sfi_has_child_validation_agent,
 )
+from kgfeg.kgs.lp_dispatch import run_lp_agent_attempt
+from kgfeg.kgs.lp_requests import LPGenerationRequest
 from kgfeg.kgs.prompts import (
     build_lc_dedup_prompt,
     build_lc_generation_prompt,
+    build_lp_generation_prompt,
     extract_sfi_candidates_from_window,
     resolve_sfi_has_child_parents,
     review_sfi_dedup_candidates,
     validate_lc_generation_response,
+    validate_lp_generation_response,
     validate_sfi_dedup_response,
     validate_sfi_extraction_result,
     validate_sfi_has_child_response,
@@ -45,6 +52,8 @@ from kgfeg.kgs.schemas import (
     LCGenerationRequest,
     LCGenerationResponse,
     LCGenerationValidationVerdict,
+    LPGenerationResponse,
+    LPGenerationValidationVerdict,
     SFIDedupReviewRequest,
     SFIDedupReviewResponse,
     SFIDedupValidationVerdict,
@@ -58,6 +67,7 @@ from kgfeg.kgs.validators import (
     verify_lc_dedup_quality,
     verify_lc_generation_quality,
     verify_lc_generation_validation_integrity,
+    verify_lp_generation_validation_integrity,
     verify_sfi_dedup_review_integrity,
     verify_sfi_dedup_validation_integrity,
     verify_sfi_extraction_integrity,
@@ -65,6 +75,7 @@ from kgfeg.kgs.validators import (
     verify_sfi_has_child_resolution_integrity,
     verify_sfi_has_child_validation_integrity,
 )
+from kgfeg.model_registry import ModelConfig
 from kgfeg.schemas import CreateKGConfig, _CreateKGLearningComponentsConfig
 from kgfeg.utils.general import AgentUsageBucket
 
@@ -94,6 +105,10 @@ class KGUsageTracker:
     lc_dedup: AgentUsageBucket
     lc_generation: AgentUsageBucket
     lc_generation_validation: AgentUsageBucket
+    lp_generation: AgentUsageBucket
+    lp_generation_validation: AgentUsageBucket
+    lp_max_concurrent_requests: int | None
+    lp_unknown_usage_attempts: int
     sfi_dedup: AgentUsageBucket
     sfi_dedup_validation: AgentUsageBucket
     sfi_extraction: AgentUsageBucket
@@ -109,6 +124,12 @@ class KGUsageTracker:
         self.lc_generation_validation = AgentUsageBucket(
             agent_name="lc_generation_validation"
         )
+        self.lp_generation = AgentUsageBucket(agent_name="lp_generation")
+        self.lp_generation_validation = AgentUsageBucket(
+            agent_name="lp_generation_validation"
+        )
+        self.lp_max_concurrent_requests = None
+        self.lp_unknown_usage_attempts = 0
         self.sfi_dedup = AgentUsageBucket(agent_name="sfi_dedup")
         self.sfi_dedup_validation = AgentUsageBucket(agent_name="sfi_dedup_validation")
         self.sfi_extraction = AgentUsageBucket(agent_name="sfi_extraction")
@@ -133,6 +154,8 @@ class KGUsageTracker:
             "lc_dedup": self.lc_dedup,
             "lc_generation": self.lc_generation,
             "lc_generation_validation": self.lc_generation_validation,
+            "lp_generation": self.lp_generation,
+            "lp_generation_validation": self.lp_generation_validation,
             "sfi_dedup": self.sfi_dedup,
             "sfi_dedup_validation": self.sfi_dedup_validation,
             "sfi_extraction": self.sfi_extraction,
@@ -160,7 +183,17 @@ class KGUsageTracker:
                 for bucket in agent_buckets.values()
             ),
         }
+        execution = {}
+
+        if self.lp_max_concurrent_requests is not None:
+            execution["lp_execution"] = {
+                "available_cost": None,
+                "max_concurrent_requests": self.lp_max_concurrent_requests,
+                "unknown_usage_attempts": self.lp_unknown_usage_attempts,
+            }
+
         return {
+            **execution,
             "agents": {
                 agent_name: bucket.to_dict()
                 for agent_name, bucket in agent_buckets.items()
@@ -516,6 +549,80 @@ def generate_learning_components_for_request(
         final_response=final_response,
         validation_verdict=validation_verdict,
     )
+
+
+def generate_learning_progressions_for_request(
+    *,
+    dispatch_guard: Callable[[], None] | None = None,
+    draft: LPGenerationResponse | None,
+    kg_config: CreateKGConfig,
+    model_config: ModelConfig,
+    request: LPGenerationRequest,
+    usage_tracker: KGUsageTracker,
+) -> LPGenerationResponse | LPGenerationValidationVerdict:
+    """Execute one bounded agent attempt with orchestration-owned retry accounting.
+
+    Parameters
+    ----------
+    dispatch_guard
+        Run-wide gate checked before each actual transport dispatch.
+    draft
+        Validated draft for checker execution, absent for a producer attempt.
+    kg_config
+        Effective curriculum instructions.
+    model_config
+        Captured shared KG model and actual Learning Progressions settings.
+    request
+        One request from the complete reconciled on-disk population.
+    usage_tracker
+        Existing producer/checker token accounting buckets.
+
+    Returns
+    -------
+    LPGenerationResponse or LPGenerationValidationVerdict
+        Untrusted stage output for deterministic validation before checkpointing.
+    """
+
+    config = kg_config.learning_progressions
+
+    if draft is None:
+        prompt = build_lp_generation_prompt(
+            lp_generation_request=request,
+            producer_instructions=config.producer_instructions,
+        )
+        agent = create_lp_generation_agent(
+            instructions=prompt.system_message, max_retries=0, model_config=model_config
+        )
+        bucket = usage_tracker.lp_generation
+    else:
+        prompt = validate_lp_generation_response(
+            checker_instructions=config.checker_instructions,
+            draft_response=draft,
+            lp_generation_request=request,
+            producer_instructions=config.producer_instructions,
+        )
+        agent = create_lp_generation_validation_agent(
+            draft_response=draft,
+            instructions=prompt.system_message,
+            lp_generation_request=request,
+            max_retries=0,
+            model_config=model_config,
+            verify_integrity_fn=verify_lp_generation_validation_integrity,
+        )
+        bucket = usage_tracker.lp_generation_validation
+
+    usage = RunUsage()
+
+    try:
+        run = run_lp_agent_attempt(
+            agent=agent,
+            dispatch_guard=dispatch_guard,
+            usage=usage,
+            user_prompt=prompt.user_message,
+        )
+        return run.output
+    finally:
+        bucket.add_run_usage(usage)
 
 
 def resolve_sfi_has_child_parent_request(

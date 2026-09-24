@@ -25,12 +25,16 @@ Document IR
 Academic Standards KG
     |
     v
-Academic Standards + Learning Components KG
++ Learning Components nodes
+    |
+    v
++ Learning Progressions relationships
 ```
 
-The five conceptual stages are implemented through four CLI entry points. The final
-entry point builds the validated Academic Standards layer first and then derives
-Learning Components from it.
+Six conceptual stages use four CLI entry points. The final entry point builds Academic
+Standards (AS), then Learning Components (LC), and followed by Learning Progressions
+(LP). LP adds SFI-to-SFI `buildsTowards` and symmetric `relatesTo` relationships to the
+AS graph.
 
 ## Quick start
 
@@ -46,18 +50,20 @@ python src/kgfeg/entries/create_kgs.py <config.json>
 
 Example curriculum profiles are available under [`examples/`](examples/). If you are
 adapting the system to a new source, start with the
-[Add a New Curriculum](docs/guides/adding-a-curriculum.md) guide rather than editing the
-backend for source-specific conventions.
+[Add a New Curriculum](docs/guides/adding-a-curriculum.md) guide rather than editing
+the backend for source-specific conventions.
 
 ## What the pipeline produces
 
 The run preserves intermediate evidence for debugging and auditability while producing
-two main validated KG handoffs:
+three additive KG handoffs:
 
 - `kgs/as_kg_bundle.json` — Academic Standards framework, items, hierarchy, and
-  provenance; and
+  provenance;
 - `kgs/as_lc_kg_bundle.json` — the combined Academic Standards + Learning Components
-  graph with `hasChild` and `supports` relationships.
+  graph with `hasChild` and `supports` relationships; and
+- `kgs/as_lc_lp_kg_bundle.json` — the combined graph with Learning Progressions
+  relationships.
 
 See the [pipeline overview](docs/pipeline/index.md) for the full artifact map and stage
 contracts. Downstream consumers should also read the
@@ -69,6 +75,8 @@ building against the exported JSON/JSONL shapes.
 - [Official documentation](https://idinsight.github.io/KGForEdGlobal/)
 - [Architecture](docs/architecture.md)
 - [Pipeline overview](docs/pipeline/index.md)
+- [Learning Progressions](docs/pipeline/learning-progressions.md)
+- [Learning Progression evaluation](docs/guides/evaluating-learning-progressions.md)
 - [Add a new curriculum](docs/guides/adding-a-curriculum.md)
 - [Run, resume, and debug](docs/guides/running-and-debugging.md)
 - [Output artifacts and integration contract](docs/reference/output-artifacts.md)
@@ -80,13 +88,13 @@ building against the exported JSON/JSONL shapes.
 - **Source grounded:** final standards and skills remain traceable to source evidence.
 - **Stage separated:** PageIR and DocumentIR reconstruct the document before curriculum
   semantics are inferred.
-- **Validated:** higher-risk LLM assertions use explicit deterministic checks and, where
-  appropriate, independent producer/checker flows.
+- **Validated:** higher-risk LLM assertions use explicit deterministic checks and,
+  where appropriate, independent producer/checker flows.
 - **Deterministic where possible:** identity construction, graph constraints,
   reconciliation checks, and final compilation are enforced in Python.
 - **Configuration driven:** curriculum-specific taxonomy, hierarchy, codes, extraction
-  policy, and LC policy belong in document profiles rather than source-specific backend
-  branches.
+  policy, LC policy, and LP policy belong in document profiles rather than
+  source-specific backend branches.
 
 ## Contact
 

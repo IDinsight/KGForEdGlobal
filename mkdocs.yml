@@ -27,6 +27,7 @@ nav:
       - Document IR: pipeline/document-ir.md
       - Academic Standards: pipeline/academic-standards.md
       - Learning Components: pipeline/learning-components.md
+      - Learning Progressions: pipeline/learning-progressions.md
 
   - Guides:
       - Add a new curriculum: guides/adding-a-curriculum.md

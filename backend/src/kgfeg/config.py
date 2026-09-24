@@ -45,6 +45,7 @@ class BackendSettings(BaseSettings):
     LLM_MAX_OUTPUT_TOKENS: int = 18432
     LLM_KG_MODEL: str = "anthropic:claude-opus-4-8"
     LLM_LC_EVAL_JUDGE_MODEL: str = "anthropic:claude-opus-5"
+    LLM_LP_EVAL_JUDGE_MODEL: str = "anthropic:claude-opus-5"
     LLM_OPENAI_REASONING_EFFORT: str = "high"
     LLM_OPENAI_TEMPERATURE: float = 0.0
     LLM_OPENAI_TOP_P: float = 0.95
@@ -112,6 +113,7 @@ class BackendSettings(BaseSettings):
                 2. "page_ir_verification" - for page IR verification agents.
                 3. "kgs" - for knowledge graph construction agents.
                 4. "lc_eval_judge" - for the Learning Components evaluation judge.
+                5. "lp_eval_judge" - for the Learning Progressions evaluation judge.
 
         Returns
         -------
@@ -129,6 +131,8 @@ class BackendSettings(BaseSettings):
                 return self.LLM_KG_MODEL
             case "lc_eval_judge":
                 return self.LLM_LC_EVAL_JUDGE_MODEL
+            case "lp_eval_judge":
+                return self.LLM_LP_EVAL_JUDGE_MODEL
             case "page_ir_extraction":
                 return self.LLM_PAGE_IR_EXTRACTION_MODEL
             case "page_ir_verification":
@@ -145,8 +149,9 @@ class BackendSettings(BaseSettings):
             The type of model configuration to build. Expected values are:
                 1. "page_ir_extraction" - for page IR extraction agents.
                 2. "page_ir_verification" - for page IR verification agents.
-                3. "kg" - for knowledge graph construction agents.
+                3. "kgs" - for knowledge graph construction agents.
                 4. "lc_eval_judge" - for the Learning Components evaluation judge.
+                5. "lp_eval_judge" - for the Learning Progressions evaluation judge.
 
         Returns
         -------

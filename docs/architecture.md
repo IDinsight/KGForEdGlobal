@@ -16,7 +16,7 @@ than country-specific code paths.
 
 ## Overview
 
-The production pipeline has **five conceptual stages implemented through four main CLI
+The production pipeline has **six conceptual stages implemented through four main CLI
 entry points**:
 
 ```mermaid
@@ -26,19 +26,21 @@ flowchart TD
     C -->|Verified PageIRs + pair verdicts| D[3. Document IR construction]
     D -->|DocumentIR| E[4. Academic Standards KG construction]
     E -->|Validated Academic Standards KG| F[5. Learning Components construction]
-    F --> G[Combined Academic Standards + Learning Components KG]
+    F -->|Validated AS + LC bundle| G[6. Learning Progressions]
+    G --> H[Combined AS + LC + LP KG]
 ```
 
-| Stage                              | Main CLI entry point                                   | Primary input                                            | Primary output                         |
-|------------------------------------|--------------------------------------------------------|----------------------------------------------------------|----------------------------------------|
-| Page IR extraction                 | `backend/src/kgfeg/entries/extract_page_ir.py`         | Curriculum PDF                                           | One `PageIR` JSON per page             |
+| Stage                              | Main CLI entry point                                     | Primary input                                            | Primary output                         |
+|------------------------------------|----------------------------------------------------------|----------------------------------------------------------|----------------------------------------|
+| Page IR extraction                 | `backend/src/kgfeg/entries/extract_page_ir.py`           | Curriculum PDF                                           | One `PageIR` JSON per page             |
 | Page IR continuity verification    | `backend/src/kgfeg/entries/verify_page_ir_continuity.py` | Page images + extracted `PageIR`s                        | Verified `PageIR`s + boundary verdicts |
 | Document IR construction           | `backend/src/kgfeg/entries/stitch_document_ir.py`        | Verified `PageIR`s + verification evidence               | `document_ir.json`                     |
 | Academic Standards KG construction | `backend/src/kgfeg/entries/create_kgs.py`                | `DocumentIR` + `kgs.as` configuration                    | Academic Standards KG artifacts        |
 | Learning Components construction   | `backend/src/kgfeg/entries/create_kgs.py`                | Validated Academic Standards KG + `kgs.lc` configuration | Combined AS + LC KG artifacts          |
+| Learning Progressions construction | `backend/src/kgfeg/entries/create_kgs.py`                | Validated AS+LC bundle + `kgs.lp`                        | Combined AS+LC+LP artifacts            |
 
 The first three stages reconstruct the source document with progressively broader
-context. The final two stages perform curriculum-semantic interpretation and knowledge
+context. The final three stages perform curriculum-semantic interpretation and knowledge
 graph construction.
 
 ---
@@ -54,7 +56,8 @@ curriculum-semantic entity.
 
 Curriculum semantics are first asserted during **Academic Standards KG construction**.
 Learning Components are then derived from the validated Academic Standards graph rather
-than independently reinterpreting the PDF.
+than independently reinterpreting the PDF. Learning Progressions consumes the validated
+AS+LC bundle and preserves its graph while adding SFI-to-SFI relationships.
 
 ### Bound LLM decisions
 
@@ -66,9 +69,10 @@ pipeline constrains the evidence supplied to each task. Examples include:
   verification;
 - a bounded `DocumentIR` extraction window for Standards Framework Item extraction;
 - a bounded duplicate-candidate set for SFI deduplication;
-- a bounded candidate-parent set for `hasChild` resolution; and
+- a bounded candidate-parent set for `hasChild` resolution;
 - one or a small batch of eligible standards plus resolved hierarchy context for
-  Learning Component generation.
+  Learning Component generation; and
+- bounded eligible SFI pairs and their permitted evidence for LP adjudication.
 
 The pipeline does not ask an LLM to infer an unconstrained whole-document graph in a
 single step.
@@ -97,7 +101,8 @@ confidence and graph-integrity gates.
 Several higher-risk semantic operations use a **producer/checker** pattern: one LLM
 produces a structured semantic judgment and an independent checker validates or
 corrects it. This pattern is used for source-grounded SFI extraction, SFI duplicate
-resolution, `hasChild` parent selection, and Learning Component decomposition.
+resolution, `hasChild` parent selection, Learning Component decomposition, and LP
+relationship adjudication. LP confidence is audit data, not a publication threshold.
 
 Learning Component semantic deduplication is intentionally different: deterministic
 blocking nominates bounded candidate pairs for one semantic judge, while Python owns
@@ -133,10 +138,13 @@ document_ir
 kgs
   as   # Academic Standards
   lc   # Learning Components
+  lp   # Learning Progressions
+  metadata # Framework metadata
 ```
 
 The KG section is optional at the `RunConfig` schema level, allowing the extraction,
-verification, and stitching stages to be used without constructing a KG.
+verification, and stitching stages to be used without constructing a KG. When `kgs` is
+present, `as`, `lc`, `lp`, and `metadata` are required. Production uses `LLM_KG_MODEL`.
 
 For a source PDF, the pipeline computes a stable document key and stores stage outputs
 under that document-specific result directory. The main stage directories are:
@@ -551,6 +559,28 @@ kgs/
 
 ---
 
+## Stage 6: Learning Progressions construction
+
+LP indexes the validated AS+LC graph, preserving DAG parents, local identity-scope
+order, and unresolved warnings. Configured statement-type pair matrices define
+eligibility independently of LC selection. Deterministic, bounded non-embedding
+nomination precedes complete request materialization and producer/checker adjudication.
+
+A single writer retains successful ordered prefixes plus durable out-of-order
+completions and attempt accounting. `kgs.lp.max_concurrent_requests` defaults to 4;
+after exhausted failure, only already active calls drain. Material changes or
+unsupported checkpoint formats fail closed, including during final reuse. See
+[Learning Progressions](pipeline/learning-progressions.md) for configuration,
+semantics, checkpoint requirements, failures, and accepted limitations.
+
+The compiler preserves AS+LC content and adds LP provenance, summaries, unresolved
+judgments, and two relationship groups to `as_lc_lp_kg_bundle.json`. Its JSONL
+delivery preserves the AS+LC wire records and appends LP relationships using the same
+Learning Commons serializers and aliases. Complete internal metadata remains in the
+bundle and standalone audit artifacts.
+
+---
+
 ## Knowledge graph model
 
 The current build pipeline produces three primary entity types.
@@ -584,12 +614,11 @@ back to standards through:
 
 ### Relationship scope
 
-The shared graph schema also recognizes `buildsTowards` and `relatesTo` relationship
-types for Standards Framework Items. However, the current `create_kgs.py` orchestration
-implemented in this repository constructs and exports **`hasChild` and `supports`**.
-`buildsTowards` and `relatesTo` should therefore be treated as schema-supported or
-future/downstream relationship types, not as outputs of the current production build
-pipeline.
+The production graph contains `hasChild`, `supports`, `buildsTowards`, and `relatesTo`.
+LP endpoints are SFIs keyed by CASE UUID. `buildsTowards` is developmental support, not
+a strict prerequisite. `relatesTo` is stored once and queried symmetrically. Direct
+assertions are retained without transitive closure or reduction. No LP node class or
+cross-framework edge is added.
 
 ---
 
@@ -598,13 +627,14 @@ pipeline.
 A useful way to reason about the architecture is by where each type of assertion is
 allowed to enter the system.
 
-| Layer                 | Owns                                                                                          | Does not own                                      |
-|-----------------------|-----------------------------------------------------------------------------------------------|---------------------------------------------------|
-| Page IR               | Visible page structure, coordinates, page-local item content, local continuation hints        | Document-wide curriculum semantics                |
-| Verification          | Evidence-backed continuation across adjacent page boundaries                                  | Curriculum hierarchy                              |
-| Document IR           | Deterministic document-level stitching, table reconstruction, section context, provenance     | Standards identity or KG relationships            |
-| Academic Standards KG | Curriculum statement types, global SFI identity, direct hierarchy, normalized grades/metadata | Atomic skill decomposition                        |
-| Learning Components   | Atomic skills, LC identity/deduplication, `supports` alignment                                | Reinterpretation of the source document hierarchy |
+| Layer                            | Owns                                                                                          | Does not own                                                   |
+|----------------------------------|-----------------------------------------------------------------------------------------------|----------------------------------------------------------------|
+| Page IR                          | Visible page structure, coordinates, page-local item content, local continuation hints        | Document-wide curriculum semantics                             |
+| Verification                     | Evidence-backed continuation across adjacent page boundaries                                  | Curriculum hierarchy                                           |
+| Document IR                      | Deterministic document-level stitching, table reconstruction, section context, provenance     | Standards identity or KG relationships                         |
+| Academic Standards KG            | Curriculum statement types, global SFI identity, direct hierarchy, normalized grades/metadata | Atomic skill decomposition                                     |
+| Learning Components              | Atomic skills, LC identity/deduplication, `supports` alignment                                | Reinterpretation of the source document hierarchy              |
+| Learning Progressions            | Bounded SFI pair adjudication, developmental/coherence edges, provenance                      | New nodes, cross-framework edges, empirical prerequisite truth |
 
 This separation reduces the amount of semantic inference required at any one stage,
 makes errors easier to localize, and preserves an auditable path from the final graph
@@ -622,8 +652,11 @@ The production architecture documented here has several deliberate boundaries:
   minting final SFI identifiers.
 - Learning Components are downstream of the Academic Standards graph and do not bypass
   it to extract skills directly from PDF pages.
-- Progression-style `buildsTowards` and associative `relatesTo` relationships are not
-  currently constructed by the main KG orchestration path.
+- Learning Progressions preserves upstream AS/LC and adds only within-framework edges.
+- Structural/process validation and producer/checker agreement do not establish
+  pedagogical correctness. Read the
+  [accepted limitations](pipeline/learning-progressions.md#accepted-limitations) before
+  interpreting graph output as evidence of instructional quality.
 
 These boundaries should be preserved when adding new extraction policies, curriculum
 profiles, or downstream graph capabilities so each stage retains a clear and testable

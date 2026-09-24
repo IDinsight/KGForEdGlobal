@@ -18,7 +18,7 @@ focuses on **operational decisions**.
     [open a new feature issue on GitHub](https://github.com/IDinsight/KGForEdGlobal/issues/new)
     so we can understand the demand and use cases.
 
-## The operating rule that prevents most mistakes
+## What to look for when something is wrong
 
 When something looks wrong, find the **earliest persisted representation that is
 already wrong** and fix or rerun that stage first.
@@ -78,9 +78,9 @@ python src/kgfeg/entries/stitch_document_ir.py <config.json>
 python src/kgfeg/entries/create_kgs.py <config.json>
 ```
 
-The five conceptual pipeline stages are implemented through these four commands because
-`create_kgs.py` builds the Academic Standards layer first and then derives Learning
-Components from it.
+Six conceptual production stages use these four commands: `create_kgs.py` builds AS,
+then LC, then LP from the validated AS+LC bundle. `kgs` requires `as`, `lc`, `lp`, and
+`metadata`. Production uses `LLM_KG_MODEL`.
 
 ## Understand `overwrite` before resuming
 
@@ -117,13 +117,14 @@ There are four independent overwrite settings:
 | DocumentIR           | An existing `document_ir.json` causes the stitching stage to skip                                                                                            | Verified PageIRs or any stitching behavior/config changed                                |
 | KG construction      | Several LLM-heavy sub-stages reuse complete current artifacts or aligned progress; deterministic derived artifacts are recomputed or cross-checked as needed | KG semantic config/model/code changed and you need the new behavior applied deliberately |
 
-The safest mental model is:
+Resume only when the material is unchanged:
 
 > **Resume with `overwrite=false` only when the inputs and policy for that stage are
 > intentionally unchanged.**
 
-If you changed what a stage is supposed to mean, use its overwrite setting or a fresh
-output root rather than assuming cached artifacts will be invalidated automatically.
+For intentional regeneration, choose an authorized overwrite or a fresh output root.
+LP specifically rejects stale material and unsupported checkpoint formats. Overwrite
+cannot bypass its supported-format preflight; preserve historical evidence.
 
 ## How each stage resumes
 
@@ -218,29 +219,55 @@ deduplication semantics, or implementation behavior and need to guarantee fresh 
 judgments, use `kgs.overwrite=true` or a separate output root.
 
 !!! warning "KG overwrite currently applies to the whole KG command"
-    There is one `kgs.overwrite` flag for both Academic Standards and Learning
-    Components. There is not a separate LC-only overwrite flag.
+    There is one `kgs.overwrite` flag for AS, LC, and LP. There is no separate LC-only
+    or LP-only overwrite flag. Unsupported LP checkpoints are rejected before any
+    overwrite effects, including AS/LC calls and run-record changes.
 
     If you set `kgs.overwrite=true` to guarantee fresh LC generation, the expensive AS
     LLM sub-stages are also restarted. There is currently no supported switch that
     forces only the LC LLM work to restart while guaranteeing that all AS LLM work is
     reused.
 
+## Learning Progressions resume, failure, and historical evidence
+
+With `kgs.overwrite=false`, LP revalidates actual upstream/configuration, prompt/model,
+candidate/request, and checkpoint identities before reusing work. Complete candidates
+and requests are materialized before calls. A saved valid draft can be reused while its
+checker resumes; validated pending suffix completions survive prefix gaps. Corruption,
+staleness, or missing authenticated journals fails closed. Production retry limits
+apply per invocation: restarting gives unfinished stages a new configured allowance,
+including after earlier exhaustion or an unknown outcome. Prior attempts and failures
+remain in the durable history; do not delete or edit them. Inspect that history before
+authorizing a resume, which can make new calls.
+
+`kgs.lp.max_concurrent_requests` defaults to 4 admitted request batches, including
+retry waits; 1 is serial. Batch size is independent. Each checker waits for its own
+producer. After exhausted failure, admission and dispatch close: only already active
+calls finish, and their valid outcomes/usage are saved by the sole writer. No new
+checker or retry starts during drain. Any unresolved failed pair blocks success;
+`no_relation` and `needs_review` are valid outcomes, with `needs_review` visible and
+nonpublishing.
+
+Successful runs retain `.lp_generation.lock`. File presence is not proof of an active
+writer. Never delete the lock file to force progress: competing processes must
+coordinate on the same inode. A compatible completed run can reuse its final bundle and
+rewrite projections without new LP model calls.
+
 ## Resume after an interruption
 
-For an unchanged config and unchanged source, start with the least destructive option:
-rerun the command that failed with its stage `overwrite=false`.
+For unchanged material and supported checkpoint evidence, an authorized rerun can use
+`overwrite=false`. Investigate exhausted or uncertain LP attempts before retrying.
 
-| What happened                                                 | Recommended recovery                                                                                                                                            |
-|---------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Extraction stopped during a page                              | Rerun extraction with `page_ir_extraction.overwrite=false`; completed PageIRs are skipped                                                                       |
-| Verification stopped while judging page pairs                 | Rerun verification with `page_ir_verification.overwrite=false`; valid pair reports are reused                                                                   |
-| Verification has partial compile/postprocess/verified outputs | Prefer a full verification rerun with `overwrite=true`, or use the targeted recovery below only when pair reports are known-current                             |
-| Stitching failed before writing `document_ir.json`            | Fix the cause and rerun stitching; `overwrite=false` is sufficient when no DocumentIR exists                                                                    |
-| Stitching completed but you changed its inputs/config         | Set `document_ir.overwrite=true` and rerun stitching                                                                                                            |
-| KG construction stopped partway through                       | Rerun `create_kgs.py` with `kgs.overwrite=false`; compatible progress is reused                                                                                 |
-| LC generation exceeded `lc_max_failure_rate`                  | Inspect `lc_generation_failures.json`, correct any transient/config issue, then rerun with `kgs.overwrite=false` to retry requests that did not complete        |
-| A resume check says existing artifacts are stale/misaligned   | First verify that the source/config did not change unintentionally; if the change was intentional, restart that stage with overwrite or use a fresh output root |
+| What happened                                                 | Recommended recovery                                                                                                                                     |
+|---------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Extraction stopped during a page                              | Rerun extraction with `page_ir_extraction.overwrite=false`; completed PageIRs are skipped                                                                |
+| Verification stopped while judging page pairs                 | Rerun verification with `page_ir_verification.overwrite=false`; valid pair reports are reused                                                            |
+| Verification has partial compile/postprocess/verified outputs | Prefer a full verification rerun with `overwrite=true`, or use the targeted recovery below only when pair reports are known-current                      |
+| Stitching failed before writing `document_ir.json`            | Fix the cause and rerun stitching; `overwrite=false` is sufficient when no DocumentIR exists                                                             |
+| Stitching completed but you changed its inputs/config         | Set `document_ir.overwrite=true` and rerun stitching                                                                                                     |
+| KG construction stopped partway through                       | Use `kgs.overwrite=false` only for compatible material and supported LP checkpoint evidence; exhausted/uncertain attempts require investigation          |
+| LC generation exceeded `lc_max_failure_rate`                  | Inspect `lc_generation_failures.json`, correct any transient/config issue, then rerun with `kgs.overwrite=false` to retry requests that did not complete |
+| A resume check says existing artifacts are stale/misaligned   | Verify the change, preserve evidence, and plan authorized regeneration; LP does not repair hashes or bypass unsupported formats with overwrite           |
 
 ### Recovering partial verification state
 
@@ -283,6 +310,7 @@ changed stage should not be trusted merely because files already exist.
 | Academic Standards taxonomy, extraction policy, identity/code scope, dedup policy, hierarchy policy/instructions, or KG model | Academic Standards KG             | Run `create_kgs.py`; use `kgs.overwrite=true` when fresh semantic judgments are required                                 |
 | LC eligibility, generation instructions, validation instructions, dedup scope/blocking/judge policy, or KG model              | Learning Components               | Run `create_kgs.py`; use `kgs.overwrite=true` to guarantee fresh LC judgments, noting that AS LLM work is also restarted |
 | Delivery/export schema setting only                                                                                           | Final KG compilation              | Rerun `create_kgs.py`; upstream document stages do not need to be rerun                                                  |
+| LP policy, evidence limits, prompts, model, budgets, or concurrency                                                           | LP material identity              | Preserve the old snapshot; plan authorized regeneration rather than reusing stale checkpoints                            |
 | Documentation only                                                                                                            | None                              | No pipeline rerun                                                                                                        |
 
 For a high-stakes comparison between old and new semantic policy, prefer a new
@@ -294,9 +322,9 @@ Extraction and verification each have `start_page` / `end_page` settings. Verifi
 can only operate on a contiguous range that actually exists in the extraction output.
 These ranges use zero-based page indexes and an exclusive `end_page`.
 
-For an **end-to-end** run through DocumentIR, there is an additional current constraint:
-the verified PageIR set loaded by the stitcher must be contiguous and start at page
-index `0`.
+For an **end-to-end** run through DocumentIR, there is an additional current
+constraint: the verified PageIR set loaded by the stitcher must be contiguous and start
+at page index `0`.
 
 Therefore:
 
@@ -315,43 +343,47 @@ missing range.
 
 Use this sequence rather than jumping directly to the final bundle.
 
-| If this is wrong...                                            | Inspect first                                                                       | Likely stage to fix                                           |
-|----------------------------------------------------------------|-------------------------------------------------------------------------------------|---------------------------------------------------------------|
-| The rendered source page itself                                | `extraction/page_images/<page>.png`                                                 | Extraction rendering/DPI/source file                          |
-| Visible text, table geometry, item type, or boundary in PageIR | accepted `page_irs/<page>.json`, then `page_irs_raw/`                               | Page IR extraction                                            |
-| Whether page N continues to N+1                                | `page_irs_pair_reports/<N>_<N+1>.json` and its crop                                 | Page IR verification                                          |
-| Pair verdict is correct but verified PageIR state is wrong     | `continuity_compile_report.json`, `postprocess_report.json`, verified PageIR        | Verification compile/postprocess thresholds or logic          |
-| Cross-page text/table reconstruction                           | `stitch_report.json` and `document_ir.json`                                         | DocumentIR                                                    |
-| Which source content was sent for SFI extraction               | `sfi_extraction_window_plan.json` and `sfi_extraction_windows.jsonl`                | AS window/table-selection config                              |
-| A standard was omitted/mis-typed/mis-scoped                    | `sfi_extraction_results.jsonl` and `sfi_candidate_registry.json`                    | AS extraction taxonomy/instructions                           |
-| Two source candidates were merged or kept separate incorrectly | `sfi_merge_report.json`, groups/conflicts, dedup review artifacts                   | AS identity/dedup policy                                      |
-| Final SFI is correct but its direct parent is wrong            | `has_child_candidate_parent_sets.jsonl`, requests, drafts/verdicts/final responses  | AS hierarchy retrieval/policy/instructions                    |
-| A standard did not enter LC generation                         | `lc_eligibility_report.json` and `lc_eligible_sfis.json`                            | LC eligibility policy or unresolved ancestry                  |
-| Atomic decomposition is wrong                                  | LC request, producer draft, validation verdict, and final response                  | LC generation/validation policy                               |
-| Two LC texts were or were not merged correctly                 | `lc_dedup_candidate_pairs.jsonl`, `lc_dedup_verdicts.jsonl`, `lc_dedup_groups.json` | LC blocking/scope/semantic dedup                              |
-| Final counts/endpoints/provenance do not reconcile             | AS validation report, LC summary, AS bundle, combined bundle                        | Finalization/validation; then trace to earliest failing input |
+| If this is wrong...                                            | Inspect first                                                                                                 | Likely stage to fix                                                               |
+|----------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------|
+| The rendered source page itself                                | `extraction/page_images/<page>.png`                                                                           | Extraction rendering/DPI/source file                                              |
+| Visible text, table geometry, item type, or boundary in PageIR | accepted `page_irs/<page>.json`, then `page_irs_raw/`                                                         | Page IR extraction                                                                |
+| Whether page N continues to N+1                                | `page_irs_pair_reports/<N>_<N+1>.json` and its crop                                                           | Page IR verification                                                              |
+| Pair verdict is correct but verified PageIR state is wrong     | `continuity_compile_report.json`, `postprocess_report.json`, verified PageIR                                  | Verification compile/postprocess thresholds or logic                              |
+| Cross-page text/table reconstruction                           | `stitch_report.json` and `document_ir.json`                                                                   | DocumentIR                                                                        |
+| Which source content was sent for SFI extraction               | `sfi_extraction_window_plan.json` and `sfi_extraction_windows.jsonl`                                          | AS window/table-selection config                                                  |
+| A standard was omitted/mis-typed/mis-scoped                    | `sfi_extraction_results.jsonl` and `sfi_candidate_registry.json`                                              | AS extraction taxonomy/instructions                                               |
+| Two source candidates were merged or kept separate incorrectly | `sfi_merge_report.json`, groups/conflicts, dedup review artifacts                                             | AS identity/dedup policy                                                          |
+| Final SFI is correct but its direct parent is wrong            | `has_child_candidate_parent_sets.jsonl`, requests, drafts/verdicts/final responses                            | AS hierarchy retrieval/policy/instructions                                        |
+| A standard did not enter LC generation                         | `lc_eligibility_report.json` and `lc_eligible_sfis.json`                                                      | LC eligibility policy or unresolved ancestry                                      |
+| Atomic decomposition is wrong                                  | LC request, producer draft, validation verdict, and final response                                            | LC generation/validation policy                                                   |
+| Two LC texts were or were not merged correctly                 | `lc_dedup_candidate_pairs.jsonl`, `lc_dedup_verdicts.jsonl`, `lc_dedup_groups.json`                           | LC blocking/scope/semantic dedup                                                  |
+| An LP pair is missing or has an unexpected outcome             | LP eligibility/candidate artifacts, bounded request, draft/verdict/final response, and `lp_final_claims.json` | Earliest incorrect policy, evidence, or adjudication stage; never patch the graph |
+| LP cycle, warning, count, or provenance validation fails       | `lp_validation_report.json`, relationship provenance, final claims                                            | Trace named endpoints/requests before any authorized rerun                        |
+| Final counts/endpoints/provenance do not reconcile             | AS validation report, LC summary, AS bundle, combined bundle                                                  | Finalization/validation; then trace to earliest failing input                     |
 
-The [Pipeline Overview](../pipeline/index.md#where-to-inspect-a-run) contains the compact
-artifact map; the stage pages explain what each artifact means.
+The [Pipeline Overview](../pipeline/index.md#where-to-inspect-a-run) contains the
+compact artifact map; the stage pages explain what each artifact means.
 
 ## Common failure signatures
 
 The exact traceback is the authority, but these patterns usually point to a specific
 class of operational problem.
 
-| Symptom or message                                                                  | Usually means                                                                    | What to do                                                                                                                          |
-|-------------------------------------------------------------------------------------|----------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------|
-| `PDF doc_key mismatch`                                                              | The configured PDF bytes do not match the upstream run                           | Use the original PDF for that artifact tree or start a new run for the new PDF                                                      |
-| Page image and PageIR directories do not match                                      | Extraction is incomplete or files were manually removed                          | Rerun extraction with the intended range and unchanged config                                                                       |
-| Requested verification range is outside available extracted pages                   | Extraction/verification page ranges disagree                                     | Align the ranges or extract the missing pages                                                                                       |
-| Edge verdict references candidate items that do not exist                           | Pair reports were produced for different/stale PageIR structure                  | Rerun verification with overwrite after confirming extraction is current                                                            |
-| Verification cannot run postprocess/save because an upstream output is being reused | The verification directory contains partial derived state                        | Full verification overwrite, or targeted cleanup if pair reports are unquestionably current                                         |
-| `document_ir.json` already exists and stitching is skipped                          | Whole-stage DocumentIR reuse is active                                           | Set `document_ir.overwrite=true` if you intended to rebuild it                                                                      |
-| Existing SFI extraction result does not match the current window                    | KG extraction progress no longer aligns with the current window plan             | Confirm the DocumentIR/KG config change, then restart KG with overwrite or use a fresh output root                                  |
-| Academic Standards export validation fails                                          | Finalized AS entities/edges/mappings/provenance violate a deterministic contract | Start with `as_validation_report.json`, then trace the named inputs upstream                                                        |
-| LC generation failure rate exceeds `lc_max_failure_rate`                            | Too many eligible SFIs failed generation after retries                           | Inspect `lc_generation_failures.json`; rerun without KG overwrite after a transient fix, or adjust the actual LC policy/model issue |
-| Existing final bundle is reported as stale because fingerprints differ              | Current deterministic inputs differ from the saved delivery bundle               | Let the compiler rebuild it; investigate only if the input change was unexpected                                                    |
-| A resumed run reports little or no LLM usage                                        | Compatible semantic artifacts were reused                                        | Expected; usage in the current run record is not cumulative lifetime usage                                                          |
+| Symptom or message                                                                  | Usually means                                                                     | What to do                                                                                                                                                       |
+|-------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `PDF doc_key mismatch`                                                              | The configured PDF bytes do not match the upstream run                            | Use the original PDF for that artifact tree or start a new run for the new PDF                                                                                   |
+| Page image and PageIR directories do not match                                      | Extraction is incomplete or files were manually removed                           | Rerun extraction with the intended range and unchanged config                                                                                                    |
+| Requested verification range is outside available extracted pages                   | Extraction/verification page ranges disagree                                      | Align the ranges or extract the missing pages                                                                                                                    |
+| Edge verdict references candidate items that do not exist                           | Pair reports were produced for different/stale PageIR structure                   | Rerun verification with overwrite after confirming extraction is current                                                                                         |
+| Verification cannot run postprocess/save because an upstream output is being reused | The verification directory contains partial derived state                         | Full verification overwrite, or targeted cleanup if pair reports are unquestionably current                                                                      |
+| `document_ir.json` already exists and stitching is skipped                          | Whole-stage DocumentIR reuse is active                                            | Set `document_ir.overwrite=true` if you intended to rebuild it                                                                                                   |
+| Existing SFI extraction result does not match the current window                    | KG extraction progress no longer aligns with the current window plan              | Confirm the DocumentIR/KG config change, then restart KG with overwrite or use a fresh output root                                                               |
+| Academic Standards export validation fails                                          | Finalized AS entities/edges/mappings/provenance violate a deterministic contract  | Start with `as_validation_report.json`, then trace the named inputs upstream                                                                                     |
+| LC generation failure rate exceeds `lc_max_failure_rate`                            | Too many eligible SFIs failed generation after retries                            | Inspect `lc_generation_failures.json`; rerun without KG overwrite after a transient fix, or adjust the actual LC policy/model issue                              |
+| AS/AS+LC final bundle fingerprints differ                                           | Current inputs differ                                                             | Inspect the change and upstream compiler behavior; LP final reuse instead rejects stale material                                                                 |
+| LP checkpoint format is unsupported                                                 | Old/partial/unauthenticated evidence, possibly even with a successful final graph | Preserve it; use compatible read-only interpretation or a separately authorized fresh run, not forced overwrite                                                  |
+| Production LP retry budget is exhausted or an outcome is unknown                    | The current invocation has failed or lacks a reusable result for that stage       | Inspect durable failure/usage evidence before an authorized resume; a new invocation can call unfinished stages again. Preserve all receipts and attempt history |
+| A resumed run reports little or no LLM usage                                        | Compatible semantic artifacts were reused                                         | Expected; usage in the current run record is not cumulative lifetime usage                                                                                       |
 
 ## Run records, status, and LLM usage
 
@@ -364,7 +396,9 @@ stitching/stitching_run.json
 kgs/kg_run.json
 ```
 
-On completion, the run record contains the current invocation's timestamps and status.
+LP unsupported-format preflight is a no-write exception: it preserves the existing run
+record and reports the incompatibility through the command error. Otherwise, on
+completion, the run record contains the current invocation's timestamps and status.
 When an exception escapes the stage, the record also captures an error type, message,
 and traceback under `extra.error`.
 
@@ -382,6 +416,10 @@ aggregate totals. Use these records to answer questions such as:
 
     Preserve earlier run records externally if you need historical/cumulative cost
     accounting; the stage `*_run.json` path is rewritten on later invocations.
+
+LP additionally keeps durable cross-invocation attempts in `lp_generation_usage.json`
+and separate `lp_generation` / `lp_generation_validation` buckets. Unknown outcomes
+remain explicit.
 
 For KG runs, `kg_run_manifest.json` is also a useful **preparation diagnostic**. It
 summarizes source/document characteristics such as segment counts, observed languages,
@@ -425,8 +463,9 @@ This costs more but provides the clearest audit boundary.
 Keep the same output root, set the earliest affected stage's `overwrite=true`, and
 regenerate all downstream stages whose inputs depend on it.
 
-This is appropriate when the source and run identity are unchanged and you intentionally
-want to replace derived artifacts in place.
+Use this only for intentional, authorized regeneration with supported evidence. LP
+format rejection occurs before archive or overwrite; it cannot be used to migrate an
+old checkpoint store.
 
 ### 3. Targeted artifact recovery — only for known partial state
 
@@ -437,7 +476,8 @@ pair reports while rebuilding deterministic derived outputs can be worthwhile.
 Avoid manually deleting arbitrary KG JSONL records. Several KG sub-stages rely on
 ordered prefixes, request IDs, aligned producer/checker artifacts, and cross-artifact
 consistency. When KG progress is genuinely stale, `kgs.overwrite=true` or a fresh output
-root is usually safer than artifact surgery.
+root is usually safer than artifact surgery. Neither option authorizes bypassing LP
+format rejection or deleting its locks, journals, receipts, or failure history.
 
 ## Before rerunning downstream
 
@@ -469,3 +509,4 @@ Use this short checklist:
   reconciliation, hierarchy, and export.
 - [Learning Components](../pipeline/learning-components.md) — LC eligibility,
   decomposition, validation, deduplication, provenance, and finalization.
+- [Learning Progressions](../pipeline/learning-progressions.md) — LP semantics and integrity.

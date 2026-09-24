@@ -354,16 +354,21 @@ Commons wire pairs, see the
 
 ## Stage boundary
 
-Learning Components construction is currently the final stage of the production
-pipeline. It adds a generated atomic-skill layer to the source-grounded Academic
-Standards hierarchy while preserving explicit provenance back to the standards and,
-through them, to the original document evidence.
+Learning Components construction is the second KG phase, after Academic Standards
+and before Learning Progressions. It adds a generated atomic-skill layer to the
+source-grounded Academic Standards hierarchy while preserving explicit provenance
+back to the standards and, through them, to the original document evidence.
 
 The `as_lc_kg_bundle.json` contains the Academic Standards framework and items,
 Learning Components, `hasChild` relationships, `supports` relationships, unresolved
 records, provenance, summaries, and validation results for the combined graph.
 
 ---
+
+The validated AS+LC bundle is also the authoritative input to
+[Learning Progressions](learning-progressions.md), the third KG phase. LP adds SFI-to-SFI
+relationships without replacing the AS/LC artifacts described here. Its internal JSONL
+projection has a different shape from the AS+LC delivery wire pair.
 
 ## Next
 

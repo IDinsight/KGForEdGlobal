@@ -45,9 +45,11 @@
 ## The Pipeline
 
 The curriculum-document processing pipeline converts a source curriculum PDF into a
-validated knowledge graph. It has **five conceptual stages implemented through four
-main CLI entry points**. The first three stages reconstruct the source document; the
-final two stages construct the Academic Standards and Learning Components layers.
+validated knowledge graph. It has **six conceptual stages implemented through four
+main CLI entry points**. The first three reconstruct the document; `create_kgs.py`
+builds AS, LC, and LP. When `kgs` is configured, `as`, `lc`, `lp`, and `metadata` are
+required. See [Learning Progressions](../pipeline/learning-progressions.md) for LP
+configuration and behavior.
 
 All commands below are run from the `backend` directory and consume the same runtime
 configuration JSON file. For a detailed description of each stage and its artifacts,
@@ -81,13 +83,12 @@ python src/kgfeg/entries/stitch_document_ir.py <config.json>
 
 ### Step 4: Construct the knowledge graph
 
-Build and validate the Academic Standards KG first, then construct Learning Components
-from the validated Academic Standards layer:
+Build and validate AS, derive LC from validated AS, then construct LP from the validated
+AS+LC bundle:
 
 ```bash
 python src/kgfeg/entries/create_kgs.py <config.json>
 ```
 
-`create_kgs.py` therefore implements the final **two conceptual stages** of the
-pipeline: Academic Standards KG construction followed by Learning Components
-construction.
+`create_kgs.py` implements the final **three conceptual stages**: Academic Standards,
+Learning Components, and Learning Progressions.

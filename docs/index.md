@@ -34,9 +34,10 @@ flowchart LR
     C --> D[Document IR]
     D --> E[Academic Standards]
     E --> F[Learning Components]
+    F --> G[Learning Progressions]
 ```
 
-The five conceptual stages are:
+The six conceptual production stages are:
 
 1. **Page IR Extraction** — reconstruct the visible structure of each PDF page.
 2. **Page IR Verification** — verify likely cross-page continuations and conservatively
@@ -47,6 +48,8 @@ The five conceptual stages are:
    source-grounded standards.
 5. **Learning Components** — decompose eligible standards into atomic skills, resolve
    duplicates, and connect them back to the standards they support.
+6. **Learning Progressions** — add bounded, producer/checker-adjudicated developmental
+   and conceptual relationships between SFIs.
 
 The current implementation is document- and configuration-driven rather than tied to a
 single curriculum or country.
@@ -61,14 +64,13 @@ single curriculum or country.
 - **Architecture** explains the system boundaries, trust model, provenance strategy,
   deterministic invariants, and relationship between the major representations.
 - **Pipeline** documents the operational flow from PDF extraction through the final
-  Academic Standards + Learning Components graph.
+  Academic Standards + Learning Components + Learning Progressions graph.
 - **Development** contains local development and contributor-oriented material.
 
 !!! note
-    The production pipeline currently builds `hasChild` relationships within the
-    Academic Standards hierarchy and `supports` relationships from Learning Components
-    to Standards Framework Items. Other Learning Commons relationship types may exist in
-    the shared schema but are not constructed by the current pipeline.
+    Production builds `hasChild`, `supports`, `buildsTowards`, and `relatesTo`.
+    Learning Progressions adds relationships, not nodes. Structural/process validation
+    and producer/checker agreement do not establish pedagogical correctness.
 
 !!! question "Have a use case or feature request?"
     If you are working with curriculum data in government, education, research, or the

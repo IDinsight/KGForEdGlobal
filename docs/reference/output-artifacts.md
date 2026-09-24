@@ -16,29 +16,32 @@ For operational recovery and artifact-first debugging, see
 
 ## Choose the output that matches your consumer
 
-| Need                                                                                   | Recommended artifact                                      | Shape                                                                                                               |
-|----------------------------------------------------------------------------------------|-----------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------|
-| Complete validated Academic Standards graph, including provenance and unresolved state | `kgs/as_kg_bundle.json`                                   | One structured JSON bundle using the pipeline's internal export models                                              |
-| Academic Standards in the Learning Commons-shaped JSONL delivery format                | `kgs/as_nodes.jsonl` + `kgs/as_relationships.jsonl`       | Compact aliased JSONL records for `StandardsFramework`, `StandardsFrameworkItem`, and `hasChild`                    |
-| Complete validated Academic Standards + Learning Components graph                      | `kgs/as_lc_kg_bundle.json`                                | One structured JSON bundle containing AS, LCs, `hasChild`, `supports`, provenance, unresolved state, and validation |
-| Academic Standards **and** Learning Components in the Learning Commons-shaped JSONL delivery format | `kgs/as_lc_nodes.jsonl` + `kgs/as_lc_relationships.jsonl` | The same wire records as the pair above, with `LearningComponent` nodes and `supports` edges appended               |
+| Need                                                                                                | Recommended artifact                                            | Shape                                                                                                               |
+|-----------------------------------------------------------------------------------------------------|-----------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------|
+| Complete validated Academic Standards graph, including provenance and unresolved state              | `kgs/as_kg_bundle.json`                                         | One structured JSON bundle using the pipeline's internal export models                                              |
+| Academic Standards in the Learning Commons-shaped JSONL delivery format                             | `kgs/as_nodes.jsonl` + `kgs/as_relationships.jsonl`             | Compact aliased JSONL records for `StandardsFramework`, `StandardsFrameworkItem`, and `hasChild`                    |
+| Complete validated Academic Standards + Learning Components graph                                   | `kgs/as_lc_kg_bundle.json`                                      | One structured JSON bundle containing AS, LCs, `hasChild`, `supports`, provenance, unresolved state, and validation |
+| Academic Standards **and** Learning Components in the Learning Commons-shaped JSONL delivery format | `kgs/as_lc_nodes.jsonl` + `kgs/as_lc_relationships.jsonl`       | The same wire records as the pair above, with `LearningComponent` nodes and `supports` edges appended               |
+| Complete AS + LC + LP graph                                                                         | `kgs/as_lc_lp_kg_bundle.json`                                   | Additive bundle with both LP relationship groups, provenance, summaries, unresolved state, and validation           |
+| Flat AS + LC + LP records                                                                           | `kgs/as_lc_lp_nodes.jsonl` + `kgs/as_lc_lp_relationships.jsonl` | Same AS+LC wire records, with `buildsTowards` and `relatesTo` relationships appended                                |
 
 For most programmatic integrations, start with a bundle. Bundles are self-contained,
 carry validation and unresolved-state information with the graph, and avoid requiring a
 consumer to join several working artifacts correctly.
 
 If a downstream system specifically expects the Learning Commons-shaped wire format,
-use the JSONL pairs. Both pairs use the **same** wire models, so a consumer of one can
-read the other without changes.
+use the AS, AS+LC or AS+LC+LP JSONL pair for the layers required. All three use the
+same Learning Commons wire models. Complete internal metadata remains in the bundles
+and standalone provenance artifacts.
 
 !!! note "Which JSONL pair to take"
     `as_nodes.jsonl` / `as_relationships.jsonl` carry the **Academic Standards layer
     only** — framework, items, and `hasChild`. `as_lc_nodes.jsonl` /
     `as_lc_relationships.jsonl` carry **the same records byte for byte**, with
     the Learning Components layer appended: `LearningComponent` nodes and `supports`
-    edges. The subject-suffixed pair is the delivery artifact; take it whenever the run
-    produced Learning Components. The Academic Standards lines are identical in both, so
-    the LC layer is provably additive.
+    edges. The AS+LC+LP pair preserves those AS+LC records and adds `buildsTowards` and
+    `relatesTo` relationships. Choose it when the run includes Learning Progressions.
+    Its node file is byte-identical to the AS+LC node file.
 
 ---
 
@@ -76,6 +79,17 @@ then validates the merged graph again. Its validation report checks the combined
 endpoints, LC edge coverage, identifier collisions, provenance presence, and summary
 alignment.
 
+### Academic Standards + Learning Components + Learning Progressions
+
+Require the combined bundle's `validation_report.passed == true` and `errors == []`,
+alongside passed upstream AS/AS+LC and `lp_validation_report.json`. Check `kg_run.json`
+for successful execution and reconcile the recorded material identities. LP processing
+failures cannot be tolerated as a percentage: any unresolved failed pair blocks success.
+`needs_review` remains visible, nonpublishing, and nonblocking.
+
+Structural/process validity and producer/checker agreement do not prove pedagogical
+correctness.
+
 ### A passed graph can still contain unresolved or excluded material
 
 `passed == true` means the exported graph satisfies the pipeline's deterministic graph
@@ -111,6 +125,9 @@ as_relationships.jsonl
 as_lc_kg_bundle.json
 as_lc_nodes.jsonl
 as_lc_relationships.jsonl
+as_lc_lp_kg_bundle.json
+as_lc_lp_nodes.jsonl
+as_lc_lp_relationships.jsonl
 ```
 
 Choose one representation for a given consumer rather than joining equivalent
@@ -295,6 +312,10 @@ JSON-array **string** like `gradeLevel`. A `LearningComponent` carries no
 source-relative — and no standards-specific properties. `tags` is omitted rather than
 emitted empty.
 
+Framework-root fallback represents unresolved placement and must not be interpreted as
+positive topical or progression evidence. LP preserves warnings or excludes affected
+SFIs according to its required profile policy.
+
 ### `supports` relationship record
 
 ```json
@@ -364,6 +385,70 @@ artifact to ingest.
 
 ---
 
+## Learning Progressions artifacts
+
+`as_lc_lp_kg_bundle.json` preserves the complete upstream framework, items, LCs,
+`hasChild`, `supports`, summaries, unresolved data, and entity provenance. It adds:
+
+- `relationships_builds_towards` and `relationships_relates_to`;
+- corresponding mappings under `entity_provenance`;
+- `summary.learning_progressions` and reconciled total counts;
+- `unresolved_items.learning_progressions`; and
+- combined structural/process validation and material bindings.
+
+The node count is `1 + SFI count + LC count`; the relationship count is
+`hasChild + supports + buildsTowards + relatesTo`. LP creates no nodes.
+
+### AS+LC+LP delivery projections
+
+`as_lc_lp_nodes.jsonl` preserves `as_lc_nodes.jsonl` byte for byte. Node records use
+`type`, `identifier`, `labels` and `properties`. `as_lc_lp_relationships.jsonl`
+preserves all AS+LC delivery records and appends `buildsTowards`, then `relatesTo`,
+with each added group sorted by relationship identifier.
+
+The same wire serializers provide camelCase properties such as `relationshipType`,
+`sourceEntityKey` and `caseIdentifierUUID`. Established outer fields such as
+`source_identifier`, `target_identifier`, `source_labels` and `target_labels` retain
+underscores. Internal SFI CASE UUID endpoints resolve to the corresponding delivery
+node identifiers; no identity or direction is reminted. `relatesTo` remains one
+canonical row per pair and must be queried from both endpoint positions.
+
+The combined bundle, standalone LP relationships, provenance, requests, checkpoints
+and reports retain their internal schemas and complete metadata. Use those artifacts
+for fields outside the delivery schema. Export and completed-bundle reuse validate
+upstream wire records against the bundle, preserve their bytes, and verify the written
+outputs; missing or inconsistent upstream delivery fails validation.
+
+### Standalone LP and checkpoint files
+
+All names below are relative to the production `kgs/` directory.
+
+| Artifacts                                                                    | Purpose                                                                                    |
+|------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------|
+| `lp_eligible_sfis.json`, `lp_eligibility_report.json`                        | Eligible endpoints, coordinate/unresolved warnings, exclusions, and counts                 |
+| `lp_candidate_pairs.jsonl`, `lp_candidate_summary.json`                      | Bounded nomination population, reasons, budgets, and identities                            |
+| `lp_generation_requests.jsonl`, `lp_generation_requests_manifest.json`       | Complete bounded request population and material binding before calls                      |
+| `lp_generation_draft_responses.jsonl`                                        | Validated contiguous producer prefix                                                       |
+| `lp_generation_validation_verdicts.jsonl`                                    | Validated contiguous checker prefix                                                        |
+| `lp_generation_responses.jsonl`                                              | Validated contiguous reconciled judgment prefix                                            |
+| `lp_generation_failures.json`                                                | Separate failed-request evidence and dispositions                                          |
+| `lp_generation_pending_completions.json`                                     | Durable validated completions beyond prefix gaps                                           |
+| `lp_generation_usage.json`                                                   | Durable attempt and usage accounting                                                       |
+| `lp_generation_checkpoint_manifest.json`                                     | Execution identity, state/counts, and artifact byte hashes                                 |
+| `lp_generation_checkpoint_transaction.json`                                  | Transient crash-recovery record; may be absent after commit                                |
+| `.lp_generation.lock`                                                        | Retained lock inode, including after success; presence does not establish active ownership |
+| `lp_final_claims.json`                                                       | Reconciled pair decisions before relationship conversion                                   |
+| `lp_relationships_builds_towards.jsonl`, `lp_relationships_relates_to.jsonl` | Standalone direct LP relationships                                                         |
+| `lp_relationship_provenance.json`                                            | Candidate, request, producer/checker, source, config, and material lineage                 |
+| `lp_unresolved_items.json`                                                   | Nonpublishing `needs_review` judgments                                                     |
+| `lp_generation_summary.json`, `lp_validation_report.json`                    | Reconciled counts and structural/process validation                                        |
+
+Checkpoint files form one authenticated store; they are not independently editable
+recovery controls. Missing journals do not mean empty work. Current production rejects
+unsupported old formats before effects, even with overwrite or a completed bundle.
+
+---
+
 ## Graph semantics
 
 ### Node types
@@ -404,6 +489,10 @@ Learning Commons-shaped relationship projection it receives
 `resolutionStatus = "unresolvedRootFallback"`; the internal bundle also retains the
 richer unresolved metadata/reporting.
 
+Framework-root fallback represents unresolved placement and must not be interpreted as
+positive topical or progression evidence. LP preserves warnings or excludes affected
+SFIs according to its required profile policy.
+
 ### `supports`
 
 Direction is always:
@@ -425,6 +514,21 @@ pair. A single LC can therefore support several standards after deduplication.
 The relationship metadata contains the generation request IDs and a
 `support_confidence`. When several generated claims from the same SFI collapse into the
 same LC, that edge uses the minimum contributing confidence.
+
+---
+
+### `buildsTowards` and `relatesTo`
+
+Both endpoint entity types are `StandardsFrameworkItem`; both internal endpoint keys
+are `case_identifier_uuid`. `buildsTowards` means proficiency in the source supports
+success in the target, not mandatory prerequisite status. `relatesTo` means substantive
+coherence without dependency and is serialized once per unordered pair, lower CASE UUID
+first. Consumers **must query both source and target positions**.
+
+Only direct adjudications are published. Neither transitive closure nor reduction is
+applied; a direct edge can coexist with a multi-hop path. A pair publishes at most one
+LP edge, and the complete `buildsTowards` graph is acyclic. See
+[query examples and semantics](../pipeline/learning-progressions.md#relationship-meaning-and-consumer-queries).
 
 ---
 
@@ -467,7 +571,8 @@ itself the complete identity contract. Several source claims can resolve to one 
 ### Relationships
 
 `hasChild` and `supports` relationship IDs are also deterministic UUIDv5 values derived
-from the document key and their resolved endpoints.
+from the document key and their resolved endpoints. LP relationship UUIDv5 identities
+also include the relationship type; `relatesTo` endpoints are canonicalized first.
 
 ### Changes that can intentionally change IDs
 
@@ -531,6 +636,17 @@ slim JSONL projection.
 
 ---
 
+### Learning Progressions provenance
+
+LP provenance identifies the source framework and its metadata, SFI endpoints,
+candidate/evidence, producer/checker requests and outcomes, and actual upstream,
+configuration, prompt, request, and model material. Configured LP attribution identifies
+inference by `LLM generated` / `IDinsight` and explicitly disclaims source-publisher
+endorsement. The framework license is copied verbatim; organizational responsibility
+for appropriate inheritance remains with IDinsight.
+
+---
+
 ## Schema versioning and compatibility
 
 The environment must provide a non-empty:
@@ -578,7 +694,8 @@ In particular:
 - do not infer LC identity from the first claim or first surface form; and
 - do not infer SFI identity from statement codes alone.
 
-Use `hasChild`, `supports`, endpoint keys, identifiers, and provenance explicitly.
+Use explicit relationship types, endpoint keys, identifiers, and provenance. Preserve
+`buildsTowards` direction and treat `relatesTo` endpoint ordering as serialization only.
 
 ---
 
@@ -594,7 +711,9 @@ Before loading a release into another system, check at least:
 6. the consumer understands multi-parent `hasChild` topology;
 7. the consumer preserves `LearningComponent -> supports -> StandardsFrameworkItem`
    direction; and
-8. if provenance matters, the full bundle is retained even when only the wire pair is
+8. LP consumers implement symmetric `relatesTo` lookup, distinguish direct edges from
+   reachability, and reconcile all four relationship groups; and
+9. if provenance matters, the full bundle is retained even when only the wire pair is
    loaded into the serving graph — `metadata` (per-claim tags, source pages, dedup
    identity) is deliberately absent from the wire records.
 

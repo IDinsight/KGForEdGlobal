@@ -1,0 +1,79 @@
+{
+  "curriculum": "rwanda_math",
+  "distinctive_property": "multiple_grains_noisy_lc",
+  "expectations": {
+    "counts": {"items": 15, "learning_components": 1, "relationships_has_child": 0, "relationships_supports": 11},
+    "cross_grade_item_sets": [],
+    "direct_parent_sets": {},
+    "lc_alignments": {
+      "511d6eb6-64ed-5e15-850e-a3fb82ebc093": [
+        "16beda1c-ea52-5040-8e86-d3f4a9b95e06",
+        "19f220e5-6b7f-5201-961d-57a3c0787307",
+        "3223fa3e-a1c0-5a15-ad97-b3d00bcfae41",
+        "3671f808-dc60-553a-8efc-0a44641d0f9c",
+        "60a07721-2d73-5cc0-adfd-aec4b37f91b4",
+        "831aa4b8-b744-50aa-a52a-e646f8f83d80",
+        "a117b945-f27e-5633-9200-f21d63c42fa9",
+        "b80a68b2-77c1-5e15-b3a0-bbd801f7e938",
+        "d3a6ce57-38da-5097-b968-c2fc84153f56",
+        "e98f50f7-d7bf-5a92-ae34-8166be4d3b1c",
+        "f705a4cc-d4b9-54fe-af47-c852819004c2"
+      ]
+    },
+    "required_identity_scope_values": {"Grade": ["P1", "P2", "P3"]},
+    "required_statement_types": ["Attitudes and Values Objective", "Grade Key Competence", "Key Unit Competence", "Knowledge Objective", "Skills Objective"],
+    "unresolved_item_ids": []
+  },
+  "framework": {"academic_subject": "Mathematics", "case_identifier_uuid": "27fe12d6-cd6b-5812-965b-41748c65ea85", "metadata": {"doc_key": "7b9629e6bd5ad5566e6420892908a307687543ede8cc0c676ddf5b0321ba5874"}, "name": "Mathematics Syllabus for Lower Primary | Primary 1 - 3"},
+  "items": [
+    {"case_identifier_uuid": "f705a4cc-d4b9-54fe-af47-c852819004c2", "description": "Show orderliness in the daily life.", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "P1", "Unit": "Unit 2"}, "source_page_indexes": [29]}, "normalized_statement_type": "Standard", "statement_code": null, "statement_type": "Attitudes and Values Objective"},
+    {"case_identifier_uuid": "a117b945-f27e-5633-9200-f21d63c42fa9", "description": "Show the culture of orderliness in daily life.", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "P2", "Unit": "Unit 2"}, "source_page_indexes": [62]}, "normalized_statement_type": "Standard", "statement_code": null, "statement_type": "Attitudes and Values Objective"},
+    {"case_identifier_uuid": "b80a68b2-77c1-5e15-b3a0-bbd801f7e938", "description": "– Express the spirit of orderliness in daily activities.", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "P3", "Unit": "Unit 2"}, "source_page_indexes": [105]}, "normalized_statement_type": "Standard", "statement_code": null, "statement_type": "Attitudes and Values Objective"},
+    {"case_identifier_uuid": "3223fa3e-a1c0-5a15-ad97-b3d00bcfae41", "description": "– Show orderliness in daily activities.", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "P1", "Unit": "Unit 6"}, "source_page_indexes": [42]}, "normalized_statement_type": "Standard", "statement_code": null, "statement_type": "Attitudes and Values Objective"},
+    {"case_identifier_uuid": "60a07721-2d73-5cc0-adfd-aec4b37f91b4", "description": "Express the spirit of orderliness in daily activities.", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "P3", "Unit": "Unit 3"}, "source_page_indexes": [110]}, "normalized_statement_type": "Standard", "statement_code": null, "statement_type": "Attitudes and Values Objective"},
+    {"case_identifier_uuid": "e98f50f7-d7bf-5a92-ae34-8166be4d3b1c", "description": "– Show orderliness in daily activities.", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "P1", "Unit": "Unit 4"}, "source_page_indexes": [35]}, "normalized_statement_type": "Standard", "statement_code": null, "statement_type": "Attitudes and Values Objective"},
+    {"case_identifier_uuid": "3671f808-dc60-553a-8efc-0a44641d0f9c", "description": "– Show the spirit of orderliness in daily activities.", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "P3", "Unit": "Unit 1"}, "source_page_indexes": [101]}, "normalized_statement_type": "Standard", "statement_code": null, "statement_type": "Attitudes and Values Objective"},
+    {"case_identifier_uuid": "16beda1c-ea52-5040-8e86-d3f4a9b95e06", "description": "– Shows orderliness in daily activities.", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "P1", "Unit": "Unit 5"}, "source_page_indexes": [39]}, "normalized_statement_type": "Standard", "statement_code": null, "statement_type": "Attitudes and Values Objective"},
+    {"case_identifier_uuid": "19f220e5-6b7f-5201-961d-57a3c0787307", "description": "– Show the culture of orderliness in daily life", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "P2", "Unit": "Unit 1"}, "source_page_indexes": [58]}, "normalized_statement_type": "Standard", "statement_code": null, "statement_type": "Attitudes and Values Objective"},
+    {"case_identifier_uuid": "831aa4b8-b744-50aa-a52a-e646f8f83d80", "description": "– Show orderliness in daily life.", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "P1", "Unit": "Unit 7"}, "source_page_indexes": [45]}, "normalized_statement_type": "Standard", "statement_code": null, "statement_type": "Attitudes and Values Objective"},
+    {"case_identifier_uuid": "d3a6ce57-38da-5097-b968-c2fc84153f56", "description": "– Show-orderliness in daily life.", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "P1", "Unit": "Unit 1"}, "source_page_indexes": [26]}, "normalized_statement_type": "Standard", "statement_code": null, "statement_type": "Attitudes and Values Objective"},
+    {"case_identifier_uuid": "1cc239cb-4955-5277-b01c-78ac54735372", "description": "Differentiate notes and coins of Rwandan currency from 1Frw to 1000Frw, exchange money, and solve word problems involving addition and subtraction.", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "P2"}, "source_page_indexes": [56, 57]}, "normalized_statement_type": "Standard", "statement_code": null, "statement_type": "Grade Key Competence"},
+    {"case_identifier_uuid": "451c6cf4-7869-5911-859e-448b0fe26c15", "description": "Key Unit Competence: Pupils will be able to measure, convert, compare, add, and subtract length measurements, multiply and divide length measurements by a whole number.", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "P2", "Unit": "Unit 5"}, "source_page_indexes": [73]}, "normalized_statement_type": "Standard", "statement_code": null, "statement_type": "Key Unit Competence"},
+    {"case_identifier_uuid": "cd51c897-163b-50fc-99f3-c03fe22445d8", "description": "Compare the angles using <,> or =", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "P2", "Unit": "Unit 10"}, "source_page_indexes": [88]}, "normalized_statement_type": "Standard", "statement_code": null, "statement_type": "Knowledge Objective"},
+    {"case_identifier_uuid": "85b5ae7f-dc52-56ea-85ba-88bf6f6e1b09", "description": "– Add numbers with and without carrying, and the sum does not exceed 5000.", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "P3", "Unit": "Unit 2"}, "source_page_indexes": [106]}, "normalized_statement_type": "Standard", "statement_code": null, "statement_type": "Skills Objective"}
+  ],
+  "learning_components": [
+    {
+      "description": "Show orderliness in daily life",
+      "identifier": "511d6eb6-64ed-5e15-850e-a3fb82ebc093",
+      "metadata": {
+        "source_page_indexes": [26, 29, 35, 39, 42, 45, 58, 62, 101, 105, 110],
+        "source_sfi_uuids": ["16beda1c-ea52-5040-8e86-d3f4a9b95e06", "19f220e5-6b7f-5201-961d-57a3c0787307", "3223fa3e-a1c0-5a15-ad97-b3d00bcfae41", "3671f808-dc60-553a-8efc-0a44641d0f9c", "60a07721-2d73-5cc0-adfd-aec4b37f91b4", "831aa4b8-b744-50aa-a52a-e646f8f83d80", "a117b945-f27e-5633-9200-f21d63c42fa9", "b80a68b2-77c1-5e15-b3a0-bbd801f7e938", "d3a6ce57-38da-5097-b968-c2fc84153f56", "e98f50f7-d7bf-5a92-ae34-8166be4d3b1c", "f705a4cc-d4b9-54fe-af47-c852819004c2"]
+      }
+    }
+  ],
+  "relationships_has_child": [],
+  "relationships_supports": [
+    {"identifier": "10101232-f36f-5d82-a42d-8686e5858e64", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "511d6eb6-64ed-5e15-850e-a3fb82ebc093", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "f705a4cc-d4b9-54fe-af47-c852819004c2"},
+    {"identifier": "11006403-d520-577d-a56a-76b0fa355cab", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "511d6eb6-64ed-5e15-850e-a3fb82ebc093", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "a117b945-f27e-5633-9200-f21d63c42fa9"},
+    {"identifier": "61daf20d-cda9-5151-96f9-86d7d35b4679", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "511d6eb6-64ed-5e15-850e-a3fb82ebc093", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "b80a68b2-77c1-5e15-b3a0-bbd801f7e938"},
+    {"identifier": "8ad53e59-9868-5c89-b56e-e15d36c39666", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "511d6eb6-64ed-5e15-850e-a3fb82ebc093", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "3223fa3e-a1c0-5a15-ad97-b3d00bcfae41"},
+    {"identifier": "a5f45371-d581-5c92-975b-5aa314f369bd", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "511d6eb6-64ed-5e15-850e-a3fb82ebc093", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "60a07721-2d73-5cc0-adfd-aec4b37f91b4"},
+    {"identifier": "aaeba719-3bcf-5858-9f6f-0ae29cbc3ed7", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "511d6eb6-64ed-5e15-850e-a3fb82ebc093", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "e98f50f7-d7bf-5a92-ae34-8166be4d3b1c"},
+    {"identifier": "af2fb5c9-d7c8-5936-927b-1c11effb15bb", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "511d6eb6-64ed-5e15-850e-a3fb82ebc093", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "3671f808-dc60-553a-8efc-0a44641d0f9c"},
+    {"identifier": "b554f1ae-c765-5f88-94ee-52f69709cfba", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "511d6eb6-64ed-5e15-850e-a3fb82ebc093", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "16beda1c-ea52-5040-8e86-d3f4a9b95e06"},
+    {"identifier": "df9f35b0-a359-5b0c-aeca-7edd00af54d2", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "511d6eb6-64ed-5e15-850e-a3fb82ebc093", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "19f220e5-6b7f-5201-961d-57a3c0787307"},
+    {"identifier": "f7060e58-89f9-5d30-b016-c74b14cea84b", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "511d6eb6-64ed-5e15-850e-a3fb82ebc093", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "831aa4b8-b744-50aa-a52a-e646f8f83d80"},
+    {"identifier": "f88275f4-4378-506f-bc96-f71d7de5508a", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "511d6eb6-64ed-5e15-850e-a3fb82ebc093", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "d3a6ce57-38da-5097-b968-c2fc84153f56"}
+  ],
+  "source_bundle": {
+    "bundle_sha256": "7035a17b275b9a4e5a30cdceac39283f066e054d82448c791e49df9ef4141e8b",
+    "doc_key": "7b9629e6bd5ad5566e6420892908a307687543ede8cc0c676ddf5b0321ba5874",
+    "entity_provenance_sections": ["framework", "items", "kg_run_manifest", "learning_components", "relationships_has_child"],
+    "framework_case_identifier_uuid": "27fe12d6-cd6b-5812-965b-41748c65ea85",
+    "object_counts": {"frameworks": 1, "learning_components": 716, "relationships_has_child": 626, "relationships_supports": 797, "standards_framework_items": 626},
+    "statement_type_counts": {"Attitudes and Values Objective": 116, "Grade": 3, "Grade Key Competence": 29, "Key Unit Competence": 38, "Knowledge Objective": 155, "Skills Objective": 204, "Sub-Topic Area": 29, "Topic Area": 14, "Unit": 38},
+    "top_level_keys": ["entity_provenance", "framework", "items", "learning_components", "relationships_has_child", "relationships_supports", "summary", "unresolved_items", "validation_report"],
+    "unresolved_root_fallback_count": 0
+  }
+}

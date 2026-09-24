@@ -13,13 +13,15 @@ These models are intentionally **non-US-centric**:
 from __future__ import annotations
 
 # Standard Library
+from collections.abc import Mapping
 from datetime import datetime
+from math import isfinite
 from typing import Any, Callable, Literal, Optional, Self, Sequence
 from urllib.parse import urlparse
 from uuid import UUID
 
 # Third Party Library
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, JsonValue, field_validator, model_validator
 
 # Package Library
 from kgfeg.schemas import BaseSchema, LanguageField, NormalizedStatementType
@@ -28,7 +30,18 @@ from kgfeg.utils.general import strip_and_require_non_empty_str
 _AllowedRelationshipTypes = {"hasChild", "supports", "buildsTowards", "relatesTo"}
 _AllowedEntityKeys = {"identifier", "case_identifier_uuid"}
 _MetadataT = dict[str, Any]
-_ProgressionSubtype = Literal["developmental_prerequisite", "recurring_practice"]
+LCAncestorPathStatus = Literal["resolved", "unresolved_ancestor_path"]
+LCExclusionReason = Literal[
+    "empty_text",
+    "grouping_node",
+    "not_a_leaf",
+    "not_in_allowlist",
+    "unresolved_ancestor_path",
+]
+LCSelectionMode = Literal["explicit_allowlist", "leaf_default"]
+LPDecision = Literal["buildsTowards", "relatesTo", "no_relation", "needs_review"]
+LPDirection = Literal["first_to_second", "second_to_first"]
+LPRelationshipType = Literal["buildsTowards", "relatesTo"]
 SFICodeResolutionMethod = Literal[
     "no_source_code",
     "review_selected_source_code",
@@ -172,6 +185,129 @@ def _validate_iso8601_str(v: Optional[str]) -> Optional[str]:
         raise ValueError(f"Invalid ISO-8601 datetime string: {v2}") from e
 
     return v2
+
+
+def _validate_lp_evidence_value(*, field_name: str, value: JsonValue) -> JsonValue:
+    """Validate one recursively JSON-safe concrete LP evidence value.
+
+    Parameters
+    ----------
+    field_name
+        Path used to identify the evidence value in validation errors.
+    value
+        JSON-compatible evidence value to validate.
+
+    Returns
+    -------
+    JsonValue
+        Validated evidence with string values and mapping keys stripped.
+
+    Raises
+    ------
+    ValueError
+        If the value is null, blank, empty, non-finite, or contains duplicate mapping
+        keys after whitespace is stripped.
+    """
+
+    if value is None:
+        raise ValueError(f"{field_name} must not be null.")
+
+    if isinstance(value, str):
+        return strip_and_require_non_empty_str(value)
+
+    if isinstance(value, float) and not isfinite(value):
+        raise ValueError(f"{field_name} must be a finite number.")
+
+    if isinstance(value, list):
+        if not value:
+            raise ValueError(f"{field_name} must not be an empty list.")
+
+        return [
+            _validate_lp_evidence_value(field_name=f"{field_name}[{index}]", value=item)
+            for index, item in enumerate(value)
+        ]
+
+    if isinstance(value, dict):
+        if not value:
+            raise ValueError(f"{field_name} must not be an empty mapping.")
+
+        cleaned: dict[str, JsonValue] = {}
+
+        for name, item in value.items():
+            name_clean = strip_and_require_non_empty_str(name)
+
+            if name_clean in cleaned:
+                raise ValueError(
+                    f"{field_name} must not contain duplicate names after stripping "
+                    f"whitespace."
+                )
+
+            cleaned[name_clean] = _validate_lp_evidence_value(
+                field_name=f"{field_name}.{name_clean}", value=item
+            )
+
+        return cleaned
+
+    return value
+
+
+def _validate_lp_pair_endpoints(*, first_sfi_uuid: UUID, second_sfi_uuid: UUID) -> None:
+    """Validate the identity and order of one logical LP pair.
+
+    Parameters
+    ----------
+    first_sfi_uuid
+        Canonically first SFI endpoint UUID.
+    second_sfi_uuid
+        Canonically second SFI endpoint UUID.
+
+    Raises
+    ------
+    ValueError
+        If the pair is a self-pair or its endpoints are not in canonical UUID order.
+    """
+
+    if first_sfi_uuid == second_sfi_uuid:
+        raise ValueError("Learning Progressions pairs must contain two distinct SFIs.")
+
+    if first_sfi_uuid.int > second_sfi_uuid.int:
+        raise ValueError(
+            "Learning Progressions pair endpoints must be in ascending UUID order."
+        )
+
+
+def _validate_lp_string_list(*, field_name: str, values: Sequence[str]) -> list[str]:
+    """Validate an ordered list of non-empty unique LP strings.
+
+    Parameters
+    ----------
+    field_name
+        Human-readable field name used in validation errors.
+    values
+        Strings to strip and validate without changing their order.
+
+    Returns
+    -------
+    list[str]
+        Stripped strings in their original order.
+
+    Raises
+    ------
+    ValueError
+        If an entry is blank or duplicated after stripping.
+    """
+
+    cleaned: list[str] = []
+
+    for value in values:
+        item = strip_and_require_non_empty_str(value)
+
+        if item in cleaned:
+            raise ValueError(f"{field_name} must not contain duplicate values.")
+
+        cleaned.append(item)
+
+    return cleaned
 
 
 def _validate_unique_source_anchors(
@@ -4144,8 +4280,7 @@ class SFIMergeGroup(BaseSchema):
 
         if self.canonical_code_source_candidate_id is not None:
             raise ValueError(
-                "single_source_code must not require an LLM-selected source "
-                "candidate."
+                "single_source_code must not require an LLM-selected source candidate."
             )
 
     def _check_review_selected_source_code_contract(
@@ -4938,8 +5073,7 @@ class SFIFinalRecord(BaseSchema):
 
         if not self.canonical_code_type:
             raise ValueError(
-                "review_selected_source_code final records require "
-                "canonical_code_type."
+                "review_selected_source_code final records require canonical_code_type."
             )
 
         if (
@@ -5552,7 +5686,7 @@ class SFIHasChildValidationVerdict(BaseSchema):
         return self
 
 
-# Schemas for Academic Standards.
+# Schemas for Academic Standards and bundles.
 class AcademicStandardsExportSummary(BaseSchema):
     """Aggregate summary for the final Academic Standards KG export."""
 
@@ -5607,6 +5741,94 @@ class AcademicStandardsLCKGBundle(BaseSchema):
     validation_report: AcademicStandardsValidationReport
 
 
+class AcademicStandardsLCLPExportSummary(AcademicStandardsLCExportSummary):
+    """Combined totals and complete summaries for all three graph layers.
+
+    ``as_lc_summary`` retains the upstream totals verbatim while the inherited total
+    fields describe the combined graph. The LP payload preserves the complete
+    standalone summary; the compiler authenticates it against persisted evidence.
+    """
+
+    as_lc_summary: AcademicStandardsLCExportSummary
+    learning_progressions: dict[str, Any]
+
+
+class AcademicStandardsLCLPKGBundle(BaseSchema):
+    """Self-contained AS+LC graph with additive LP relationships and audit material.
+
+    LP summary, unresolved, and validation payloads retain their standalone JSON
+    shapes. Their owning artifact reader validates them before compilation; these JSON
+    mappings avoid coupling the shared schemas to downstream pipeline modules.
+    """
+
+    entity_provenance: dict[str, Any]
+    framework: StandardsFramework
+    items: list[StandardsFrameworkItem]
+    learning_components: list[LearningComponent]
+    relationships_has_child: list[Relationship]
+    relationships_supports: list[Relationship]
+    relationships_builds_towards: list[Relationship]
+    relationships_relates_to: list[Relationship]
+    summary: AcademicStandardsLCLPExportSummary
+    unresolved_items: AcademicStandardsLCLPUnresolvedItems
+    validation_report: AcademicStandardsLCLPValidationReport
+
+
+class AcademicStandardsLCLPUnresolvedItems(BaseSchema):
+    """Verbatim upstream unresolved reports plus complete ambiguous LP claims."""
+
+    academic_standards: AcademicStandardsUnresolvedItems
+    learning_components: LCUnresolvedItems
+    learning_progressions: dict[str, Any]
+
+
+class AcademicStandardsLCLPValidationReport(BaseSchema):
+    """Combined structural/process verdict and complete input-validation evidence."""
+
+    as_lc_validation_report: AcademicStandardsValidationReport
+    artifact_byte_hashes: dict[str, str]
+    errors: list[str]
+    input_content_hashes: dict[str, str]
+    lp_validation_report: dict[str, Any]
+    object_counts: dict[str, int]
+    passed: bool = Field(strict=True)
+    pedagogical_correctness_established: Literal[False]
+    semantic_scope_notice: Literal[
+        "Validation covers structural and process integrity only; it does not establish pedagogical correctness."
+    ]
+    semantic_validation_performed: Literal[False]
+    validation_checks: list[str]
+    warnings: list[str]
+
+    @model_validator(mode="after")
+    def _validate_verdict(self) -> AcademicStandardsLCLPValidationReport:
+        """Reject success that contradicts either input verdict or combined errors.
+
+        Returns
+        -------
+        AcademicStandardsLCLPValidationReport
+            Consistent verdict, pending compiler validation of actual material.
+
+        Raises
+        ------
+        ValueError
+            If success contradicts the recorded validation evidence.
+        """
+
+        upstream = self.as_lc_validation_report
+        lp_report = self.lp_validation_report
+        if self.passed != (
+            not self.errors
+            and upstream.passed
+            and not upstream.errors
+            and lp_report.get("passed") is True
+            and lp_report.get("errors") == []
+        ):
+            raise ValueError("Combined validation verdict contradicts its evidence.")
+
+        return self
+
+
 class AcademicStandardsLCUnresolvedItems(BaseSchema):
     """Unresolved report for the merged AS+LC KG bundle."""
 
@@ -5632,18 +5854,7 @@ class AcademicStandardsValidationReport(BaseSchema):
     validation_checks: list[str] = Field(default_factory=list)
 
 
-# Schemas for Learning Component generation.
-LCAncestorPathStatus = Literal["resolved", "unresolved_ancestor_path"]
-LCExclusionReason = Literal[
-    "empty_text",
-    "grouping_node",
-    "not_a_leaf",
-    "not_in_allowlist",
-    "unresolved_ancestor_path",
-]
-LCSelectionMode = Literal["explicit_allowlist", "leaf_default"]
-
-
+# Schemas for Learning Components.
 class LCAtomicSkill(BaseSchema):
     """One atomic teachable skill decomposed from an LC-source SFI."""
 
@@ -6034,6 +6245,834 @@ class LCUnresolvedItems(BaseSchema):
 
     lc_generation_failures: list[LCGenerationFailure] = Field(default_factory=list)
     lc_source_exclusion_reason_counts: dict[str, int] = Field(default_factory=dict)
+
+
+# Schemas for Learning Progressions.
+class LPAdmissibleDecision(BaseSchema):
+    """One valid decision that may be made for an LP pair."""
+
+    decision: LPDecision
+    direction: Optional[LPDirection] = Field(
+        default=None,
+        description=(
+            "Semantic direction for buildsTowards; omitted for symmetric, negative, "
+            "and unresolved decisions."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_decision_direction(self) -> LPAdmissibleDecision:
+        """Validate whether this decision permits or requires a direction.
+
+        Returns
+        -------
+        LPAdmissibleDecision
+            The validated decision option.
+
+        Raises
+        ------
+        ValueError
+            If a directional decision omits direction or another decision supplies it.
+        """
+
+        if self.decision == "buildsTowards" and self.direction is None:
+            raise ValueError("buildsTowards decisions require a direction.")
+
+        if self.decision != "buildsTowards" and self.direction is not None:
+            raise ValueError(f"{self.decision} decisions must not specify a direction.")
+
+        return self
+
+
+class LPCandidateEvidence(BaseSchema):
+    """One named nomination signal and its concrete triggering values."""
+
+    evidence_type: str = Field(
+        description="Stable name of the code-owned nomination signal.", min_length=1
+    )
+    nominated_relationships: list[LPRelationshipType] = Field(
+        description="Relationship outcomes for which this signal nominated the pair.",
+        min_length=1,
+    )
+    references: list[str] = Field(
+        default_factory=list,
+        description="Bounded identifiers for source records supporting this signal.",
+    )
+    triggering_values: dict[str, JsonValue] = Field(
+        description="Named concrete values that caused this signal to nominate the pair.",
+        min_length=1,
+    )
+
+    @field_validator("evidence_type", mode="before")
+    @classmethod
+    def _strip_evidence_type(cls, v: str) -> str:
+        """Strip and require a non-empty evidence type.
+
+        Parameters
+        ----------
+        v
+            Evidence type to validate.
+
+        Returns
+        -------
+        str
+            The stripped evidence type.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+    @field_validator("nominated_relationships")
+    @classmethod
+    def _validate_nominated_relationships(
+        cls, v: list[LPRelationshipType]
+    ) -> list[LPRelationshipType]:
+        """Reject duplicate relationship nominations from one evidence signal.
+
+        Parameters
+        ----------
+        v
+            Relationship types nominated by this evidence signal.
+
+        Returns
+        -------
+        list[LPRelationshipType]
+            Unique relationship nominations in deterministic input order.
+
+        Raises
+        ------
+        ValueError
+            If the same relationship type is nominated more than once.
+        """
+
+        if len(v) != len(set(v)):
+            raise ValueError("nominated_relationships must not contain duplicates.")
+
+        return v
+
+    @field_validator("references")
+    @classmethod
+    def _validate_references(cls, v: list[str]) -> list[str]:
+        """Validate bounded evidence-reference identifiers.
+
+        Parameters
+        ----------
+        v
+            Evidence-reference identifiers to validate.
+
+        Returns
+        -------
+        list[str]
+            Stripped unique reference identifiers in input order.
+        """
+
+        return _validate_lp_string_list(field_name="references", values=v)
+
+    @field_validator("triggering_values")
+    @classmethod
+    def _validate_triggering_values(
+        cls, v: dict[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        """Validate names and top-level presence for JSON evidence values.
+
+        Parameters
+        ----------
+        v
+            Evidence value names and their JSON-compatible concrete values.
+
+        Returns
+        -------
+        dict[str, JsonValue]
+            Evidence values keyed by stripped unique names in input order.
+
+        Raises
+        ------
+        ValueError
+            If the mapping, a name, or a top-level value is empty.
+        """
+
+        if not v:
+            raise ValueError("triggering_values must not be empty.")
+
+        cleaned: dict[str, JsonValue] = {}
+
+        for name, value in v.items():
+            name_clean = strip_and_require_non_empty_str(name)
+
+            if name_clean in cleaned:
+                raise ValueError(
+                    "triggering_values must not contain duplicate names after "
+                    "stripping whitespace."
+                )
+
+            cleaned[name_clean] = _validate_lp_evidence_value(
+                field_name=f"triggering_values[{name_clean!r}]", value=value
+            )
+
+        return cleaned
+
+
+class LPCandidatePair(BaseSchema):
+    """One canonical unordered SFI pair nominated for LP adjudication."""
+
+    admissible_decisions: list[LPAdmissibleDecision] = Field(
+        description=(
+            "Complete intrinsic decision set after deterministic policy filtering."
+        ),
+        min_length=1,
+    )
+    evidence: list[LPCandidateEvidence] = Field(
+        description="Named evidence signals that nominated this pair.", min_length=1
+    )
+    first_sfi_uuid: UUID = Field(
+        description="Lower canonical SFI CASE UUID; this order is not semantic."
+    )
+    pair_id: str = Field(
+        description="Deterministic logical-pair identifier.", min_length=1
+    )
+    second_sfi_uuid: UUID = Field(
+        description="Higher canonical SFI CASE UUID; this order is not semantic."
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Upstream audit or unresolved-context warnings for the pair.",
+    )
+
+    @field_validator("admissible_decisions")
+    @classmethod
+    def _validate_admissible_decisions(
+        cls, v: list[LPAdmissibleDecision]
+    ) -> list[LPAdmissibleDecision]:
+        """Require a complete, unique intrinsic decision set.
+
+        Parameters
+        ----------
+        v
+            Decision options derived for this candidate pair.
+
+        Returns
+        -------
+        list[LPAdmissibleDecision]
+            The validated decision options in deterministic input order.
+
+        Raises
+        ------
+        ValueError
+            If options are duplicated or omit required nonpublishing outcomes or every
+            publishable relationship outcome.
+        """
+
+        signatures = [(option.decision, option.direction) for option in v]
+
+        if len(signatures) != len(set(signatures)):
+            raise ValueError("admissible_decisions must not contain duplicates.")
+
+        decisions = {option.decision for option in v}
+
+        if not {"no_relation", "needs_review"}.issubset(decisions):
+            raise ValueError(
+                "admissible_decisions must include no_relation and needs_review."
+            )
+
+        if not decisions.intersection({"buildsTowards", "relatesTo"}):
+            raise ValueError(
+                "admissible_decisions must include at least one relationship outcome."
+            )
+
+        return v
+
+    @model_validator(mode="after")
+    def _validate_canonical_pair(self) -> LPCandidatePair:
+        """Validate that the candidate contains one canonical non-self pair.
+
+        Returns
+        -------
+        LPCandidatePair
+            The validated candidate pair.
+        """
+
+        _validate_lp_pair_endpoints(
+            first_sfi_uuid=self.first_sfi_uuid, second_sfi_uuid=self.second_sfi_uuid
+        )
+        return self
+
+    @field_validator("evidence")
+    @classmethod
+    def _validate_evidence(
+        cls, v: list[LPCandidateEvidence]
+    ) -> list[LPCandidateEvidence]:
+        """Require one consolidated record per named nomination signal.
+
+        Parameters
+        ----------
+        v
+            Evidence records that nominated the pair.
+
+        Returns
+        -------
+        list[LPCandidateEvidence]
+            The validated evidence records in deterministic input order.
+
+        Raises
+        ------
+        ValueError
+            If a named evidence type occurs more than once.
+        """
+
+        evidence_types = [item.evidence_type for item in v]
+
+        if len(evidence_types) != len(set(evidence_types)):
+            raise ValueError("evidence must contain each evidence_type at most once.")
+
+        return v
+
+    @model_validator(mode="after")
+    def _validate_evidence_decisions(self) -> LPCandidatePair:
+        """Ensure evidence nominates only intrinsically admissible relationships.
+
+        Returns
+        -------
+        LPCandidatePair
+            The validated candidate pair.
+
+        Raises
+        ------
+        ValueError
+            If evidence nominates a relationship absent from the admissible set.
+        """
+
+        admissible_relationships = {
+            option.decision
+            for option in self.admissible_decisions
+            if option.decision in {"buildsTowards", "relatesTo"}
+        }
+        nominated_relationships = {
+            relationship_type
+            for evidence in self.evidence
+            for relationship_type in evidence.nominated_relationships
+        }
+
+        if not nominated_relationships.issubset(admissible_relationships):
+            raise ValueError(
+                "evidence must not nominate a relationship absent from admissible_decisions."
+            )
+
+        return self
+
+    @field_validator("pair_id", mode="before")
+    @classmethod
+    def _validate_pair_id(cls, v: str) -> str:
+        """Strip and require a non-empty deterministic pair identifier.
+
+        Parameters
+        ----------
+        v
+            Pair identifier to validate.
+
+        Returns
+        -------
+        str
+            The stripped pair identifier.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+    @field_validator("warnings")
+    @classmethod
+    def _validate_warnings(cls, v: list[str]) -> list[str]:
+        """Validate audit warnings carried by the candidate pair.
+
+        Parameters
+        ----------
+        v
+            Warning messages to validate.
+
+        Returns
+        -------
+        list[str]
+            Stripped unique warning messages in input order.
+        """
+
+        return _validate_lp_string_list(field_name="warnings", values=v)
+
+
+class LPCandidateSummary(BaseSchema):
+    """Deterministic audit summary for one bounded LP candidate population.
+
+    The summary reconciles the bounded evaluated admissible/evidence union with the
+    retained JSONL population and exposes its warning-bearing rows. Counts and hashes
+    describe structural candidate processing only; they do not measure semantic recall
+    or pedagogical correctness.
+    """
+
+    candidate_pair_bound: int = Field(
+        description=(
+            "Tight simple-graph upper bound implied by eligible SFIs and both "
+            "configured candidate budgets."
+        ),
+        ge=0,
+        strict=True,
+    )
+    candidate_pair_evaluation_bound: int = Field(
+        description=(
+            "Maximum number of endpoint pairs the bounded nomination neighborhood "
+            "may pass to hard-filter and evidence evaluation."
+        ),
+        ge=0,
+        strict=True,
+    )
+    candidate_pairs_content_hash: str = Field(
+        description="SHA-256 of the retained candidate records as canonical JSON.",
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    candidate_pairs_per_sfi: dict[UUID, int] = Field(
+        description="Retained incident-pair count for every eligible SFI."
+    )
+    candidate_warning_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Retained candidate-warning occurrence counts; warnings remain audit "
+            "state and are not nomination evidence."
+        ),
+    )
+    config_content_hash: str = Field(
+        description="SHA-256 of the complete effective KG configuration.",
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    eligible_sfis_content_hash: str = Field(
+        description="SHA-256 of the exact eligible-SFI artifact population.",
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    evidence_type_counts: dict[str, int] = Field(
+        description="Retained evidence-record counts by fixed signal name."
+    )
+    framework_uuid: UUID
+    limitations: list[str] = Field(
+        description="Accepted candidate-recall and semantic-validation limitations.",
+        min_length=1,
+    )
+    max_candidates_per_sfi: int = Field(ge=1, strict=True)
+    max_total_candidates: int = Field(ge=1, strict=True)
+    total_admissible_pairs: int = Field(ge=0, strict=True)
+    total_candidate_pairs: int = Field(ge=0, strict=True)
+    total_candidate_pairs_dropped_by_per_sfi_budget: int = Field(ge=0, strict=True)
+    total_candidate_pairs_dropped_by_total_budget: int = Field(ge=0, strict=True)
+    total_candidate_pairs_with_warnings: int = Field(default=0, ge=0, strict=True)
+    total_candidate_shortlist_entries: int = Field(ge=0, strict=True)
+    total_candidate_union_pairs: int = Field(ge=0, strict=True)
+    total_duplicate_shortlist_entries: int = Field(ge=0, strict=True)
+    total_eligible_sfis: int = Field(ge=0, strict=True)
+    total_nominated_pairs: int = Field(ge=0, strict=True)
+    total_pair_evaluations: int = Field(ge=0, strict=True)
+    total_pairs_without_evidence: int = Field(ge=0, strict=True)
+    total_policy_disallowed_pairs: int = Field(ge=0, strict=True)
+    total_unordered_pairs_considered: int = Field(
+        description="Complete eligible unordered-pair population before nomination.",
+        ge=0,
+        strict=True,
+    )
+    upstream_content_hash: str = Field(
+        description="SHA-256 of the complete authoritative upstream AS+LC bundle.",
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _populate_derived_audit_counts(cls, v: Any) -> Any:
+        """Populate evaluation counts from the supplied pair-population partitions.
+
+        Parameters
+        ----------
+        v
+            Candidate summary payload before field validation.
+
+        Returns
+        -------
+        Any
+            A copied mapping with deterministic derived counts when callers omit them.
+        """
+
+        if not isinstance(v, Mapping):
+            return v
+
+        payload = dict(v)
+        payload.setdefault(
+            "candidate_pair_evaluation_bound",
+            payload.get("total_unordered_pairs_considered", 0),
+        )
+        payload.setdefault(
+            "total_pair_evaluations",
+            payload.get("total_admissible_pairs", 0)
+            + payload.get("total_policy_disallowed_pairs", 0),
+        )
+        return payload
+
+    def _validate_pair_partitions(self, unordered_pair_count: int) -> None:
+        """Validate bounded evaluation and evidence partitions.
+
+        Parameters
+        ----------
+        unordered_pair_count
+            Total eligible unordered SFI pairs implied by the eligible SFI population.
+        """
+
+        if self.total_unordered_pairs_considered != unordered_pair_count:
+            raise ValueError(
+                "total_unordered_pairs_considered must cover every eligible "
+                "unordered pair exactly once."
+            )
+
+        if (
+            self.total_admissible_pairs + self.total_policy_disallowed_pairs
+            != self.total_pair_evaluations
+        ):
+            raise ValueError(
+                "Admissible and policy-disallowed counts must partition evaluated pairs."
+            )
+
+        if self.total_pair_evaluations > self.candidate_pair_evaluation_bound:
+            raise ValueError(
+                "Pair evaluations exceed the bounded nomination neighborhood."
+            )
+
+        if self.candidate_pair_evaluation_bound > self.total_unordered_pairs_considered:
+            raise ValueError(
+                "Pair evaluation bound exceeds the eligible unordered-pair population."
+            )
+
+        if (
+            self.total_nominated_pairs + self.total_pairs_without_evidence
+            != self.total_admissible_pairs
+        ):
+            raise ValueError(
+                "Nominated and evidence-free counts must partition admissible pairs."
+            )
+
+    def _validate_candidate_partitions(self) -> None:
+        """Validate shortlist, union, and budget-drop partitions."""
+
+        if (
+            self.total_candidate_pairs
+            + self.total_candidate_pairs_dropped_by_per_sfi_budget
+            + self.total_candidate_pairs_dropped_by_total_budget
+            != self.total_nominated_pairs
+        ):
+            raise ValueError(
+                "Retained and budget-dropped counts must reconcile to nominations."
+            )
+
+        if (
+            self.total_candidate_union_pairs + self.total_duplicate_shortlist_entries
+            != self.total_candidate_shortlist_entries
+        ):
+            raise ValueError(
+                "Candidate union and duplicate-entry counts must reconcile to the "
+                "bounded per-SFI shortlists."
+            )
+
+        if self.total_candidate_union_pairs > self.total_nominated_pairs:
+            raise ValueError("Candidate union cannot exceed evidence nominations.")
+
+        if (
+            self.total_candidate_shortlist_entries
+            > self.total_eligible_sfis * self.max_candidates_per_sfi
+        ):
+            raise ValueError(
+                "Candidate shortlist entries exceed the configured per-SFI bound."
+            )
+
+        if (
+            self.total_candidate_pairs
+            + self.total_candidate_pairs_dropped_by_total_budget
+            > self.total_candidate_union_pairs
+        ):
+            raise ValueError(
+                "Per-SFI budget survivors cannot exceed the deduplicated candidate union."
+            )
+
+    def _validate_candidate_bounds(self, unordered_pair_count: int) -> None:
+        """Validate configured pair, incidence, and evaluation ceilings.
+
+        Parameters
+        ----------
+        unordered_pair_count
+            Total eligible unordered SFI pairs implied by the eligible SFI population.
+        """
+
+        candidate_pair_bound = min(
+            self.max_total_candidates,
+            unordered_pair_count,
+            self.total_eligible_sfis * self.max_candidates_per_sfi // 2,
+        )
+
+        if self.candidate_pair_bound != candidate_pair_bound:
+            raise ValueError(
+                "candidate_pair_bound must equal the tight configured simple-graph bound."
+            )
+
+        if self.total_candidate_pairs > self.candidate_pair_bound:
+            raise ValueError("Retained candidates exceed the configured pair bound.")
+
+        if self.candidate_pair_bound > self.candidate_pair_evaluation_bound:
+            raise ValueError(
+                "Candidate pair bound cannot exceed the pair evaluation bound."
+            )
+
+    def _validate_candidate_incidence(self) -> None:
+        """Validate complete per-SFI retained-pair incidence counts."""
+
+        if len(self.candidate_pairs_per_sfi) != self.total_eligible_sfis:
+            raise ValueError(
+                "candidate_pairs_per_sfi must contain every eligible SFI exactly once."
+            )
+
+        if any(
+            isinstance(count, bool) or count < 0 or count > self.max_candidates_per_sfi
+            for count in self.candidate_pairs_per_sfi.values()
+        ):
+            raise ValueError(
+                "Every candidate_pairs_per_sfi count must satisfy the configured "
+                "incidence budget."
+            )
+
+        if sum(self.candidate_pairs_per_sfi.values()) != 2 * self.total_candidate_pairs:
+            raise ValueError(
+                "Candidate incidence counts must equal twice the retained pair count."
+            )
+
+    def _validate_candidate_audit_counts(self) -> None:
+        """Validate evidence and warning count mappings."""
+
+        if any(
+            not name.strip() or isinstance(count, bool) or count <= 0
+            for name, count in self.evidence_type_counts.items()
+        ):
+            raise ValueError(
+                "evidence_type_counts must contain nonblank names and positive counts."
+            )
+
+        if any(
+            not warning.strip() or isinstance(count, bool) or count <= 0
+            for warning, count in self.candidate_warning_counts.items()
+        ):
+            raise ValueError(
+                "candidate_warning_counts must contain nonblank warnings and positive "
+                "counts."
+            )
+
+        if (
+            self.total_candidate_pairs_with_warnings > self.total_candidate_pairs
+            or bool(self.candidate_warning_counts)
+            != bool(self.total_candidate_pairs_with_warnings)
+        ):
+            raise ValueError(
+                "Warning counts must describe a possible retained candidate population."
+            )
+
+    @model_validator(mode="after")
+    def _validate_counts(self) -> LPCandidateSummary:
+        """Reconcile pair populations, budgets, and retained incidence counts.
+
+        Returns
+        -------
+        LPCandidateSummary
+            The internally consistent summary.
+
+        Raises
+        ------
+        ValueError
+            If counts do not describe one bounded simple candidate graph.
+        """
+
+        unordered_pair_count = (
+            self.total_eligible_sfis * (self.total_eligible_sfis - 1) // 2
+        )
+        self._validate_pair_partitions(unordered_pair_count)
+        self._validate_candidate_partitions()
+        self._validate_candidate_bounds(unordered_pair_count)
+        self._validate_candidate_incidence()
+        self._validate_candidate_audit_counts()
+        self.limitations = _validate_lp_string_list(
+            field_name="limitations", values=self.limitations
+        )
+        return self
+
+
+class LPGenerationResponse(BaseSchema):
+    """Untrusted producer draft tied to one bounded request's material identity.
+
+    Parsing does not establish request-relative coverage, permissions, or semantic
+    acceptance. A draft requires deterministic integrity checks and independent checker
+    adjudication before it can contribute to any published relationship.
+    """
+
+    judgments: list["LPPairJudgment"] = Field(min_length=1)
+    request_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    request_id: UUID
+
+
+class LPGenerationValidationIssue(BaseSchema):
+    """One pair-grounded checker error or advisory observation."""
+
+    issue_type: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    pair_id: Optional[str] = Field(default=None, min_length=1)
+    severity: Literal["error", "warning"]
+
+    @field_validator("issue_type", "message", "pair_id", mode="before")
+    @classmethod
+    def _validate_issue_strings(cls, v: Optional[str]) -> Optional[str]:
+        """Require nonblank issue text and any supplied pair reference.
+
+        Parameters
+        ----------
+        v
+            Raw issue text or an absent pair reference.
+
+        Returns
+        -------
+        Optional[str]
+            Cleaned text, or the absent reference.
+        """
+
+        return None if v is None else strip_and_require_non_empty_str(v)
+
+
+class LPGenerationValidationVerdict(BaseSchema):
+    """Independent checker proposal bound to the original request evidence.
+
+    Request-relative validation enforces acceptance without correction or a complete
+    replacement response. A verdict alone never publishes a relationship.
+    """
+
+    corrected_response: Optional[LPGenerationResponse] = Field(default=None)
+    issues: list[LPGenerationValidationIssue] = Field(default_factory=list)
+    passed: bool = Field(strict=True)
+    rationale: str = Field(min_length=1)
+    request_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    request_id: UUID
+
+    @field_validator("rationale", mode="before")
+    @classmethod
+    def _validate_rationale(cls, v: str) -> str:
+        """Require a nonblank overall checker assessment.
+
+        Parameters
+        ----------
+        v
+            Raw checker rationale.
+
+        Returns
+        -------
+        str
+            Cleaned nonempty rationale.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+
+class LPPairJudgment(BaseSchema):
+    """One complete accepted, negative, or unresolved LP pair judgment."""
+
+    confidence: float = Field(
+        description="Audit confidence for this judgment; it does not publish an edge.",
+        ge=0.0,
+        le=1.0,
+        strict=True,
+    )
+    decision: LPDecision
+    direction: Optional[LPDirection] = Field(
+        default=None,
+        description=(
+            "Semantic direction for buildsTowards; omitted for symmetric, negative, "
+            "and unresolved decisions."
+        ),
+    )
+    first_sfi_uuid: UUID = Field(
+        description="Lower canonical SFI CASE UUID; this order is not semantic."
+    )
+    pair_id: str = Field(
+        description="Deterministic logical-pair identifier.", min_length=1
+    )
+    rationale: str = Field(
+        description="Evidence-grounded explanation for the complete pair decision.",
+        min_length=1,
+    )
+    second_sfi_uuid: UUID = Field(
+        description="Higher canonical SFI CASE UUID; this order is not semantic."
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Upstream audit or unresolved-context warnings considered.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_decision_direction(self) -> LPPairJudgment:
+        """Validate whether the selected decision permits or requires direction.
+
+        Returns
+        -------
+        LPPairJudgment
+            The validated complete pair judgment.
+
+        Raises
+        ------
+        ValueError
+            If a directional decision omits direction or another decision supplies it.
+        """
+
+        LPAdmissibleDecision(decision=self.decision, direction=self.direction)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_pair(self) -> LPPairJudgment:
+        """Validate that the judgment contains one canonical non-self pair.
+
+        Returns
+        -------
+        LPPairJudgment
+            The validated complete pair judgment.
+        """
+
+        _validate_lp_pair_endpoints(
+            first_sfi_uuid=self.first_sfi_uuid, second_sfi_uuid=self.second_sfi_uuid
+        )
+        return self
+
+    @field_validator("pair_id", "rationale", mode="before")
+    @classmethod
+    def _validate_required_strings(cls, v: str) -> str:
+        """Strip and require a non-empty pair identifier or rationale.
+
+        Parameters
+        ----------
+        v
+            Required string to validate.
+
+        Returns
+        -------
+        str
+            The stripped required string.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+    @field_validator("warnings")
+    @classmethod
+    def _validate_warnings(cls, v: list[str]) -> list[str]:
+        """Validate audit warnings carried by the judgment.
+
+        Parameters
+        ----------
+        v
+            Warning messages to validate.
+
+        Returns
+        -------
+        list[str]
+            Stripped unique warning messages in input order.
+        """
+
+        return _validate_lp_string_list(field_name="warnings", values=v)
 
 
 # Schemas for nodes.
@@ -6484,7 +7523,115 @@ class StandardsFrameworkItem(_CaseIdentifierMixin, _DateValidationMixin, BaseSch
         return self
 
 
-# Schemas for relationship.
+class LearningComponent(_DateValidationMixin, BaseSchema):
+    """Granular skill/concept aligned to one or more standards items via `supports`.
+
+    LearningComponents represent skill/concept units that can be aligned to
+    StandardsFrameworkItems using `supports` relationships:
+
+      (:LearningComponent)-[:supports]->(:StandardsFrameworkItem)
+    """
+
+    academic_subject: str = Field(
+        description=(
+            "High-level academic subject classification for the component "
+            "(e.g., Mathematics, English Language Arts). In strict exports this should "
+            "conform to LC enum values; in relaxed exports free-form values are allowed."
+        ),
+    )
+    attribution_statement: str = Field(
+        description=(
+            "Attribution text required to credit the original publisher/owner of the "
+            "source curriculum content that this component derives from."
+        ),
+    )
+    author: str = Field(
+        description=(
+            "Human or organization name considered the author/owner of this component, "
+            "typically inherited from the framework (e.g., Ministry of Education)."
+        ),
+    )
+    date_created: Optional[str] = Field(
+        default=None,
+        description=(
+            "Creation timestamp for the component (ISO-8601 string), if known. Optional."
+        ),
+    )
+    date_modified: Optional[str] = Field(
+        default=None,
+        description=(
+            "Last-modified timestamp for the component (ISO-8601 string), if known. Optional."
+        ),
+    )
+    description: str = Field(
+        description=(
+            "Primary human-readable text describing the skill/concept represented by the "
+            "LearningComponent. In a 1-to-1 policy, this may be identical to the supporting "
+            "standards expectation statement."
+        ),
+    )
+    identifier: UUID = Field(
+        description=(
+            "Primary internal identifier for this entity in the export. Must be deterministic "
+            "across reruns (UUIDv5 recommended)."
+        ),
+    )
+    in_language: LanguageField = Field(
+        description=(
+            "Language tag for the component text (e.g., en-US). In strict exports this should "
+            "conform to LC enum values; in relaxed exports any valid BCP-47 language tag is allowed."
+        ),
+    )
+    license: str = Field(
+        description=(
+            "License string for the component content. Must be present even if it is a "
+            "conservative placeholder when the original license is unknown."
+        ),
+    )
+    metadata: _MetadataT = Field(
+        default_factory=dict,
+        description=(
+            "Free-form metadata for pipeline/internal use (e.g., canonical node ids, "
+            "doc_key references, provenance pointers, dialect fallback notes). "
+            "Not a core LC KG field; consider omitting from strict exports."
+        ),
+    )
+    provider: str = Field(
+        description=(
+            "Provider/host name for the exported KG dataset (often your organization/product). "
+            "Used for attribution and provenance in downstream systems."
+        ),
+    )
+
+    @field_validator(
+        "academic_subject",
+        "attribution_statement",
+        "author",
+        "description",
+        "in_language",
+        "license",
+        "provider",
+        mode="before",
+    )
+    @classmethod
+    def _strip_and_require_non_empty(cls, v: str) -> str:
+        """Strip whitespace and require non-empty strings for required fields.
+
+        Parameters
+        ----------
+        v
+            The input string value to validate.
+
+        Returns
+        -------
+        str
+            The validated and stripped string value.
+        """
+
+        return strip_and_require_non_empty_str(v)
+
+
+# Schemas for relationships.
 class Relationship(_DateValidationMixin, BaseSchema):
     """LC KG relationship record (shared schema across relationship types).
 
@@ -6818,8 +7965,8 @@ class Relationship(_DateValidationMixin, BaseSchema):
             default_map = {
                 "hasChild": "A hasChild relationship links a parent framework/item to a child standards item.",
                 "supports": "A supports relationship links a learning component to a standards item it supports.",
-                "buildsTowards": "A buildsTowards relationship indicates prerequisite progression from one standards item to another.",
-                "relatesTo": "A relatesTo relationship indicates an associative connection between two standards items.",
+                "buildsTowards": "A buildsTowards relationship indicates that proficiency in the source standards item supports the likelihood of success in the target standards item; it does not assert a mandatory prerequisite.",
+                "relatesTo": "A relatesTo relationship indicates substantive conceptual or skill coherence between two standards items without asserting sequence or dependency; endpoint ordering is technical, not semantic.",
             }
             self.description = default_map.get(
                 self.relationship_type,
@@ -6839,6 +7986,21 @@ class _LearningCommonsWireModel(BaseSchema):
         populate_by_name=True,
         serialize_by_alias=True,
     )
+
+
+class LearningCommonsLearningComponentProperties(_LearningCommonsWireModel):
+    """String-valued properties for one Learning Commons learning-component node."""
+
+    academic_subject: str = Field(alias="academicSubject")
+    attribution_statement: str = Field(alias="attributionStatement")
+    author: str
+    description: str
+    identifier: str
+    identity_key: str = Field(alias="identityKey")
+    in_language: str = Field(alias="inLanguage")
+    license: str
+    provider: str
+    tags: str | None = None
 
 
 class LearningCommonsNode(_LearningCommonsWireModel):
@@ -7025,227 +8187,3 @@ class LearningCommonsStandardsFrameworkProperties(_LearningCommonsWireModel):
     name: str
     notes: str | None = None
     provider: str
-
-
-class LearningCommonsLearningComponentProperties(_LearningCommonsWireModel):
-    """String-valued properties for one Learning Commons learning-component node."""
-
-    academic_subject: str = Field(alias="academicSubject")
-    attribution_statement: str = Field(alias="attributionStatement")
-    author: str
-    description: str
-    identifier: str
-    identity_key: str = Field(alias="identityKey")
-    in_language: str = Field(alias="inLanguage")
-    license: str
-    provider: str
-    tags: str | None = None
-
-
-# CURRENTLY UNUSED #
-# Schemas for LLM responses.
-class ProgressionEdge(BaseSchema):
-    """A single suggested edge between two StandardsFrameworkItems."""
-
-    confidence: float = Field(
-        description="0..1 calibrated confidence (higher = more certain).",
-        ge=0.0,
-        le=1.0,
-    )
-    progression_subtype: Optional[_ProgressionSubtype] = Field(
-        default=None,
-        description=(
-            "For Phase 1 within-level buildsTowards only: "
-            "'developmental_prerequisite' means the source is a meaningful prerequisite "
-            "for a more complex or dependent target; 'recurring_practice' means the "
-            "target is a later curriculum occurrence continuing practice of the same "
-            "or substantially similar skill."
-        ),
-    )
-    rationale: str = Field(
-        description="Brief rationale for the edge (>= 50 chars).",
-        min_length=50,
-    )
-    source_sfi_uuid: str = Field(description="UUID string of the source SFI.")
-    target_sfi_uuid: str = Field(description="UUID string of the target SFI.")
-
-    @field_validator("rationale", mode="before")
-    @classmethod
-    def _strip_rationale(cls, v: Any) -> str:
-        """Strip whitespace and validate that rationale is a string of at least 50
-        characters.
-
-        Parameters
-        ----------
-        v
-            The input value to validate.
-
-        Returns
-        -------
-        str
-            The validated and stripped rationale string.
-
-        Raises
-        ------
-        ValueError
-            If the rationale is not a string or is less than 50 characters after
-            stripping.
-        """
-
-        s = str(v or "").strip()
-
-        if len(s) < 50:
-            raise ValueError("rationale must be >= 50 characters")
-
-        return s
-
-    @field_validator("source_sfi_uuid", "target_sfi_uuid", mode="before")
-    @classmethod
-    def _validate_uuid_str(cls, v: Any) -> str:
-        """Strip whitespace and validate that the value is a parseable UUID string.
-
-        Parameters
-        ----------
-        v
-            The input value to validate.
-
-        Returns
-        -------
-        str
-            The validated and stripped UUID string.
-
-        Raises
-        ------
-        ValueError
-            If the input value is null, empty, or not a valid UUID string.
-        """
-
-        if v is None:
-            raise ValueError("UUID cannot be null")
-
-        s = str(v).strip()
-
-        if not s:
-            raise ValueError("UUID cannot be empty")
-
-        try:
-            UUID(s)
-        except Exception as e:  # pylint: disable=broad-except
-            raise ValueError(f"Invalid UUID string: {s}") from e
-
-        return s
-
-
-class ProgressionEdgesResponse(BaseSchema):
-    """Top-level structured response: a list of edges (may be empty)."""
-
-    edges: list[ProgressionEdge] = Field(default_factory=list)
-
-
-# Schemas for nodes.
-class LearningComponent(_DateValidationMixin, BaseSchema):
-    """Granular skill/concept aligned to one or more standards items via `supports`.
-
-    LearningComponents represent skill/concept units that can be aligned to
-    StandardsFrameworkItems using `supports` relationships:
-
-      (:LearningComponent)-[:supports]->(:StandardsFrameworkItem)
-    """
-
-    academic_subject: str = Field(
-        description=(
-            "High-level academic subject classification for the component "
-            "(e.g., Mathematics, English Language Arts). In strict exports this should "
-            "conform to LC enum values; in relaxed exports free-form values are allowed."
-        ),
-    )
-    attribution_statement: str = Field(
-        description=(
-            "Attribution text required to credit the original publisher/owner of the "
-            "source curriculum content that this component derives from."
-        ),
-    )
-    author: str = Field(
-        description=(
-            "Human or organization name considered the author/owner of this component, "
-            "typically inherited from the framework (e.g., Ministry of Education)."
-        ),
-    )
-    date_created: Optional[str] = Field(
-        default=None,
-        description=(
-            "Creation timestamp for the component (ISO-8601 string), if known. Optional."
-        ),
-    )
-    date_modified: Optional[str] = Field(
-        default=None,
-        description=(
-            "Last-modified timestamp for the component (ISO-8601 string), if known. Optional."
-        ),
-    )
-    description: str = Field(
-        description=(
-            "Primary human-readable text describing the skill/concept represented by the "
-            "LearningComponent. In a 1-to-1 policy, this may be identical to the supporting "
-            "standards expectation statement."
-        ),
-    )
-    identifier: UUID = Field(
-        description=(
-            "Primary internal identifier for this entity in the export. Must be deterministic "
-            "across reruns (UUIDv5 recommended)."
-        ),
-    )
-    in_language: LanguageField = Field(
-        description=(
-            "Language tag for the component text (e.g., en-US). In strict exports this should "
-            "conform to LC enum values; in relaxed exports any valid BCP-47 language tag is allowed."
-        ),
-    )
-    license: str = Field(
-        description=(
-            "License string for the component content. Must be present even if it is a "
-            "conservative placeholder when the original license is unknown."
-        ),
-    )
-    metadata: _MetadataT = Field(
-        default_factory=dict,
-        description=(
-            "Free-form metadata for pipeline/internal use (e.g., canonical node ids, "
-            "doc_key references, provenance pointers, dialect fallback notes). "
-            "Not a core LC KG field; consider omitting from strict exports."
-        ),
-    )
-    provider: str = Field(
-        description=(
-            "Provider/host name for the exported KG dataset (often your organization/product). "
-            "Used for attribution and provenance in downstream systems."
-        ),
-    )
-
-    @field_validator(
-        "academic_subject",
-        "attribution_statement",
-        "author",
-        "description",
-        "in_language",
-        "license",
-        "provider",
-        mode="before",
-    )
-    @classmethod
-    def _strip_and_require_non_empty(cls, v: str) -> str:
-        """Strip whitespace and require non-empty strings for required fields.
-
-        Parameters
-        ----------
-        v
-            The input string value to validate.
-
-        Returns
-        -------
-        str
-            The validated and stripped string value.
-        """
-
-        return strip_and_require_non_empty_str(v)

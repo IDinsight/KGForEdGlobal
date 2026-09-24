@@ -6,7 +6,7 @@ adding curriculum-specific logic to the backend.
 The goal is not to tune every available setting. The goal is to encode the smallest
 reviewed **document profile** that lets the generic pipeline reconstruct the source,
 extract the intended Academic Standards hierarchy, and derive Learning Components at
-the right granularity.
+the right granularity, then infer Learning Progressions using explicit local policy.
 
 Start with a representative subset of the document, inspect the intermediate artifacts,
 and only then run the full curriculum.
@@ -33,17 +33,18 @@ A curriculum profile should describe **source-specific evidence and policy**. Th
 backend should continue to own **general invariants that must hold for every
 curriculum**.
 
-| Put this in configuration                                                    | Put this in Python                                      |
-|------------------------------------------------------------------------------|---------------------------------------------------------|
-| Local statement types such as `Strand`, `Sub-Strand`, `Indicator`, or `Unit` | Schema validation and identifier integrity              |
-| Aliases and controlled values visible in a particular source                 | Universal provenance requirements                       |
-| Which tables contain standards                                               | Exactly-once DocumentIR consumption                     |
-| Curriculum-specific code formats and code scope                              | Graph endpoint, cardinality, and cycle checks           |
-| Expected source hierarchy and allowed direct-parent types                    | Deterministic UUID construction                         |
-| Grade/stage mappings                                                         | Generic PageIR and DocumentIR transformations           |
-| Source-specific extraction or validation instructions                        | Generic producer/checker orchestration                  |
-| LC seed types, decomposition guidance, and dedup policy                      | Generic LC reconciliation and export rules              |
-| Known document conventions or reviewed anomalies                             | Logic that should apply identically to every curriculum |
+| Put this in configuration                                                                               | Put this in Python                                                  |
+|---------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------|
+| Local statement types such as `Strand`, `Sub-Strand`, `Indicator`, or `Unit`                            | Schema validation and identifier integrity                          |
+| Aliases and controlled values visible in a particular source                                            | Universal provenance requirements                                   |
+| Which tables contain standards                                                                          | Exactly-once DocumentIR consumption                                 |
+| Curriculum-specific code formats and code scope                                                         | Graph endpoint, cardinality, and cycle checks                       |
+| Expected source hierarchy and allowed direct-parent types                                               | Deterministic UUID construction                                     |
+| Grade/stage mappings                                                                                    | Generic PageIR and DocumentIR transformations                       |
+| Source-specific extraction or validation instructions                                                   | Generic producer/checker orchestration                              |
+| LC seed types, decomposition guidance, and dedup policy                                                 | Generic LC reconciliation and export rules                          |
+| LP type-pair permissions, local coordinate/order, evidence/budget/retry settings, and unresolved policy | Universal LP identity, acyclicity, checkpoint, and validation rules |
+| Known document conventions or reviewed anomalies                                                        | Logic that should apply identically to every curriculum             |
 
 A useful test is: **would the rule still be correct for a structurally different
 curriculum?** If not, prefer configuration.
@@ -111,6 +112,10 @@ The runtime config has four top-level sections:
   "kgs": {}
 }
 ```
+
+When `kgs` is present, it requires all four namespaces: `as`, `lc`, `lp`, and
+`metadata`. An AS/LC-only profile must be completed before the current KG command can
+load it; omitting the entire `kgs` section remains possible for document-only work.
 
 Set the document-specific extraction values first:
 
@@ -386,7 +391,44 @@ new language does not require a backend code change.
 Use `lc_dedup_instructions` for semantic conventions that affect whether two skills mean
 the same thing in this curriculum.
 
-## 10. Run a calibration slice end to end
+## 10. Configure Learning Progressions explicitly
+
+Use the exact field names in the
+[LP configuration reference](../pipeline/learning-progressions.md#running-and-configuration)
+and a reviewed example profile. Do not copy one curriculum's grade labels, statement
+names, or semantics into another without source review.
+
+1. Set the closed-world `builds_towards.allowed_statement_type_pairs` and
+   `relates_to.allowed_statement_type_pairs`. Omitted pairs are excluded. LP selection
+   does not inherit LC seed selection, leafness, or normalized `Standard` eligibility.
+2. Set `developmental_coordinate.statement_type` and exact `ordered_values` using the
+   canonical AS identity-scope vocabulary. This works for scope-only values as well as
+   explicit grade nodes. Do not use lexical label sorting or US grade mappings as order.
+3. Set `unresolved_participation` to `exclude_unresolved` or
+   `include_unresolved_with_warnings`. There is no default or per-SFI exception.
+   Inclusion preserves warnings and never turns root fallback into positive evidence.
+4. Supply positive candidate budgets, `request_batch_size`, and all five evidence
+   limits, plus nonnegative producer/checker retry counts. `max_concurrent_requests` is
+   the optional exception: omission defaults to 4 admitted batches; 1 selects serial
+   work.
+5. Write producer/checker instructions with local examples distinguishing substantive
+   extension, meaningful recurrence, generic repetition, and ambiguity. Instructions
+   cannot override type/direction/identity or structural rules.
+6. Supply `relationship_metadata.author = "LLM generated"`, `provider = "IDinsight"`,
+   `approved_by = "IDinsight"`, and the exact attribution template below. License
+   inheritance is code-owned, using the validated framework license.
+
+```text
+Learning progression relationship generated by IDinsight using an LLM producer/checker workflow. Source framework attribution: {source_attribution_statement}. This inferred relationship was not stated or endorsed by the source publisher.
+```
+
+Only `{source_attribution_statement}` is substituted. Config validation rejects unknown
+fields, missing policy, and inconsistencies with AS types/controlled values. Universal
+candidate algorithms, rank-gap rules, checkpoint policy, fingerprint selectors, and
+semantic edge overrides are not profile controls. A genuinely multi-axis curriculum
+requires a governed extension rather than inferred coordinate tuples.
+
+## 11. Run a calibration slice end to end
 
 From the `backend` directory, run all four entry points against the calibration config:
 
@@ -409,27 +451,28 @@ becomes wrong** and fix the profile or source interpretation there.
 
 A useful review order is:
 
-| Question                                                       | Start with                                                            |
-|----------------------------------------------------------------|-----------------------------------------------------------------------|
-| Does each page reflect what is visibly present?                | `extraction/page_irs/*.json`                                          |
-| Are cross-page continuations correct?                          | verification pair reports and verified PageIRs                        |
-| Is the document reconstructed correctly?                       | `stitching/document_ir.json` and `stitch_report.json`                 |
-| Are the right standards extracted with the right types/scopes? | SFI extraction results and `sfi_candidate_registry.json`              |
-| Are true duplicates reconciled conservatively?                 | SFI merge report/groups/conflicts                                     |
-| Is the AS hierarchy correct?                                   | `has_child_edges_final.json` and parent-resolution artifacts          |
-| Did the AS graph validate?                                     | `as_validation_report.json`                                           |
-| Are the intended standards eligible for LCs?                   | `lc_eligibility_report.json`                                          |
-| Is decomposition at the right granularity?                     | LC requests, producer drafts, validator verdicts, and final responses |
-| Are LC duplicates nominated and adjudicated correctly?         | `lc_dedup_candidate_pairs.jsonl`, verdicts, and groups                |
-| Does the final combined graph reconcile?                       | `lc_generation_summary.json` and `as_lc_kg_bundle.json`               |
+| Question                                                       | Start with                                                                            |
+|----------------------------------------------------------------|---------------------------------------------------------------------------------------|
+| Does each page reflect what is visibly present?                | `extraction/page_irs/*.json`                                                          |
+| Are cross-page continuations correct?                          | verification pair reports and verified PageIRs                                        |
+| Is the document reconstructed correctly?                       | `stitching/document_ir.json` and `stitch_report.json`                                 |
+| Are the right standards extracted with the right types/scopes? | SFI extraction results and `sfi_candidate_registry.json`                              |
+| Are true duplicates reconciled conservatively?                 | SFI merge report/groups/conflicts                                                     |
+| Is the AS hierarchy correct?                                   | `has_child_edges_final.json` and parent-resolution artifacts                          |
+| Did the AS graph validate?                                     | `as_validation_report.json`                                                           |
+| Are the intended standards eligible for LCs?                   | `lc_eligibility_report.json`                                                          |
+| Is decomposition at the right granularity?                     | LC requests, producer drafts, validator verdicts, and final responses                 |
+| Are LC duplicates nominated and adjudicated correctly?         | `lc_dedup_candidate_pairs.jsonl`, verdicts, and groups                                |
+| Is LP eligibility, nomination, and adjudication appropriate?   | `lp_eligibility_report.json`, candidates, requests, drafts/verdicts, and final claims |
+| Does the final combined graph reconcile?                       | LC/LP summaries, `lp_validation_report.json`, and `as_lc_lp_kg_bundle.json`           |
 
 For the complete artifact map and trust boundaries, see the
 [Pipeline Overview](../pipeline/index.md).
 
-## 11. Expand coverage before the full run
+## 12. Expand coverage before the full run
 
-A successful five-page slice proves only that those five pages work. Before launching the
-entire PDF, test each materially different source layout.
+A successful five-page slice proves only that those five pages work. Before launching
+the entire PDF, test each materially different source layout.
 
 At minimum, sample:
 
@@ -437,14 +480,16 @@ At minimum, sample:
 - each grade/stage section if formatting changes;
 - front matter versus standards-bearing sections;
 - coded and uncoded standards, when both exist;
-- multilingual layouts, when present; and
-- several LC decomposition patterns.
+- multilingual layouts, when present;
+- several LC decomposition patterns; and
+- same/cross/missing-rank LP cases, DAG and unresolved contexts, sparse/noisy LC
+  evidence, and recurrence versus developmental extension.
 
 Use failures to refine the smallest relevant piece of configuration. Avoid adding a
 broad instruction because one unusual page failed if a bounded table/section rule can
 represent the source more precisely.
 
-## 12. Run the full document with a clean output root
+## 13. Run the full document with a clean output root
 
 Once calibration is stable:
 
@@ -528,3 +573,4 @@ of the curriculum. One surprising pair is not enough evidence for a corpus-wide 
   behavior.
 - [Learning Components](../pipeline/learning-components.md) — detailed LC generation,
   validation, deduplication, and export behavior.
+- [Learning Progressions](../pipeline/learning-progressions.md) — policy and limitations.

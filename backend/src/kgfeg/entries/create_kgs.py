@@ -41,6 +41,14 @@ from kgfeg.kgs.lc_generation import (
 )
 from kgfeg.kgs.lc_selection import select_lc_source_sfis
 from kgfeg.kgs.llm import KGUsageTracker
+from kgfeg.kgs.lp_artifacts import write_lp_artifacts
+from kgfeg.kgs.lp_checkpoints import validate_lp_checkpoint_format
+from kgfeg.kgs.lp_export import compile_as_lc_lp_kg, reuse_as_lc_lp_kg
+from kgfeg.kgs.lp_finalization import (
+    build_lp_relationships,
+    finalize_learning_progressions,
+)
+from kgfeg.kgs.lp_generation import generate_learning_progressions
 from kgfeg.kgs.sfi_dedup import merge_sfi_candidates
 from kgfeg.kgs.sfi_export import compile_academic_standards_kg
 from kgfeg.kgs.sfi_extraction import extract_sfi_candidates_from_windows
@@ -57,6 +65,7 @@ from kgfeg.kgs.utils import (
     cross_check_stitching_run,
     load_and_validate_inputs,
     persist_kg_run,
+    persist_kg_run_manifest,
 )
 from kgfeg.schemas import CreateKGConfig, RunConfig
 from kgfeg.utils.general import open_json_type, write_to_json
@@ -74,12 +83,12 @@ def build_kgs(
     kg_dirs: KGDirs,
     usage_tracker: KGUsageTracker,
 ) -> Path:
-    """Build Academic Standards + Learning Components KG artifacts for a DocumentIR.
+    """Build Academic Standards, Learning Components, and Learning Progressions KGs.
 
     The process is as follows:
 
     1. Load the stitched DocumentIR and validate it against the KG config parameters.
-    2. Build and persist `kg_run_manifest.json`.
+    2. Build `kg_run_manifest.json`, preserving the validated original on resume.
     3. Plan source DocumentIR units for Academic Standards (SFI) extraction windows.
     4. Build LLM-ready extraction windows.
     5. Extract source-grounded SFI candidates from extraction windows using an LLM.
@@ -105,6 +114,13 @@ def build_kgs(
         LC entity provenance.
     19. Merge the AS bundle and the LC layer into the single AS+LC KG
         bundle, with flat node/relationship projections.
+    20. Reuse an exact current-material-validated final LP bundle when available and
+        overwrite is disabled, rewriting its projections. Otherwise generate bounded LP
+        judgments using resumable producer/checker calls and the shared tracker.
+    21. Reconcile completed judgments into final direct claims.
+    22. Mint deterministic LP relationships and their provenance.
+    23. Validate and persist standalone LP artifacts, retaining failed diagnostics.
+    24. Compile and validate the additive AS+LC+LP bundle and flat projections.
 
     Parameters
     ----------
@@ -123,7 +139,14 @@ def build_kgs(
     -------
     Path
         The path to the persisted `kg_run_manifest.json` artifact.
+
+    Raises
+    ------
+    ValueError
+        If runtime validation reports contain errors.
     """
+
+    validate_lp_checkpoint_format(kg_dirs.root)
 
     # 1.
     kg_run_inputs = load_and_validate_inputs(
@@ -135,8 +158,11 @@ def build_kgs(
 
     # 2.
     kg_run_manifest = build_run_manifest(kg_run_inputs)
-    kg_run_manifest_fp = kg_dirs.root / "kg_run_manifest.json"
-    write_to_json(fp=kg_run_manifest_fp, json_info=kg_run_manifest)
+    kg_run_manifest_fp = persist_kg_run_manifest(
+        kg_dirs=kg_dirs,
+        manifest=kg_run_manifest,
+        overwrite=config.overwrite,
+    )
 
     # 3.
     plan_items = plan_extraction_windows(
@@ -290,7 +316,7 @@ def build_kgs(
     )
 
     # 19.
-    compile_as_lc_kg(
+    as_lc_bundle = compile_as_lc_kg(
         academic_standards_bundle=final_bundle,
         kg_dirs=kg_dirs,
         lc_generation_summary=lc_generation_summary,
@@ -298,6 +324,79 @@ def build_kgs(
         overwrite=config.overwrite,
         supports_edges=lc_supports_edges,
     )
+
+    if (
+        not as_lc_bundle.validation_report.passed
+        or as_lc_bundle.validation_report.errors
+    ):
+        raise ValueError("LP requires a passed, error-free AS+LC validation report.")
+
+    if not config.overwrite:
+        reused_bundle = reuse_as_lc_lp_kg(
+            as_lc_bundle=as_lc_bundle,
+            doc_key=kg_run_inputs.document_ir.doc_key,
+            kg_config=kg_run_inputs.kg_config,
+            kg_dirs=kg_dirs,
+        )
+
+        if reused_bundle is not None:
+            return kg_run_manifest_fp
+
+    # 20.
+    generate_learning_progressions(
+        as_lc_bundle=as_lc_bundle,
+        doc_key=kg_run_inputs.document_ir.doc_key,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+        overwrite=config.overwrite,
+        usage_tracker=usage_tracker,
+    )
+
+    # 21.
+    finalize_learning_progressions(
+        as_lc_bundle=as_lc_bundle,
+        doc_key=kg_run_inputs.document_ir.doc_key,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+    )
+
+    # 22.
+    lp_relationships = build_lp_relationships(
+        as_lc_bundle=as_lc_bundle,
+        doc_key=kg_run_inputs.document_ir.doc_key,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+    )
+
+    # 23.
+    lp_artifacts = write_lp_artifacts(
+        as_lc_bundle=as_lc_bundle,
+        doc_key=kg_run_inputs.document_ir.doc_key,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+        relationships=lp_relationships,
+    )
+
+    if (
+        not lp_artifacts.validation_report.passed
+        or lp_artifacts.validation_report.errors
+    ):
+        raise ValueError("LP validation failed; inspect lp_validation_report.json.")
+
+    # 24.
+    as_lc_lp_bundle = compile_as_lc_lp_kg(
+        as_lc_bundle=as_lc_bundle,
+        doc_key=kg_run_inputs.document_ir.doc_key,
+        kg_config=kg_run_inputs.kg_config,
+        kg_dirs=kg_dirs,
+        overwrite=config.overwrite,
+    )
+
+    if (
+        not as_lc_lp_bundle.validation_report.passed
+        or as_lc_lp_bundle.validation_report.errors
+    ):
+        raise ValueError("AS+LC+LP validation failed; inspect as_lc_lp_kg_bundle.json.")
 
     return kg_run_manifest_fp
 
@@ -321,8 +420,12 @@ def create(
     1. Load the global run config and resolve KG, extraction, and stitching paths.
     2. Cross-check stitching run results.
     3. Persist KG run metadata.
-    4. Create a usage tracker to accumulate token costs for extracting SFIs.
+    4. Create a shared usage tracker for Academic Standards, Learning Components, and
+        Learning Progressions producer/checker calls.
     5. Build the knowledge graphs.
+
+    Successful runs retain the generation lock inode for safe completed-run reuse and
+    mutual exclusion with competing processes.
 
     Parameters
     ----------
@@ -359,6 +462,7 @@ def create(
 
     # 3.
     kg_results_dir = extraction_config.output_dir / computed_doc_key / "kgs"
+    validate_lp_checkpoint_format(kg_results_dir)
     kg_dirs, kg_run = persist_kg_run(config=config, output_dir=kg_results_dir)
 
     # 4.

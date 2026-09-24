@@ -1,0 +1,44 @@
+{
+  "curriculum": "pratham_science",
+  "distinctive_property": "multi_parent_dag",
+  "expectations": {
+    "counts": {"items": 4, "learning_components": 1, "relationships_has_child": 3, "relationships_supports": 1},
+    "cross_grade_item_sets": [],
+    "direct_parent_sets": {
+      "003d05f8-ce74-53ec-9ef3-ef19b8f3ad80": ["76575690-87b8-5435-bce2-d3d8dc477b54", "855aefba-808d-5896-8519-cf4c80d9c97d"],
+      "069c360b-a0fd-5f3d-b653-4ed9d3e71c44": ["003d05f8-ce74-53ec-9ef3-ef19b8f3ad80"]
+    },
+    "lc_alignments": {"7629a6bd-8a3c-503a-b3fe-f739621bc59a": ["069c360b-a0fd-5f3d-b653-4ed9d3e71c44"]},
+    "required_identity_scope_values": {"Class": ["Class IX"]},
+    "required_statement_types": ["Chapter", "NCERT Learning Outcome", "Content Domain Specific Learning Outcome", "Indicator"],
+    "unresolved_item_ids": []
+  },
+  "framework": {"academic_subject": "Science", "case_identifier_uuid": "4839ccc8-5fcc-58a1-a981-7994625c79b2", "metadata": {"doc_key": "3f8c25c19ed8395bf6625b7958092b8d219cae743b9ea36fcfd56efd59b6d2fc"}, "name": "Learning Framework - Science"},
+  "items": [
+    {"case_identifier_uuid": "76575690-87b8-5435-bce2-d3d8dc477b54", "description": "Chapter 2 – Is matter around us pure?", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Class": "Class IX", "Content Domain": "Materials"}, "source_page_indexes": [24, 25]}, "normalized_statement_type": "Standard Grouping", "statement_code": null, "statement_type": "Chapter"},
+    {"case_identifier_uuid": "855aefba-808d-5896-8519-cf4c80d9c97d", "description": "Plans and conducts investigations/ experiments to arrive at and verify the facts/ principles/ phenomena or to seek answers to queries on their own, such as how does speed of an object change? How objects float/ sink when placed on surface of liquid? Is there any change in mass when chemical reaction takes place? What is the effect of heat on state of substances? What is the effect of compression on different states of matter? Where are stomata present in different types of leaves? Where are growing tissues present in plants?", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Class": "Class IX"}, "source_page_indexes": [25, 29, 32, 37, 39, 42, 46, 48, 53]}, "normalized_statement_type": "Standard", "statement_code": "LO3", "statement_type": "NCERT Learning Outcome"},
+    {"case_identifier_uuid": "003d05f8-ce74-53ec-9ef3-ef19b8f3ad80", "description": "Investigates the nature and properties of various types of chemical substances through experiments.", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Class": "Class IX", "Content Domain": "Materials", "Chapter": "Is matter around us pure?"}, "source_page_indexes": [25]}, "normalized_statement_type": "Standard", "statement_code": "CLO7", "statement_type": "Content Domain Specific Learning Outcome"},
+    {"case_identifier_uuid": "069c360b-a0fd-5f3d-b653-4ed9d3e71c44", "description": "Investigates the types and properties of mixtures, solutions, colloids, and suspensions using simple experiments.", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Class": "Class IX", "Content Domain": "Materials", "Chapter": "Is matter around us pure?"}, "source_page_indexes": [25]}, "normalized_statement_type": "Standard", "statement_code": "C19", "statement_type": "Indicator"}
+  ],
+  "learning_components": [
+    {"description": "Investigates the types and properties of suspensions using simple experiments", "identifier": "7629a6bd-8a3c-503a-b3fe-f739621bc59a", "metadata": {"source_page_indexes": [25], "source_sfi_uuids": ["069c360b-a0fd-5f3d-b653-4ed9d3e71c44"]}}
+  ],
+  "relationships_has_child": [
+    {"identifier": "0098077f-6c49-56e2-8fdf-18d3925f6714", "metadata": {"unresolved_root_fallback": false}, "relationship_type": "hasChild", "source_entity": "StandardsFrameworkItem", "source_entity_key": "case_identifier_uuid", "source_entity_value": "76575690-87b8-5435-bce2-d3d8dc477b54", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "003d05f8-ce74-53ec-9ef3-ef19b8f3ad80"},
+    {"identifier": "843833ff-d20b-5e07-b7bc-7de34b025e8c", "metadata": {"unresolved_root_fallback": false}, "relationship_type": "hasChild", "source_entity": "StandardsFrameworkItem", "source_entity_key": "case_identifier_uuid", "source_entity_value": "855aefba-808d-5896-8519-cf4c80d9c97d", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "003d05f8-ce74-53ec-9ef3-ef19b8f3ad80"},
+    {"identifier": "2cd9b61c-3e06-5c94-b6e8-a49352512dc4", "metadata": {"unresolved_root_fallback": false}, "relationship_type": "hasChild", "source_entity": "StandardsFrameworkItem", "source_entity_key": "case_identifier_uuid", "source_entity_value": "003d05f8-ce74-53ec-9ef3-ef19b8f3ad80", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "069c360b-a0fd-5f3d-b653-4ed9d3e71c44"}
+  ],
+  "relationships_supports": [
+    {"identifier": "a005d5e7-d50e-5608-81de-aa77870066c0", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "7629a6bd-8a3c-503a-b3fe-f739621bc59a", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "069c360b-a0fd-5f3d-b653-4ed9d3e71c44"}
+  ],
+  "source_bundle": {
+    "bundle_sha256": "b61539326e140a706e137e7ebe7cf4a2d00aaf6b2db17c0600c34a173be3a154",
+    "doc_key": "3f8c25c19ed8395bf6625b7958092b8d219cae743b9ea36fcfd56efd59b6d2fc",
+    "entity_provenance_sections": ["framework", "items", "kg_run_manifest", "learning_components", "relationships_has_child"],
+    "framework_case_identifier_uuid": "4839ccc8-5fcc-58a1-a981-7994625c79b2",
+    "object_counts": {"frameworks": 1, "learning_components": 853, "relationships_has_child": 1109, "relationships_supports": 858, "standards_framework_items": 874},
+    "statement_type_counts": {"Chapter": 31, "Class": 2, "Content Domain": 10, "Content Domain Specific Learning Outcome": 235, "Indicator": 554, "NCERT Learning Outcome": 42},
+    "top_level_keys": ["entity_provenance", "framework", "items", "learning_components", "relationships_has_child", "relationships_supports", "summary", "unresolved_items", "validation_report"],
+    "unresolved_root_fallback_count": 0
+  }
+}

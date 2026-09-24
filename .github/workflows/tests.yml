@@ -7,12 +7,18 @@ on:
     paths:
       - ".github/workflows/tests.yml"
       - "**.py"
+      - "backend/pyproject.toml"
+      - "backend/uv.lock"
+      - "backend/tests/fixtures/**"
 
   push:
     branches: ["main"]
     paths:
       - ".github/workflows/tests.yml"
       - "**.py"
+      - "backend/pyproject.toml"
+      - "backend/uv.lock"
+      - "backend/tests/fixtures/**"
 
 env:
   CHAT_ENV: testing

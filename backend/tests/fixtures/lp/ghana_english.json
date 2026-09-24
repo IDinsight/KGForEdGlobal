@@ -1,0 +1,61 @@
+{
+  "curriculum": "ghana_english",
+  "distinctive_property": "cross_grade_recurrence",
+  "expectations": {
+    "counts": {"items": 8, "learning_components": 2, "relationships_has_child": 4, "relationships_supports": 4},
+    "cross_grade_item_sets": [
+      ["6aa8eb1c-35a7-557e-9508-a94b3f186583", "94c51fd6-98b4-54ef-9c0c-f609048faea5"],
+      ["d63db9a4-ce13-54f2-a7ca-f8ef81b48aa6", "f9031ec6-d2db-5334-b21d-93f90eb10b2d"]
+    ],
+    "direct_parent_sets": {
+      "6aa8eb1c-35a7-557e-9508-a94b3f186583": ["ec1ee1d0-de40-5dc4-8205-7e15b1127331"],
+      "94c51fd6-98b4-54ef-9c0c-f609048faea5": ["34f3f33e-c4c3-5685-acc1-cc597c105c29"],
+      "d63db9a4-ce13-54f2-a7ca-f8ef81b48aa6": ["38d9ba12-cea7-5226-9ac5-02a3da118012"],
+      "f9031ec6-d2db-5334-b21d-93f90eb10b2d": ["9a07e147-2a11-55b5-bbef-43510828751d"]
+    },
+    "lc_alignments": {
+      "199c4a16-8937-5a18-bcb6-75a332ed1e54": ["6aa8eb1c-35a7-557e-9508-a94b3f186583", "94c51fd6-98b4-54ef-9c0c-f609048faea5"],
+      "84d27015-1234-5726-835b-b48a8715da95": ["d63db9a4-ce13-54f2-a7ca-f8ef81b48aa6", "f9031ec6-d2db-5334-b21d-93f90eb10b2d"]
+    },
+    "required_identity_scope_values": {"Grade": ["BASIC 2", "BASIC 3"]},
+    "required_statement_types": ["Content Standard", "Indicator"],
+    "unresolved_item_ids": []
+  },
+  "framework": {"academic_subject": "English Language", "case_identifier_uuid": "862e9144-b9e0-5512-bfa9-55597af6d1d6", "metadata": {"doc_key": "e49a792637011b32ed2ed906d58f9992e5208d2b7c15425ccc971f4f51de43c8"}, "name": "English Language Curriculum for Primary Schools (Basic 1 - 3)"},
+  "items": [
+    {"case_identifier_uuid": "ec1ee1d0-de40-5dc4-8205-7e15b1127331", "description": "Apply knowledge of language and communicative skills to participate in conversation", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "BASIC 2", "Strand": "Oral Language", "Sub-Strand": "Conversation"}, "source_page_indexes": [63, 64]}, "normalized_statement_type": "Standard", "statement_code": "B2.1.6.2", "statement_type": "Content Standard"},
+    {"case_identifier_uuid": "34f3f33e-c4c3-5685-acc1-cc597c105c29", "description": "Apply knowledge of language and communicative skills to participate in conversation", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "BASIC 3", "Strand": "Oral Language", "Sub-Strand": "Conversation"}, "source_page_indexes": [95, 96]}, "normalized_statement_type": "Standard", "statement_code": "B3.1.6.2", "statement_type": "Content Standard"},
+    {"case_identifier_uuid": "38d9ba12-cea7-5226-9ac5-02a3da118012", "description": "Connect sounds to letters and blend letters/syllables in order to read and write", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "BASIC 2", "Strand": "Reading", "Sub-Strand": "Phonics"}, "source_page_indexes": [70, 71]}, "normalized_statement_type": "Standard", "statement_code": "B2.2.2.1", "statement_type": "Content Standard"},
+    {"case_identifier_uuid": "9a07e147-2a11-55b5-bbef-43510828751d", "description": "Connect sounds to letters and blend letters/syllables in order to read and write", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "BASIC 3", "Strand": "Reading", "Sub-Strand": "Phonics"}, "source_page_indexes": [102, 103]}, "normalized_statement_type": "Standard", "statement_code": "B3.2.2.1", "statement_type": "Content Standard"},
+    {"case_identifier_uuid": "6aa8eb1c-35a7-557e-9508-a94b3f186583", "description": "Demonstrate turn-taking in conversations", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "BASIC 2", "Strand": "Oral Language", "Sub-Strand": "Conversation"}, "source_page_indexes": [63]}, "normalized_statement_type": "Standard", "statement_code": "B2.1.6.2.1", "statement_type": "Indicator"},
+    {"case_identifier_uuid": "94c51fd6-98b4-54ef-9c0c-f609048faea5", "description": "Demonstrate turn-taking in conversation in different topics", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "BASIC 3", "Strand": "Oral Language", "Sub-Strand": "Conversation"}, "source_page_indexes": [95]}, "normalized_statement_type": "Standard", "statement_code": "B3.1.6.2.1", "statement_type": "Indicator"},
+    {"case_identifier_uuid": "d63db9a4-ce13-54f2-a7ca-f8ef81b48aa6", "description": "Use elements of structural analysis to decode unknown words.", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "BASIC 2", "Strand": "Reading", "Sub-Strand": "Phonics"}, "source_page_indexes": [71]}, "normalized_statement_type": "Standard", "statement_code": "B2.2.2.1.3", "statement_type": "Indicator"},
+    {"case_identifier_uuid": "f9031ec6-d2db-5334-b21d-93f90eb10b2d", "description": "Use basic elements of structural analysis (e.g prefixes, suffixes, compound, root words) to decode unknown words", "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Grade": "BASIC 3", "Strand": "Reading", "Sub-Strand": "Phonics"}, "source_page_indexes": [103]}, "normalized_statement_type": "Standard", "statement_code": "B3.2.2.1.3", "statement_type": "Indicator"}
+  ],
+  "learning_components": [
+    {"description": "Demonstrate turn-taking in conversations", "identifier": "199c4a16-8937-5a18-bcb6-75a332ed1e54", "metadata": {"source_page_indexes": [63, 95], "source_sfi_uuids": ["6aa8eb1c-35a7-557e-9508-a94b3f186583", "94c51fd6-98b4-54ef-9c0c-f609048faea5"]}},
+    {"description": "Use elements of structural analysis to decode unknown words", "identifier": "84d27015-1234-5726-835b-b48a8715da95", "metadata": {"source_page_indexes": [71, 103], "source_sfi_uuids": ["d63db9a4-ce13-54f2-a7ca-f8ef81b48aa6", "f9031ec6-d2db-5334-b21d-93f90eb10b2d"]}}
+  ],
+  "relationships_has_child": [
+    {"identifier": "1b3c3806-7888-5f5b-9d35-643ce0f8a784", "metadata": {"unresolved_root_fallback": false}, "relationship_type": "hasChild", "source_entity": "StandardsFrameworkItem", "source_entity_key": "case_identifier_uuid", "source_entity_value": "ec1ee1d0-de40-5dc4-8205-7e15b1127331", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "6aa8eb1c-35a7-557e-9508-a94b3f186583"},
+    {"identifier": "6e761294-fbd6-52f4-8b90-603a248c09ca", "metadata": {"unresolved_root_fallback": false}, "relationship_type": "hasChild", "source_entity": "StandardsFrameworkItem", "source_entity_key": "case_identifier_uuid", "source_entity_value": "34f3f33e-c4c3-5685-acc1-cc597c105c29", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "94c51fd6-98b4-54ef-9c0c-f609048faea5"},
+    {"identifier": "425503b9-93c3-5d48-8d94-eb7d825762ca", "metadata": {"unresolved_root_fallback": false}, "relationship_type": "hasChild", "source_entity": "StandardsFrameworkItem", "source_entity_key": "case_identifier_uuid", "source_entity_value": "38d9ba12-cea7-5226-9ac5-02a3da118012", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "d63db9a4-ce13-54f2-a7ca-f8ef81b48aa6"},
+    {"identifier": "a425e624-12e7-5d98-9e97-d673b16e7c6c", "metadata": {"unresolved_root_fallback": false}, "relationship_type": "hasChild", "source_entity": "StandardsFrameworkItem", "source_entity_key": "case_identifier_uuid", "source_entity_value": "9a07e147-2a11-55b5-bbef-43510828751d", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "f9031ec6-d2db-5334-b21d-93f90eb10b2d"}
+  ],
+  "relationships_supports": [
+    {"identifier": "11f54f8f-7e73-5b6d-be74-78d0ea048f65", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "199c4a16-8937-5a18-bcb6-75a332ed1e54", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "6aa8eb1c-35a7-557e-9508-a94b3f186583"},
+    {"identifier": "0da4f010-4859-58da-868c-62b19f398ca2", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "199c4a16-8937-5a18-bcb6-75a332ed1e54", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "94c51fd6-98b4-54ef-9c0c-f609048faea5"},
+    {"identifier": "e43d8acd-4955-513e-a8a6-14ae1cc5a957", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "84d27015-1234-5726-835b-b48a8715da95", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "d63db9a4-ce13-54f2-a7ca-f8ef81b48aa6"},
+    {"identifier": "796c2eb2-83b3-51d3-bde1-4cb4f4681394", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "84d27015-1234-5726-835b-b48a8715da95", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "f9031ec6-d2db-5334-b21d-93f90eb10b2d"}
+  ],
+  "source_bundle": {
+    "bundle_sha256": "49ede64fa0b843ba6bbb553c924734454277af9fd13dda580679752e467c5d73",
+    "doc_key": "e49a792637011b32ed2ed906d58f9992e5208d2b7c15425ccc971f4f51de43c8",
+    "entity_provenance_sections": ["framework", "items", "kg_run_manifest", "learning_components", "relationships_has_child"],
+    "framework_case_identifier_uuid": "862e9144-b9e0-5512-bfa9-55597af6d1d6",
+    "object_counts": {"frameworks": 1, "learning_components": 272, "relationships_has_child": 430, "relationships_supports": 307, "standards_framework_items": 430},
+    "statement_type_counts": {"Content Standard": 102, "Grade": 3, "Indicator": 217, "Strand": 15, "Sub-Strand": 93},
+    "top_level_keys": ["entity_provenance", "framework", "items", "learning_components", "relationships_has_child", "relationships_supports", "summary", "unresolved_items", "validation_report"],
+    "unresolved_root_fallback_count": 2
+  }
+}

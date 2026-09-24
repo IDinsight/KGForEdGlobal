@@ -1,0 +1,81 @@
+{
+  "curriculum": "madhi_math",
+  "distinctive_property": "scope_only_class",
+  "expectations": {
+    "counts": {"items": 4, "learning_components": 2, "relationships_has_child": 2, "relationships_supports": 2},
+    "cross_grade_item_sets": [],
+    "direct_parent_sets": {
+      "10a71951-09a7-54d3-ad76-d12d25375710": ["da6ec6bd-acb4-59b9-a84a-916d66b67115"],
+      "654379c9-9630-543c-ba85-a2c5badc3530": ["600e3ad9-0fb5-55fc-999c-5eeb89856485"]
+    },
+    "lc_alignments": {
+      "505d7ee4-c9af-588e-be23-e26ca5fb6967": ["654379c9-9630-543c-ba85-a2c5badc3530"],
+      "6f888fe8-8d02-53d6-95d6-987e3dc17c26": ["10a71951-09a7-54d3-ad76-d12d25375710"]
+    },
+    "required_identity_scope_values": {"Class": ["Class-1", "Class-5"]},
+    "required_statement_types": ["Competency", "Content"],
+    "unresolved_item_ids": []
+  },
+  "framework": {
+    "academic_subject": "Mathematics",
+    "case_identifier_uuid": "3b7ddd08-3682-5dbb-8455-abba82e54370",
+    "metadata": {"doc_key": "33c5da78839a7611308dd30f342b72f931a661235e094cc641832ec2a5548444"},
+    "name": "Tamil Nadu Curriculum Framework 2025: Mathematics - Classes 1-5"
+  },
+  "items": [
+    {
+      "case_identifier_uuid": "10a71951-09a7-54d3-ad76-d12d25375710",
+      "description": "Reorders quantities by number",
+      "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Curricular Goal": "CG-1", "Competency": "C-1.5", "Class": "Class-1"}, "source_page_indexes": [1]},
+      "normalized_statement_type": "Standard",
+      "statement_code": null,
+      "statement_type": "Content"
+    },
+    {
+      "case_identifier_uuid": "da6ec6bd-acb4-59b9-a84a-916d66b67115",
+      "description": "Learns to order and arrange, developing intuition of number",
+      "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Curricular Goal": "CG-1"}, "source_page_indexes": [1]},
+      "normalized_statement_type": "Standard Grouping",
+      "statement_code": "C 1.5",
+      "statement_type": "Competency"
+    },
+    {
+      "case_identifier_uuid": "654379c9-9630-543c-ba85-a2c5badc3530",
+      "description": "Reflection",
+      "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Curricular Goal": "CG-3", "Competency": "C-3.3", "Class": "Class-5"}, "source_page_indexes": [5]},
+      "normalized_statement_type": "Standard",
+      "statement_code": null,
+      "statement_type": "Content"
+    },
+    {
+      "case_identifier_uuid": "600e3ad9-0fb5-55fc-999c-5eeb89856485",
+      "description": "Recognizes and creates symmetry, including reflection and rotation, in familiar two-and three-dimensional shapes",
+      "metadata": {"audit_flags": [], "audit_notes": [], "identity_scope_values": {"Curricular Goal": "CG-3"}, "source_page_indexes": [5]},
+      "normalized_statement_type": "Standard Grouping",
+      "statement_code": "C-3.3",
+      "statement_type": "Competency"
+    }
+  ],
+  "learning_components": [
+    {"description": "Create reflection symmetry in familiar two- and three-dimensional shapes", "identifier": "505d7ee4-c9af-588e-be23-e26ca5fb6967", "metadata": {"source_page_indexes": [5], "source_sfi_uuids": ["654379c9-9630-543c-ba85-a2c5badc3530"]}},
+    {"description": "Reorder quantities by number", "identifier": "6f888fe8-8d02-53d6-95d6-987e3dc17c26", "metadata": {"source_page_indexes": [1], "source_sfi_uuids": ["10a71951-09a7-54d3-ad76-d12d25375710"]}}
+  ],
+  "relationships_has_child": [
+    {"identifier": "b23df151-1c23-5e20-9034-11b8e0e5569f", "metadata": {"unresolved_root_fallback": false}, "relationship_type": "hasChild", "source_entity": "StandardsFrameworkItem", "source_entity_key": "case_identifier_uuid", "source_entity_value": "da6ec6bd-acb4-59b9-a84a-916d66b67115", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "10a71951-09a7-54d3-ad76-d12d25375710"},
+    {"identifier": "df7b19e5-50a7-5a02-874f-04cc1f5f6469", "metadata": {"unresolved_root_fallback": false}, "relationship_type": "hasChild", "source_entity": "StandardsFrameworkItem", "source_entity_key": "case_identifier_uuid", "source_entity_value": "600e3ad9-0fb5-55fc-999c-5eeb89856485", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "654379c9-9630-543c-ba85-a2c5badc3530"}
+  ],
+  "relationships_supports": [
+    {"identifier": "4920f5da-fac1-5ae6-8534-7e63631d5edc", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "505d7ee4-c9af-588e-be23-e26ca5fb6967", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "654379c9-9630-543c-ba85-a2c5badc3530"},
+    {"identifier": "00513a20-fec4-5959-8e37-dafc248967bc", "metadata": {"support_role": "primary"}, "relationship_type": "supports", "source_entity": "LearningComponent", "source_entity_key": "identifier", "source_entity_value": "6f888fe8-8d02-53d6-95d6-987e3dc17c26", "target_entity": "StandardsFrameworkItem", "target_entity_key": "case_identifier_uuid", "target_entity_value": "10a71951-09a7-54d3-ad76-d12d25375710"}
+  ],
+  "source_bundle": {
+    "bundle_sha256": "35f13bd5f94e82d47b823cc3027e0e53e24909602536d21763d0fa5d4d4d5683",
+    "doc_key": "33c5da78839a7611308dd30f342b72f931a661235e094cc641832ec2a5548444",
+    "entity_provenance_sections": ["framework", "items", "kg_run_manifest", "learning_components", "relationships_has_child"],
+    "framework_case_identifier_uuid": "3b7ddd08-3682-5dbb-8455-abba82e54370",
+    "object_counts": {"frameworks": 1, "learning_components": 399, "relationships_has_child": 255, "relationships_supports": 419, "standards_framework_items": 255},
+    "statement_type_counts": {"Competency": 30, "Content": 220, "Curricular Goal": 5},
+    "top_level_keys": ["entity_provenance", "framework", "items", "learning_components", "relationships_has_child", "relationships_supports", "summary", "unresolved_items", "validation_report"],
+    "unresolved_root_fallback_count": 0
+  }
+}
