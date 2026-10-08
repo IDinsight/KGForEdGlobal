@@ -1,0 +1,428 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:standards:invocation-metadata:v1",
+  "title": "STANDARDS invocation source metadata",
+  "description": "Version 1 role and mode metadata embedded in Markdown. Source and assembly semantics are defined in invocation-metadata.md beside this schema. This schema does not validate workflow eligibility or discovery output.",
+  "oneOf": [
+    {
+      "$ref": "#/definitions/role"
+    },
+    {
+      "$ref": "#/definitions/mode"
+    }
+  ],
+  "definitions": {
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "role"
+        },
+        "role": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?![\\s\\S])"
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/group"
+          }
+        },
+        "userStyles": {
+          "$ref": "#/definitions/userStyles"
+        }
+      },
+      "required": ["schemaVersion", "kind", "role", "groups", "userStyles"]
+    },
+    "mode": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "mode"
+        },
+        "group": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?![\\s\\S])"
+        },
+        "id": {},
+        "label": {},
+        "description": {},
+        "selection": {},
+        "when": {},
+        "requiresAssessment": {},
+        "argument": {}
+      },
+      "required": ["schemaVersion", "kind", "group"],
+      "allOf": [
+        {
+          "$ref": "#/definitions/choiceFields"
+        }
+      ]
+    },
+    "group": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?![\\s\\S])"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "source": {
+          "enum": ["modes", "inline"]
+        },
+        "selectionRules": {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\\.md(?:#[a-z0-9]+(?:-[a-z0-9]+)*)?(?![\\s\\S])"
+        },
+        "defaultForNew": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*(?![\\s\\S])"
+        },
+        "inferFromRequest": {
+          "const": true
+        },
+        "savedValue": {
+          "$ref": "#/definitions/savedValue"
+        },
+        "lockedWhen": {
+          "$ref": "#/definitions/condition"
+        },
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/option"
+          }
+        },
+        "savedArgument": {
+          "$ref": "#/definitions/savedValue"
+        }
+      },
+      "required": ["id", "label", "source", "selectionRules"],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "const": "inline"
+              }
+            }
+          },
+          "then": {
+            "required": ["options"]
+          },
+          "else": {
+            "not": {
+              "required": ["options"]
+            }
+          }
+        }
+      ]
+    },
+    "option": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {},
+        "label": {},
+        "description": {},
+        "selection": {},
+        "when": {},
+        "requiresAssessment": {},
+        "argument": {}
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/choiceFields"
+        }
+      ]
+    },
+    "userStyles": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "const": "role-directory"
+        },
+        "savedValue": {
+          "oneOf": [
+            {
+              "$ref": "#/definitions/recordField"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "conversation"
+                }
+              },
+              "required": ["kind"]
+            }
+          ]
+        },
+        "lockedWhen": {
+          "$ref": "#/definitions/condition"
+        }
+      },
+      "required": ["source", "savedValue"]
+    },
+    "savedValue": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/fact"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "conversation"
+            }
+          },
+          "required": ["kind"]
+        }
+      ]
+    },
+    "fact": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/workflowField"
+        },
+        {
+          "$ref": "#/definitions/recordField"
+        }
+      ]
+    },
+    "workflowField": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "workflow"
+        },
+        "field": {
+          "enum": [
+            "ProjectMode",
+            "CycleMode",
+            "WorkflowState",
+            "Active Work.CompletionPolicy",
+            "Active Work.PendingVerificationCadence",
+            "Active Work.AuditTarget",
+            "Handoff.Kind"
+          ]
+        }
+      },
+      "required": ["kind", "field"]
+    },
+    "recordField": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "record"
+        },
+        "artifact": {
+          "enum": [
+            "DEVELOPMENT",
+            "VERIFICATION",
+            "REVIEW",
+            "DOCUMENTATION",
+            "SYNCHRONIZATION"
+          ]
+        },
+        "field": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "reviewKind": {
+          "enum": ["IMPLEMENTATION", "FINAL_DELIVERABLE"]
+        },
+        "reviewKindFromGroup": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?![\\s\\S])"
+        }
+      },
+      "required": ["kind", "artifact", "field"],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "artifact": {
+                "const": "REVIEW"
+              }
+            }
+          },
+          "then": {
+            "oneOf": [
+              {
+                "required": ["reviewKind"],
+                "not": {
+                  "required": ["reviewKindFromGroup"]
+                }
+              },
+              {
+                "required": ["reviewKindFromGroup"],
+                "not": {
+                  "required": ["reviewKind"]
+                }
+              }
+            ]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": ["reviewKind"]
+                },
+                {
+                  "required": ["reviewKindFromGroup"]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "predicate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fact": {
+          "$ref": "#/definitions/fact"
+        },
+        "equals": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      },
+      "required": ["fact", "equals"]
+    },
+    "condition": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/predicate"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/definitions/condition"
+              }
+            }
+          },
+          "required": ["all"]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "any": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/definitions/condition"
+              }
+            }
+          },
+          "required": ["any"]
+        }
+      ]
+    },
+    "choiceFields": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*(?![\\s\\S])"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "selection": {
+          "enum": ["user", "state", "assessment"]
+        },
+        "when": {
+          "$ref": "#/definitions/condition"
+        },
+        "requiresAssessment": {
+          "const": true
+        },
+        "argument": {
+          "enum": ["file", "directory", "capability", "area"]
+        }
+      },
+      "required": ["id", "label", "description", "selection"],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "selection": {
+                "const": "state"
+              }
+            }
+          },
+          "then": {
+            "required": ["when"],
+            "not": {
+              "anyOf": [
+                {
+                  "required": ["requiresAssessment"]
+                },
+                {
+                  "required": ["argument"]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "selection": {
+                "const": "assessment"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": ["requiresAssessment"]
+                },
+                {
+                  "required": ["argument"]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

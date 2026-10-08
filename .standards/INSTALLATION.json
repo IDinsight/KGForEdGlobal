@@ -1,0 +1,31 @@
+{
+  "framework": "S.T.A.N.D.A.R.D.S.",
+  "createdPaths": [
+    ".agents",
+    ".agents/skills",
+    ".claude",
+    ".claude/skills",
+    ".claude/settings.json",
+    ".codex",
+    ".codex/hooks.json"
+  ],
+  "managedClientSettings": {
+    ".claude/settings.json": {
+      "skillOverrides": {
+        "architect": "user-invocable-only",
+        "auditor": "user-invocable-only",
+        "developer": "user-invocable-only",
+        "documenter": "user-invocable-only",
+        "navigator": "user-invocable-only",
+        "reviewer": "user-invocable-only",
+        "scoper": "user-invocable-only",
+        "synchronizer": "user-invocable-only",
+        "tester": "user-invocable-only"
+      }
+    }
+  },
+  "hooks": [
+    ".codex/hooks.json",
+    ".claude/settings.json"
+  ]
+}

@@ -1,0 +1,12 @@
+# OpenAI Codex adapter. This file supplies the interface metadata Codex shows in its
+# agent picker. The skill's actual instructions live in ../SKILL.md, which the Agent
+# Skills client installs alongside this file and loads when the skill runs.
+interface:
+  default_prompt: "Use $tester in the existing independent Tester chat or a fresh chat separate from Developer to assess the persisted full, increment, or corrective assignment while TESTING in STANDARD. Reconstruct current inputs, select VERIFY or REVERIFY, preserve the cycle's scenario budget and evidence history, and follow the applicable checkpoint, full-completion, or recovery handoff."
+  display_name: "Tester"
+  short_description: "Independently verify behavior and acceptance evidence."
+
+policy:
+  allow_implicit_invocation: false
+  products:
+    - CODEX

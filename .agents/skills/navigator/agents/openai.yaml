@@ -1,0 +1,12 @@
+# OpenAI Codex adapter. This file supplies the interface metadata Codex shows in its
+# agent picker. The skill's actual instructions live in ../SKILL.md, which the Agent
+# Skills client installs alongside this file and loads when the skill runs.
+interface:
+  default_prompt: "Use $navigator help to show the current modes and available user styles without changing files or workflow state."
+  display_name: "Navigator"
+  short_description: "Explain, investigate, quiz; ask for help with modes and styles."
+
+policy:
+  allow_implicit_invocation: false
+  products:
+    - CODEX
