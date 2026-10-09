@@ -163,8 +163,16 @@ Design mode: Feature.
    no claim that it must start at 0.
 6. **CAPS config only.** All CAPS behavior lives in
    `examples/funda_wande/config_english_curriculum.json`. That file's
-   committed `start_page`/`end_page` values (27/55) are left unchanged. The
-   other example configs are not touched.
+   committed config holds the Grade R run (AC-034): `start_page` 35 and
+   `end_page` 59 in both `page_ir_extraction` and `page_ir_verification`.
+   Its `page_ir_extraction.output_dir` changes to a new Grade R rerun
+   directory under `results/` (for example
+   `<repo>/results/funda_wande_grade_r`), keeping the existing absolute-path
+   convention. This is needed because extraction skips any page IR that already
+   exists (`overwrite` false). The current value,
+   `results/funda_wande_trial_p28_55`, already holds trial page IRs for page
+   indexes 35-54, so a run into it would reuse them instead of re-extracting.
+   The other example configs are not touched.
 
 ## Acceptance Coverage
 
@@ -210,7 +218,10 @@ Design mode: Feature.
   so all four prompts are unchanged. The guard changes no prompt.
 - `AC-020`: No architectural impact. Satisfied by implementation and checked by
   the existing `make test` and `make lint`.
-- `AC-021` to `AC-023`, `AC-025`, `AC-031`: Validation reruns under **Build Plan** step 5. AC-022
+- `AC-034`: Decision 6, the committed Grade R range and its fresh output
+  directory.
+- `AC-033`, `AC-022`, `AC-023`, `AC-025`, `AC-031`: Validation reruns under
+  **Build Plan** step 5. AC-022
   depends on the verification instructions (Decision 3, CAPS contract). AC-023
   depends on the extraction instructions, since stitching only joins tables to
   tables. AC-031 depends on Decision 4. AC-025 has no code change of its own:
@@ -377,6 +388,9 @@ prompt (optional block). Selection, patching and compile steps are unchanged.
   contiguity, not about starting at 0.
 - `AC-028`: The CAPS `grade_level_mapping` has the key for the Grade R
   canonical value mapped to `["K"]`.
+- `AC-034`: The committed CAPS config has `start_page` 35 and `end_page` 59 in
+  both page stages, and a `page_ir_extraction.output_dir` that differs from
+  every trial-run directory.
 - `AC-014`, `AC-019`: `RunConfig.model_validate` succeeds for the CAPS config
   and for the Ghana, India, Nigeria and Rwanda configs.
 
@@ -392,16 +406,37 @@ prompt (optional block). Selection, patching and compile steps are unchanged.
    occurrence-count rule, and its tests are updated to match.
 4. Update the loader documentation and messages, and add range tests (AC-012,
    AC-013).
-5. Write the CAPS config values (page-stage instructions and the `kgs` block),
-   then confirm the config loads. Run validation: derive temporary, git-ignored
-   configs from the CAPS config that change only `start_page`, `end_page` and
-   `output_dir` (a fresh directory under `results/` per range), for ranges
-   12-15, 27-55, 109-135 and 59-66. Run extraction, verification and stitching,
-   and read blocked-correction warnings from the terminal output (AC-031; no
-   log file). Run the PDF 43 replay (AC-032). Compare the results with the three trial runs for each
-   Goal finding, and report PDF 60-66 on its own. If a rerun misses AC-022,
-   AC-023, AC-025 or AC-031 because of config wording, revise the CAPS config text and rerun only
-   the affected range.
+5. Write the CAPS config values (page-stage instructions, the `kgs` block,
+   and the Grade R range and output directory), then confirm the config
+   loads. Run validation as four grade runs (AC-033), each running extraction,
+   verification and stitching:
+
+   | Run     | `page_index` range | PDF pages | Trial baseline              |
+   | ------- | ------------------ | --------- | --------------------------- |
+   | Grade R | 35-59              | 36-59     | `trial_p28_55` (PDF 36-55)  |
+   | Grade 1 | 59-84              | 60-84     | none                        |
+   | Grade 2 | 84-109             | 85-109    | none                        |
+   | Grade 3 | 109-135            | 110-135   | `trial_p110_135` (all)      |
+
+   - Grade R runs from the committed config as is.
+   - For each later grade, the user sets `start_page` and `end_page` in both
+     page stages, and also `page_ir_extraction.output_dir` (a fresh directory
+     per grade, for example `results/funda_wande_grade_1`), in the local config
+     only. None of these local edits are committed. A separate output directory
+     per grade is required: verification and stitching operate on the shared
+     `<output_dir>/<doc_key>/` tree, and stitching loads every verified page IR
+     in it without filtering by range (`document_ir/utils.py:341-440`). Grades
+     sharing one directory would be stitched together.
+   - Read blocked-correction warnings from the terminal output (AC-031; no log
+     file).
+   - Run the PDF 43 replay (AC-032). It uses the `trial_p28_55` artifacts, which
+     are unaffected by the reruns.
+   - Compare against the trial runs for each Goal finding where pages overlap.
+     Report the pages with no baseline (PDF 56-109) on their own. The
+     `trial_p13_15` run has no counterpart and is not compared.
+   - If a run misses AC-022, AC-023, AC-025 or AC-031 because of config wording,
+     revise the CAPS config text and rerun only the affected grade, into a fresh
+     output directory or with `overwrite` set.
 
 ## Risks and Follow-up
 
@@ -422,6 +457,12 @@ prompt (optional block). Selection, patching and compile steps are unchanged.
 - Configs with `use_extracted_hints` false get no guard protection.
 - The CAPS `kgs` block is not exercised by `create_kgs` in this cycle. Its
   hierarchy and table selection are unproven until a later KG run.
+- Page breaks between grades (PDF 59->60, 84->85 and 109->110) are never
+  verified, because each grade is its own run. Every grade starts with a
+  section heading, so no table can legitimately continue across those breaks.
+- Forgetting to change `output_dir` for a later grade either reuses page IRs
+  already in that directory or merges grades at stitching. The run procedure
+  in Build Plan step 5 guards against this.
 - AC-025 depends on AC-023. If continuation content still becomes heading
   blocks, `section_path` truncation at 60 can recur. Changing `section_path` is
   a non-goal, so such a miss goes back to config wording.
