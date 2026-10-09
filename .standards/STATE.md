@@ -1,6 +1,6 @@
 # S.T.A.N.D.A.R.D.S. Workflow State
 
-`WorkflowState`: `DEVELOPING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
+`WorkflowState`: `SCOPING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
 `PendingCycleRequest`: `UNSET` `PendingCycleBlockedOn`: `NONE`
 
 ## Active Work
@@ -65,8 +65,7 @@ VALIDATION after the fixes: rerun the three trial ranges plus PDF 60-66
 `Architecture`:
 `.standards/docs/specs/add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8.md` `Development`:
 `.standards/docs/development/add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8.md`
-`PromotionReason`: `NONE` `AuditTarget`: `NONE` `BlockedOn`:
-`Continue with DEV-004 (hints-gated correction guard)?`
+`PromotionReason`: `NONE` `AuditTarget`: `NONE` `BlockedOn`: `NONE`
 `PendingVerificationCadence`: `NONE`
 
 `BaselineReconciliation`: `NONE`
@@ -79,12 +78,18 @@ Preserve existing entries; see PROTOCOL.md, Baseline Reconciliation Format.
 
 ## Handoff
 
-`Kind`: `RESUME` `From`: `ARCHITECTING` `FailureType`: `NONE` `Reason`:
-`Design rerun for AC-026 to AC-028 complete; recovery frame closed, resuming development.`
+`Kind`: `FAILURE` `From`: `DEVELOPING` `FailureType`: `SCOPING` `Reason`:
+`AC-026 cannot stop the PDF 43 case: that correction duplicates an existing ASSESSMENT band (8 distinct words each one occurrence over the text layer), it adds no word missing from the text layer.`
 
 ## Recovery
 
-`Active`: `false`
+`Active`: `true`
+
+### Frame 1
+
+`From`: `DEVELOPING` `Owner`: `SCOPING` `FailureType`: `SCOPING`
+`Reason`: `AC-026 cannot stop the PDF 43 case: that correction duplicates an existing ASSESSMENT band (8 distinct words each one occurrence over the text layer), it adds no word missing from the text layer.`
+`ResumeAt`: `DEVELOPING` `RerunThrough`: `NONE`
 
 ## Outstanding Obligations
 

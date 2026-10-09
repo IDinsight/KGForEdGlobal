@@ -222,7 +222,7 @@ INVARIANTS still apply.
 
 ### DEV-004 — Hints-gated correction guard
 
-`Status`: `PENDING` `Depends On`: `DEV-002`
+`Status`: `IN_PROGRESS` `Depends On`: `DEV-002`
 `Acceptance`: `AC-026, AC-008, AC-009, AC-010, AC-027`
 
 **Goal**
@@ -257,6 +257,41 @@ decision function over each Decision 4 branch (case, quotes, artifact header,
 garbled layer, `None` layer, extraction-kept words, genuinely added words) and
 replaying the PDF 43 trial correction from `results/` against the real PDF
 text layer.
+
+Run 2026-10-09 from `backend/`, CI-equivalent env, on the DEV-003 tree plus
+uncommitted changes to `page_ir_extraction/utils.py` (guard functions,
+`PageIRCorrectionDecision`, `evaluate_page_ir_correction`) and
+`page_ir_extraction/llm.py` (guard call on the `pdf_page is not None` path):
+
+- Scratchpad `check_dev004.py`: case/curly-quote/line-break-hyphen differences,
+  an added ARTIFACT header, words kept from the extraction, and added pure
+  numbers or single characters are all accepted; genuinely new words
+  (`drills`, `phonics`, `zebras`) are rejected; `text_hint=None` and a garbled
+  layer (coverage below 50% of 12 extracted words) are accepted. Through
+  `extract_page_ir` with stub agents: hints off returns the correction without
+  invoking the guard; hints on with added words returns the extraction PageIR.
+- Trial replay against the real CAPS text layer (raw extraction
+  `page_irs_raw/*.val00.attempt00.parsed.json` vs saved `page_irs/*.json`):
+  all 12 corrected trial pages (PDF 29, 33, 36, 39, 43, 50, 52, 54, 112, 113,
+  124, 131) are accepted with no added words, **including PDF 43**.
+- PDF 43 investigation (`inspect_p43*.py`): the correction (16 items vs the
+  extraction's 10) repeats the ASSESSMENT band (items 9-13 duplicate items
+  1-5). Every content word is in both the text layer and the extraction; the 8
+  distinct words `assessment, suggestions, for, informal, oral, or,
+  practical, observation` each occur once more than in the text layer
+  (correction/layer/extraction counts: assessment 5/4/3, the others 2/1/1 or
+  3/2/2). A per-word occurrence-count comparison flags PDF 43 alone among the
+  12 corrected trial pages (`inspect_dupes.py`).
+- `mypy`, `pylint` (10.00/10), `ruff`, `black`, `isort`, `interrogate` on
+  `utils.py` and `llm.py`: clean. `doctest.testmod` on `utils.py`: 3 attempted,
+  0 failed. Focused suites: 654 passed, 9 failed (the same Tester-owned stub
+  failures as DEV-003; no new failures).
+
+**Implementation Notes**
+
+The implementation matches Architecture Decision 4 and AC-026 as written, but
+that contract cannot block the PDF 43 correction the scope cites as the
+motivating case. Routed as a `SCOPING` failure; see Suspended Assignment 1.
 
 ---
 
@@ -410,3 +445,9 @@ The step has two pauses: after handing over the run instructions
   hold for these stubs. User decision (2026-10-09, option A): leave the stub
   updates to Tester; DEV-007 reports any remaining failures of this kind as
   known Tester-owned stub updates rather than routing an architecture failure.
+
+### Suspended Assignment 1
+
+`Recovery Frame`: `1` `Recovery Reason`: `AC-026 cannot stop the PDF 43 case: that correction duplicates an existing ASSESSMENT band (8 distinct words each one occurrence over the text layer), it adds no word missing from the text layer.` `Purpose`: `DEVELOPMENT`
+`Target`: `NONE` `Assessed Inputs`: `DEV-001 to DEV-003 committed or staged by the user; DEV-004 uncommitted changes to backend/src/kgfeg/page_ir_extraction/utils.py and llm.py implementing Architecture Decision 4 as of 2026-10-09`
+`Next Action`: `Reconcile DEV-004 against the corrected scope and design (reopen or revise it under the approval rules), finish its self-check record, then continue STEPWISE with DEV-005.`
