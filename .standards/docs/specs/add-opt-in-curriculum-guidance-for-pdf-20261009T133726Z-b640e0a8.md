@@ -105,9 +105,7 @@ Design mode: Feature.
      time, and a `None` text hint means "no usable layer".
    - **Normalization**, applied the same way to every compared text: Unicode
      NFKC (this also expands ligatures); remove soft hyphens (U+00AD); map curly
-     single and double quotes and primes to their straight forms; casefold. In
-     the text layer, a word split by a hyphen at a line break (`-` followed by a
-     newline) counts both as the joined word and as its two pieces.
+     single and double quotes and primes to their straight forms; casefold.
    - **Content word.** Split the normalized text into maximal runs of Unicode
      letters and digits (`[^\W_]+`). A content word is a run of at least 2
      characters that contains at least one letter. Pure numbers and single
@@ -119,24 +117,42 @@ Design mode: Feature.
      and page numbers. Skip `figure.alt_text` (a description, not page text),
      `figure.embedded_text` (often raster text with no text layer), `local_code`,
      list `marker`, and `text_en`.
-   - **Added unsupported words** = content words in the corrected PageIR, minus
-     content words in the text layer, minus content words in the extraction
-     agent's PageIR (both PageIRs scanned the same way). Subtracting the
-     extraction's words means the guard judges only what the correction adds.
-     This is the AC-026 definition of an added content word. Without it, words a
-     correction merely keeps from the extraction, such as raster-only text,
-     would block every correction on that page.
+   - **Occurrence counts (AC-029).** The guard compares how many times each
+     content word occurs, not just whether it occurs. Build three counts per
+     normalized content word: `C(w)` over the corrected PageIR, `E(w)` over the
+     extraction agent's PageIR (both scanning the same fields), and `L(w)` over
+     the text layer. `L` is the element-wise maximum (`Counter | Counter`) of
+     the counts from the raw text layer and from the text layer with each
+     line-break hyphen (`-` followed by a newline) removed. A word split across
+     a line therefore counts as both its joined form and its pieces, and no word
+     is counted twice.
+   - **Added words** = every `w` with `C(w) > L(w)` and `C(w) > E(w)`. A word
+     missing from both the text layer and the extraction is the case where
+     `L(w) = E(w) = 0`. Comparing against `E` means occurrences the correction
+     merely keeps from the extraction, such as raster-only text, never block it.
+     Comparing against `L` catches on-page text repeated more often than the
+     page has it, which is the PDF 43 case. The text layer also contains running
+     headers that the PageIR scans skip, which can only raise `L` and so only
+     makes the guard more lenient.
+   - **Evidence.** A read-only prototype of this rule over the saved trial
+     artifacts for PDF 28-55 flags only PDF 43, the only page there whose final
+     PageIR differs from the extraction. It reports exactly 8 over-counted
+     words: assessment, suggestions, for, informal, oral, or, practical,
+     observation. The other trial ranges have no saved extraction outputs to
+     compare against.
    - **Usable text layer.** The layer is usable when it passes the quality gate
      and, if the extraction agent's PageIR has at least 10 distinct content
      words, at least 50% of those words appear in the text layer. The coverage
-     check catches garbled layers (for example, broken font encodings) that pass
+     check uses distinct words (sets), not counts. It catches garbled layers
+     (for example, broken font encodings) that pass
      the printable-character gate. A real text layer covers nearly all of the
      extracted words, and a garbled one covers almost none, so 50% sits safely
      between the two.
-   - **Outcome.** If the layer is usable and there are added unsupported words,
-     reject the correction and return the extraction agent's PageIR. Log
-     `logger.warning` naming the 1-based page number, the word count, and the
-     sorted distinct words. This goes to loguru's default terminal output; no
+   - **Outcome.** If the layer is usable and there are added words, reject the
+     correction and return the extraction agent's PageIR. Log `logger.warning`
+     naming the 1-based page number, the number of added words, and the sorted
+     added words. Showing each word's correction and text-layer counts is
+     optional. This goes to loguru's default terminal output; no
      log file or persisted record is added. Otherwise, return the correction as
      today. When no usable layer exists, an info-level log may say the guard was
      skipped. The guard never raises.
@@ -165,8 +181,11 @@ Design mode: Feature.
   only to `validate_page_ir_continuity_verdict`. The framing explicitly names
   the table-to-table decision procedure as overridable.
 - `AC-006`: Decision 3, as for AC-003.
-- `AC-026`, `AC-010`: Decision 4, the added-unsupported-words rule and its
+- `AC-029`, `AC-030`: Decision 4, the occurrence-count added-words rule and its
   outcome, with the warning on terminal output only.
+- `AC-032`: Decision 4 plus the replay contract under **Interfaces and
+  Contracts**. The prototype evidence in Decision 4 shows the rule blocks that
+  correction.
 - `AC-008`: Decision 4. Casefolding handles display case. Splitting on
   punctuation plus quote mapping handles curly versus straight quotes. Skipping
   `ARTIFACT` blocks handles running headers.
@@ -191,10 +210,10 @@ Design mode: Feature.
   so all four prompts are unchanged. The guard changes no prompt.
 - `AC-020`: No architectural impact. Satisfied by implementation and checked by
   the existing `make test` and `make lint`.
-- `AC-021` to `AC-025`: Validation reruns under **Build Plan** step 5. AC-022
+- `AC-021` to `AC-023`, `AC-025`, `AC-031`: Validation reruns under **Build Plan** step 5. AC-022
   depends on the verification instructions (Decision 3, CAPS contract). AC-023
   depends on the extraction instructions, since stitching only joins tables to
-  tables. AC-024 depends on Decision 4. AC-025 has no code change of its own:
+  tables. AC-031 depends on Decision 4. AC-025 has no code change of its own:
   it depends on AC-023, because continuation content kept as table rows stops
   adding headings to `section_path` (non-goal: changing `section_path`).
 
@@ -240,10 +259,26 @@ Design mode: Feature.
 - **Guard decision.** The inputs are the extraction PageIR, the corrected
   PageIR, the gated text hint (`str | None`; `None` means no usable layer) and
   the page index. The output tells the caller whether to accept the correction, and
-  supplies the sorted added unsupported words for the log. The outcome contract
+  supplies the sorted added words for the log. The outcome contract
   is Decision 4; the type and function names are Developer's choice. The
   coverage threshold (0.50) and the minimum word count (10) are named module
   constants.
+- **PDF 43 replay (AC-032).** This is a local verification procedure, not
+  committed code: the inputs are git-ignored, and AC-018 forbids backend source
+  or test code from naming the curriculum. It calls the public guard decision
+  function on three inputs from the trial `results/funda_wande_trial_p28_55/`
+  extraction run:
+  - extraction: the highest-numbered
+    `page_irs_raw/0042.val00.attempt*.parsed.json` (only the extraction agent
+    writes to the raw directory);
+  - correction: `page_irs/0042.json` (the final PageIR, which in that trial was
+    the checker's correction);
+  - text hint: page index 42 of the PDF, taken through the existing text-hint
+    quality gate.
+
+  Expected result: rejected, and the added words include the 8 words above.
+  The comparison is unaffected by Python-filled fields on the saved PageIRs,
+  because the guard scans only transcribed text.
 - **CAPS page-stage instructions** (curriculum text, config only):
   - `page_ir_extraction.extraction_instructions` and
     `page_ir_extraction.validation_instructions` each state that a bordered box
@@ -329,10 +364,14 @@ prompt (optional block). Selection, patching and compile steps are unchanged.
 - `AC-002`, `AC-005`: With a field set, its text appears only in its own
   agent's system message, under the override heading, after all generic
   sections. No other agent's prompt contains it.
-- `AC-026`, `AC-008` to `AC-010`, `AC-027`: The guard decision follows
+- `AC-029`, `AC-030`, `AC-008`, `AC-009`, `AC-027`: The guard decision follows
   Decision 4 exactly. With `pdf_page=None` (hints off) a failing verdict's
   correction is returned unchanged and the guard logic is not invoked. With a
   page supplied, the prompts are the same whether the guard accepts or rejects.
+  The added-words test uses occurrence counts. A correction that duplicates an
+  item already on the page, with no new vocabulary, is rejected. A correction
+  whose counts stay within `max(L, E)` for every word is accepted.
+- `AC-032`: The replay procedure above returns "rejected", with the 8 words.
 - `AC-012`: A sorted, gap-free `page_index` list starting at any non-negative
   index passes. Any gap or duplicate raises `ValueError` with a message about
   contiguity, not about starting at 0.
@@ -349,7 +388,8 @@ prompt (optional block). Selection, patching and compile steps are unchanged.
    verification (`verify_page_pairs.py` to `llm.py`).
 3. Add the correction guard and call it on the hints path in
    `extract_page_ir`. Add unit tests for every Decision 4 branch, including
-   hints off.
+   hints off. The guard's existing set-based rule (commit `fd83fee`) becomes the
+   occurrence-count rule, and its tests are updated to match.
 4. Update the loader documentation and messages, and add range tests (AC-012,
    AC-013).
 5. Write the CAPS config values (page-stage instructions and the `kgs` block),
@@ -357,25 +397,28 @@ prompt (optional block). Selection, patching and compile steps are unchanged.
    configs from the CAPS config that change only `start_page`, `end_page` and
    `output_dir` (a fresh directory under `results/` per range), for ranges
    12-15, 27-55, 109-135 and 59-66. Run extraction, verification and stitching,
-   and read blocked-correction warnings from the terminal output (AC-024; no
-   log file). Compare the results with the three trial runs for each
-   Goal finding, and report PDF 60-66 on its own. If a rerun misses AC-022 to
-   AC-025 because of config wording, revise the CAPS config text and rerun only
+   and read blocked-correction warnings from the terminal output (AC-031; no
+   log file). Run the PDF 43 replay (AC-032). Compare the results with the three trial runs for each
+   Goal finding, and report PDF 60-66 on its own. If a rerun misses AC-022,
+   AC-023, AC-025 or AC-031 because of config wording, revise the CAPS config text and rerun only
    the affected range.
 
 ## Risks and Follow-up
 
-- LLM compliance with the instructions is not guaranteed. AC-022 to AC-025 may
+- LLM compliance with the instructions is not guaranteed. AC-022, AC-023, AC-025 and AC-031 may
   need several rounds of config wording, and each rerun costs money.
 - Guard false positives: kerning-split or ligature-garbled words in an
   otherwise usable layer could block a legitimate correction. The cost is
   bounded, since the page keeps the extraction agent's PageIR. If the reruns
   show this happening, adjust the normalization within this design rather than
   disabling the guard.
+- Count rule tolerance: a correction that legitimately restores an occurrence
+  the text layer lacks (for example, a word the layer dropped) and that the
+  extraction also missed is blocked. The page then keeps the extraction.
 - Guard blind spots: hallucinated `alt_text` or `embedded_text`, and pure
-  numbers, are not checked. This is accepted to avoid blocking raster text.
+  numbers, are not checked. Neither are reorderings that keep every count. This is accepted to avoid blocking raster text.
 - Blocked corrections appear only as terminal warnings, by user decision.
-  Evidence for AC-024 lasts only as long as that terminal output is kept.
+  Evidence for AC-031 lasts only as long as that terminal output is kept.
 - Configs with `use_extracted_hints` false get no guard protection.
 - The CAPS `kgs` block is not exercised by `create_kgs` in this cycle. Its
   hierarchy and table selection are unproven until a later KG run.
@@ -396,6 +439,9 @@ prompt (optional block). Selection, patching and compile steps are unchanged.
   feedback would change the checker's conversation.
 - Running the guard for every config, including hints off. Replaced by user
   rework (AC-027): the guard follows `use_extracted_hints`.
+- Set-based comparison (word present or absent), the previous design. It
+  cannot catch on-page text the correction repeats, which is the PDF 43
+  failure.
 - Comparing the correction with the text layer without subtracting the
   extraction's words. Rejected: it would block every correction on pages with
   raster-only text that the extraction already had (see Decision 4).

@@ -1,6 +1,6 @@
 # S.T.A.N.D.A.R.D.S. Workflow State
 
-`WorkflowState`: `ARCHITECTING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
+`WorkflowState`: `DEVELOPING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
 `PendingCycleRequest`: `UNSET` `PendingCycleBlockedOn`: `NONE`
 
 ## Active Work
@@ -78,18 +78,12 @@ Preserve existing entries; see PROTOCOL.md, Baseline Reconciliation Format.
 
 ## Handoff
 
-`Kind`: `FORWARD` `From`: `SCOPING` `FailureType`: `NONE` `Reason`:
-`Scope replanned for over-counted words (AC-010, AC-024, AC-026 retired; AC-029 to AC-032 added); architecture rerun required.`
+`Kind`: `RESUME` `From`: `ARCHITECTING` `FailureType`: `NONE` `Reason`:
+`Design rerun for occurrence-count guard (AC-029 to AC-032) complete; recovery frame closed, resuming development.`
 
 ## Recovery
 
-`Active`: `true`
-
-### Frame 1
-
-`From`: `DEVELOPING` `Owner`: `SCOPING` `FailureType`: `SCOPING`
-`Reason`: `AC-026 cannot stop the PDF 43 case: that correction duplicates an existing ASSESSMENT band (8 distinct words each one occurrence over the text layer), it adds no word missing from the text layer.`
-`ResumeAt`: `DEVELOPING` `RerunThrough`: `ARCHITECTING`
+`Active`: `false`
 
 ## Outstanding Obligations
 
