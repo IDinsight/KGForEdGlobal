@@ -149,7 +149,7 @@ an extraction breaking the instructions is an error-severity issue and any
 
 ### DEV-003 — Verification prompts take and receive curriculum instructions
 
-`Status`: `PENDING` `Depends On`: `DEV-001`
+`Status`: `DONE` `Depends On`: `DEV-001`
 `Acceptance`: `AC-005, AC-006`
 
 **Goal**
@@ -179,6 +179,44 @@ heading, and the framing names the table rule as overridable.
 
 Existing `tests/kgfeg/page_ir_verification`; scratchpad prompt-equality and
 isolation script as in DEV-002.
+
+Run 2026-10-09 from `backend/`, CI-equivalent env, on the DEV-002 tree plus
+uncommitted changes to `page_ir_verification/prompts.py`,
+`page_ir_verification/llm.py` and `page_ir_verification/verify_page_pairs.py`:
+
+- Scratchpad `check_dev003.py`: for two threshold sets, both builders with
+  `curriculum_instructions` omitted or `None` return a `PromptPair` equal to
+  `d916660`'s `prompts.py`. With a value set, the user message is unchanged,
+  the section is appended last in the system message, the text appears once,
+  both framings name "the TABLE continuation DECISION PROCEDURE in section B
+  (Steps 1-4)" and the in-grid content rule as overridable, and only the
+  verifier's names the UNCERTAINTY POLICY TABLE<->TABLE exception. Driving
+  `verify_page_ir_pairs` with stub agents routes `verification_instructions`
+  only to the verifier builder and `validation_instructions` only to the
+  checker builder.
+- `_execute_verification_attempts` passes `config.validation_instructions`
+  and `config.verification_instructions` (diff inspection).
+- `mypy`, `pylint` (10.00/10), `ruff`, `black`, `isort`, `interrogate` on the
+  three files: clean.
+- Focused suites: 654 passed, 9 failed. Four are the DEV-002 `test_llm.py`
+  stubs. Five are in `tests/kgfeg/page_ir_verification/test_verify_page_irs.py`
+  (`test_raises_runtime_error_when_all_attempts_fail`,
+  `test_records_errors_then_selects_the_later_successful_attempt`,
+  `test_uses_pair_priority_key_to_select_the_best_successful_attempt`,
+  `test_stops_early_for_primary_primary_patchable_positive`,
+  `test_stops_early_for_primary_primary_same_family_high_confidence_negative`):
+  each attempt fails with `'VerificationConfigStub' object has no attribute
+  'validation_instructions'`, because the test's stand-in config class lacks
+  the two new attributes. Tester-owned stub update under the option A
+  decision in Plan Notes.
+
+**Implementation Notes**
+
+A private `_append_curriculum_instructions` in this module (separate from the
+extraction one, since the framings differ) adds an `overridable_rules` clause:
+when the instructions say a table starts a new table or continues the previous
+one, their conclusion wins over the decision procedure's; the SCHEMA
+INVARIANTS still apply.
 
 ---
 
@@ -363,9 +401,12 @@ The step has two pauses: after handing over the run instructions
   committed.
 - Test commands run from `backend/` with
   `CHAT_ENV=testing LEARNING_COMMONS_EXPORT_SCHEMA_VERSION=2026-07-09 OPENAI_API_KEY=sk-fake PATHS_PROJECT_DIR=<repo root>`.
-- Test stubs with exact signatures (DEV-002): existing `test_llm.py` stand-ins
-  for the prompt builders and `_run_validation_agent` reject the new keyword
-  arguments. Developer does not edit Tester-owned tests and does not bend
+- Test stubs with exact signatures (DEV-002, DEV-003): existing `test_llm.py`
+  stand-ins for the prompt builders and `_run_validation_agent` reject the new
+  keyword arguments, and `test_verify_page_irs.py`'s `VerificationConfigStub`
+  lacks the two new verification attributes. Developer does not edit Tester-owned tests and does not bend
   production code (for example, passing the keyword only when set) around them.
   The Architecture's note that existing tests keep working unchanged does not
-  hold for these stubs.
+  hold for these stubs. User decision (2026-10-09, option A): leave the stub
+  updates to Tester; DEV-007 reports any remaining failures of this kind as
+  known Tester-owned stub updates rather than routing an architecture failure.

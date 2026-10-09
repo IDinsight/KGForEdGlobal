@@ -66,7 +66,7 @@ VALIDATION after the fixes: rerun the three trial ranges plus PDF 60-66
 `.standards/docs/specs/add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8.md` `Development`:
 `.standards/docs/development/add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8.md`
 `PromotionReason`: `NONE` `AuditTarget`: `NONE` `BlockedOn`:
-`DEV-002 done with 4 test_llm.py stubs failing on the new keyword; confirm handling and continue with DEV-003?`
+`Continue with DEV-004 (hints-gated correction guard)?`
 `PendingVerificationCadence`: `NONE`
 
 `BaselineReconciliation`: `NONE`
