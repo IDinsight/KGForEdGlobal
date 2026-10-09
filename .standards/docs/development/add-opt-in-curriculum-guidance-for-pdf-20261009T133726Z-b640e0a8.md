@@ -222,8 +222,8 @@ INVARIANTS still apply.
 
 ### DEV-004 — Hints-gated correction guard
 
-`Status`: `IN_PROGRESS` `Depends On`: `DEV-002`
-`Acceptance`: `AC-026, AC-008, AC-009, AC-010, AC-027`
+`Status`: `DONE` `Depends On`: `DEV-002`
+`Acceptance`: `AC-029, AC-008, AC-009, AC-030, AC-027, AC-032`
 
 **Goal**
 
@@ -233,8 +233,10 @@ normalization (NFKC, soft-hyphen removal, curly-to-straight quotes and primes,
 casefold, line-break hyphen joins counted both ways), content-word collection
 from transcribed fields only (skip `ARTIFACT` blocks, `alt_text`,
 `embedded_text`, `local_code`, list markers, `text_en`), text-layer usability
-(the existing gated `text_hint`, plus 50% coverage when the extraction has at
-least 10 distinct content words), and the accept-or-reject decision. In
+(the existing gated `text_hint`, plus 50% distinct-word coverage when the
+extraction has at least 10 distinct content words), and the accept-or-reject
+decision using occurrence counts: a word is added when it occurs more times in
+the correction than in the text layer and than in the extraction. In
 `extract_page_ir`, run it only when `pdf_page` was supplied and the checker
 failed: on rejection, log a `logger.warning` with the 1-based page, word count
 and sorted words, and return the extraction agent's PageIR (Decision 4).
@@ -246,8 +248,9 @@ No new module.
 
 **Expected Outcome**
 
-Hints on, usable layer, added unsupported words -> extraction PageIR kept and
-terminal warning. Any other case -> correction returned as today. Hints off ->
+Hints on, usable layer, added words (including on-page text repeated more often
+than the page has it) -> extraction PageIR kept and terminal warning. The
+PDF 43 trial replay is rejected with the 8 over-counted words. Any other case -> correction returned as today. Hints off ->
 guard not invoked. No prompt changes. The guard never raises.
 
 **Self-Check**
@@ -292,6 +295,33 @@ uncommitted changes to `page_ir_extraction/utils.py` (guard functions,
 The implementation matches Architecture Decision 4 and AC-026 as written, but
 that contract cannot block the PDF 43 correction the scope cites as the
 motivating case. Routed as a `SCOPING` failure; see Suspended Assignment 1.
+
+Rework run 2026-10-09 after Recovery Reconciliation 1, from `backend/`,
+CI-equivalent env, on `56b91f8` plus uncommitted changes to
+`page_ir_extraction/utils.py` (set helpers replaced by `_count_content_words`,
+`_count_page_ir_content_words`, `_count_text_layer_content_words`;
+`evaluate_page_ir_correction` uses occurrence counts, set-based coverage kept)
+and `page_ir_extraction/llm.py` (docstrings and warning text). This supersedes
+the earlier set-rule evidence above:
+
+- Scratchpad `check_dev004.py`: all earlier cases still behave as before; new
+  count cases: a correction that repeats an on-page paragraph with no new
+  vocabulary is rejected (`big, books, learner, of, the`), and a repeat that
+  stays within `max(L, E)` (word twice in the layer) is accepted.
+- AC-032 PDF 43 replay (extraction = highest-numbered
+  `page_irs_raw/0042.val00.attempt*.parsed.json`, which is `attempt00`;
+  correction = `page_irs/0042.json`; text hint = page index 42 through
+  `_extract_text_hint`): rejected, 8 added words `assessment, for, informal,
+  observation, or, oral, practical, suggestions`.
+- All 12 corrected trial pages (PDF 29, 33, 36, 39, 43, 50, 52, 54 in
+  `funda_wande_trial_p28_55`; PDF 112, 113, 124, 131 in
+  `funda_wande_trial_p110_135`): only PDF 43 is rejected. Note: the design's
+  evidence says the other trial ranges have no saved extraction outputs;
+  `funda_wande_trial_p110_135` does have them and they are covered here.
+- `mypy`, `pylint` (10.00/10), `ruff`, `black`, `isort`, `interrogate` on both
+  files: clean. `doctest.testmod` on `utils.py`: 3 attempted, 0 failed.
+  Focused suites: 654 passed, 9 failed (the same Tester-owned stub failures
+  recorded for DEV-002 and DEV-003).
 
 ---
 
@@ -388,7 +418,7 @@ comparison per non-CAPS config; `make lint` and `make test` from `backend/`.
 ### DEV-008 — Validation reruns on the CAPS PDF (user-run, Developer-checked)
 
 `Status`: `PENDING` `Depends On`: `DEV-007`
-`Acceptance`: `AC-021, AC-022, AC-023, AC-024, AC-025`
+`Acceptance`: `AC-021, AC-022, AC-023, AC-025, AC-031`
 
 **Goal**
 
@@ -410,8 +440,8 @@ config wording.
 
 A recorded before/after comparison in this plan showing new-banner breaks
 split (including 110->111, 123->124), continuation and ASSESSMENT pages kept as
-stitched table rows, no accepted correction adding off-page words (blocked ones
-seen as warnings in the user's terminal output), and the Grade 3 heading in
+stitched table rows, no accepted correction adding content words as defined in
+AC-029 (blocked ones seen as warnings in the user's terminal output), and the Grade 3 heading in
 `section_path` throughout Grade 3. If a miss traces to config wording,
 Developer revises the CAPS text and asks the user to rerun only the affected
 range. Misses not fixable by config wording are routed to their owner.
@@ -451,3 +481,15 @@ The step has two pauses: after handing over the run instructions
 `Recovery Frame`: `1` `Recovery Reason`: `AC-026 cannot stop the PDF 43 case: that correction duplicates an existing ASSESSMENT band (8 distinct words each one occurrence over the text layer), it adds no word missing from the text layer.` `Purpose`: `DEVELOPMENT`
 `Target`: `NONE` `Assessed Inputs`: `DEV-001 to DEV-003 committed or staged by the user; DEV-004 uncommitted changes to backend/src/kgfeg/page_ir_extraction/utils.py and llm.py implementing Architecture Decision 4 as of 2026-10-09`
 `Next Action`: `Reconcile DEV-004 against the corrected scope and design (reopen or revise it under the approval rules), finish its self-check record, then continue STEPWISE with DEV-005.`
+
+### Recovery Reconciliation 1
+
+Frame 1 closed 2026-10-09 (scope `dcc09dc`, design `56b91f8`). Restored
+Suspended Assignment 1. Reconciliation: DEV-001 to DEV-003 unaffected. DEV-004
+keeps its goal, files and dependencies; its rule follows the corrected
+Decision 4 (occurrence counts; `L` is the element-wise max of raw and
+hyphen-joined text-layer counts; coverage stays set-based), and its acceptance
+mapping moves from retired AC-026/AC-010 to AC-029/AC-030 plus AC-032 (PDF 43
+replay, run as part of its self-check and again in DEV-008). DEV-008 maps
+AC-031 in place of retired AC-024. Traceability and in-step rule updates under
+unchanged approved intent; no reapproval required.

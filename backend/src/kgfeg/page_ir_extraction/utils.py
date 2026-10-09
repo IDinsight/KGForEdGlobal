@@ -5,6 +5,7 @@ import re
 import unicodedata
 import uuid
 
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -69,8 +70,8 @@ class PageIRCorrectionDecision:
     accepted
         True if the corrected PageIR may replace the extraction agent's PageIR.
     added_words
-        Sorted, normalized content words that the correction adds and that appear in
-        neither the usable text layer nor the extraction agent's PageIR. Empty when
+        Sorted, normalized content words that occur more times in the correction than
+        in both the usable text layer and the extraction agent's PageIR. Empty when
         the correction is accepted.
     """
 
@@ -118,8 +119,8 @@ class PageTextLayerHints:
         return self.text_hint is not None or self.table_hint is not None
 
 
-def _collect_content_words(text: str) -> set[str]:
-    """Collect normalized content words from a text.
+def _count_content_words(text: str) -> Counter[str]:
+    """Count normalized content words in a text.
 
     A content word is a maximal run of Unicode letters and digits that is at least 2
     characters long and contains at least one letter. Pure numbers and single
@@ -128,28 +129,28 @@ def _collect_content_words(text: str) -> set[str]:
     Parameters
     ----------
     text
-        The text to collect content words from.
+        The text to count content words in.
 
     Returns
     -------
-    set[str]
-        The distinct normalized content words.
+    Counter[str]
+        The number of occurrences of each normalized content word.
 
     Examples
     --------
-    >>> sorted(_collect_content_words("Learner’s “Big” book, p. 12 (A)"))
-    ['big', 'book', 'learner']
+    >>> sorted(_count_content_words("Learner’s “Big” book, big p. 12 (A)").items())
+    [('big', 2), ('book', 1), ('learner', 1)]
     """
 
-    return {
+    return Counter(
         word
         for word in _CONTENT_WORD_PATTERN.findall(_normalize_guard_text(text))
         if len(word) >= 2 and any(c.isalpha() for c in word)
-    }
+    )
 
 
-def _collect_page_ir_content_words(page_ir: PageIR) -> set[str]:
-    """Collect normalized content words from the transcribed text of a PageIR.
+def _count_page_ir_content_words(page_ir: PageIR) -> Counter[str]:
+    """Count normalized content words in the transcribed text of a PageIR.
 
     Parameters
     ----------
@@ -158,23 +159,25 @@ def _collect_page_ir_content_words(page_ir: PageIR) -> set[str]:
 
     Returns
     -------
-    set[str]
-        The distinct normalized content words.
+    Counter[str]
+        The number of occurrences of each normalized content word.
     """
 
-    words: set[str] = set()
+    counts: Counter[str] = Counter()
 
     for text in _iter_page_ir_transcribed_texts(page_ir):
-        words |= _collect_content_words(text)
+        counts += _count_content_words(text)
 
-    return words
+    return counts
 
 
-def _collect_text_layer_content_words(text_layer: str) -> set[str]:
-    """Collect normalized content words from a PDF text layer.
+def _count_text_layer_content_words(text_layer: str) -> Counter[str]:
+    """Count normalized content words in a PDF text layer.
 
-    A word split by a hyphen at a line break counts both as the joined word and as
-    its two pieces.
+    The counts are the element-wise maximum of the counts from the raw text layer and
+    from the text layer with every line-break hyphen removed. A word split by a hyphen
+    at a line break therefore counts as both its joined form and its two pieces,
+    without any word being counted twice.
 
     Parameters
     ----------
@@ -183,18 +186,18 @@ def _collect_text_layer_content_words(text_layer: str) -> set[str]:
 
     Returns
     -------
-    set[str]
-        The distinct normalized content words.
+    Counter[str]
+        The number of occurrences of each normalized content word.
 
     Examples
     --------
-    >>> sorted(_collect_text_layer_content_words("phono-\\nlogical awareness"))
-    ['awareness', 'logical', 'phono', 'phonological']
+    >>> sorted(_count_text_layer_content_words("phono-\\nlogical awareness").items())
+    [('awareness', 1), ('logical', 1), ('phono', 1), ('phonological', 1)]
     """
 
     joined = _LINE_BREAK_HYPHEN_PATTERN.sub("", text_layer)
 
-    return _collect_content_words(text_layer) | _collect_content_words(joined)
+    return _count_content_words(text_layer) | _count_content_words(joined)
 
 
 def _create_page_ir_extraction_dirs(output_dir: Path) -> PageIRExtractionDirs:
@@ -486,16 +489,20 @@ def evaluate_page_ir_correction(
 ) -> PageIRCorrectionDecision:
     """Decide whether a validation agent's corrected PageIR may replace the extraction.
 
-    The correction is rejected only when the page has a usable text layer and the
-    correction adds content words that appear in neither that text layer nor the
-    extraction agent's PageIR. Words the correction merely keeps from the extraction
-    (e.g., raster-only text) never cause a rejection. Display case, curly versus
-    straight quotes, and ARTIFACT blocks (running headers, footers, page numbers) do
-    not affect the outcome.
+    The guard compares occurrence counts of normalized content words. A word counts as
+    added when it occurs more times in the correction than in the text layer and more
+    times than in the extraction agent's PageIR. This covers both words that are not
+    on the page (both counts are zero) and on-page text the correction repeats more
+    often than the page has it. Occurrences the correction merely keeps from the
+    extraction (e.g., raster-only text) never cause a rejection. Display case, curly
+    versus straight quotes, and ARTIFACT blocks (running headers, footers, page
+    numbers) do not affect the outcome.
 
-    The text layer is usable when it passed the hint quality gate (`text_hint` is not
-    None) and, if the extraction has at least `_GUARD_MIN_WORDS_FOR_COVERAGE` distinct
-    content words, at least `_GUARD_MIN_TEXT_LAYER_COVERAGE` of them appear in it.
+    The correction is rejected only when the page has a usable text layer and adds at
+    least one word. The text layer is usable when it passed the hint quality gate
+    (`text_hint` is not None) and, if the extraction has at least
+    `_GUARD_MIN_WORDS_FOR_COVERAGE` distinct content words, at least
+    `_GUARD_MIN_TEXT_LAYER_COVERAGE` of those distinct words appear in it.
 
     Parameters
     ----------
@@ -521,12 +528,13 @@ def evaluate_page_ir_correction(
         )
         return PageIRCorrectionDecision(accepted=True, added_words=())
 
-    text_layer_words = _collect_text_layer_content_words(text_hint)
-    extraction_words = _collect_page_ir_content_words(extraction_page_ir)
+    text_layer_counts = _count_text_layer_content_words(text_hint)
+    extraction_counts = _count_page_ir_content_words(extraction_page_ir)
 
-    # A text layer that covers few of the extracted words is likely garbled.
-    if len(extraction_words) >= _GUARD_MIN_WORDS_FOR_COVERAGE:
-        coverage = len(extraction_words & text_layer_words) / len(extraction_words)
+    # A text layer that covers few of the distinct extracted words is likely garbled.
+    if len(extraction_counts) >= _GUARD_MIN_WORDS_FOR_COVERAGE:
+        covered = sum(1 for word in extraction_counts if word in text_layer_counts)
+        coverage = covered / len(extraction_counts)
 
         if coverage < _GUARD_MIN_TEXT_LAYER_COVERAGE:
             logger.info(
@@ -535,14 +543,15 @@ def evaluate_page_ir_correction(
             )
             return PageIRCorrectionDecision(accepted=True, added_words=())
 
-    added_words = (
-        _collect_page_ir_content_words(corrected_page_ir)
-        - text_layer_words
-        - extraction_words
+    # Counter lookups return 0 for missing words.
+    added_words = sorted(
+        word
+        for word, count in _count_page_ir_content_words(corrected_page_ir).items()
+        if count > text_layer_counts[word] and count > extraction_counts[word]
     )
 
     return PageIRCorrectionDecision(
-        accepted=not added_words, added_words=tuple(sorted(added_words))
+        accepted=not added_words, added_words=tuple(added_words)
     )
 
 

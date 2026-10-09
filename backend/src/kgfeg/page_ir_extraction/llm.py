@@ -20,8 +20,8 @@ Orchestration flow
 5. If the validation agent returns a failing verdict, it also provides a corrected
    PageIR that has passed the same Python quality checks (enforced by the validation
    agent's own output validator with retries). Return the corrected PageIR, unless
-   PDF hints are enabled and the correction guard rejects it for adding words that
-   are not on the page, in which case return the extraction agent's PageIR.
+   PDF hints are enabled and the correction guard rejects it for adding text the page
+   does not contain, in which case return the extraction agent's PageIR.
 """
 
 # Standard Library
@@ -227,10 +227,11 @@ def extract_page_ir(
         agent's own output validator (same Python checks, with retries).
     4. If validation passes, the extraction agent's PageIR is returned directly.
     5. If validation fails and `pdf_page` was provided (PDF hints enabled), the
-        correction guard compares the corrected PageIR with the PDF text layer. A
-        correction that adds content words found in neither the usable text layer nor
-        the extraction is rejected with a warning, and the extraction agent's PageIR
-        is returned instead.
+        correction guard compares content-word occurrence counts in the corrected
+        PageIR with the PDF text layer and the extraction. A correction with any word
+        occurring more times than in both the usable text layer and the extraction is
+        rejected with a warning, and the extraction agent's PageIR is returned
+        instead.
 
     This single-pass design avoids re-invoking the weaker extraction agent with
     feedback it cannot see its own prior output for, and leverages the stronger
@@ -348,7 +349,8 @@ def extract_page_ir(
         verdict.corrected_page_ir is not None
     ), "Validation failed but no corrected PageIR provided."
 
-    # Guard against corrections that add words not on the page. It runs only when PDF
+    # Guard against corrections that add text the page does not contain (new words, or
+    # on-page words repeated more often than the page has them). It runs only when PDF
     # hints are enabled (`pdf_page` is provided only when `use_extracted_hints` is on).
     if pdf_page is not None:
         decision = evaluate_page_ir_correction(
@@ -361,8 +363,8 @@ def extract_page_ir(
         if not decision.accepted:
             logger.warning(
                 f"Page {page_index + 1}: correction guard rejected the validation "
-                f"agent's corrected PageIR because it adds {len(decision.added_words)} "
-                f"content word(s) found in neither the PDF text layer nor the "
+                f"agent's corrected PageIR because {len(decision.added_words)} content "
+                f"word(s) occur more times than in both the PDF text layer and the "
                 f"extraction: {', '.join(decision.added_words)}. Keeping the "
                 f"extraction agent's PageIR."
             )
