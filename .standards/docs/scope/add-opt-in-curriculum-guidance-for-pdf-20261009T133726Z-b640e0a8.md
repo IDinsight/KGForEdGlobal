@@ -32,9 +32,10 @@ rerunning the trial ranges.
 - With the new instruction fields unset, every agent prompt stays exactly as it
   is today.
 - The Ghana, India, Nigeria and Rwanda example configs are not edited and keep
-  today's behavior. The one accepted exception is the always-on guard in work
-  item 3, which may block a checker correction that adds words missing from the
-  page (user decision, 2026-10-09).
+  today's behavior. The one accepted exception is the guard in work item 3,
+  which, for configs that set `use_extracted_hints` to true, may block a
+  checker correction that adds words missing from the page (user decision and
+  rework, 2026-10-09). All four of those example configs set it to true today.
 - New unset fields may appear in run metadata files such as
   `extraction_run.json` and `verification_run.json`, because those files save
   the whole stage config.
@@ -63,6 +64,7 @@ rerunning the trial ranges.
   optional instruction blocks.
 - Adding OCR or otherwise repairing missing or garbled PDF text layers.
 - Committing trial or rerun outputs.
+- Writing guard warnings or validation console output to a log file.
 
 ## Work
 
@@ -115,16 +117,20 @@ its corrected verdict replaces the verifier's
 ### 3. Guard against hallucinated extraction corrections
 
 **Intent:** Stop the extraction checker from replacing a page with text that is
-not on the page, as happened on PDF 43. The guard is generic and always on, for
-every config, with no config switch (user decision, 2026-10-09).
+not on the page, as happened on PDF 43. The guard is generic and has no
+curriculum-specific switch. It runs only when the extraction config sets
+`use_extracted_hints` to true (user rework, 2026-10-09, replacing the earlier
+always-on decision).
 
 **Done when:**
 
-- `AC-007`: When a page has a usable PDF text layer and the checker's corrected
-  PageIR contains content words that are not in that text layer, the correction
-  is not accepted. The page keeps the extraction agent's PageIR (user decision,
-  2026-10-09), and a warning is logged that identifies the page and the missing
-  words.
+- `AC-026`: When the guard runs and a page has a usable PDF text layer, a
+  checker correction that adds content words is not accepted. A content word
+  counts as added when it is missing from that text layer and also absent from
+  the extraction agent's PageIR. The page keeps the extraction agent's PageIR
+  (user decision, 2026-10-09), and a warning that identifies the page and the
+  added words appears in the run's terminal output. No log file is required
+  (user rework, 2026-10-09).
 - `AC-008`: The guard does not block a correction because of differences in
   display case, curly versus straight quotes, or running header text.
 - `AC-009`: When a page's text layer is missing or unusable (for example,
@@ -132,9 +138,10 @@ every config, with no config switch (user decision, 2026-10-09).
   as it is today.
 - `AC-010`: A correction that adds no content words missing from the text
   layer is accepted as it is today.
-- `AC-011`: The guard applies to every config, including configs with
-  `use_extracted_hints` turned off, and running it does not change any agent's
-  prompt.
+- `AC-027`: The guard runs only when the extraction config sets
+  `use_extracted_hints` to true. With it false, the guard does not run and
+  checker corrections are handled as they are today. Running the guard does
+  not change any agent's prompt.
 
 **Depends on:** None.
 
@@ -169,6 +176,8 @@ replace that config's `kgs` block, which is still a copy of Ghana English's.
   Home Language, Grades R-3, in its metadata, framework, grade and instruction
   fields, and contains no Ghana-specific content. The full config loads as a
   valid run config.
+- `AC-028`: The CAPS config maps CAPS Grade R to Learning Commons grade K (user
+  rework, 2026-10-09).
 - `AC-015`: The CAPS config's `kgs.as.sfi_extraction_instructions` states that
   Term and skill area come from each table's header rows.
 - `AC-016`: The CAPS config sets the extraction instruction fields for both the
@@ -225,12 +234,20 @@ not only record a comparison (user decision, 2026-10-09).
   continue the previous page's table, and stitching joins them to that table.
 - `AC-024`: In the reruns, no accepted checker correction adds content words
   that are missing from the page's usable text layer, and any correction the
-  guard blocks is logged.
+  guard blocks is reported as a warning in the run's terminal output.
 - `AC-025`: In the stitched Grade 3 reruns, the Grade 3 heading stays in
   `section_path` on every Grade 3 content segment, including at and after
   PDF 122.
 
 **Depends on:** Work items 1, 2, 3 and 5.
+
+## Retired Acceptance Identifiers
+
+- `AC-007`: Replaced by `AC-026`. The guard now blocks only content words the
+  correction adds (missing from the text layer and absent from the extraction
+  agent's PageIR), and its warning goes to terminal output.
+- `AC-011`: Replaced by `AC-027`. The guard now runs only when
+  `use_extracted_hints` is true instead of for every config.
 
 ## Assumptions
 
@@ -238,7 +255,7 @@ not only record a comparison (user decision, 2026-10-09).
   config as untracked. Both were committed in `a34c4e6` after the audit; the
   content is the same, so this does not change the scope.
 - Exactly what counts as a "content word", and how running header text is
-  recognized, are design decisions for Architect within AC-007 and AC-008.
+  recognized, are design decisions for Architect within AC-026 and AC-008.
 - The trial runs under `results/` stay available locally as the "before" side
   of the comparison in AC-021.
 - AC-021 to AC-025 judge LLM output. If a rerun misses one of them, the cause
