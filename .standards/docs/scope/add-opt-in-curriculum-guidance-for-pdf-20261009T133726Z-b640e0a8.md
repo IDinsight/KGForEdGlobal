@@ -13,7 +13,8 @@ pages, and all 7 pages that open with an ASSESSMENT band, came out as loose
 blocks, so stitching never joined them to the table they continue. Two of eight
 breaks into a new "REQUIREMENTS PER TERM" table were merged with the previous
 table (PDF 110->111 and 123->124). The extraction checker's correction on PDF 43
-added 8 words that are not on the page. No content segment carries a Term in
+repeated an ASSESSMENT band already on the page, so 8 words appeared once more
+than the page has them. No content segment carries a Term in
 `section_path`, and in Grade 3 the "3.4 GRADE 3" heading drops out of
 `section_path` at PDF 122.
 
@@ -116,32 +117,41 @@ its corrected verdict replaces the verifier's
 
 ### 3. Guard against hallucinated extraction corrections
 
-**Intent:** Stop the extraction checker from replacing a page with text that is
-not on the page, as happened on PDF 43. The guard is generic and has no
-curriculum-specific switch. It runs only when the extraction config sets
-`use_extracted_hints` to true (user rework, 2026-10-09, replacing the earlier
-always-on decision).
+**Intent:** Stop the extraction checker from replacing a page with text the
+page does not contain, either words that are not on the page or on-page text
+repeated more often than the page has it. PDF 43 is the second kind: the
+correction repeated an ASSESSMENT band already on the page. The guard is
+generic and has no curriculum-specific switch. It runs only when the extraction
+config sets `use_extracted_hints` to true (user rework, 2026-10-09, replacing
+the earlier always-on decision).
 
 **Done when:**
 
-- `AC-026`: When the guard runs and a page has a usable PDF text layer, a
+- `AC-029`: When the guard runs and a page has a usable PDF text layer, a
   checker correction that adds content words is not accepted. A content word
-  counts as added when it is missing from that text layer and also absent from
-  the extraction agent's PageIR. The page keeps the extraction agent's PageIR
-  (user decision, 2026-10-09), and a warning that identifies the page and the
-  added words appears in the run's terminal output. No log file is required
-  (user rework, 2026-10-09).
+  counts as added when it occurs more times in the correction than in that text
+  layer and more times than in the extraction agent's PageIR. A word missing
+  from both is the case where both of those counts are zero (user decision,
+  2026-10-09). The page keeps the extraction agent's PageIR (user decision,
+  2026-10-09), and a warning that identifies the page and the added words
+  appears in the run's terminal output. No log file is required (user rework,
+  2026-10-09).
 - `AC-008`: The guard does not block a correction because of differences in
   display case, curly versus straight quotes, or running header text.
 - `AC-009`: When a page's text layer is missing or unusable (for example,
   garbled), the guard does not block the correction; the correction is handled
   as it is today.
-- `AC-010`: A correction that adds no content words missing from the text
-  layer is accepted as it is today.
+- `AC-030`: A correction that adds no content words, as defined in AC-029, is
+  accepted as it is today.
 - `AC-027`: The guard runs only when the extraction config sets
   `use_extracted_hints` to true. With it false, the guard does not run and
   checker corrections are handled as they are today. Running the guard does
   not change any agent's prompt.
+- `AC-032`: Replaying the saved PDF 43 trial correction through the guard,
+  against that page's PDF text layer and the saved trial extraction, blocks the
+  correction and names the over-counted words. A live rerun might not
+  reproduce that correction, so this replay is the deterministic check of the
+  PDF 43 case.
 
 **Depends on:** None.
 
@@ -232,9 +242,9 @@ not only record a comparison (user decision, 2026-10-09).
 - `AC-023`: In the reruns, bordered continuation pages without the banner, and
   pages that open with an ASSESSMENT band, are extracted as table rows that
   continue the previous page's table, and stitching joins them to that table.
-- `AC-024`: In the reruns, no accepted checker correction adds content words
-  that are missing from the page's usable text layer, and any correction the
-  guard blocks is reported as a warning in the run's terminal output.
+- `AC-031`: In the reruns, no accepted checker correction adds content words,
+  as defined in AC-029, and any correction the guard blocks is reported as a
+  warning in the run's terminal output.
 - `AC-025`: In the stitched Grade 3 reruns, the Grade 3 heading stays in
   `section_path` on every Grade 3 content segment, including at and after
   PDF 122.
@@ -246,8 +256,15 @@ not only record a comparison (user decision, 2026-10-09).
 - `AC-007`: Replaced by `AC-026`. The guard now blocks only content words the
   correction adds (missing from the text layer and absent from the extraction
   agent's PageIR), and its warning goes to terminal output.
+- `AC-010`: Replaced by `AC-030`, which uses the AC-029 definition of an added
+  word.
 - `AC-011`: Replaced by `AC-027`. The guard now runs only when
   `use_extracted_hints` is true instead of for every config.
+- `AC-024`: Replaced by `AC-031`, which uses the AC-029 definition of an added
+  word.
+- `AC-026`: Replaced by `AC-029`. The missing-word rule could not block the
+  PDF 43 correction, which repeats on-page text; the guard now also blocks
+  words that occur more often than in both the text layer and the extraction.
 
 ## Assumptions
 
@@ -255,9 +272,9 @@ not only record a comparison (user decision, 2026-10-09).
   config as untracked. Both were committed in `a34c4e6` after the audit; the
   content is the same, so this does not change the scope.
 - Exactly what counts as a "content word", and how running header text is
-  recognized, are design decisions for Architect within AC-026 and AC-008.
+  recognized, are design decisions for Architect within AC-029 and AC-008.
 - The trial runs under `results/` stay available locally as the "before" side
   of the comparison in AC-021.
-- AC-021 to AC-025 judge LLM output. If a rerun misses one of them, the cause
-  is routed to its owner (for example, config wording or the guard) rather
-  than the condition being waived.
+- AC-021 to AC-023, AC-025 and AC-031 judge LLM output. If a rerun misses one
+  of them, the cause is routed to its owner (for example, config wording or the
+  guard) rather than the condition being waived.

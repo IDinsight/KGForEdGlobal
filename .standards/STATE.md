@@ -1,6 +1,6 @@
 # S.T.A.N.D.A.R.D.S. Workflow State
 
-`WorkflowState`: `SCOPING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
+`WorkflowState`: `ARCHITECTING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
 `PendingCycleRequest`: `UNSET` `PendingCycleBlockedOn`: `NONE`
 
 ## Active Work
@@ -59,7 +59,7 @@ where continuation content stayed as table rows, the Grade stayed on all 44
 segments. BASELINE NOTES: utils.py has the uncommitted fix-5 change;
 examples/funda_wande/ is untracked; no .standards/CONTEXT.md existed.
 VALIDATION after the fixes: rerun the three trial ranges plus PDF 60-66
-(start_page 59, end_page 66) and compare the results. USER REWORK (2026-10-09): (a) the fix-3 guard runs only when the stage config sets use_extracted_hints true; with it false the guard does not run (replaces the always-on decision behind AC-011); (b) the guard blocks only content words the correction adds, i.e. missing from the usable text layer and absent from the extraction agent's PageIR (align AC-007 wording with AC-010); (c) blocked-correction warnings go to the terminal only; validation needs no log file; (d) keep CAPS Grade R mapped to Learning Commons grade K.`
+(start_page 59, end_page 66) and compare the results. USER REWORK (2026-10-09): (a) the fix-3 guard runs only when the stage config sets use_extracted_hints true; with it false the guard does not run (replaces the always-on decision behind AC-011); (b) the guard blocks only content words the correction adds, i.e. missing from the usable text layer and absent from the extraction agent's PageIR (align AC-007 wording with AC-010); (c) blocked-correction warnings go to the terminal only; validation needs no log file; (d) keep CAPS Grade R mapped to Learning Commons grade K. USER DECISION (2026-10-09, after the PDF 43 scoping failure): the guard also blocks a correction when a content word occurs more times than in both the text layer and the extraction agent's PageIR (PDF 43 repeats an on-page ASSESSMENT band).`
 `Scope`:
 `.standards/docs/scope/add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8.md`
 `Architecture`:
@@ -78,8 +78,8 @@ Preserve existing entries; see PROTOCOL.md, Baseline Reconciliation Format.
 
 ## Handoff
 
-`Kind`: `FAILURE` `From`: `DEVELOPING` `FailureType`: `SCOPING` `Reason`:
-`AC-026 cannot stop the PDF 43 case: that correction duplicates an existing ASSESSMENT band (8 distinct words each one occurrence over the text layer), it adds no word missing from the text layer.`
+`Kind`: `FORWARD` `From`: `SCOPING` `FailureType`: `NONE` `Reason`:
+`Scope replanned for over-counted words (AC-010, AC-024, AC-026 retired; AC-029 to AC-032 added); architecture rerun required.`
 
 ## Recovery
 
@@ -89,7 +89,7 @@ Preserve existing entries; see PROTOCOL.md, Baseline Reconciliation Format.
 
 `From`: `DEVELOPING` `Owner`: `SCOPING` `FailureType`: `SCOPING`
 `Reason`: `AC-026 cannot stop the PDF 43 case: that correction duplicates an existing ASSESSMENT band (8 distinct words each one occurrence over the text layer), it adds no word missing from the text layer.`
-`ResumeAt`: `DEVELOPING` `RerunThrough`: `NONE`
+`ResumeAt`: `DEVELOPING` `RerunThrough`: `ARCHITECTING`
 
 ## Outstanding Obligations
 
