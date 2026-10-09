@@ -26,9 +26,10 @@ Design mode: Feature.
 - Extraction (`page_ir_extraction/llm.py:extract_page_ir`) runs the extraction
   agent, then the checker (`_run_validation_agent`). A failing verdict's
   `corrected_page_ir` replaces the extraction with no further check (`:313-328`).
-  Today the entry point (`entries/extract_page_ir.py:115`) loads the PyMuPDF page
+  The entry point (`entries/extract_page_ir.py:115`) loads the PyMuPDF page
   only when `use_extracted_hints` is true, and `extract_page_ir` treats
-  "`pdf_page` is not None" as "build prompt hints".
+  "`pdf_page` is not None" as "build prompt hints". All seven example configs,
+  including CAPS, set `use_extracted_hints` to true.
 - Verification (`page_ir_verification/llm.py:verify_page_ir_pairs`) runs the
   verifier, then the checker. A failing checker's `corrected_verdict` replaces
   the verifier's verdict. Only three thresholds reach the LLM layer today, as
@@ -85,20 +86,23 @@ Design mode: Feature.
    With a value of `None`, the prompt-building code produces exactly today's
    string: no new separator, whitespace or heading. Developer chooses the exact
    framing wording.
-4. **Generic correction guard**, always on, deterministic, and with no LLM call
-   or prompt change. It runs in `extract_page_ir` only when the checker returned
-   `passed=false` with a `corrected_page_ir`.
-   - **Text layer source.** The guard reads the page's PDF text layer through the
-     existing text-layer quality gate (the logic in
-     `page_ir_extraction/utils.py:_extract_text_hint`: at least 20 characters,
-     printable ratio at least 0.90, U+FFFD ratio at most 0.02). It does this
-     whether or not `use_extracted_hints` is on. To make that possible, the
-     extraction entry point always passes the PyMuPDF page, and `extract_page_ir`
-     gets a new keyword parameter `use_extracted_hints: bool = True`. Prompt
-     hints are built only when `pdf_page is not None and use_extracted_hints`.
-     The entry point passes `config.use_extracted_hints`. The default of `True`
-     keeps today's meaning for existing callers that pass a page. Read the text
-     layer at most once per page and reuse it for both the hints and the guard.
+4. **Generic correction guard**, deterministic, with no LLM call, no prompt
+   change and no config switch of its own. It runs in `extract_page_ir` only
+   when hints are enabled and the checker returned `passed=false` with a
+   `corrected_page_ir`.
+   - **Gating on `use_extracted_hints` (AC-027).** Keep today's contract: the
+     entry point passes `pdf_page` only when `config.use_extracted_hints` is
+     true (`entries/extract_page_ir.py:115`), so inside `extract_page_ir`
+     "`pdf_page is not None`" means "hints on". The guard runs only on that
+     path. When `pdf_page` is `None`, a failing verdict's correction is returned
+     exactly as today. No new parameter or entry-point change is needed.
+   - **Text layer source.** The guard reuses the text hint that
+     `extract_page_text_layer_hints` already computes for the prompt
+     (`PageTextLayerHints.text_hint`): the raw `page.get_text("text")` that
+     passed the existing quality gate (at least 20 characters, printable ratio
+     at least 0.90, U+FFFD ratio at most 0.02;
+     `page_ir_extraction/utils.py:176-207`). The text layer is not read a second
+     time, and a `None` text hint means "no usable layer".
    - **Normalization**, applied the same way to every compared text: Unicode
      NFKC (this also expands ligatures); remove soft hyphens (U+00AD); map curly
      single and double quotes and primes to their straight forms; casefold. In
@@ -119,23 +123,23 @@ Design mode: Feature.
      content words in the text layer, minus content words in the extraction
      agent's PageIR (both PageIRs scanned the same way). Subtracting the
      extraction's words means the guard judges only what the correction adds.
-     This is how AC-007 is read together with AC-010 and the request ("a checker
-     correction that adds content words missing from the page's PDF text
-     layer"). Without it, words a correction merely keeps from the extraction,
-     such as raster-only text, would block every correction on that page.
+     This is the AC-026 definition of an added content word. Without it, words a
+     correction merely keeps from the extraction, such as raster-only text,
+     would block every correction on that page.
    - **Usable text layer.** The layer is usable when it passes the quality gate
      and, if the extraction agent's PageIR has at least 10 distinct content
      words, at least 50% of those words appear in the text layer. The coverage
      check catches garbled layers (for example, broken font encodings) that pass
      the printable-character gate. A real text layer covers nearly all of the
      extracted words, and a garbled one covers almost none, so 50% sits safely
-     between the two. A missing PyMuPDF page also counts as "no usable layer".
+     between the two.
    - **Outcome.** If the layer is usable and there are added unsupported words,
      reject the correction and return the extraction agent's PageIR. Log
      `logger.warning` naming the 1-based page number, the word count, and the
-     sorted distinct words. Otherwise, return the correction as today. When no
-     usable layer exists, an info-level log may say the guard was skipped. The
-     guard never raises: a text-layer read failure counts as "no usable layer".
+     sorted distinct words. This goes to loguru's default terminal output; no
+     log file or persisted record is added. Otherwise, return the correction as
+     today. When no usable layer exists, an info-level log may say the guard was
+     skipped. The guard never raises.
 5. **Verified page IR loader (fix 5).** Keep the committed logic in
    `load_page_irs_from_verification` (`page_ir_verification/utils.py:541-542`).
    Update the NB note, the Raises entry and the error message so they describe a
@@ -161,19 +165,21 @@ Design mode: Feature.
   only to `validate_page_ir_continuity_verdict`. The framing explicitly names
   the table-to-table decision procedure as overridable.
 - `AC-006`: Decision 3, as for AC-003.
-- `AC-007`, `AC-010`: Decision 4, the added-unsupported-words rule and its
-  outcome.
+- `AC-026`, `AC-010`: Decision 4, the added-unsupported-words rule and its
+  outcome, with the warning on terminal output only.
 - `AC-008`: Decision 4. Casefolding handles display case. Splitting on
   punctuation plus quote mapping handles curly versus straight quotes. Skipping
   `ARTIFACT` blocks handles running headers.
 - `AC-009`: Decision 4, usable-text-layer rule (quality gate plus coverage
   check, and a missing page or failed read counts as unusable).
-- `AC-011`: Decision 4, text-layer source. The guard reads the layer regardless
-  of `use_extracted_hints`, runs after both agents, and changes no prompt
+- `AC-027`: Decision 4, gating on `use_extracted_hints`. The guard runs only
+  on the `pdf_page is not None` path, after both agents, and changes no prompt
   argument.
 - `AC-012`: Decision 5.
 - `AC-013`: No architectural impact. The tests are Developer or Tester work
   against the Decision 5 contract.
+- `AC-028`: CAPS `kgs` block contract: `grade_level_mapping` maps Grade R to
+  [K]; the Grade R label itself is unchanged.
 - `AC-014`, `AC-015`: Decision 6 and the CAPS `kgs` block contract under
   **Interfaces and Contracts**.
 - `AC-016`, `AC-017`: Decision 6 and the CAPS page-stage instruction contract
@@ -197,16 +203,14 @@ Design mode: Feature.
 - `kgfeg/schemas.py`: the four new fields and their blank-to-`None` validators.
 - `page_ir_extraction/prompts.py`: an optional curriculum-instructions block on
   both prompt builders.
-- `page_ir_extraction/llm.py`: carries both values through, adds the
-  `use_extracted_hints` parameter, and calls the guard after a failing verdict.
+- `page_ir_extraction/llm.py`: carries both values through and, when
+  `pdf_page` was supplied, calls the guard after a failing verdict.
 - `page_ir_extraction/correction_guard.py` (new; Developer may instead put it in
   `utils.py`): pure functions for normalization, content-word collection,
   text-layer usability, and the accept-or-reject decision. No I/O apart from
   logging.
-- `page_ir_extraction/utils.py`: exposes the text-layer quality gate so that the
-  hints and the guard share one implementation.
-- `entries/extract_page_ir.py`: always loads the PyMuPDF page, and passes
-  `use_extracted_hints` and both instruction values.
+- `entries/extract_page_ir.py`: passes both instruction values. Its existing
+  `pdf_page` gating on `use_extracted_hints` is unchanged.
 - `page_ir_verification/prompts.py`: an optional block on the verifier and
   checker prompts.
 - `page_ir_verification/llm.py` and `verify_page_pairs.py`: carry the two
@@ -225,8 +229,8 @@ Design mode: Feature.
   equals the current output exactly.
 - **`extract_page_ir`** gets new keyword parameters
   `extraction_instructions: str | None = None`,
-  `validation_instructions: str | None = None` and
-  `use_extracted_hints: bool = True`. `_run_validation_agent` gets
+  `validation_instructions: str | None = None`. The meaning of `pdf_page` is
+  unchanged (supplied only when hints are on). `_run_validation_agent` gets
   `validation_instructions: str | None = None`.
 - **`verify_page_ir_pairs`** gets new keyword parameters
   `verification_instructions: str | None = None` and
@@ -234,8 +238,8 @@ Design mode: Feature.
   gets `validation_instructions`. `_execute_verification_attempts` passes the
   values from `config`.
 - **Guard decision.** The inputs are the extraction PageIR, the corrected
-  PageIR, the raw text layer (`str | None`, before the quality gate) and the page
-  index. The output tells the caller whether to accept the correction, and
+  PageIR, the gated text hint (`str | None`; `None` means no usable layer) and
+  the page index. The output tells the caller whether to accept the correction, and
   supplies the sorted added unsupported words for the log. The outcome contract
   is Decision 4; the type and function names are Developer's choice. The
   coverage threshold (0.50) and the minimum word count (10) are named module
@@ -298,16 +302,16 @@ Design mode: Feature.
 
 Extraction, per page:
 
-1. The entry point loads the PyMuPDF page.
-2. `extract_page_ir` reads the text layer through the quality gate (at most
-   once). If `use_extracted_hints` is on, it also builds the prompt hints from
-   it.
+1. If `use_extracted_hints` is on, the entry point loads the PyMuPDF page and
+   `extract_page_ir` builds the prompt hints from it, as today.
 3. The extraction prompt, with the optional block, goes to the extraction
    agent, which returns its PageIR.
 4. The checker prompt, with its optional block, goes to the checker.
 5. If the checker passes, return the extraction PageIR.
-6. If the checker fails, run the guard. Return the correction if the guard
-   accepts it. Otherwise log a warning and return the extraction PageIR.
+6. If the checker fails and hints are on, run the guard on the text hint.
+   Return the correction if the guard accepts it. Otherwise log a terminal
+   warning and return the extraction PageIR. If hints are off, return the
+   correction as today.
 
 Downstream steps (boundary_state, re-validation, writing to disk) are unchanged.
 
@@ -325,12 +329,15 @@ prompt (optional block). Selection, patching and compile steps are unchanged.
 - `AC-002`, `AC-005`: With a field set, its text appears only in its own
   agent's system message, under the override heading, after all generic
   sections. No other agent's prompt contains it.
-- `AC-007` to `AC-011`: The guard decision follows Decision 4 exactly. With
-  `use_extracted_hints=false` the extraction prompt has no hint blocks, yet the
-  guard still evaluates the text layer when a PyMuPDF page is available.
+- `AC-026`, `AC-008` to `AC-010`, `AC-027`: The guard decision follows
+  Decision 4 exactly. With `pdf_page=None` (hints off) a failing verdict's
+  correction is returned unchanged and the guard logic is not invoked. With a
+  page supplied, the prompts are the same whether the guard accepts or rejects.
 - `AC-012`: A sorted, gap-free `page_index` list starting at any non-negative
   index passes. Any gap or duplicate raises `ValueError` with a message about
   contiguity, not about starting at 0.
+- `AC-028`: The CAPS `grade_level_mapping` has the key for the Grade R
+  canonical value mapped to `["K"]`.
 - `AC-014`, `AC-019`: `RunConfig.model_validate` succeeds for the CAPS config
   and for the Ghana, India, Nigeria and Rwanda configs.
 
@@ -340,9 +347,9 @@ prompt (optional block). Selection, patching and compile steps are unchanged.
    with framing text. Add tests for the `None` path and the set path.
 2. Thread the values through extraction (`llm.py` and the entry point) and
    verification (`verify_page_pairs.py` to `llm.py`).
-3. Add the correction guard, the shared text-layer gate, the
-   `use_extracted_hints` parameter, and the entry change that always loads the
-   page. Add unit tests for every Decision 4 branch.
+3. Add the correction guard and call it on the hints path in
+   `extract_page_ir`. Add unit tests for every Decision 4 branch, including
+   hints off.
 4. Update the loader documentation and messages, and add range tests (AC-012,
    AC-013).
 5. Write the CAPS config values (page-stage instructions and the `kgs` block),
@@ -350,8 +357,8 @@ prompt (optional block). Selection, patching and compile steps are unchanged.
    configs from the CAPS config that change only `start_page`, `end_page` and
    `output_dir` (a fresh directory under `results/` per range), for ranges
    12-15, 27-55, 109-135 and 59-66. Run extraction, verification and stitching,
-   and capture console output to a log file so that blocked corrections are
-   recorded (AC-024). Compare the results with the three trial runs for each
+   and read blocked-correction warnings from the terminal output (AC-024; no
+   log file). Compare the results with the three trial runs for each
    Goal finding, and report PDF 60-66 on its own. If a rerun misses AC-022 to
    AC-025 because of config wording, revise the CAPS config text and rerun only
    the affected range.
@@ -367,8 +374,9 @@ prompt (optional block). Selection, patching and compile steps are unchanged.
   disabling the guard.
 - Guard blind spots: hallucinated `alt_text` or `embedded_text`, and pure
   numbers, are not checked. This is accepted to avoid blocking raster text.
-- Blocked corrections are recorded only in the console log; no file sink
-  exists. The validation runs must capture output to a file.
+- Blocked corrections appear only as terminal warnings, by user decision.
+  Evidence for AC-024 lasts only as long as that terminal output is kept.
+- Configs with `use_extracted_hints` false get no guard protection.
 - The CAPS `kgs` block is not exercised by `create_kgs` in this cycle. Its
   hierarchy and table selection are unproven until a later KG run.
 - AC-025 depends on AC-023. If continuation content still becomes heading
@@ -386,6 +394,8 @@ prompt (optional block). Selection, patching and compile steps are unchanged.
 - Making the guard a checker output validator that raises `ModelRetry`.
   Rejected: scope requires blocking and keeping the extraction, and retry
   feedback would change the checker's conversation.
+- Running the guard for every config, including hints off. Replaced by user
+  rework (AC-027): the guard follows `use_extracted_hints`.
 - Comparing the correction with the text layer without subtracting the
   extraction's words. Rejected: it would block every correction on pages with
   raster-only text that the extraction already had (see Decision 4).
