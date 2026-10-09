@@ -661,6 +661,41 @@ Grade 2 run handed over: local, uncommitted `start_page` 84 / `end_page` 109
 in both page stages and `output_dir` `<repo>/results/funda_wande_grade_2`.
 No trial baseline covers PDF 85-109.
 
+**Grade 2 run (page_index 84-109, PDF 85-109)** — run by the user 2026-10-09
+into `results/funda_wande_grade_2/` (`extraction_run.json` confirms 84/109 and
+wording revision 1). No trial baseline; reported on its own. User reported no
+guard warnings.
+
+- Extraction: all 12 banner pages give one 2-column table with 3 or 4 header
+  rows holding the banner; all 12 banner-free pages, including ASSESSMENT
+  openers PDF 96, 102, 108, are `resumed` tables (PDF 93 `both`); PDF 109
+  (resources) is a heading plus its own `complete` table.
+- Verification (AC-022): all 11 breaks into a banner page are new tables
+  (0.95-0.96); all 12 breaks into a continuation are table continuations
+  (0.78-0.93); PDF 108->109 (resources) is a new table (0.95).
+- Stitching (AC-023): 15 segments: "3.3 GRADE 2" heading, 12 banner tables
+  ([85], [86-88], [89,90], [91], [92-94], [95,96], [97], [98-100], [101,102],
+  [103], [104-106], [107,108]; the singletons are followed by banner pages),
+  and the resources heading and table. All 13 content segments carry the
+  Grade 2 heading. Warnings: 20 `table_colspan_repair` and one inferred
+  `header_row_count` for the resources table, as in Grade 1.
+- Corrections (AC-031): checker corrections saved on 3 of 25 pages (PDF 85,
+  91, 97), all accepted by the guard rule with no added words. Missing
+  text-layer words are only running headers, plus "highfrequency" on PDF 98
+  (hyphen-join counting of the printed "high-frequency"; transcribed
+  verbatim).
+
+**Committed-range deviation (AC-034):** commit `48998d9` ("record Grade 1
+validation results") also committed the local Grade 1 edits, so the committed
+config now has 59/84 and `funda_wande_grade_1` instead of the Grade R range
+35/59 and `funda_wande_grade_r`. Developer restores the Grade R values after
+the Grade 3 run (the user still needs local range edits until then) and
+re-checks AC-034 before completing DEV-008.
+
+Grade 3 run handed over: local, uncommitted `start_page` 109 / `end_page` 135
+in both page stages and `output_dir` `<repo>/results/funda_wande_grade_3`.
+Baseline: `trial_p110_135` (all pages).
+
 ---
 
 ## Plan Notes
