@@ -1,6 +1,7 @@
 """This is the main module for testing page_ir_verification/utils.py."""
 
 # Standard Library
+from pathlib import Path
 from typing import Union
 
 # Third Party Library
@@ -490,3 +491,81 @@ class TestRequireNonNegativeInt:
             field_name="test_field", report_name="0001_0002.json", value=0
         )
         assert result == 0
+
+
+class TestLoadPageIrsFromVerification:
+    """Tests for `load_page_irs_from_verification` page-index range handling (AC-012,
+    AC-013)."""
+
+    @staticmethod
+    def _write_verified_page_irs(*, directory: Path, page_indexes: list[int]) -> None:
+        """Write one consistent verified PageIR JSON per page index.
+
+        Parameters
+        ----------
+        directory
+            Directory to write the verified PageIR JSONs into.
+        page_indexes
+            The page_index of each file to write (duplicates get distinct filenames).
+        """
+
+        directory.mkdir(parents=True, exist_ok=True)
+
+        for file_no, page_index in enumerate(page_indexes):
+            page_ir = make_page_ir().model_copy(
+                update={
+                    "doc_key": "doc-key-1",
+                    "dpi": 150,
+                    "page_index": page_index,
+                    "pdf_name": "doc.pdf",
+                }
+            )
+            (directory / f"{file_no:04}.json").write_text(
+                page_ir.model_dump_json(), encoding="utf-8"
+            )
+
+    def test_loads_gap_free_range_starting_above_zero(self, tmp_path: Path) -> None:
+        """A gap-free page_index range that starts above 0 loads, sorted by index.
+
+        Parameters
+        ----------
+        tmp_path
+            Temporary directory for the verified PageIR JSONs.
+        """
+
+        # Written out of order so the result must come from sorting by page_index.
+        self._write_verified_page_irs(directory=tmp_path, page_indexes=[37, 35, 36])
+
+        page_irs = utils.load_page_irs_from_verification(
+            doc_key="doc-key-1", verified_page_irs_dir=tmp_path
+        )
+
+        assert [p.page_index for p in page_irs] == [35, 36, 37]
+
+    @pytest.mark.parametrize(
+        "page_indexes", [[35, 36, 38], [35, 36, 36]], ids=["gap", "duplicate"]
+    )
+    def test_rejects_range_with_gap_or_duplicate(
+        self, page_indexes: list[int], tmp_path: Path
+    ) -> None:
+        """A page_index sequence with a gap or a duplicate raises a ValueError that
+        describes a gap-free sequence and does not require starting at 0.
+
+        Parameters
+        ----------
+        page_indexes
+            The page indexes to write.
+        tmp_path
+            Temporary directory for the verified PageIR JSONs.
+        """
+
+        self._write_verified_page_irs(directory=tmp_path, page_indexes=page_indexes)
+
+        with pytest.raises(ValueError, match="Non-contiguous page_index sequence") as e:
+            utils.load_page_irs_from_verification(
+                doc_key="doc-key-1", verified_page_irs_dir=tmp_path
+            )
+
+        assert "gap-free" in str(e.value)
+        assert "starting at 35" in str(e.value)
+        assert "start at 0" not in str(e.value)

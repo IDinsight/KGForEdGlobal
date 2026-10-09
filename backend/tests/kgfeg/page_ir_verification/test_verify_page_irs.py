@@ -93,6 +93,8 @@ class VerificationConfigStub:
     min_confidence_to_stop_negative_search: float = 0.0
     model: str = "fake"
     next_page_crop_padding_px: float = 25.0
+    validation_instructions: str | None = None
+    verification_instructions: str | None = None
 
 
 def create_block_item_json(*, repeats_header: bool | None = None) -> dict[str, Any]:
@@ -2832,3 +2834,67 @@ def test_uses_pair_priority_key_to_select_the_best_successful_attempt() -> None:
     assert result["selected_next_index"] == 22
     assert result["selected_prev_index"] == 32
     assert result["selected_verdict"] is verdict_b
+
+
+def test_passes_config_curriculum_instructions_to_verify_page_ir_pairs() -> None:
+    """`_execute_verification_attempts` forwards both optional instruction fields from
+    the verification config to `verify_page_ir_pairs` (AC-005)."""
+
+    config = VerificationConfigStub(
+        min_confidence_to_patch=0.8,
+        min_confidence_to_select_positive=0.9,
+        min_confidence_to_stop_negative_search=0.95,
+        validation_instructions="RULES FOR THE CHECKER",
+        verification_instructions="RULES FOR THE VERIFIER",
+    )
+    pair = create_candidate_pair_spec(
+        crop_y_max=50.0,
+        next_boundary=ItemBoundary.RESUMED,
+        next_index=3,
+        next_rank=0,
+        prev_boundary=ItemBoundary.TRUNCATED,
+        prev_index=4,
+        prev_rank=0,
+    )
+    verdict = create_verdict(
+        confidence=0.92,
+        continuation_kind_value="continuous_text",
+        is_continuation=True,
+    )
+
+    with (
+        patch(
+            "kgfeg.page_ir_verification.verify_page_pairs._ensure_pair_specific_crop",
+            return_value=Path("/tmp/crops/first.png"),
+        ),
+        patch(
+            "kgfeg.page_ir_verification.verify_page_pairs._make_verification_excerpt",
+            return_value={"excerpt": True},
+        ),
+        patch(
+            "kgfeg.page_ir_verification.verify_page_pairs._strip_continuity_hints",
+            side_effect=lambda item_json: item_json,
+        ),
+        patch(
+            "kgfeg.page_ir_verification.verify_page_pairs.verify_page_ir_pairs",
+            return_value=verdict,
+        ) as mock_verify,
+    ):
+        verify_page_pairs._execute_verification_attempts(
+            config=config,
+            next_page_image_fp=Path("/tmp/pages/0001.png"),
+            page_index=0,
+            pair_crop_dir=Path("/tmp/crops"),
+            pairs=[pair],
+            usage_tracker=MagicMock(),
+        )
+
+    assert mock_verify.call_count == 1
+    assert (
+        mock_verify.call_args.kwargs["validation_instructions"]
+        == "RULES FOR THE CHECKER"
+    )
+    assert (
+        mock_verify.call_args.kwargs["verification_instructions"]
+        == "RULES FOR THE VERIFIER"
+    )

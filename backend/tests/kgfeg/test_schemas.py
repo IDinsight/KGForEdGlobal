@@ -1,12 +1,23 @@
 """This is the main module for testing schemas.py."""
 
+# Standard Library
+from pathlib import Path
+from typing import Any
+
 # Third Party Library
 import pytest
 
 from pydantic import TypeAdapter, ValidationError
 
 # Package Library
-from kgfeg.schemas import BBox, _BCP47Str, _validate_bcp47, validate_bbox_order
+from kgfeg.schemas import (
+    BBox,
+    ExtractionConfig,
+    VerificationConfig,
+    _BCP47Str,
+    _validate_bcp47,
+    validate_bbox_order,
+)
 from tests.constants import PARAM
 
 
@@ -154,3 +165,117 @@ def test_validate_bbox_order_raises_on_wrong_length(*, bbox: list[float]) -> Non
         match=r"Bounding box must have exactly 4 numbers",
     ):
         _ = validate_bbox_order(bbox=bbox)
+
+
+# The optional per-agent instruction fields on each page IR stage config.
+_STAGE_INSTRUCTION_FIELDS: dict[str, tuple[str, str]] = {
+    "extraction": ("extraction_instructions", "validation_instructions"),
+    "verification": ("verification_instructions", "validation_instructions"),
+}
+
+
+def _build_stage_config(
+    *, stage: str, tmp_path: Path, **overrides: Any
+) -> ExtractionConfig | VerificationConfig:
+    """Validate a minimal page IR stage config from raw (JSON-like) data.
+
+    Parameters
+    ----------
+    stage
+        "extraction" or "verification".
+    tmp_path
+        Temporary directory used as the extraction output directory.
+    **overrides
+        Extra raw keys to include in the config data.
+
+    Returns
+    -------
+    ExtractionConfig | VerificationConfig
+        The validated stage config.
+    """
+
+    if stage == "extraction":
+        # `pdf_fp` only has to exist; its content is never read here.
+        pdf_fp = tmp_path / "document.pdf"
+        pdf_fp.write_bytes(b"%PDF-1.4\n")
+
+        return ExtractionConfig.model_validate(
+            {
+                "country": "Testland",
+                "languages": ["en"],
+                "output_dir": str(tmp_path / "out"),
+                "pdf_fp": str(pdf_fp),
+                **overrides,
+            }
+        )
+
+    return VerificationConfig.model_validate(overrides)
+
+
+@PARAM(argnames="stage", argvalues=["extraction", "verification"])
+def test_stage_config_instruction_fields_default_to_none_when_omitted(
+    *, stage: str, tmp_path: Path
+) -> None:
+    """A stage config that omits both instruction fields still loads, with both unset
+    (AC-001, AC-004).
+
+    Parameters
+    ----------
+    stage
+        Which page IR stage config to build.
+    tmp_path
+        Temporary directory for the extraction output directory.
+    """
+
+    config = _build_stage_config(stage=stage, tmp_path=tmp_path)
+
+    for field in _STAGE_INSTRUCTION_FIELDS[stage]:
+        assert getattr(config, field) is None
+
+
+@PARAM(argnames="stage", argvalues=["extraction", "verification"])
+def test_stage_config_instruction_fields_are_stripped_and_blank_becomes_none(
+    *, stage: str, tmp_path: Path
+) -> None:
+    """Each instruction field keeps its own stripped text, and a blank or
+    whitespace-only value becomes None so it can never add an empty prompt section.
+
+    Parameters
+    ----------
+    stage
+        Which page IR stage config to build.
+    tmp_path
+        Temporary directory for the extraction output directory.
+    """
+
+    first, second = _STAGE_INSTRUCTION_FIELDS[stage]
+
+    config = _build_stage_config(
+        stage=stage, tmp_path=tmp_path, **{first: "  rule one \n", second: "rule two"}
+    )
+    assert getattr(config, first) == "rule one"
+    assert getattr(config, second) == "rule two"
+
+    for blank in ("", "   ", "\n\t"):
+        config = _build_stage_config(
+            stage=stage, tmp_path=tmp_path, **{first: blank, second: blank}
+        )
+        assert getattr(config, first) is None
+        assert getattr(config, second) is None
+
+
+def test_stage_configs_still_reject_unknown_keys(tmp_path: Path) -> None:
+    """Both page IR stage configs still reject unknown keys (`extra="forbid"`) after
+    the new optional fields were added. One behavior, checked on both configs.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory for the extraction output directory.
+    """
+
+    for stage in _STAGE_INSTRUCTION_FIELDS:
+        with pytest.raises(ValidationError, match="curriculum_instructions"):
+            _build_stage_config(
+                stage=stage, tmp_path=tmp_path, curriculum_instructions="x"
+            )
