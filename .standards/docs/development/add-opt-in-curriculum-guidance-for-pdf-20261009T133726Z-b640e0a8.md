@@ -373,7 +373,7 @@ AC-013's automated tests are Tester-owned and are not written here.
 ### DEV-006 — CAPS runtime config
 
 `Status`: `DONE` `Depends On`: `DEV-001`
-`Acceptance`: `AC-014, AC-015, AC-016, AC-017, AC-028`
+`Acceptance`: `AC-014, AC-015, AC-016, AC-017, AC-028, AC-034`
 
 **Goal**
 
@@ -383,8 +383,10 @@ the Ghana-copy `kgs` block per **CAPS `kgs` block** (metadata, Grade > Term >
 Skill Area > Skill hierarchy, policies, `grade_level_mapping` with Grade R ->
 `["K"]`, no codes, `included_table_section_patterns` on "requirements per
 term", `sfi_extraction_instructions` saying Grade, Term and Skill Area come
-from table header rows, and CAPS-specific AS/LC/LP instruction fields). Leave
-`start_page`/`end_page` at 27/55.
+from table header rows, and CAPS-specific AS/LC/LP instruction fields). Set
+`start_page`/`end_page` to the Grade R range 35/59 in both page stages and
+point `page_ir_extraction.output_dir` at a fresh Grade R rerun directory under
+`results/` (AC-034, Decision 6).
 
 **Affected Area**
 
@@ -433,11 +435,19 @@ The extraction checker text adds one line beyond the three required rules:
 fixing structure must not add, repeat, or reword text, which targets the
 PDF 43 duplication alongside the AC-029 guard.
 
+Reopened run 2026-10-09 (Recovery Reconciliation 2, AC-034), on `a5a1851`
+plus the uncommitted config change: scratchpad `check_dev006b.py` loads the
+config via `RunConfig.model_validate` (with `output_dir` redirected so the
+validator does not create the real directory); `start_page`/`end_page` are
+35/59 in both page stages; `page_ir_extraction.output_dir` is
+`<repo>/results/funda_wande_grade_r`, which is not a trial directory and does
+not exist yet; the only values changed versus `HEAD` are those five.
+
 ---
 
 ### DEV-007 — Cycle-wide compatibility and lint self-check
 
-`Status`: `PENDING` `Depends On`: `DEV-001, DEV-002, DEV-003, DEV-004, DEV-005, DEV-006`
+`Status`: `IN_PROGRESS` `Depends On`: `DEV-001, DEV-002, DEV-003, DEV-004, DEV-005, DEV-006`
 `Acceptance`: `AC-018, AC-019, AC-020`
 
 **Goal**
@@ -465,23 +475,27 @@ comparison per non-CAPS config; `make lint` and `make test` from `backend/`.
 ### DEV-008 — Validation reruns on the CAPS PDF (user-run, Developer-checked)
 
 `Status`: `PENDING` `Depends On`: `DEV-007`
-`Acceptance`: `AC-021, AC-022, AC-023, AC-025, AC-031`
+`Acceptance`: `AC-033, AC-022, AC-023, AC-025, AC-031, AC-032`
 
 **Goal**
 
-Developer does not run the paid pipeline. Developer prepares git-ignored
-configs derived from the CAPS config that change only `start_page`, `end_page`
-and `output_dir` (a fresh `results/` directory per range) for ranges 12-15,
-27-55, 109-135 and 59-66, then gives the user the exact extraction,
+Developer does not run the paid pipeline. The validation is four grade runs
+(AC-033; page_index start inclusive, end exclusive): Grade R 35-59 from the
+committed config as is, then Grade 1 59-84, Grade 2 84-109 and Grade 3
+109-135, for which the user sets `start_page`/`end_page` in both page stages
+and a fresh `page_ir_extraction.output_dir` per grade in the local config
+only (not committed). Developer gives the user the exact extraction,
 verification and stitching commands and what to keep from the terminal (guard
-warnings). The user runs them and returns. Developer then analyzes the outputs
-against the three trial runs for each Goal finding, reports PDF 60-66 on its
-own, and records the comparison here (Build Plan step 5).
+warnings). The user runs each grade and returns. Developer analyzes the
+outputs against the trial runs where pages overlap (Grade R vs
+`trial_p28_55` PDF 36-55; Grade 3 vs `trial_p110_135`), reports pages with no
+baseline (PDF 56-109) on their own, reruns the PDF 43 replay (AC-032), and
+records the comparison here (Build Plan step 5).
 
 **Affected Area**
 
-Derived configs and rerun outputs under git-ignored `results/`; possibly CAPS
-config wording.
+Rerun outputs under git-ignored `results/`; the user's local per-grade config
+edits; possibly CAPS config wording.
 
 **Expected Outcome**
 
@@ -491,7 +505,7 @@ stitched table rows, no accepted correction adding content words as defined in
 AC-029 (blocked ones seen as warnings in the user's terminal output), and the Grade 3 heading in
 `section_path` throughout Grade 3. If a miss traces to config wording,
 Developer revises the CAPS text and asks the user to rerun only the affected
-range. Misses not fixable by config wording are routed to their owner.
+grade, into a fresh output directory or with `overwrite` set. Misses not fixable by config wording are routed to their owner.
 
 **Self-Check**
 
@@ -546,3 +560,13 @@ unchanged approved intent; no reapproval required.
 `Recovery Frame`: `1` `Recovery Reason`: `User rework: validation reruns become four grade ranges (page_index 35-59, 59-84, 84-109, 109-135) replacing AC-021's trial ranges plus 59-66, and the committed CAPS config starts at the Grade R range.` `Purpose`: `DEVELOPMENT`
 `Target`: `NONE` `Assessed Inputs`: `DEV-001 to DEV-006 DONE; DEV-006 CAPS config change as of 2026-10-09 with start_page/end_page still 27/55`
 `Next Action`: `Reconcile DEV-006 and DEV-008 against the corrected scope and design (Grade R range in the committed config; four grade-range validation runs, user-run and Developer-checked), then continue STEPWISE with DEV-007.`
+
+### Recovery Reconciliation 2
+
+Frame 1 (user rework 2) closed 2026-10-09 (scope `43b8505`, design `a5a1851`).
+Restored Suspended Assignment 2. DEV-001 to DEV-005 unaffected. DEV-006
+reopened to set the committed Grade R range (35/59 in both page stages) and a
+fresh Grade R `output_dir` (AC-034). DEV-008 now covers the four grade runs
+(AC-033 replaces retired AC-021) plus the AC-032 replay. Bookkeeping and an
+in-step config correction under unchanged approved intent; no reapproval
+required. Next after DEV-006: DEV-007.
