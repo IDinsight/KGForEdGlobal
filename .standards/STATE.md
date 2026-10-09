@@ -63,8 +63,10 @@ VALIDATION after the fixes: rerun the three trial ranges plus PDF 60-66
 `Scope`:
 `.standards/docs/scope/add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8.md`
 `Architecture`:
-`.standards/docs/specs/add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8.md` `Development`: `NONE`
-`PromotionReason`: `NONE` `AuditTarget`: `NONE` `BlockedOn`: `NONE`
+`.standards/docs/specs/add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8.md` `Development`:
+`.standards/docs/development/add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8.md`
+`PromotionReason`: `NONE` `AuditTarget`: `NONE` `BlockedOn`:
+`Continue with DEV-002 (extraction prompts take and receive curriculum instructions)?`
 `PendingVerificationCadence`: `NONE`
 
 `BaselineReconciliation`: `NONE`

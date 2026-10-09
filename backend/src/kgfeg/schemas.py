@@ -3315,6 +3315,15 @@ class ExtractionConfig(BaseSchema):
     end_page: Optional[int] = Field(
         None, description="0-based end page (exclusive). Default None is to end."
     )
+    extraction_instructions: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional document-specific instructions appended to the extraction "
+            "agent's system prompt. Where they conflict with the generic extraction "
+            "rules, the agent follows them unless that would break the output "
+            "contract. None leaves the prompt unchanged."
+        ),
+    )
     languages: list[LanguageField] = Field(
         ...,
         description="One or more languages associated with the PDF document (e.g. en-US, fr-FR).",
@@ -3335,6 +3344,15 @@ class ExtractionConfig(BaseSchema):
             "Whether or not to extract text layer and table layer hints using PyMuPDF "
             "as additional context for the extraction agent's prompt. This is helpful "
             "for PDF with non-English text and accents."
+        ),
+    )
+    validation_instructions: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional document-specific instructions appended to the extraction "
+            "validation (checker) agent's system prompt. Where they conflict with the "
+            "generic validation rules, the agent follows them unless that would break "
+            "the output contract. None leaves the prompt unchanged."
         ),
     )
     year: Optional[int] = Field(
@@ -3387,6 +3405,36 @@ class ExtractionConfig(BaseSchema):
         make_dir(v)
 
         return v
+
+    @field_validator(
+        "extraction_instructions", "validation_instructions", mode="before"
+    )
+    @classmethod
+    def _strip_optional_strings(cls, v: Any) -> Any:
+        """Strip optional instruction fields and normalize blank strings to None.
+
+        NB: Mapping blank values to None guarantees that a blank config value never
+        adds an empty curriculum-instructions section to an agent prompt. Non-string
+        values are passed through so that pydantic's own `Optional[str]` validation
+        rejects them with a field-specific `ValidationError`.
+
+        Parameters
+        ----------
+        v
+            The raw optional instruction value.
+
+        Returns
+        -------
+        Any
+            The stripped string, None when the value is None or blank, or the
+            untouched non-string value.
+        """
+
+        if not isinstance(v, str):
+            return v
+
+        v2 = v.strip()
+        return v2 if v2 else None
 
 
 class StitchingConfig(BaseSchema):
@@ -3482,6 +3530,26 @@ class VerificationConfig(BaseSchema):
     start_page: Optional[int] = Field(
         None, description="0-based start page (inclusive)."
     )
+    validation_instructions: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional document-specific instructions appended to the continuity "
+            "validation (checker) agent's system prompt. Where they conflict with the "
+            "generic continuity rules, including the table continuation procedure, "
+            "the agent follows them unless that would break the output contract. "
+            "None leaves the prompt unchanged."
+        ),
+    )
+    verification_instructions: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional document-specific instructions appended to the continuity "
+            "verification agent's system prompt. Where they conflict with the generic "
+            "continuity rules, including the table continuation procedure, the agent "
+            "follows them unless that would break the output contract. None leaves "
+            "the prompt unchanged."
+        ),
+    )
 
     @model_validator(mode="after")
     def check_page_range(self) -> Self:
@@ -3538,6 +3606,36 @@ class VerificationConfig(BaseSchema):
             )
 
         return self
+
+    @field_validator(
+        "validation_instructions", "verification_instructions", mode="before"
+    )
+    @classmethod
+    def _strip_optional_strings(cls, v: Any) -> Any:
+        """Strip optional instruction fields and normalize blank strings to None.
+
+        NB: Mapping blank values to None guarantees that a blank config value never
+        adds an empty curriculum-instructions section to an agent prompt. Non-string
+        values are passed through so that pydantic's own `Optional[str]` validation
+        rejects them with a field-specific `ValidationError`.
+
+        Parameters
+        ----------
+        v
+            The raw optional instruction value.
+
+        Returns
+        -------
+        Any
+            The stripped string, None when the value is None or blank, or the
+            untouched non-string value.
+        """
+
+        if not isinstance(v, str):
+            return v
+
+        v2 = v.strip()
+        return v2 if v2 else None
 
 
 class RunCtx(BaseSchema):
