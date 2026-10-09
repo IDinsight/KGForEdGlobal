@@ -76,7 +76,7 @@ the older `_strip_optional_strings` copies that raise a bare `TypeError`.
 
 ### DEV-002 — Extraction prompts take and receive curriculum instructions
 
-`Status`: `PENDING` `Depends On`: `DEV-001`
+`Status`: `DONE` `Depends On`: `DEV-001`
 `Acceptance`: `AC-002, AC-003`
 
 **Goal**
@@ -107,6 +107,43 @@ Existing `tests/kgfeg/page_ir_extraction`; a scratchpad script comparing both
 `PromptPair`s against `git show d916660:...prompts.py` output for
 representative inputs (with and without text/table hints), and confirming
 set-path placement and isolation.
+
+Run 2026-10-09 from `backend/`, CI-equivalent env, on the DEV-001 tree plus
+uncommitted changes to `page_ir_extraction/prompts.py`, `page_ir_extraction/llm.py`
+and `entries/extract_page_ir.py`:
+
+- Scratchpad `check_dev002.py`: for three extraction inputs (no hints; text and
+  table hints; text hint only) and one checker input, both builders with
+  `curriculum_instructions` omitted or `None` return a `PromptPair` equal to
+  `d916660`'s `prompts.py`. With a value set, the user message is unchanged,
+  the system message equals the old one plus `\n\n## RUNTIME CURRICULUM
+  INSTRUCTIONS\n...` ending in the tagged text, and the text appears once.
+  Driving `extract_page_ir` with stub agents routes `extraction_instructions`
+  only to the extraction builder and `validation_instructions` only to the
+  checker builder.
+- Entry point passes `config.extraction_instructions` and
+  `config.validation_instructions` (diff inspection).
+- `mypy`, `pylint` (10.00/10), `ruff`, `black`, `isort`, `interrogate` on the
+  three files: clean.
+- `pytest -n auto tests/kgfeg/page_ir_extraction tests/kgfeg/page_ir_verification tests/kgfeg/document_ir tests/kgfeg/test_schemas.py`:
+  659 passed, 4 failed. All four are in
+  `tests/kgfeg/page_ir_extraction/test_llm.py`
+  (`test__run_validation_agent_invokes_agent_and_tracks_usage`,
+  `test_extract_page_ir_returns_corrected_page_ir_when_validation_fails`,
+  `test_extract_page_ir_passes_pdf_hints_into_prompt_builder`,
+  `test_extract_page_ir_returns_extraction_page_ir_when_validation_passes`) and
+  fail with `TypeError: ... unexpected keyword argument
+  'curriculum_instructions'` or `'validation_instructions'`: their stand-in
+  functions declare an exact keyword-only signature, and the orchestration now
+  always passes the new keyword (as `None` when unset). Behavior under test is
+  unchanged. The stubs are Tester-owned; see Plan Notes.
+
+**Implementation Notes**
+
+One private helper, `_append_curriculum_instructions`, builds the section for
+both builders; each passes its own one-sentence directive (the checker's says
+an extraction breaking the instructions is an error-severity issue and any
+`corrected_page_ir` must follow them).
 
 ---
 
@@ -326,3 +363,9 @@ The step has two pauses: after handing over the run instructions
   committed.
 - Test commands run from `backend/` with
   `CHAT_ENV=testing LEARNING_COMMONS_EXPORT_SCHEMA_VERSION=2026-07-09 OPENAI_API_KEY=sk-fake PATHS_PROJECT_DIR=<repo root>`.
+- Test stubs with exact signatures (DEV-002): existing `test_llm.py` stand-ins
+  for the prompt builders and `_run_validation_agent` reject the new keyword
+  arguments. Developer does not edit Tester-owned tests and does not bend
+  production code (for example, passing the keyword only when set) around them.
+  The Architecture's note that existing tests keep working unchanged does not
+  hold for these stubs.

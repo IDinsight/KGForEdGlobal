@@ -108,6 +108,7 @@ def extract_page_by_page(
 
         image_width, image_height = read_png_dimensions(png_fp)
         page_ir = extract_page_ir(
+            extraction_instructions=config.extraction_instructions,
             image_height=image_height,
             image_width=image_width,
             languages=config.languages,
@@ -116,6 +117,7 @@ def extract_page_by_page(
             png_fp=png_fp,
             raw_page_irs_dir=extraction_dirs.page_irs_raw,
             usage_tracker=usage_tracker,
+            validation_instructions=config.validation_instructions,
         )
 
         # Add metadata to the PageIR.

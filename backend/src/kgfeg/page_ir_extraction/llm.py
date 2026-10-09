@@ -131,6 +131,7 @@ def _run_validation_agent(
     page_ir: PageIR,
     png_bytes: bytes,
     usage_tracker: ExtractionUsageTracker,
+    validation_instructions: str | None = None,
 ) -> ExtractionValidationVerdict:
     """Run the validation agent to compare an extracted PageIR against the source image.
 
@@ -154,6 +155,9 @@ def _run_validation_agent(
         The raw PNG bytes of the source page image.
     usage_tracker
         Tracker to accumulate validation agent usage.
+    validation_instructions
+        Optional document-specific instructions for the validation agent's system
+        prompt. None leaves the prompt unchanged.
 
     Returns
     -------
@@ -164,6 +168,7 @@ def _run_validation_agent(
     logger.info(f"Running validation agent for page: {page_index + 1}...")
 
     prompts = validate_page_ir_extraction(
+        curriculum_instructions=validation_instructions,
         image_height=image_height,
         image_width=image_width,
         page_index=page_index,
@@ -193,6 +198,7 @@ def _run_validation_agent(
 
 def extract_page_ir(
     *,
+    extraction_instructions: str | None = None,
     image_height: int,
     image_width: int,
     languages: list[str],
@@ -201,6 +207,7 @@ def extract_page_ir(
     png_fp: Path,
     raw_page_irs_dir: Path,
     usage_tracker: ExtractionUsageTracker,
+    validation_instructions: str | None = None,
 ) -> PageIR:
     """Extract PageIR from a page image using an extraction agent with validation.
 
@@ -221,6 +228,9 @@ def extract_page_ir(
 
     Parameters
     ----------
+    extraction_instructions
+        Optional document-specific instructions for the extraction agent's system
+        prompt. None leaves the prompt unchanged.
     image_height
         The image height in pixels.
     image_width
@@ -240,6 +250,9 @@ def extract_page_ir(
         Directory to save raw page IR extraction artifacts.
     usage_tracker
         Tracker to accumulate token usage from both extraction and validation agents.
+    validation_instructions
+        Optional document-specific instructions for the validation agent's system
+        prompt. None leaves the prompt unchanged.
 
     Returns
     -------
@@ -271,6 +284,7 @@ def extract_page_ir(
 
     # Run the extraction agent (lower reasoning effort).
     prompts = extract_page_ir_from_pdf_page(
+        curriculum_instructions=extraction_instructions,
         image_height=image_height,
         image_width=image_width,
         languages=languages,
@@ -307,6 +321,7 @@ def extract_page_ir(
         page_ir=page_ir,
         png_bytes=png_bytes,
         usage_tracker=usage_tracker,
+        validation_instructions=validation_instructions,
     )
 
     if verdict.passed:
