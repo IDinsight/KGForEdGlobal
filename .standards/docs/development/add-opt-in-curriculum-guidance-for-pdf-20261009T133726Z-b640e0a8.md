@@ -514,7 +514,7 @@ Run 2026-10-09 by the user from `backend/` on `9cd9cdd` (working tree: only
 
 ### DEV-008 — Validation reruns on the CAPS PDF (user-run, Developer-checked)
 
-`Status`: `PENDING` `Depends On`: `DEV-007`
+`Status`: `IN_PROGRESS` `Depends On`: `DEV-007`
 `Acceptance`: `AC-033, AC-022, AC-023, AC-025, AC-031, AC-032`
 
 **Goal**
@@ -556,6 +556,55 @@ outputs, plus the guard warning lines the user pastes back.
 
 The step has two pauses: after handing over the run instructions
 (`BlockedOn` waits for the user's runs), and after the analysis, under STEPWISE.
+
+Progress: Grade R run instructions handed over 2026-10-09 (committed config at
+`9cd9cdd`: page_index 35-59, `output_dir` `results/funda_wande_grade_r`,
+which did not exist beforehand). Entry points are run from `backend/` as
+`.venv/bin/python src/kgfeg/entries/<entry>.py ../examples/funda_wande/config_english_curriculum.json`
+for `extract_page_ir`, `verify_page_ir_continuity`, `stitch_document_ir`.
+Guard evidence (AC-031) comes from the user's terminal: lines containing
+"correction guard rejected", pasted back (no log file, per scope).
+
+**Grade R run (page_index 35-59, PDF 36-59)** — run by the user 2026-10-09
+into `results/funda_wande_grade_r/` with the committed config at `9cd9cdd`;
+analyzed by Developer with scratchpad scripts `grade_extraction.py`,
+`grade_verification.py`, `grade_stitching.py`, `grade_corrections.py`,
+`replay_pdf43.py`. User reported no guard warnings in the terminal.
+
+- Extraction (vs `trial_p28_55` for PDF 36-55): all 12 banner pages give one
+  1-column table with `header_row_count` 4 (trial: 3 on 6 of them); all 10
+  banner-free pages (PDF 37, 39, 41, 43, 45, 47, 49, 51, 54, 56 plus 58) are
+  extracted as `resumed` tables. The ASSESSMENT-opening pages PDF 41, 43, 47,
+  49, 58 and the continuation page PDF 51, which the trial extracted as loose
+  heading/paragraph/list blocks (PDF 41, 43, 47, 49, 51), are now table rows.
+  PDF 59 ("RECOMMENDED TEXTS/RESOURCES FOR THE YEAR", no banner) is its own
+  `complete` table.
+- Verification (AC-022): all 12 page breaks into a banner page are
+  `is_continuation=false` (confidence 0.95-0.96); all 10 breaks into a
+  banner-free continuation page are table continuations (0.85-0.93). The trial
+  had 5 of those as new tables (PDF 40->41, 42->43, 46->47, 48->49, 50->51).
+  PDF 58->59 (resources box) is correctly a new table (0.93).
+- Stitching (AC-023): 14 segments: the "3.1 GRADE R" heading, 12 banner tables
+  each joined to its continuation page ([36,37], [38,39], [40,41], [42,43],
+  [44,45], [46,47], [48,49], [50,51], [52], [53,54], [55,56], [57,58]; PDF 52
+  is correctly alone, PDF 53 being a banner page) and the PDF 59 resources
+  table. All 13 content segments carry the Grade R heading in `section_path`
+  (path length 1).
+- Corrections (AC-031): the checker's correction was saved on 2 of 24 pages
+  (PDF 46, 59); replayed through the guard, both are accepted with no added
+  words, consistent with no terminal warnings. Text-layer content words not in
+  the final PageIR are 5 or 10 per page (the running headers, kept as
+  ARTIFACT blocks), plus "cupboard" on PDF 51, an artifact of the hyphen-join
+  counting of the printed syllable example "cup-board", which is transcribed
+  verbatim.
+- AC-032 replay (trial PDF 43, `0042.val00.attempt00.parsed.json` vs
+  `page_irs/0042.json`): rejected, added words `assessment, for, informal,
+  observation, or, oral, practical, suggestions`.
+- Risk for later grades: each grade ends with a banner-free "RECOMMENDED
+  TEXTS/RESOURCES FOR THE YEAR" box (PDF 59, 84, 109, 135). The CAPS rule
+  "a banner-free box at the top of a page continues the previous table"
+  (extraction rule 2, verification rule 3) is literally wrong for these boxes;
+  Grade R handled PDF 59 correctly anyway.
 
 ---
 
