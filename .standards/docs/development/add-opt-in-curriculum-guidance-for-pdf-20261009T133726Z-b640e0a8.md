@@ -7,7 +7,7 @@ Cycle: add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8
 
 `Cycle`: `add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8` `Mode`: `STEPWISE`
 `User Style`: `tony` `User Style Locked`: `true`
-`Status`: `IN_PROGRESS` `Verification Cadence`:
+`Status`: `COMPLETE` `Verification Cadence`:
 `AFTER_IMPLEMENTATION` `Current Increment`: `NONE`
 
 ## Implementation Contract
@@ -514,7 +514,7 @@ Run 2026-10-09 by the user from `backend/` on `9cd9cdd` (working tree: only
 
 ### DEV-008 — Validation reruns on the CAPS PDF (user-run, Developer-checked)
 
-`Status`: `IN_PROGRESS` `Depends On`: `DEV-007`
+`Status`: `DONE` `Depends On`: `DEV-007`
 `Acceptance`: `AC-033, AC-022, AC-023, AC-025, AC-031, AC-032`
 
 **Goal**
@@ -696,6 +696,59 @@ Grade 3 run handed over: local, uncommitted `start_page` 109 / `end_page` 135
 in both page stages and `output_dir` `<repo>/results/funda_wande_grade_3`.
 Baseline: `trial_p110_135` (all pages).
 
+**Grade 3 run (page_index 109-135, PDF 110-135)** — run by the user 2026-10-09
+into `results/funda_wande_grade_3/` (`extraction_run.json` confirms 109/135
+and wording revision 1). User reported no guard warnings.
+
+- Extraction (vs `trial_p110_135`): all 12 banner pages give one 2-column table
+  with the banner in 3 or 4 header rows; on PDF 110 the trial split the banner
+  into a separate 1-row table, the rerun does not. All 13 banner-free pages
+  (PDF 112, 113, 115, 117, 119, 120, 122, 125, 126, 128, 131, 132, 134;
+  ASSESSMENT openers 115, 122, 134) are `resumed` tables; the trial extracted
+  12 of them as loose heading/paragraph/list blocks (all but PDF 125). PDF 135
+  (resources) is a heading plus its own `complete` table.
+- Verification (AC-022): all 12 breaks into a banner page are new tables
+  (0.95-0.96), including PDF 110->111 and 123->124, which the trial merged
+  (0.70, 0.65); all 12 breaks into a continuation are table continuations
+  (0.85-0.90; the trial had 10 of them as new tables and 131->132 as text);
+  PDF 134->135 (resources) is a new table (0.95).
+- Stitching (AC-023): 15 segments: "3.4 GRADE 3" heading, 12 banner tables
+  ([110], [111-113], [114,115], [116,117], [118-120], [121,122], [123],
+  [124-126], [127,128], [129], [130-132], [133,134]) and the resources heading
+  and table. Warnings: 19 `table_colspan_repair` and one inferred
+  `header_row_count` for the resources table (trial: 7 warnings including
+  header-row mismatches).
+- Section path (AC-025): all 13 content segments carry the Grade 3 heading,
+  including all 7 at or after PDF 122; maximum `section_path` length 2. Trial:
+  83 content segments, 45 with the Grade 3 heading, only 2 of 40 at or after
+  PDF 122, maximum length 60.
+- Corrections (AC-031): checker corrections saved on 2 of 26 pages (PDF 114,
+  119), both accepted by the guard rule with no added words. Missing text-layer
+  words are only running headers, plus "causeeffect" on PDF 118 (hyphen-join
+  counting of the printed "cause-effect").
+
+**AC-034 restored:** after the Grade 3 run Developer reset the config's
+`start_page`/`end_page` to 35/59 in both page stages and `output_dir` to
+`<repo>/results/funda_wande_grade_r`; the file is byte-identical to `97bee9a`
+(Grade R range plus wording revision 1). It differs from `HEAD` (`3a60360`,
+which still carries the Grade 1 values from `48998d9`) only in those five
+values; the user commits the restore.
+
+**Before/after summary (AC-033)** for each Goal finding, trial -> rerun:
+
+| Goal finding | Trial | Rerun |
+| --- | --- | --- |
+| Continuation pages as loose blocks (Grade 3) | 12 of 13 | 0 of 13 (PDF 112-134) |
+| ASSESSMENT-opening pages as loose blocks | 7 of 7 (PDF 41, 43, 47, 49, 115, 122, 134) | 0; all 7, and every other ASSESSMENT opener in the reruns (PDF 58, 65, 72, 75, 96, 102, 108), are table rows |
+| Breaks into a new banner table merged | 2 of 8 in `trial_p110_135` (110->111, 123->124) | 0 of 46 across all four grades |
+| PDF 43 correction repeating on-page text | accepted | AC-032 replay rejected (8 words); no rerun correction adds words |
+| Term in content `section_path` | never | Term is in each banner table's header rows (KG reads it per `sfi_extraction_instructions`; KG step not run) |
+| Grade 3 heading lost from `section_path` at PDF 122 | 38 Grade 3 segments without it | 0 |
+
+Grades 1 and 2 (PDF 60-109) have no trial baseline and are reported on their
+own above. `trial_p13_15` has no counterpart (AC-033). Analysis scripts are
+kept in git-ignored `logs/dev008/` (see its README) for rerunning.
+
 ---
 
 ## Plan Notes
@@ -749,3 +802,33 @@ fresh Grade R `output_dir` (AC-034). DEV-008 now covers the four grade runs
 (AC-033 replaces retired AC-021) plus the AC-032 replay. Bookkeeping and an
 in-step config correction under unchanged approved intent; no reapproval
 required. Next after DEV-006: DEV-007.
+
+### Handoff to Tester (full verification)
+
+Developer full completion 2026-10-09: DEV-001 to DEV-008 are `DONE`.
+Implementation commits: `fcb7640` (DEV-001), `add6e0b` (DEV-002), `afcda16`
+(DEV-003), `fd83fee` and `35b0f65` (DEV-004), `c557442` (DEV-005), CAPS config
+in `43b8505`, `9cd9cdd` and `97bee9a` (DEV-006, DEV-008 wording revision 1);
+the AC-034 restore of the committed Grade R range is in the working tree
+(identical to `97bee9a`'s config) until the user commits it.
+
+Claims and evidence are under each step above. Limitations and work for
+Tester:
+
+- Tester-owned test updates (option A, Plan Notes): 9 existing tests fail only
+  because their stubs predate the new keyword arguments and config fields
+  (4 in `tests/kgfeg/page_ir_extraction/test_llm.py`, 5 in
+  `tests/kgfeg/page_ir_verification/test_verify_page_irs.py`); latest full run
+  3810 passed, 9 failed (DEV-007).
+- Formal tests named by the Architecture are not written by Developer: prompt
+  `None`/set paths (AC-002, AC-003, AC-005, AC-006), guard branches and
+  hints-off gating (AC-008, AC-009, AC-027, AC-029, AC-030), loader ranges
+  (AC-013).
+- LLM-judged ACs (AC-022, AC-023, AC-025, AC-031, AC-033) rest on the four
+  user-run grade runs in `results/funda_wande_grade_{r,1,2,3}/` (git-ignored,
+  local) and the scripts in `logs/dev008/`. Blocked-correction evidence for
+  AC-031 is terminal-only by design; the user reported none in all four runs.
+- Grade R ran with the CAPS wording before revision 1 (user-accepted); Grades
+  1-3 ran with revision 1.
+- The KG step (`create_kgs`) was not run (non-goal); the CAPS `kgs` block is
+  checked by loading and review only.

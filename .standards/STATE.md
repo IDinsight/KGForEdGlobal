@@ -1,6 +1,6 @@
 # S.T.A.N.D.A.R.D.S. Workflow State
 
-`WorkflowState`: `DEVELOPING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
+`WorkflowState`: `TESTING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
 `PendingCycleRequest`: `UNSET` `PendingCycleBlockedOn`: `NONE`
 
 ## Active Work
@@ -65,8 +65,7 @@ VALIDATION after the fixes: rerun the three trial ranges plus PDF 60-66
 `Architecture`:
 `.standards/docs/specs/add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8.md` `Development`:
 `.standards/docs/development/add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8.md`
-`PromotionReason`: `NONE` `AuditTarget`: `NONE` `BlockedOn`:
-`Waiting for the user to run the Grade 3 validation (page_index 109-135, output results/funda_wande_grade_3) and paste any correction-guard warnings.`
+`PromotionReason`: `NONE` `AuditTarget`: `NONE` `BlockedOn`: `NONE`
 `PendingVerificationCadence`: `NONE`
 
 `BaselineReconciliation`: `NONE`
@@ -79,8 +78,8 @@ Preserve existing entries; see PROTOCOL.md, Baseline Reconciliation Format.
 
 ## Handoff
 
-`Kind`: `RESUME` `From`: `ARCHITECTING` `FailureType`: `NONE` `Reason`:
-`Design rerun for grade-range validation (AC-033, AC-034) complete; recovery frame closed, resuming development.`
+`Kind`: `FORWARD` `From`: `DEVELOPING` `FailureType`: `NONE` `Reason`:
+`Development complete (DEV-001 to DEV-008); ready for full verification.`
 
 ## Recovery
 
