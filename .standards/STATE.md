@@ -1,6 +1,6 @@
 # S.T.A.N.D.A.R.D.S. Workflow State
 
-`WorkflowState`: `SCOPING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
+`WorkflowState`: `ARCHITECTING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
 `PendingCycleRequest`: `UNSET` `PendingCycleBlockedOn`: `NONE`
 
 ## Active Work
@@ -60,7 +60,9 @@ segments. BASELINE NOTES: utils.py has the uncommitted fix-5 change;
 examples/funda_wande/ is untracked; no .standards/CONTEXT.md existed.
 VALIDATION after the fixes: rerun the three trial ranges plus PDF 60-66
 (start_page 59, end_page 66) and compare the results.`
-`Scope`: `NONE` `Architecture`: `NONE` `Development`: `NONE`
+`Scope`:
+`.standards/docs/scope/add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8.md`
+`Architecture`: `NONE` `Development`: `NONE`
 `PromotionReason`: `NONE` `AuditTarget`: `NONE` `BlockedOn`: `NONE`
 `PendingVerificationCadence`: `NONE`
 
@@ -74,8 +76,8 @@ Preserve existing entries; see PROTOCOL.md, Baseline Reconciliation Format.
 
 ## Handoff
 
-`Kind`: `FORWARD` `From`: `AUDITING` `FailureType`: `NONE` `Reason`:
-`Baseline context written to .standards/CONTEXT.md; ready for scoping.`
+`Kind`: `FORWARD` `From`: `SCOPING` `FailureType`: `NONE` `Reason`:
+`Scope completed with AC-001 to AC-025; ready for architecture.`
 
 ## Recovery
 
