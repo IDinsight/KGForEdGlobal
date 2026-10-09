@@ -622,6 +622,45 @@ Grade 1 run handed over: the user sets, locally and uncommitted,
 `page_ir_extraction.output_dir` to `<repo>/results/funda_wande_grade_1`, then
 runs the same three entry points. No trial baseline covers PDF 60-84.
 
+**Grade 1 run (page_index 59-84, PDF 60-84)** — run by the user 2026-10-09
+into `results/funda_wande_grade_1/` with `97bee9a` (wording revision 1) plus
+the local range edits (`extraction_run.json` confirms 59/84 and the new
+wording). No trial baseline; reported on its own. User reported no guard
+warnings.
+
+- Extraction: all 12 banner pages give one table with 3 or 4 header rows
+  holding the complete banner (Grade line and REQUIREMENTS PER TERM are one
+  printed row on some pages); all 13 banner-free pages, including the
+  ASSESSMENT openers PDF 65, 72, 75, are tables (`resumed`, or `both` for PDF
+  62, 69, 75 that continue onto a third page). PDF 84 (resources) is a heading
+  plus its own `complete` table.
+- Column counts: Grade 1 banner tables have `n_cols` 2 only because the
+  skill-area row splits into skill area and contact time; every body row spans
+  both columns (`col_span` 2). Continuation pages are full-width and come out
+  `n_cols` 1. Stitching widens those rows (21 `table_colspan_repair` warnings,
+  no text change), which matches the printed layout; not treated as a miss of
+  the "keep the parent's column count" rule.
+- Verification (AC-022): all 11 breaks into a banner page are new tables
+  (0.95-0.96); all 12 breaks into a banner-free continuation are table
+  continuations (0.85-0.90); PDF 83->84 (resources box) is a new table (0.95),
+  the first case covered by wording revision 1.
+- Stitching (AC-023): 15 segments: the "3.2 GRADE 1" heading, 12 banner tables
+  with their continuations ([60], [61-63], [64,65], [66,67], [68-70], [71,72],
+  [73], [74-76], [77,78], [79], [80,81], [82,83]; [60], [73], [79] are
+  correctly alone, the next page being a banner page), and the PDF 84
+  resources heading and table. All 13 content segments carry the Grade 1
+  heading in `section_path`. One further warning: stitching inferred
+  `header_row_count` 3 for the PDF 84 resources table; it has no
+  REQUIREMENTS PER TERM signature, so it is outside KG table selection.
+- Corrections (AC-031): the checker's correction was saved on 1 of 25 pages
+  (PDF 73); replayed through the guard it is accepted with no added words.
+  Text-layer content words missing from the final PageIRs are only the
+  running headers (5 or 10 per page).
+
+Grade 2 run handed over: local, uncommitted `start_page` 84 / `end_page` 109
+in both page stages and `output_dir` `<repo>/results/funda_wande_grade_2`.
+No trial baseline covers PDF 85-109.
+
 ---
 
 ## Plan Notes

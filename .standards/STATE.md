@@ -66,7 +66,7 @@ VALIDATION after the fixes: rerun the three trial ranges plus PDF 60-66
 `.standards/docs/specs/add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8.md` `Development`:
 `.standards/docs/development/add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8.md`
 `PromotionReason`: `NONE` `AuditTarget`: `NONE` `BlockedOn`:
-`Waiting for the user to run the Grade 1 validation (page_index 59-84, output results/funda_wande_grade_1) and paste any correction-guard warnings.`
+`Waiting for the user to run the Grade 2 validation (page_index 84-109, output results/funda_wande_grade_2) and paste any correction-guard warnings.`
 `PendingVerificationCadence`: `NONE`
 
 `BaselineReconciliation`: `NONE`
