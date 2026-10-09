@@ -25,7 +25,10 @@ and only then run the full curriculum.
     whose source structure is most similar to the new document, not necessarily the one
     from the same country or subject.
 
-    Current examples include Ghana, Nigeria, Rwanda, and India profiles.
+    Current examples include Ghana, Nigeria, Rwanda, India, and South Africa profiles.
+    The South Africa profile (`examples/funda_wande/`) is the only one that uses the
+    page-stage instruction fields. Its `kgs` block has not yet been run through
+    `create_kgs.py`.
 
 ## What belongs in the curriculum profile?
 
@@ -130,6 +133,16 @@ Set the document-specific extraction values first:
 The verification and DocumentIR defaults are generally a better starting point than
 curriculum-specific tuning. Change them only in response to an observed reconstruction
 problem.
+
+If extraction or verification keeps making the same mistake on this document, such as
+reading a continued table as loose text blocks, you can give the page stages
+document-specific instructions. `page_ir_extraction` takes `extraction_instructions`
+and `validation_instructions`, and `page_ir_verification` takes
+`verification_instructions` and `validation_instructions`. Leave them unset until you
+see such a problem. See
+[Page IR Extraction](../pipeline/page-ir-extraction.md#document-specific-instructions)
+and
+[Page IR Verification](../pipeline/page-ir-verification.md#document-specific-instructions).
 
 ### Use an isolated calibration output
 
@@ -439,11 +452,11 @@ python src/kgfeg/entries/stitch_document_ir.py <config.json>
 python src/kgfeg/entries/create_kgs.py <config.json>
 ```
 
-For an end-to-end calibration run, keep the selected verified page range contiguous and
-starting at page index `0`. A non-zero slice is still useful for PageIR
-extraction/verification inspection, but the current DocumentIR loader cannot stitch
-that slice by itself. To test a middle section end to end, use a separate cropped test
-PDF whose first page is index `0`. See
+For an end-to-end calibration run, keep the selected verified page range free of gaps.
+The range does not have to start at page index `0`, so a slice from the middle of the
+document can be stitched on its own. Give each slice its own
+`page_ir_extraction.output_dir`, because the stitcher loads every verified PageIR in
+that directory. See
 [Run, Resume, and Debug](running-and-debugging.md#page-ranges-and-calibration-runs).
 
 Do not tune the final graph first. Find the **earliest stage where the representation

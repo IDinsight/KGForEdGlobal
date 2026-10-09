@@ -54,7 +54,35 @@ Important settings include:
 | `start_page` / `end_page` | Optional 0-based page range                                                |
 | `languages`               | Expected source-language context                                           |
 | `use_extracted_hints`     | Whether to provide usable PyMuPDF text/table hints to the extraction agent |
+| `extraction_instructions` | Optional document-specific instructions for the extraction agent           |
+| `validation_instructions` | Optional document-specific instructions for the validation agent           |
 | `overwrite`               | Whether to regenerate existing PageIR JSON files                           |
+
+### Document-specific instructions
+
+`extraction_instructions` and `validation_instructions` let a curriculum profile give
+this stage's two agents rules that apply to one document, such as how to tell a new
+table from a table that continues from the previous page. Each field reaches only its
+own agent: `extraction_instructions` goes to the extraction agent, and
+`validation_instructions` goes to the validation agent.
+
+The text is added at the end of the agent's system prompt, under a heading that tells
+the agent to follow it wherever it conflicts with the generic extraction rules. It does
+not override the output contract: the `PageIR` schema and the deterministic quality
+checks still apply.
+
+Both fields are optional. When a field is unset or blank, the agent's prompt is exactly
+the same as it would be without the field.
+
+When the rules affect page structure, give them to both agents. If the validation agent
+rejects an extraction, its corrected `PageIR` replaces the extraction, so a validation
+agent that does not know the rules can undo them.
+
+For a worked example, see `examples/funda_wande/config_english_curriculum.json`, which
+uses both fields to describe how that PDF's tables continue across pages.
+
+Changing either field does not update PageIRs that already exist. Set `overwrite` to
+true or use a new `output_dir` so the affected pages are extracted again.
 
 ---
 
@@ -90,6 +118,10 @@ For each selected page, the pipeline performs the following steps:
    rendered page. If it finds material errors, it returns a complete corrected
    `PageIR`. Any correction must itself pass the deterministic quality checks.
 
+   When `use_extracted_hints` is enabled, the
+   [correction guard](#correction-guard) then checks the correction against the page's
+   PDF text layer before it is accepted.
+
 6. **Finalize Python-owned metadata and persist the page.**
    The pipeline fills fields such as the document key, PDF name, DPI, page index,
    coordinate space, and image dimensions. The page-level `boundary_state` is derived
@@ -118,6 +150,42 @@ Representative Python checks include:
 A model response is therefore not accepted simply because it matches the JSON schema.
 It must also satisfy extraction-specific quality rules, and the resulting page is
 independently checked against the source image.
+
+### Correction guard
+
+When `use_extracted_hints` is true, the pipeline checks each correction from the
+validation agent before accepting it. The check stops corrections that add text the page
+does not contain.
+
+The guard counts how often each word appears in three places: the correction, the page's
+PDF text layer, and the extraction agent's `PageIR`. A word counts as added when it
+appears more times in the correction than in the text layer, and also more times than in
+the extraction. This catches both words that are not on the page at all and on-page text
+that the correction repeats more often than the page has it.
+
+If the correction adds any word, the pipeline rejects it, keeps the extraction agent's
+`PageIR`, and logs a warning that names the page and the added words. Otherwise the
+correction is accepted as usual.
+
+Some details:
+
+- Only text read from the page is compared: block text, list items, figure captions,
+  and table cells. Artifact blocks (running headers, footers, and page numbers), figure
+  alt text, and text embedded in figures are skipped.
+- Letter case and curly versus straight quotes make no difference. Single characters
+  and words made only of digits are not counted.
+- The guard does not check a correction when the page has no usable text layer. That
+  covers a missing layer, a layer that fails the hint quality checks, and a layer that
+  contains fewer than half of the distinct words in the extraction, which usually means
+  it is garbled. The last check applies only when the extraction has at least 10
+  distinct words.
+- The guard never changes an agent's prompt, and it does not run when
+  `use_extracted_hints` is false.
+
+The warning goes to the terminal output and is not written to any output file. The
+validation agent's verdicts are not saved either, so a rejected correction leaves no
+trace in the run's artifacts. If you need a record of rejections, keep the terminal
+output.
 
 ---
 

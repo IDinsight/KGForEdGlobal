@@ -303,7 +303,7 @@ changed stage should not be trusted merely because files already exist.
 | Change                                                                                                                        | Earliest affected stage           | Recommended rerun                                                                                                        |
 |-------------------------------------------------------------------------------------------------------------------------------|-----------------------------------|--------------------------------------------------------------------------------------------------------------------------|
 | Source PDF bytes                                                                                                              | Page IR extraction                | Run all four commands; the changed PDF receives a new `doc_key`                                                          |
-| Extraction model, DPI, languages, extracted hints, extraction logic, or accepted PageIR contract                              | Page IR extraction                | Extraction with overwrite, then verification, DocumentIR, and KG from the regenerated PageIRs                            |
+| Extraction model, DPI, languages, extracted hints, extraction instructions, extraction logic, or accepted PageIR contract     | Page IR extraction                | Extraction with overwrite, then verification, DocumentIR, and KG from the regenerated PageIRs                            |
 | Verification model, candidate logic, semantic instructions, search/selection behavior, or continuity policy                   | Page IR verification              | Verification with overwrite, then DocumentIR and KG                                                                      |
 | Only verified PageIR inputs changed                                                                                           | Page IR verification / DocumentIR | Rebuild verification if necessary, then DocumentIR and KG                                                                |
 | Stitching/link/fill-down/normalization behavior                                                                               | DocumentIR                        | Stitching with overwrite, then KG                                                                                        |
@@ -322,18 +322,21 @@ Extraction and verification each have `start_page` / `end_page` settings. Verifi
 can only operate on a contiguous range that actually exists in the extraction output.
 These ranges use zero-based page indexes and an exclusive `end_page`.
 
-For an **end-to-end** run through DocumentIR, there is an additional current
-constraint: the verified PageIR set loaded by the stitcher must be contiguous and start
-at page index `0`.
+For an **end-to-end** run through DocumentIR, there is one more constraint: the
+verified PageIRs that the stitcher loads must form a range with no gaps and no
+duplicates. The range can start at any page index.
 
-Therefore:
+The stitcher loads every verified PageIR under
+`<output_dir>/<doc_key>/verification/page_irs_verified/`, not only the pages in the
+current config's range. Therefore:
 
 - a small calibration run such as `[0, 10)` can be run through all four commands;
-- a non-zero slice such as `[40, 50)` is useful for PageIR extraction/verification
-  inspection, but cannot be stitched by itself in the current pipeline; and
-- if you need an end-to-end calibration of pages from the middle of a large source,
-  create a separate cropped test PDF so that its first page is index `0`, and use a
-  separate output root.
+- a slice from the middle of the source, such as `[40, 50)`, can also be stitched on
+  its own; and
+- each slice needs its own `page_ir_extraction.output_dir`. If two slices share one,
+  the stitcher sees both. Touching slices such as `[35, 59)` and `[59, 84)` are
+  stitched together as one document, and slices with pages missing between them fail
+  the gap check.
 
 Also keep the extraction and verification ranges compatible. Requesting verification
 outside the available extracted pages fails explicitly rather than silently skipping the
