@@ -327,7 +327,7 @@ the earlier set-rule evidence above:
 
 ### DEV-005 — Loader documentation for ranges not starting at 0
 
-`Status`: `PENDING` `Depends On`: `NONE`
+`Status`: `DONE` `Depends On`: `NONE`
 `Acceptance`: `AC-012`
 
 **Goal**
@@ -349,6 +349,20 @@ duplicate raises `ValueError` about contiguity.
 
 Existing `tests/kgfeg/page_ir_verification`; a scratchpad call with a temp
 directory for a range starting above 0 and a range with a gap.
+
+Run 2026-10-09 from `backend/`, CI-equivalent env, on the DEV-004 tree plus the
+uncommitted `page_ir_verification/utils.py` change (NB note, Raises entry,
+error message; logic untouched):
+
+- Scratchpad `check_dev005.py` on the real trial output
+  `results/funda_wande_trial_p28_55/*/verification/page_irs_verified` with its
+  `extraction_run.json` doc_key: loads 28 pages, page_index 27..54. Copies with
+  a gap (27, 28, 29, 31, 32) and a duplicate (27, 28, 29, 29) each raise
+  `ValueError: Non-contiguous page_index sequence: expected a gap-free sequence
+  with no duplicates starting at 27. Got [...]`.
+- No remaining "start at 0" wording in the loader.
+- `mypy`, `pylint` (10.00/10), `ruff`, `black`, `isort`, `interrogate`: clean.
+  Focused suites: 654 passed, 9 failed (same Tester-owned stub failures).
 
 **Implementation Notes**
 

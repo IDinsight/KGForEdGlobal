@@ -492,8 +492,10 @@ def load_page_irs_from_verification(
     directory.
 
     NB: This loader is intended for callers that expect a self-contained verified
-    page-IR set whose page_index values are contiguous and start at 0. It is not the
-    loader used by the page-IR verification pipeline itself.
+    page-IR set whose page_index values form a gap-free (contiguous) sequence with no
+    duplicates. The sequence may start at any page_index, because verification writes
+    only the configured page range. It is not the loader used by the page-IR
+    verification pipeline itself.
 
     Parameters
     ----------
@@ -513,7 +515,7 @@ def load_page_irs_from_verification(
         If no verified page IR JSON files are found in the specified directory.
     ValueError
         If any verified PageIR is missing page_index.
-        If the page_index sequence is non-contiguous or does not start at 0.
+        If the page_index sequence has a gap or a duplicate.
         If there are inconsistent doc_key or pdf_name values across pages.
         If there are inconsistent coord_space, dpi, image_width, or image_height
             values across pages.
@@ -542,7 +544,8 @@ def load_page_irs_from_verification(
 
     if page_indexes != expected:
         raise ValueError(
-            f"Non-contiguous page_index sequence. Got {page_indexes[:10]}..."
+            f"Non-contiguous page_index sequence: expected a gap-free sequence with no "
+            f"duplicates starting at {page_indexes[0]}. Got {page_indexes[:10]}..."
         )
 
     # Validate doc_key consistency + presence.
