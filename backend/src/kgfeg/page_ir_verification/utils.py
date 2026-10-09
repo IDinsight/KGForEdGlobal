@@ -538,7 +538,7 @@ def load_page_irs_from_verification(
 
     page_irs.sort(key=lambda p: p.page_index)
     page_indexes = [p.page_index for p in page_irs]
-    expected = list(range(len(page_irs)))
+    expected = list(range(page_indexes[0], page_indexes[0] + len(page_irs)))
 
     if page_indexes != expected:
         raise ValueError(
