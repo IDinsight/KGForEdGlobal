@@ -23,7 +23,7 @@ not in backend branches. This cycle adds optional, generic instruction fields
 that let a config steer the extraction and continuity agents, plus a generic
 guard that stops the extraction checker from inventing text. It then uses only
 the CAPS runtime config to fix the CAPS problems, and confirms the fix by
-rerunning the trial ranges.
+rerunning the PDF one grade at a time.
 
 ## Constraints
 
@@ -47,6 +47,9 @@ rerunning the trial ranges.
   as the request specifies.
 - Run configs reject unknown keys (`BaseSchema`, `extra="forbid"`); that must
   stay true.
+- The committed CAPS config holds the Grade R page range. For each later grade
+  run the user sets that grade's range in the config locally; those per-run
+  range edits are not committed (user rework, 2026-10-09).
 - Trial data, PDFs and rerun outputs are local and git-ignored. They are not
   committed.
 - Live pipeline runs call paid LLM APIs. Only the validation runs in work item 7
@@ -188,6 +191,9 @@ replace that config's `kgs` block, which is still a copy of Ghana English's.
   valid run config.
 - `AC-028`: The CAPS config maps CAPS Grade R to Learning Commons grade K (user
   rework, 2026-10-09).
+- `AC-034`: The committed CAPS config sets `start_page` 35 and `end_page` 59
+  (the Grade R range) in both the page IR extraction and page IR verification
+  stages, replacing 27/55 (user rework, 2026-10-09).
 - `AC-015`: The CAPS config's `kgs.as.sfi_extraction_instructions` states that
   Term and skill area come from each table's header rows.
 - `AC-016`: The CAPS config sets the extraction instruction fields for both the
@@ -230,13 +236,14 @@ not only record a comparison (user decision, 2026-10-09).
 
 **Done when:**
 
-- `AC-021`: Extraction, verification and stitching are rerun with the updated
-  CAPS config over the ranges of the three trial runs
-  (`results/funda_wande_trial_p13_15/`, `results/funda_wande_trial_p28_55/`,
-  `results/funda_wande_trial_p110_135/`) and over PDF 60-66 (`start_page` 59,
-  `end_page` 66). A before/after comparison against the trial results is
-  recorded for each finding in the Goal; PDF 60-66 has no trial baseline and is
-  reported on its own.
+- `AC-033`: Extraction, verification and stitching are rerun with the updated
+  CAPS config as four grade runs, given as 0-based `page_index` ranges (start
+  inclusive, end exclusive): Grade R 35-59 (PDF 36-59), Grade 1 59-84
+  (PDF 60-84), Grade 2 84-109 (PDF 85-109) and Grade 3 109-135 (PDF 110-135)
+  (user rework, 2026-10-09). Where a trial run covers the same pages
+  (`results/funda_wande_trial_p28_55/`, `results/funda_wande_trial_p110_135/`),
+  a before/after comparison is recorded for each finding in the Goal. Pages
+  with no trial baseline are reported on their own.
 - `AC-022`: In the reruns, every page break into a new REQUIREMENTS PER TERM
   table starts a new table, including PDF 110->111 and 123->124.
 - `AC-023`: In the reruns, bordered continuation pages without the banner, and
@@ -260,6 +267,8 @@ not only record a comparison (user decision, 2026-10-09).
   word.
 - `AC-011`: Replaced by `AC-027`. The guard now runs only when
   `use_extracted_hints` is true instead of for every config.
+- `AC-021`: Replaced by `AC-033`. Validation now reruns four grade ranges
+  instead of the three trial ranges plus PDF 60-66.
 - `AC-024`: Replaced by `AC-031`, which uses the AC-029 definition of an added
   word.
 - `AC-026`: Replaced by `AC-029`. The missing-word rule could not block the
@@ -274,7 +283,7 @@ not only record a comparison (user decision, 2026-10-09).
 - Exactly what counts as a "content word", and how running header text is
   recognized, are design decisions for Architect within AC-029 and AC-008.
 - The trial runs under `results/` stay available locally as the "before" side
-  of the comparison in AC-021.
-- AC-021 to AC-023, AC-025 and AC-031 judge LLM output. If a rerun misses one
+  of the comparison in AC-033.
+- AC-022, AC-023, AC-025, AC-031 and AC-033 judge LLM output. If a rerun misses one
   of them, the cause is routed to its owner (for example, config wording or the
   guard) rather than the condition being waived.
