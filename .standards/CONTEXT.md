@@ -4,232 +4,320 @@
 
 - KGForEdGlobal is a config-driven Python pipeline that turns curriculum PDFs
   into Learning Commons-shaped knowledge graphs. Stages: Page IR extraction ->
-  Page IR continuity verification -> Document IR stitching -> AS / LC / LP KG
-  construction, run through four CLI entry points in
-  `backend/src/kgfeg/entries/` (`extract_page_ir.py`,
-  `verify_page_ir_continuity.py`, `stitch_document_ir.py`, `create_kgs.py`).
+  Page IR continuity verification -> Document IR stitching -> KG construction
+  (Academic Standards (AS), Learning Components (LC), Learning Progressions
+  (LP)). Four CLI entry points in `backend/src/kgfeg/entries/`
+  (`extract_page_ir.py`, `verify_page_ir_continuity.py`,
+  `stitch_document_ir.py`, `create_kgs.py`); `evaluate_lcs.py` and
+  `evaluate_lps.py` are LLM-judge evaluation CLIs outside the pipeline.
 - Design principle (README, `docs/architecture.md`): curriculum-specific
   taxonomy and policy belong in runtime config ("document profiles"), not in
   source-specific backend branches. LLM judgments use producer/checker agent
   pairs, bounded inputs, and deterministic Python validators.
 - Example runtime configs live in `examples/` (Ghana English and math, India
-  Madhi math and Pratham science, Nigeria math, Rwanda math). The new
-  `examples/funda_wande/config_english_curriculum.json` (South Africa CAPS
-  English HL R-3) is untracked.
-- Uncommitted baseline change (part of this cycle's request, fix 5):
-  `backend/src/kgfeg/page_ir_verification/utils.py:541` now builds `expected`
-  from `page_indexes[0]` rather than 0. Its docstring (`:494-496`) and Raises
-  entry (`:516`) still say the sequence must start at 0.
+  Madhi math and Pratham science, Nigeria math, Rwanda math, and the committed
+  South Africa CAPS English HL R-3 profile
+  `examples/funda_wande/config_english_curriculum.json`).
+- The signed-off previous cycle
+  (`add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8`) added
+  optional `extraction_instructions` / `validation_instructions` (extraction)
+  and `verification_instructions` / `validation_instructions` (verification),
+  a text-layer correction guard for extraction-checker corrections, and
+  gap-free page ranges starting above 0. It changed no `kgs/` code; it authored
+  the CAPS `kgs` block but never ran `create_kgs`.
+- `backend/src/kgfeg/kgs/` was last changed on `main` by `be5c6a5` (LP
+  generation, 2026-09-24); the branch `tz6/fw` has no `kgs/` changes.
 
 ## Stack and Tooling
 
-- Python `>=3.13,<3.14` (`backend/pyproject.toml:130`), managed with uv
+- Python `>=3.13,<3.14` (`backend/pyproject.toml`), managed with uv
   (`backend/uv.lock`, hashed requirements under `cicd/requirements/`). Local
   venv at `backend/.venv`.
-- LLM agents use pydantic-ai (`Agent`, `ModelRetry`, `BinaryContent`). Models
-  come from environment settings, not run config:
-  `LLM_PAGE_IR_EXTRACTION_MODEL` and `LLM_PAGE_IR_VERIFICATION_MODEL`
-  (`backend/src/kgfeg/config.py:52-53`, via `Settings.llm_config(...)`), with
-  per-provider settings in `backend/src/kgfeg/model_registry.py`.
-- PDF access uses PyMuPDF (`fitz`). Logging uses loguru
-  (`from loguru import logger`) everywhere; no stdlib `logging`, no named
-  loggers.
-- Prompts are `dedent(f"""...""")` f-strings returning
-  `PromptPair(system_message, user_message)` (`backend/src/kgfeg/utils/general.py:94`).
+- LLM agents use pydantic-ai. Every KG agent (AS, LC, LP producers and
+  checkers) builds its model from `Settings.llm_config("kgs")`, i.e. env var
+  `LLM_KG_MODEL` (`backend/src/kgfeg/config.py:46`, `:129-131`); there is no
+  per-stage KG model setting. Page stages use `LLM_PAGE_IR_EXTRACTION_MODEL` /
+  `LLM_PAGE_IR_VERIFICATION_MODEL`. Settings load from `.env`
+  (`config.py` `SettingsConfigDict(env_file=".env")`); the repo-root `.env`
+  defines `LLM_KG_MODEL`, `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION`, provider
+  keys and `PATHS_PROJECT_DIR` (values not recorded).
+- PDF access uses PyMuPDF. Logging uses loguru everywhere. Prompts are
+  `dedent(f"""...""")` f-strings returning `PromptPair`.
 
 ## Structure and Boundaries
 
-- `backend/src/kgfeg/schemas.py` — all run-config models. `BaseSchema`
-  (`:252-255`) sets `extra="forbid"`, so every config model rejects unknown
-  keys. `RunConfig` (`:3565`) has `page_ir_extraction: ExtractionConfig`
-  (`:3308`), `page_ir_verification: VerificationConfig` (`:3449`),
-  `document_ir: StitchingConfig` (`:3392`), and `kgs: Optional[CreateKGConfig]`
-  (`:3152`, aliases `as`/`lc`/`lp`). Loaded with
-  `RunConfig.model_validate(open_json_type(config_fp))` in each entry point.
-- `backend/src/kgfeg/page_ir_extraction/` — per-page extraction.
-  - `agents.py`: `create_page_ir_extraction_agent` (`:27`) and
-    `create_page_ir_validation_agent` (`:162`, the checker, output
-    `ExtractionValidationVerdict`). A new agent is built per page. Both output
-    validators run `verify_page_ir_extraction_quality` (`llm.py:331-382`, 14
-    ordered validators from `validators.py`) and raise `ModelRetry` on
-    `QualityError`.
-  - `prompts.py`: `extract_page_ir_from_pdf_page` (`:15`) and
-    `validate_page_ir_extraction` (`:191`). The extraction user message appends
-    optional text-layer and table-layer hint blocks only when not `None`
-    (`:157-184`). The checker prompt has no optional blocks and never receives
-    the text-layer hints.
-  - `llm.py`: `extract_page_ir` runs the extraction agent, then
-    `_run_validation_agent` (`:126-191`). On a failing verdict it returns
-    `verdict.corrected_page_ir` wholesale, with no merge or further gating
-    (`:313-328`).
-  - `utils.py`: `extract_page_text_layer_hints` (`:248`) reads
-    `page.get_text("text")` and `page.find_tables()`; text passes a quality gate
-    (min 20 chars, printable ratio >= 0.90, U+FFFD ratio <= 0.02,
-    `:24-26`, `:176-207`), and is otherwise raw. No quote normalization,
-    running-header stripping, or OCR exists in this module.
-  - Run config reaching extraction: only `languages`, `use_extracted_hints`, and
-    `dpi` (`entries/extract_page_ir.py:110-119`). The text layer is read only
-    when `use_extracted_hints` is true (`:115`).
-- `backend/src/kgfeg/page_ir_verification/` — adjacent-page continuity.
-  - `agents.py`: `create_continuity_verification_agent` (`:29`) and
-    `create_continuity_validation_agent` (`:125`, the checker).
-  - `prompts.py`: `verify_page_ir_pairs_from_extraction` (`:171`, verifier) and
-    `validate_page_ir_continuity_verdict` (`:16`, checker). Both system prompts
-    are one static f-string with no optional blocks. The verifier's TABLE
-    decision procedure (Steps 1-4, `:258-286`) ends with "Content differences
-    INSIDE the grid do NOT override this structural conclusion", explicitly
-    including topic or skill-area shifts; its UNCERTAINTY POLICY makes Step 4
-    override uncertainty. The checker repeats Steps 1-4 nearly verbatim
-    (`:112-128`).
-  - `llm.py`: `verify_page_ir_pairs` runs the verifier, then
-    `_run_validation_agent` (`:114-199`); on failure it returns
-    `validation_verdict.corrected_verdict` ungated (`:376-389`).
-  - Only three config values reach the LLM layer, as keyword arguments:
-    `min_confidence_to_patch`, `min_confidence_to_select_positive`,
-    `min_confidence_to_stop_negative_search` (call path
-    `verify_page_pairs.py:1359` -> `:290` -> `:351-370`). No config object
-    reaches `llm.py` or `prompts.py`.
-  - `utils.py`: `load_page_irs_from_verification` (`:488-595`), whose only
-    caller is `cross_check_verification_run` (`document_ir/utils.py:341`,
-    call at `:395`), invoked from `entries/stitch_document_ir.py:226`. The
-    caller separately rejects negative/duplicate indexes and non-consecutive
-    pairs (`document_ir/utils.py:404-439`). The loader globs every `*.json` in
-    the directory (`:522`).
-- `backend/src/kgfeg/document_ir/` — stitching.
-  `compatible_kinds_for_stitch` (`utils.py:255`, rule at `:300-302`) only
-  stitches Block-Block or Table-Table; a Table never links to a Block.
-  `section_path` is built in `_update_section_stack`
-  (`stitch_segments.py:2117-2190`) and truncated to the newest
-  `config.max_section_path_length` headings (`:2190`; schema default 12,
-  `schemas.py:3420-3423`).
-- `backend/src/kgfeg/kgs/` — AS/LC/LP KG construction and prompts
-  (`kgs/prompts.py`).
+- `backend/src/kgfeg/schemas.py` — all run-config models. `BaseSchema` (`:252`)
+  sets `extra="forbid"`. `RunConfig` (`:3663`) holds `page_ir_extraction`
+  (`ExtractionConfig`, `:3308`), `page_ir_verification` (`VerificationConfig`,
+  `:3497`), `document_ir` (`StitchingConfig`, `:3440`) and
+  `kgs: Optional[CreateKGConfig]` (`:3152`; namespaces `as`/`lc`/`lp` map to
+  `_CreateKGAcademicStandardsConfig` `:892`, `_CreateKGLearningComponentsConfig`
+  `:2482`, `_CreateKGLearningProgressionsConfig` `:2956`; `metadata` is
+  `_CreateKGMetadata` `:2990`). `CreateKGConfig` cross-validates LP against AS:
+  LP statement types must be canonical AS types, the developmental coordinate
+  type must be in `grade_level_statement_types`, its `ordered_values` must equal
+  that type's canonical controlled values, and every buildsTowards type must
+  carry the coordinate in `identity_scope_statement_types`.
+  `grade_level_mapping` keys must be canonical grade controlled values.
+- `backend/src/kgfeg/entries/create_kgs.py` — `create` resolves upstream
+  inputs, then `build_kgs` runs 24 ordered steps (AS 1-10, LC 11-19, LP 20-24).
+  KG artifacts live in `<page_ir_extraction.output_dir>/<doc_key>/kgs/`.
+- `backend/src/kgfeg/kgs/` — KG construction (about 54k lines, 33 modules):
+  - Shared: `utils.py` (input validation, table selection, manifest, `KGDirs`),
+    `llm.py` (agent runners, `KGUsageTracker`), `agents.py`, `prompts.py`,
+    `validators.py`, `schemas.py`.
+  - AS: `sfi_extraction_windows.py` (plan + build windows),
+    `sfi_extraction.py`, `sfi_registry.py`, `sfi_dedup.py`,
+    `sfi_finalization.py`, `sfi_relationships.py` (hasChild),
+    `sfi_source_anchors.py`, `sfi_export.py`.
+  - LC: `lc_selection.py`, `lc_generation.py`, `lc_dedup.py`,
+    `lc_finalization.py`, `lc_export.py`.
+  - LP: `lp_generation.py`, `lp_candidates.py`, `lp_evidence.py`,
+    `lp_coordinates.py`, `lp_admissibility.py`, `lp_selection.py`,
+    `lp_requests.py`, `lp_dispatch.py`, `lp_checkpoints.py`, `lp_index.py`,
+    `lp_finalization.py`, `lp_validation.py`, `lp_artifacts.py`,
+    `lp_export.py`.
+- Page-IR and Document IR modules (`page_ir_extraction/`,
+  `page_ir_verification/`, `document_ir/`) are upstream of this cycle; the
+  request says their CAPS outputs need not be rerun.
 
 ## Commands
 
 Run from `backend/`.
 
-- `make test` — `uv run pytest -n auto ... tests $(TEST_ARGS)` after sourcing
-  `tests/test.env`; `TEST_ARGS=--run-slow` includes slow tests
-  (`backend/Makefile:140-144`, `tests/pytest_slow.py`).
-- Focused tests with CI-equivalent settings (CI env in
-  `.github/workflows/tests.yml:23-28`; `tests/test.env` alone does not supply
-  `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION` or `PATHS_PROJECT_DIR`, so
-  `BackendSettings` fails to load without them):
-  `CHAT_ENV=testing LEARNING_COMMONS_EXPORT_SCHEMA_VERSION=2026-07-09 OPENAI_API_KEY=sk-fake PATHS_PROJECT_DIR=<repo root> .venv/bin/python -m pytest -n auto tests/kgfeg/<area>`.
+- `make test` — pytest with xdist after sourcing `tests/test.env`;
+  `TEST_ARGS=--run-slow` adds slow tests (`backend/Makefile`).
+- Focused tests with CI-equivalent env (`tests/test.env` alone lacks
+  `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION` and `PATHS_PROJECT_DIR`):
+  `CHAT_ENV=testing LEARNING_COMMONS_EXPORT_SCHEMA_VERSION=2026-07-09 OPENAI_API_KEY=sk-fake PATHS_PROJECT_DIR=<repo root> .venv/bin/python -m pytest -n auto <paths>`.
 - `make lint` — isort, black, ruff, interrogate, mypy, pylint, cloc.
-- Pipeline stages: `python src/kgfeg/entries/<entry>.py <config.json>` (README
-  Quick start). These call live LLMs and cost money.
+- `python src/kgfeg/entries/create_kgs.py <config.json>` — runs AS, LC and LP
+  end to end with live LLM calls (cost).
+- AS steps 3-4 (`plan_extraction_windows`, `build_llm_extraction_windows`) are
+  deterministic and were run without LLM calls on the CAPS DocumentIR with
+  `save_fp` outside the repo.
 
 ## Conventions and Constraints
 
-- Request constraint for this cycle: no code may name CAPS or any curriculum;
-  curriculum details go only in runtime config. With new fields unset, every
-  agent prompt must stay unchanged, and the existing example configs must behave
-  as today. New unset fields appearing in run metadata is accepted.
-- Established optional-instruction pattern: `kgs.lc.lc_dedup_instructions:
-  Optional[str] = None` (`schemas.py:2495-2503`), injected in
-  `build_lc_dedup_prompt` (`kgs/prompts.py:896-905`) as a
-  "## Runtime curriculum instructions" section that says to follow it over the
-  generic policy unless that would violate the output contract. Only `None`
-  omits the section; an empty string passes validation and emits an empty
-  section. `lc_generation_validation_instructions` (`schemas.py:2521`) is
-  another `Optional`, default-`None` example.
-- `kgs.as.sfi_extraction_instructions` (`schemas.py:1019`) is a required,
-  stripped, non-empty `str` (validator `:1214-1238`). It reaches both the SFI
-  extraction prompt (`kgs/prompts.py:396`, precedence wording at
-  `:1115`, `:1152`) and the SFI checker (`:1733-1737`, `:1781-1787`). Other
-  required AS instruction fields: `sfi_dedup_instructions`,
-  `sfi_extraction_validation_instructions`, `sfi_has_child_instructions`,
-  `sfi_has_child_validation_instructions`.
-- Page ranges: `start_page` is 0-based inclusive, `end_page` 0-based exclusive
-  (`None` = to the end), in both `ExtractionConfig` and `VerificationConfig`
-  (`check_page_range` requires `end_page > start_page`). Verification writes
-  only the configured range, so verified page indexes can start above 0.
-- Commit messages follow Conventional Commits in recent history.
-- Pre-commit runs detect-secrets, black, isort, ruff, interrogate, mypy, pylint
-  (`.pre-commit-config.yaml`). Example configs embed absolute local paths for
-  `pdf_fp` and `output_dir`.
+- Request constraint carried from the previous cycle's work: curriculum
+  details belong in runtime config; no backend code names CAPS or any
+  curriculum.
+- Established optional-instruction pattern: `Optional[str] = None` fields
+  injected as a "Runtime curriculum instructions" section only when not `None`
+  (for example `kgs.lc.lc_dedup_instructions`, `schemas.py:2495`, injected at
+  `kgs/prompts.py:896-905`). `kgs.as.sfi_extraction_instructions`
+  (`schemas.py:1019`) is required and non-empty.
+- `RunConfig` validation creates `page_ir_extraction.output_dir` if missing
+  (`ExtractionConfig.ensure_output_dir_exists`, `schemas.py:3390-3405`), so
+  merely loading a config has a filesystem side effect.
+- Page ranges: `start_page` 0-based inclusive, `end_page` 0-based exclusive.
+- Commit messages follow Conventional Commits. Pre-commit runs detect-secrets,
+  black, isort, ruff, interrogate, mypy, pylint. Example configs embed absolute
+  local paths for `pdf_fp` and `output_dir`.
 
 ## External Systems and Data
 
-- LLM providers: Anthropic (default models) and OpenAI, via pydantic-ai; keys
-  come from environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`).
-- Run metadata: `extraction_run.json` (`persist_extraction_run`,
-  `page_ir_extraction/utils.py:277-317`) and `verification_run.json`
-  (`persist_verification_run`, `page_ir_verification/utils.py:648-684`) store
-  the stage config's `model_dump` (minus `overwrite`) in `RunCtx.extra`
-  (`schemas.py:3543`), so any new config field appears there automatically.
+- LLM providers: Anthropic and OpenAI via pydantic-ai; keys from environment
+  (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`).
+- `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION` must be non-empty or AS export
+  raises (`kgs/sfi_export.py:596-619`); it is recorded in validation reports
+  and fingerprints only.
 - Git-ignored local data: `data/`, `results/`, `caches/`, `logs/`, `secrets/`,
-  `graveyard/`, `.env*`. `examples/` is not ignored.
-- CAPS evidence (local, git-ignored):
-  `data/funda_wande/caps_english_hl_grade_3_fs.pdf` has 142 pages and a usable
-  PyMuPDF text layer on every page except PDF 142. A case-insensitive search
-  for "REQUIREMENTS PER TERM" matches exactly 48 pages, PDF 36-133. Trial runs
-  are under `results/funda_wande_trial_p13_15/`,
-  `results/funda_wande_trial_p28_55/` (both nested under a config-hash
-  directory), and `results/funda_wande_trial_p110_135/`
-  (`extraction/`, `verification/`, `stitching/`).
+  `graveyard/`, `.env*`. Current `results/` holds `kg_for_ed/` and
+  `lp_evals/`; the earlier CAPS trial directories are gone.
+- CAPS PDF: `data/funda_wande/caps_english_hl_grade_3_fs.pdf`, doc key
+  `c939a3a9dcce92ed61d970f4599ced6f2ddc425d1220eeeab9828472b878d24d`.
+- User-verified upstream outputs for this cycle:
+  `results/kg_for_ed/<doc_key>/` with `extraction/` (`extraction_run.json`:
+  `output_dir` `results/kg_for_ed`, `start_page` 35, `end_page` 135, 100 page
+  IRs = page_index 35-134 = PDF 36-135), `verification/` (100 verified page
+  IRs) and `stitching/document_ir.json`. No `kgs/` directory exists yet.
+- CAPS DocumentIR shape (59 segments): 7 heading blocks ("3.1 GRADE R",
+  "3.2 GRADE 1", "3.3 GRADE 2", "3.4 GRADE 3", and three "RECOMMENDED
+  TEXTS/RESOURCES FOR THE YEAR" headings on page_index 83, 108, 134) and 52
+  tables. 48 are banner tables, 12 per grade (4 terms x 3 skill areas), each
+  with `header_row_count` 3 or 4: the GRADE/REQUIREMENTS PER TERM lines (one
+  or two rows), the TERM label, and the skill-area label (Grades 1-3 put
+  contact time in column 2 of the skill-area row; the first Grade R table
+  has a separate contact-time header row). One table (page_index 103-105) also counts the
+  `CONTENT/CONCEPTS/SKILLS` row as a header. Grade R tables have `n_cols` 1,
+  Grades 1-3 `n_cols` 2. The 4 remaining tables are the per-grade resources
+  boxes (page_index 58, 83, 108, 134). Body rows are single full-width cells
+  of 700-2300 characters holding many bullets; 144 body rows in the banner
+  tables hold about 1,083 bullet lines outside ASSESSMENT rows and about 545
+  inside them (rough regex count).
+- `section_path` in this DocumentIR accumulates and never pops: later tables
+  carry every earlier grade heading and resources heading (up to 7 entries).
 
 ## Testing and Verification Baseline
 
-- Tests live in `backend/tests/kgfeg/<module>/` (pytest, xdist,
-  `asyncio_mode=auto`, `pythonpath=[".","src"]`). Baseline on this checkout:
-  `tests/kgfeg/page_ir_extraction`, `page_ir_verification`, `document_ir`, and
-  `test_schemas.py` — 663 passed with the CI-equivalent env above.
-- LLM calls are never made in tests. Extraction tests monkeypatch the agent
-  factories with stub agents (`tests/kgfeg/page_ir_extraction/test_llm.py:65-268`)
-  or patch `_run_validation_agent`; verification tests use
-  `unittest.mock.patch` on `llm.create_continuity_verification_agent`,
-  `_run_validation_agent`, and related functions with `MagicMock` agents.
-  Prompt tests assert substrings and injected values, not full snapshots.
-- Fixtures in `tests/conftest.py` include a small PDF
-  (`tests/fixtures/utils/tanzania.pdf`), loguru capture/mocks, and an autouse
-  logfire silencer.
-- Untested today: entry modules, `persist_extraction_run`,
-  `persist_verification_run`, `load_page_irs_from_verification`,
-  `cross_check_verification_run`, and the agent factories' output validators.
+- Tests live in `backend/tests/kgfeg/<area>/` (pytest, xdist,
+  `asyncio_mode=auto`). KG-related baseline on this checkout:
+  `tests/kgfeg/kgs`, both `test_learning_progressions_config_*.py`,
+  `tests/kgfeg/evals`, `test_schemas.py` — 3011 passed with the CI-equivalent
+  env.
+- `tests/kgfeg/kgs/` covers LP (about 31 files, stub models, sockets patched
+  to reject network) plus `test_create_kgs_lp.py` (mocks AS/LC steps to check
+  phase order), `test_kg_manifest_resume.py`, `test_llm.py`. No unit tests
+  exist for SFI windows, extraction, registry, dedup, finalization, hasChild,
+  source anchors, or any LC module; real AS/AS+LC export runs only on
+  synthetic data in `tests/fixtures/lp_eval/snapshot_fixtures.py`. Test
+  profiles are Ghana, Nigeria, Rwanda, MADHI and Pratham; none is CAPS.
 - CI (`.github/workflows/tests.yml`) runs pytest on Python 3.13 without
-  `--run-slow`; `linting.yml` runs isort/black/ruff/interrogate/mypy/pylint.
+  `--run-slow`; `linting.yml` runs the linters.
 
 ## Relevant Existing Behavior
 
-- Extraction checker correction replaces the extracted PageIR wholesale once it
-  passes the deterministic quality validators; nothing compares its text to the
-  PDF text layer.
-- Verification checker correction replaces the verifier verdict wholesale.
-- The verifier's generic table rule treats any matching-column table at the top
-  of page N+1 with no external heading and no redefined header as a
-  continuation, regardless of in-grid topic or skill-area changes.
-- Document IR never stitches a Table to a Block, so continuation content
-  extracted as blocks breaks table continuity.
-- The Funda Wande config's `kgs` block is byte-for-byte equal to Ghana English's
-  (Ghana metadata, framework title, grades, `sfi_extraction_instructions`,
-  `lc_dedup_instructions`). Its only CAPS-specific values are outside `kgs`:
-  `page_ir_extraction.country` "South Africa", `year` 2011, `pdf_fp`,
-  `output_dir`, `start_page`/`end_page` 27/55 in both page stages, and
-  `document_ir.max_section_path_length` 60. It sets
-  `use_extracted_hints: true`.
+### Inputs, resume and overwrite
+
+- `create` requires `<page_ir_extraction.output_dir>/<doc_key>/extraction/extraction_run.json`
+  with a matching `doc_key`, then reads `<...>/stitching/document_ir.json`
+  (`kgs/utils.py:1288-1367`). The committed CAPS config sets
+  `output_dir` to `results/funda_wande_grade_r` and page stages to
+  `start_page` 35 / `end_page` 59, so it does not point at the
+  `results/kg_for_ed` outputs.
+- `load_and_validate_inputs` (`kgs/utils.py:1503-1582`) checks doc key, pages,
+  segments, unique segment IDs; it raises when table inclusion rules are set
+  but select no table, and only warns on language mismatch.
+- One `kgs.overwrite` flag governs all of AS, LC and LP. With
+  `overwrite=false`, `kg_run_manifest.json` must equal the freshly built prep
+  manifest (which includes the table-selection policy, counts and warnings)
+  or the run raises (`kgs/utils.py:1679-1752`). Sub-stages resume from
+  aligned prefixes; resume keys for SFI extraction windows and LC requests do
+  not include instruction text, so changed instructions with
+  `overwrite=false` reuse earlier LLM results (also stated in
+  `docs/guides/running-and-debugging.md`). LP resume fails closed on any
+  changed config, prompt, model or population, and
+  `validate_lp_checkpoint_format` runs before overwrite archiving.
+- `kg_run.json` records the `kgs` config (minus `overwrite`), status, error
+  and usage.
+
+### AS (steps 3-10)
+
+- Table selection matches `included_table_section_patterns` against text
+  built from `section_path` headings within `table_section_pattern_page_lookback`
+  pages of the table start (else the last `section_path` entry), plus the
+  table's `local_code` and `columns_signature` (`kgs/utils.py:211-265`,
+  `:1452-1500`); header and body cells are not consulted. Field docs mention
+  only nearby heading text. Exclusions win; included column signatures are
+  exact matches.
+- Every non-empty block segment becomes its own extraction window, unfiltered
+  (`kgs/sfi_extraction_windows.py:1636-1641`). Tables are split by
+  `max_rows_per_table_window` / `row_overlap`, repeating `header_rows` in each
+  window. The prompt payload sends raw `rows` cells (internal newlines kept),
+  the full un-truncated `section_path` (recent first), up to 2 same-page
+  headings on each side, and `scope_context_candidates` drawn only from
+  neighbor headings and `section_path`.
+- Dry run on the CAPS DocumentIR with the committed config: 55 windows = 48
+  banner tables (selected via `columns_signature`, which contains "requirements
+  per term"; the pattern never appears in `section_path`) + 7 heading blocks.
+  The 4 resources tables are excluded. No table splits (2-8 body rows each).
+  `scope_context_candidates` carry only Grade values, and late tables list all
+  earlier grades. Prompts are about 30k system + 11-13k user characters per
+  table window.
+- SFI extraction runs windows sequentially: producer then checker (a failing
+  verdict's correction replaces the draft), then deterministic integrity
+  checks. Checks include: canonical `statement_type` (an alias is an error,
+  not normalized); `identity_scope_values` keys exactly equal to the
+  configured dimensions (so Grade candidates return `{}`) with controlled
+  values or aliases; exact anchors; `source_text` inside the cited rows. Each
+  agent has 3 output retries; exhausting them aborts the run.
+- Registry: identity scope comes only from the LLM-returned
+  `identity_scope_values`, canonicalized via controlled-value aliases with
+  `normalize_controlled_value_key` (NFKC, casefold, punctuation collapsed;
+  `schemas.py:140`); unknown or missing values raise
+  (`kgs/sfi_registry.py:891-984`). A candidate's own label canonicalizes only
+  by exact normalized match, else `canonical_statement_value` is `None`.
+- Dedup sends every multi-candidate component (edges from same controlled
+  value, same normalized text within identity scope, shared anchors, registry
+  buckets, same row) to producer/checker; `max_dedup_review_set_candidates:
+  null` leaves components unsplit. Only `merged`/`singleton` groups are minted;
+  `conflict`/`needs_review` groups are dropped and counted.
+- Final SFI IDs for uncoded items are UUIDv5 over `synthetic_merge_key_fields`
+  (normalized text plus identity scope, etc.); an identity collision raises
+  (`kgs/sfi_finalization.py:788-874`, `:1957-1995`). Finalization has no
+  resume and always rewrites its files.
+- hasChild issues one producer/checker request per final SFI, including
+  Grades. Candidate parents are bounded to 24 including the root; more than
+  23 "indispensable" candidates raises (`kgs/sfi_relationships.py:579-694`).
+  Section-path evidence is a substring test against up to 12 labels.
+  Unresolved children always get a root-fallback edge
+  (`unresolved_root_fallback=True`) with no config gate, although
+  `docs/pipeline/academic-standards.md` says "when permitted by the hierarchy
+  policy".
+- AS export (`kgs/sfi_export.py`) raises on any validation error. Local grades
+  come from the record's canonical value or its Grade scope value (no
+  inheritance through hasChild), and an observed grade missing from
+  `grade_level_mapping` is an error. `metadata.grades_or_stages` is never
+  checked against the mapping.
+
+### LC (steps 11-19)
+
+- LC requires a passed, error-free AS validation report. With
+  `lc_source_statement_types: null`, selection uses the leaf default: leaf
+  SFIs whose `normalized_statement_type == "Standard"` (CAPS Skills); seeds
+  under a root-fallback path are excluded (`kgs/lc_selection.py:64-76`,
+  `:242-268`). Zero eligible seeds raises.
+- Generation is sequential, one producer/checker per request (batch size 1).
+  Per-request failures are recorded. The run raises only when failed/total
+  exceeds `lc_max_failure_rate`, after artifacts are written
+  (`kgs/lc_generation.py:749-760`). Rerunning without overwrite retries only
+  failed requests.
+- Dedup with `lc_dedup_scope: framework` compares all skill texts in one scope.
+  Identical normalized text across grades/terms becomes one LC with one
+  supports edge per claiming SFI. Semantic pairs are adjudicated by a single
+  judge (no checker) in batches of 25. The dedup judge prompt carries
+  math-flavored examples (`kgs/prompts.py:912-913`).
+
+### LP (steps 20-24)
+
+- The coordinate is read from each Skill's own Grade `identity_scope_values`,
+  ranked by `ordered_values`. Term order exists only in instruction text.
+  buildsTowards is allowed when `source_rank <= target_rank`, so same-grade
+  pairs are judged in both directions (`kgs/lp_coordinates.py:137-143`).
+- Candidates are capped at `min(max_total_candidates, N(N-1)/2,
+  N*max_candidates_per_sfi//2)` and over-budget pairs are dropped silently
+  (`kgs/lp_candidates.py:264-281`). With this config that is
+  `min(5000, 6N)`, so the 5000 cap binds at about 834 Skills. Each request
+  makes one producer and one checker call, with up to 3 attempts each per
+  invocation; concurrency is `max_concurrent_requests`.
+- Any exhausted request fails the stage (`LPGenerationFailed`). Any
+  buildsTowards cycle raises `LPFinalizationCycleError` after writing
+  `lp_final_claims.json` (`kgs/lp_finalization.py:930-935`).
+  `relationship_metadata` must match fixed approved literals.
 
 ## Known Unknowns
 
-- The docstrings of both page-IR modules say the checker uses higher reasoning
-  effort, but Anthropic settings are identical for both agent types
-  (`model_registry.py:85-89`, `:113-116`). Not material to this request unless
-  downstream design relies on the distinction.
+- Actual numbers of Skill SFIs, LC requests and LP candidates for CAPS;
+  the bullet count above is a rough proxy. It matters for LLM cost and
+  whether LP's 5000-candidate cap binds.
+- How the KG model labels Grade/Term/Skill Area candidates whose banner cell
+  combines lines (for example `"GRADE R HOME LANGUAGE ENGLISH\n\nREQUIREMENTS
+  PER TERM"`). An unmapped Grade label would fail AS export, and a description
+  that does not exactly normalize to a controlled value or alias leaves
+  `canonical_statement_value` empty.
+- The request describes the verified range as "page_index 35-135"; run
+  metadata shows `end_page` 135 exclusive, i.e. page_index 35-134 (PDF
+  36-135). Both agree on PDF 36-135.
+- Real buildsTowards cycle frequency among same-grade CAPS Skill pairs.
 
 ## Evidence
 
-- `backend/src/kgfeg/page_ir_extraction/{agents,prompts,llm,utils,validators}.py`
-  and `entries/extract_page_ir.py` — extraction flow and hints.
-- `backend/src/kgfeg/page_ir_verification/{agents,prompts,llm,utils,verify_page_pairs}.py`
-  and `entries/verify_page_ir_continuity.py` — verification flow.
-- `backend/src/kgfeg/schemas.py`, `backend/src/kgfeg/kgs/prompts.py` — config
-  models and instruction-field patterns.
-- `backend/src/kgfeg/document_ir/{utils,stitch_segments}.py` — stitching and
-  section path.
-- `git diff backend/src/kgfeg/page_ir_verification/utils.py` — uncommitted
-  fix-5 change.
-- Python comparison of the Funda Wande and Ghana English `kgs` blocks — equal.
-- PyMuPDF scan of the CAPS PDF — page count, text layer, banner pages.
-- Focused pytest run — 663 passed.
+- `backend/src/kgfeg/entries/create_kgs.py` — step order, input resolution,
+  failure points.
+- `backend/src/kgfeg/kgs/{utils,sfi_extraction_windows,sfi_extraction,sfi_registry,sfi_dedup,sfi_finalization,sfi_relationships,sfi_export}.py`
+  — AS behavior.
+- `backend/src/kgfeg/kgs/{lc_selection,lc_generation,lc_dedup,lc_finalization,lc_export}.py`
+  — LC behavior.
+- `backend/src/kgfeg/kgs/{lp_coordinates,lp_candidates,lp_generation,lp_checkpoints,lp_finalization,lp_validation,lp_export}.py`
+  — LP behavior.
+- `backend/src/kgfeg/schemas.py`, `backend/src/kgfeg/config.py` — config
+  models, cross-validation, model settings.
+- `results/kg_for_ed/<doc_key>/{extraction/extraction_run.json,stitching/document_ir.json}`
+  — upstream run metadata and DocumentIR shape.
+- Non-LLM dry run of AS steps 3-4 on the CAPS DocumentIR (outputs outside
+  the repo) — window counts and selection reasons.
+- Config load script — doc key, `output_dir` resolution.
+- Focused pytest run — 3011 passed.
+- `docs/pipeline/academic-standards.md`, `docs/guides/running-and-debugging.md`
+  — documented stage behavior and resume caveats.

@@ -2,12 +2,12 @@
 	"page_ir_extraction": {
 		"country": "South Africa",
 		"dpi": 250,
-		"end_page": 59,
+		"end_page": 135,
 		"extraction_instructions": "This page belongs to the South Africa CAPS English Home Language curriculum, Foundation Phase, Grades R-3. Its requirement pages are drawn as bordered boxes (ruled tables). Apply these rules:\n1. Banner tables. A box whose top rows show the banner \"REQUIREMENTS PER TERM\" is the start of a new table. Its banner rows are the \"GRADE <R|1|2|3> HOME LANGUAGE ENGLISH\" line, the \"REQUIREMENTS PER TERM\" line, the TERM label (for example \"TERM 1\"), and the skill-area label (LISTENING AND SPEAKING (ORAL), EMERGENT READING, EMERGENT WRITING, READING AND PHONICS, or WRITING). These banner rows are header rows of that one table: keep them inside `rows` and count them in `header_row_count`. Do not split the banner off into its own table, and do not extract banner lines as heading or paragraph blocks. A section heading printed above the box, such as \"3.1 GRADE R\", stays a heading block outside the table.\n2. Continuation boxes. A box at the top of a page that does NOT show the \"REQUIREMENTS PER TERM\" banner continues the table from the previous page. Extract it as a table (kind \"table\") with boundary \"resumed\" (or \"both\" if it also continues onto the next page), whose rows continue the previous page's table. Never extract the content of such a box as loose heading, paragraph, or list blocks. This includes boxes that open with an ASSESSMENT band (\"ASSESSMENT\", \"Suggestions for Assessment\", \"Informal\", \"Oral and / or practical\", \"Observation\", and the bullet list that follows): those are rows of the continued table, not headings or paragraphs. Likewise, a box that is cut off at the bottom of a page and continues on the next page has boundary \"truncated\". Exception: a box whose top row is a title such as \"RECOMMENDED TEXTS/RESOURCES FOR THE YEAR\" starts its own table (boundary \"complete\" unless it is itself cut off), not a continuation; such a box appears at the end of each grade (PDF pages 59, 84, 109, 135).\n3. Column count. A continuation keeps the parent table's column count: give it the same n_cols as the table it continues (Grade R tables have one content column; some Grade 1-3 tables have two). Do not split one column into several, and keep bullet lists, sub-labels (such as \"Weeks 1 - 5\" or \"Processes information:\"), and contact-time lines inside the cell text of the rows where they appear.",
 		"languages": [
 			"en"
 		],
-		"output_dir": "/Users/tzz/Projects/private/idi/KGForEdGlobal/results/funda_wande_grade_r",
+		"output_dir": "/Users/tzz/Projects/private/idi/KGForEdGlobal/results/kg_for_ed",
 		"overwrite": false,
 		"pdf_fp": "/Users/tzz/Projects/private/idi/KGForEdGlobal/data/funda_wande/caps_english_hl_grade_3_fs.pdf",
 		"start_page": 35,
@@ -16,7 +16,7 @@
 		"year": 2011
 	},
 	"page_ir_verification": {
-		"end_page": 59,
+		"end_page": 135,
 		"min_confidence_to_patch": 0.5,
 		"min_confidence_to_select_positive": 0.5,
 		"min_confidence_to_stop_negative_search": 0.9,

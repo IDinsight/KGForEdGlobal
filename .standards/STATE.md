@@ -1,6 +1,6 @@
 # S.T.A.N.D.A.R.D.S. Workflow State
 
-`WorkflowState`: `AUDITING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
+`WorkflowState`: `SCOPING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
 `PendingCycleRequest`: `UNSET` `PendingCycleBlockedOn`: `NONE`
 
 ## Active Work
@@ -22,8 +22,8 @@ Preserve existing entries; see PROTOCOL.md, Baseline Reconciliation Format.
 
 ## Handoff
 
-`Kind`: `NEW_CYCLE` `From`: `SIGNED_OFF` `FailureType`: `NONE` `Reason`:
-`New standard brownfield cycle for the Funda Wande KG step; Auditor establishes project context.`
+`Kind`: `FORWARD` `From`: `AUDITING` `FailureType`: `NONE` `Reason`:
+`Project context refreshed with a targeted audit of backend/src/kgfeg/kgs/ for the CAPS KG run.`
 
 ## Recovery
 
