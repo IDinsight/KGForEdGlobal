@@ -1,70 +1,14 @@
 # S.T.A.N.D.A.R.D.S. Workflow State
 
-`WorkflowState`: `SIGNED_OFF` `CycleMode`: `UNSET` `PendingCycleMode`: `UNSET`
+`WorkflowState`: `AUDITING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
 `PendingCycleRequest`: `UNSET` `PendingCycleBlockedOn`: `NONE`
 
 ## Active Work
 
 `CompletionPolicy`: `FULL_DELIVERABLE` `Id`:
-`add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8` `Request`:
-`Add generic, opt-in support for curriculum-specific guidance in PDF page
-extraction and page-continuity verification, plus a generic guard against
-hallucinated extraction corrections; then apply it to the South Africa CAPS
-English Home Language R-3 PDF (Funda Wande) through that curriculum's runtime
-config only. CONSTRAINTS: no code may name CAPS or any curriculum (curriculum
-details live only in runtime config); with the new fields unset every agent
-prompt stays the same and the Ghana, India, Nigeria and Rwanda example configs
-behave exactly as today (run metadata files such as extraction.json and
-verification_run.json saving the whole config, so new unset fields appear in
-them, is acceptable). FIXES: (1) page_ir_extraction: optional
-curriculum-instruction fields injected into both the extraction agent and its
-validation (checker) agent, with an explicit rule that they override the
-generic rules where they conflict; follow the kgs.lc.lc_dedup_instructions
-pattern (backend/src/kgfeg/schemas.py:2495, backend/src/kgfeg/kgs/prompts.py:901);
-the checker needs them because its corrected PageIR replaces the extraction
-(page_ir_extraction/llm.py:328). (2) page_ir_verification: same kind of fields
-for the continuity verifier and its checker (the checker's corrected verdict
-replaces the verifier's, page_ir_verification/llm.py:389); they must be able to
-override the generic table-to-table rule (page_ir_verification/prompts.py:273-286)
-that treats skill-area changes inside a grid as continuations. (3)
-page_ir_extraction generic guard: do not accept a checker correction that adds
-content words missing from the page's PDF text layer when a usable text layer
-exists; tolerate missing or garbled text layers, display-case differences,
-curly vs straight quotes, and running headers; block the bad correction and log
-a warning. (4) KG step, config only: in the CAPS config use
-kgs.as.sfi_extraction_instructions to say Term and skill area come from each
-table's header rows. (5) page_ir_verification: keep the uncommitted change in
-load_page_irs_from_verification (backend/src/kgfeg/page_ir_verification/utils.py:541-542)
-that accepts a gap-free page range not starting at 0; update its docstring and
-error message; add tests that a range starting above 0 passes and a range with
-a gap fails. (6) Author the CAPS kgs block in this cycle (still a copy of
-Ghana's; fix 4 depends on it). Each agent gets its own instruction field. CAPS
-CONFIG CONTENT (examples/funda_wande/config_english_curriculum.json):
-extraction - a bordered box without the REQUIREMENTS PER TERM banner continues
-the previous page's table as rows, including pages that open with an ASSESSMENT
-band; the banner rows (Grade, Term, skill area) are header rows; keep the
-parent table's column count. Verification - a table whose top rows contain
-REQUIREMENTS PER TERM starts a new table even if the columns match; that phrase
-appears on exactly the 48 banner pages, PDF 36-133, and nowhere else. EVIDENCE
-(local, git-ignored): PDF data/funda_wande/caps_english_hl_grade_3_fs.pdf; trial
-runs results/funda_wande_trial_p13_15/, results/funda_wande_trial_p28_55/,
-results/funda_wande_trial_p110_135/; findings - 12 of 13 Grade 3 continuation
-pages and all 7 pages opening with ASSESSMENT were extracted as loose blocks and
-stitching never links a table to a block (document_ir/utils.py:302); 2 of 8
-table-to-table breaks into a new banner table were wrongly merged (PDF 110->111,
-123->124); the checker's correction on PDF 43 added 8 words not on the page; no
-content segment has a Term in section_path; in Grade 3, 3.4 GRADE 3 drops out of
-section_path at PDF 122 (only the newest 60 headings are kept) while in Grade R,
-where continuation content stayed as table rows, the Grade stayed on all 44
-segments. BASELINE NOTES: utils.py has the uncommitted fix-5 change;
-examples/funda_wande/ is untracked; no .standards/CONTEXT.md existed.
-VALIDATION after the fixes: rerun the three trial ranges plus PDF 60-66
-(start_page 59, end_page 66) and compare the results. USER REWORK (2026-10-09): (a) the fix-3 guard runs only when the stage config sets use_extracted_hints true; with it false the guard does not run (replaces the always-on decision behind AC-011); (b) the guard blocks only content words the correction adds, i.e. missing from the usable text layer and absent from the extraction agent's PageIR (align AC-007 wording with AC-010); (c) blocked-correction warnings go to the terminal only; validation needs no log file; (d) keep CAPS Grade R mapped to Learning Commons grade K. USER DECISION (2026-10-09, after the PDF 43 scoping failure): the guard also blocks a correction when a content word occurs more times than in both the text layer and the extraction agent's PageIR (PDF 43 repeats an on-page ASSESSMENT band). USER REWORK 2 (2026-10-09): run the validation reruns as four grade ranges by 0-based page_index (start inclusive, end exclusive): Grade R 35-59, Grade 1 59-84, Grade 2 84-109, Grade 3 109-135, replacing the three trial ranges plus PDF 60-66 (start_page 59, end_page 66); the committed CAPS config's start_page/end_page in both page stages are set to the Grade R range (35/59) instead of staying 27/55, and the user updates the config's range for each later grade run.`
-`Scope`:
-`.standards/docs/scope/add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8.md`
-`Architecture`:
-`.standards/docs/specs/add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8.md` `Development`:
-`.standards/docs/development/add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8.md`
+`run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8` `Request`:
+`Run the KG construction step of the pipeline (create_kgs: the AS, LC and LP knowledge graphs) on the Funda Wande South Africa CAPS English Home Language R-3 PDF; update the CAPS runtime config's kgs section (examples/funda_wande/config_english_curriculum.json) as necessary; check and update the KG pipeline code as necessary; and review the results. Basically the same thing the previous cycle (add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8, signed off) did for the page IR extraction, verification and stitching steps. Same branch (tz6/fw). INPUTS (user, 2026-10-09): page IR extraction, verification and stitching do not need to run again. Their full Grade R-3 outputs (0-based page_index 35-135, PDF 36-135), verified separately by the user, are in results/kg_for_ed/c939a3a9dcce92ed61d970f4599ced6f2ddc425d1220eeeab9828472b878d24d/ (extraction/, verification/, stitching/document_ir.json; local, git-ignored). CONTEXT FROM THE PREVIOUS CYCLE (facts, not new requirements): it authored the CAPS kgs block (South Africa / Department of Basic Education metadata; Grade > Term > Skill Area > Skill hierarchy; Grade R mapped to Learning Commons grade K; sfi_extraction_instructions say Grade, Term and skill area come from each table's header rows; tables selected by included_table_section_patterns matching requirements per term) but never ran create_kgs (a non-goal there), so that block has only been checked by config loading and review. The CAPS PDF is data/funda_wande/caps_english_hl_grade_3_fs.pdf (local, git-ignored).`
+`Scope`: `NONE` `Architecture`: `NONE` `Development`: `NONE`
 `PromotionReason`: `NONE` `AuditTarget`: `NONE` `BlockedOn`: `NONE`
 `PendingVerificationCadence`: `NONE`
 
@@ -78,8 +22,8 @@ Preserve existing entries; see PROTOCOL.md, Baseline Reconciliation Format.
 
 ## Handoff
 
-`Kind`: `SIGNOFF` `From`: `AWAITING_USER_SIGNOFF` `FailureType`: `NONE` `Reason`:
-`User signed off; completion requirements revalidated against unchanged inputs.`
+`Kind`: `NEW_CYCLE` `From`: `SIGNED_OFF` `FailureType`: `NONE` `Reason`:
+`New standard brownfield cycle for the Funda Wande KG step; Auditor establishes project context.`
 
 ## Recovery
 
