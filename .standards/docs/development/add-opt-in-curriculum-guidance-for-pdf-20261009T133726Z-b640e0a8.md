@@ -606,6 +606,22 @@ analyzed by Developer with scratchpad scripts `grade_extraction.py`,
   (extraction rule 2, verification rule 3) is literally wrong for these boxes;
   Grade R handled PDF 59 correctly anyway.
 
+**CAPS wording revision 1** (user-approved 2026-10-09, before the Grade 1 run;
+the user accepted that Grade R ran with the earlier wording): one exception
+sentence appended to rule 2 of both extraction texts and rule 3 of both
+verification texts: a box/table whose top row is a title such as "RECOMMENDED
+TEXTS/RESOURCES FOR THE YEAR" starts its own table, not a continuation, and
+appears at the end of each grade (PDF 59, 84, 109, 135). Self-check
+(scratchpad `check_wording.py`): config loads as `RunConfig`; only those four
+values differ from `HEAD`; each text has the exception exactly once; AC-016
+and AC-017 phrases still present; range and `output_dir` unchanged (35/59,
+`funda_wande_grade_r`).
+
+Grade 1 run handed over: the user sets, locally and uncommitted,
+`start_page` 59 and `end_page` 84 in both page stages and
+`page_ir_extraction.output_dir` to `<repo>/results/funda_wande_grade_1`, then
+runs the same three entry points. No trial baseline covers PDF 60-84.
+
 ---
 
 ## Plan Notes

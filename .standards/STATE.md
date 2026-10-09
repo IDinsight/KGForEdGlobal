@@ -66,7 +66,7 @@ VALIDATION after the fixes: rerun the three trial ranges plus PDF 60-66
 `.standards/docs/specs/add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8.md` `Development`:
 `.standards/docs/development/add-opt-in-curriculum-guidance-for-pdf-20261009T133726Z-b640e0a8.md`
 `PromotionReason`: `NONE` `AuditTarget`: `NONE` `BlockedOn`:
-`Grade R analysis recorded. Decide whether to tighten the CAPS continuation wording for the end-of-grade resources box before the Grade 1 run, then continue with Grade 1.`
+`Waiting for the user to run the Grade 1 validation (page_index 59-84, output results/funda_wande_grade_1) and paste any correction-guard warnings.`
 `PendingVerificationCadence`: `NONE`
 
 `BaselineReconciliation`: `NONE`
