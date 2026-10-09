@@ -447,7 +447,7 @@ not exist yet; the only values changed versus `HEAD` are those five.
 
 ### DEV-007 — Cycle-wide compatibility and lint self-check
 
-`Status`: `IN_PROGRESS` `Depends On`: `DEV-001, DEV-002, DEV-003, DEV-004, DEV-005, DEV-006`
+`Status`: `DONE` `Depends On`: `DEV-001, DEV-002, DEV-003, DEV-004, DEV-005, DEV-006`
 `Acceptance`: `AC-018, AC-019, AC-020`
 
 **Goal**
@@ -469,6 +469,46 @@ identical to `d916660` for all four agents; `make lint` and `make test` pass.
 
 `git diff d916660 -- backend` grep for curriculum terms; scratchpad prompt
 comparison per non-CAPS config; `make lint` and `make test` from `backend/`.
+
+**Implementation Notes**
+
+User-run step (user request, 2026-10-09): the user runs the commands and
+Developer reviews the saved output. The check script and outputs live in
+git-ignored `logs/dev007/`: `check_non_caps_prompts.py` (loads every non-CAPS
+example config with `pdf_fp`/`output_dir` redirected, confirms the file is
+unchanged since `d916660` and all four instruction fields are `None`, and
+compares all four agents' prompts with the `d916660` prompt builders),
+`curriculum_terms.txt`, `non_caps_prompts.txt`, `lint.txt` and `test.txt`.
+Expected `make test` result: only the 9 Tester-owned stub failures recorded
+under DEV-002 and DEV-003.
+
+Run 2026-10-09 by the user from `backend/` on `9cd9cdd` (working tree: only
+`.standards/` records modified); output reviewed by Developer:
+
+- AC-018 (`logs/dev007/curriculum_terms.txt`): `git diff d916660 -- src tests`
+  adds 667 lines across 9 files; a case-insensitive whole-word search of the
+  added lines for `caps, funda wande, wande, south africa, ghana, nigeria,
+  rwanda, india, madhi, pratham, nacca, requirements per term` finds 0 matches
+  (file empty; count rechecked by Developer).
+- AC-019 (`logs/dev007/non_caps_prompts.txt`): all 6 non-CAPS example configs
+  (Ghana English and math, India Madhi and Pratham, Nigeria, Rwanda) are
+  unchanged since `d916660`, load as `RunConfig` with all four instruction
+  fields `None`, and give extraction, extraction-checker, continuity-verifier
+  and continuity-checker prompts identical to the `d916660` builders. 6
+  checked, 0 failed.
+- AC-020 lint (`logs/dev007/lint.txt`, `make lint`): isort and black left all
+  177 files unchanged; ruff "All checks passed" (src and tests); interrogate
+  100.0% (minimum 100.0%); mypy no issues in 92 and 85 source files; pylint
+  10.00/10 for src and tests; cloc ran.
+- AC-020 tests (`logs/dev007/test.txt`, `make test`): 3810 passed, 9 failed in
+  510.95s. The 9 are exactly the Tester-owned stub failures recorded under
+  DEV-002 and DEV-003 (4 `test_llm.py` `TypeError`s on
+  `curriculum_instructions`/`validation_instructions`; 5
+  `test_verify_page_irs.py` failures from `VerificationConfigStub` lacking
+  `validation_instructions`). Other `FAILED`/`assert False` lines in the log
+  belong to inner pytest sessions run by the slow-test plugin's own tests, not
+  to the outer run. Per the option A decision, these stub updates are left to
+  Tester; no Developer-owned fallout remains.
 
 ---
 
