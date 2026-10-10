@@ -255,7 +255,7 @@ reviewed above); outputs reviewed by Developer:
 
 ### DEV-003 — User AS confirmation and S_AS
 
-`Status`: `PENDING` `Depends On`: `DEV-002`
+`Status`: `IN_PROGRESS` `Depends On`: `DEV-002`
 `Acceptance`: `AC-011`
 
 **Goal**
@@ -276,6 +276,19 @@ the Architecture's S_AS file list) of the AS results reviewed.
 
 S_AS recomputed from the files on disk at confirmation and saved as
 `logs/kg_construction/dev003/s_as_manifest.json`.
+
+**Implementation Notes**
+
+User confirmation 2026-10-10 ("continue, AS confirmed"), after reviewing
+`logs/kg_construction/dev002/as_outline.md` (generated 15:08 UTC by the
+DEV-002 self-check from AS run 1, `kgs/` files last written 14:56 UTC). No
+defects reported; no change requested to the printed labels in the node
+descriptions (the observation raised before confirmation). S_AS covers the
+Architecture's 13 files: `sfi_final_records.json`,
+`sfi_final_contexts.json`, `has_child_edges_final.json`,
+`has_child_unresolved_edges.json` and the nine `as_*` exports. A Developer
+trial hash of the same files (scratchpad) was taken right after the
+confirmation for comparison with the user's manifest.
 
 ---
 
