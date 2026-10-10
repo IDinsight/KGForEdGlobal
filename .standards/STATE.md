@@ -13,7 +13,7 @@
 `.standards/docs/specs/run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8.md` `Development`:
 `.standards/docs/development/run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8.md`
 `PromotionReason`: `NONE` `AuditTarget`: `NONE` `BlockedOn`:
-`DEV-003 done; continue with DEV-004 (LC run with Stop B)?`
+`DEV-004: user backs up kgs/, removes LC run 1 files, runs LC run 2 (Stop B) and reports back.`
 `PendingVerificationCadence`: `NONE`
 
 `BaselineReconciliation`: `NONE`

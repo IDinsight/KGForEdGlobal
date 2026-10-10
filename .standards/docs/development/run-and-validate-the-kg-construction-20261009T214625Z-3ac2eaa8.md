@@ -316,7 +316,7 @@ ones reviewed. S_AS combined digest (SHA-256 of the sorted
 
 ### DEV-004 — LC run with zero failed requests
 
-`Status`: `PENDING` `Depends On`: `DEV-003`
+`Status`: `IN_PROGRESS` `Depends On`: `DEV-003`
 `Acceptance`: `AC-012, AC-014, AC-015, AC-016, AC-031`
 
 **Goal**
@@ -344,6 +344,75 @@ assessment suggestions, contact time or scheduling labels.
 
 S_AS comparison script; LC check script over the LC artifacts; sampled LC
 review recorded here.
+
+**Implementation Notes**
+
+LC run instructions handed over 2026-10-10 on `442beb4` (clean tree, Stop A
+already removed by the user, never committed) plus the local Stop B edit:
+in `build_kgs`, after the "LP requires a passed, error-free AS+LC validation
+report" check and before `if not config.overwrite:` /
+`reuse_as_lc_lp_kg`, `sys.exit("Temporary Stop B: ...")`. Runs from the repo
+root teed to `logs/kg_construction/dev004/lc_run_<n>.log`. The user reruns
+the same command while the last `Decomposed LC-source SFIs` log line reports
+`failed_requests` above 0 (retries only failed requests), then pauses for
+review. AS must be reused without LLM calls (extraction resume, merge and
+hasChild artifacts loaded); signs of AS regeneration mean stop the run and
+report. LC check scripts are written against the actual outputs after the
+run.
+
+LC run 1 (user-run 2026-10-10 15:18-18:58 UTC, `lc_run_1.log`, ended at
+Stop B as intended): AS reused with no AS LLM calls (extraction skipped
+55/55, merge report and hasChild artifacts loaded, AS export loaded;
+`sfi_final_records.json` rewritten byte-identical); a Developer trial
+`manifest.py compare` against S_AS was identical (13/13). LC generation:
+924 requests, 924 succeeded, 0 failed (`lc_generation_failures.json`
+empty), 26 validator corrections, 1209 skill claims (splits 1: 675, 2: 219,
+3: 24, 4: 6). Dedup: 987 unique texts, 4953 candidate pairs, 199 judge
+requests, 515 judged same, 72 merges refused by the chaining guard; 698
+LCs, 1208 supports edges; every Skill has at least one supports edge; every
+LC's edges equal its claiming Skills; `as_lc_validation_report.json` passed
+with no errors. LC texts read as learner skills; mentions of the teacher or
+a pace ('per week') come from the Skills' own wording.
+
+Defect D-LC-1 (`AC-016`, found in Developer review of LC run 1): a merged
+LC carries the elected member's own examples, qualifiers and quantities
+(canonical election is most-claimed text), so its text is not supported by
+other Skills it supports. 146 of the 1208 supports links (96 LCs) add
+content found in neither the Skill nor its own claim; clear cases:
+'Recognises vowel digraphs such as 'oo' as in moon and 'ee' as in tree' on
+Skills listing 'oy', 'oi', 'ay', 'ai'; 'Spells words correctly using phonic
+knowledge in informal tests, in dictation and in all written work' on
+'Spells words correctly using phonic knowledge'; 'Listens without
+interrupting, showing respect for the speaker' on 'Listens without
+interrupting'; Grade 3 Term 3 'Edits own story ... (at least 12
+sentences)' where the Skill prints 'ten or more sentences'. Cause: the CAPS
+`lc_dedup_instructions` treat scope-widening repeats as the same skill. A
+smaller generation-side variant: about 39 single-Skill LCs reword the
+Skill, a few adding scope (for example 'in own writing'). Proposed fix
+(within this step: `kgs.lc` wording plus LC regeneration by move-aside):
+merge only interchangeable skill texts, and tell the generator not to add
+unstated qualifiers or ancestor scope. Awaiting the user's choice before
+editing (2026-10-10).
+
+D-LC-1 fix (user chose option 1, stricter merging, 2026-10-10): root cause
+confirmed in the prompts. The generic LC dedup judge policy is already strict
+(SAME only when action, object, direction and every scope qualifier match),
+but the CAPS `lc_dedup_instructions`, which override it, said repeats that
+widen scope "are the same skill when the stated action and object match".
+Config edit (CAPS file only; `kgs.lc.lc_dedup_instructions` rewritten to
+apply the generic policy strictly and judge non-interchangeable repeats
+DISTINCT, with the D-LC-1 cases as examples; one paragraph added to
+`kgs.lc.generation_instructions`: state only what the Skill prints, no
+ancestor scope such as 'in own writing'). No other key changed; the config
+loads as a `RunConfig` (`lc_max_failure_rate` 0.05, `overwrite` false).
+
+LC regeneration handed over 2026-10-10 as the design's move-aside done in
+two steps at the user's request: copy the whole `kgs/` (AS + LC run 1) to
+`kgs_superseded/20261010T185810Z-lc/` (named for LC run 1's end), verify the
+copy with `diff -rq`, then remove the 18 LC files from `kgs/` (`lc_*`,
+`learning_components.jsonl`, `as_lc_*`; no `lp_*` files or LP lock exist).
+The copy keeps LC run 1 as D-LC-1 evidence. Then LC run 2 with Stop B still
+in place, teed to `logs/kg_construction/dev004/lc_run_2.log`.
 
 ---
 
