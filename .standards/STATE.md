@@ -13,7 +13,7 @@
 `.standards/docs/specs/run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8.md` `Development`:
 `.standards/docs/development/run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8.md`
 `PromotionReason`: `NONE` `AuditTarget`: `NONE` `BlockedOn`:
-`Approve the proposed development plan (STEPWISE, user style tony, six steps DEV-001 to DEV-006).`
+`DEV-001: user runs the S0 snapshot and preflight commands and reports back.`
 `PendingVerificationCadence`: `NONE`
 
 `BaselineReconciliation`: `NONE`

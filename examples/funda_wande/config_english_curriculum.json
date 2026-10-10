@@ -70,10 +70,16 @@
 					"Grade",
 					"Term"
 				],
-				"Skill": [
+				"Sub-strand": [
 					"Grade",
 					"Term",
 					"Skill Area"
+				],
+				"Skill": [
+					"Grade",
+					"Term",
+					"Skill Area",
+					"Sub-strand"
 				]
 			},
 			"included_table_columns_signatures": [],
@@ -83,18 +89,19 @@
 			"max_dedup_review_set_candidates": null,
 			"max_has_child_parent_candidates": 24,
 			"max_has_child_section_path_labels": 12,
-			"max_rows_per_table_window": 10,
+			"max_rows_per_table_window": null,
 			"row_overlap": 1,
 			"sfi_dedup_context_statement_types": [
 				"Grade",
 				"Term",
-				"Skill Area"
+				"Skill Area",
+				"Sub-strand"
 			],
 			"sfi_dedup_context_window_radius": 3,
-			"sfi_dedup_instructions": "Deduplicate CAPS English Home Language Grades R-3 SFI candidates conservatively. Merge candidates only when they represent the same source-visible item, such as duplicate extraction from overlapping table windows or a statement repeated across a page break of the same table. Do not merge merely because wording or topic is similar.\n\nSkills: CAPS deliberately repeats the same learner statement across terms and grades (for example 'Listens without interrupting' appears in several terms). Apply the configured identity scope exactly: a Skill is identified within its Grade, Term and Skill Area. Never merge Skills from different Grades, Terms or Skill Areas, even when the wording is identical. Within one Grade, Term and Skill Area, merge only true duplicate occurrences of the same printed bullet. ASSESSMENT-band bullets that repeat a skill are not SFIs and must not be used as merge evidence.\n\nGroupings: Grade R, Grade 1, Grade 2 and Grade 3 are distinct; merge only case or format variants of the same grade. Term labels are grade-scoped: TERM 1 under Grade R and TERM 1 under Grade 1 are different nodes. Each Grade-and-Term banner is printed once per skill area, so repeated occurrences of the same Term under the same Grade are one node and should be merged. Skill Area labels are scoped by Grade and Term; merge repeated occurrences only within the same Grade and Term.",
-			"sfi_extraction_instructions": "Extract candidate StandardsFrameworkItems only from the REQUIREMENTS PER TERM tables of the South Africa CAPS English Home Language curriculum for Grade R, Grade 1, Grade 2 and Grade 3. The intended hierarchy is Grade -> Term -> Skill Area -> Skill.\n\nGrade, Term and Skill Area come from each table's header rows. Every requirements table begins with banner header rows: the 'GRADE <R|1|2|3> HOME LANGUAGE ENGLISH' line, 'REQUIREMENTS PER TERM', the TERM label (TERM 1 to TERM 4), and the skill-area label (LISTENING AND SPEAKING (ORAL), EMERGENT READING, EMERGENT WRITING, READING AND PHONICS, or WRITING). Emit the Grade, the Term and the Skill Area in those header rows as Standard Grouping candidates in that order, preserving the visible label. Continuation rows on later pages belong to the same Grade, Term and Skill Area as the table's header rows, even though the banner is not repeated on those pages. Do not take Grade, Term or Skill Area from section headings such as '3.1 GRADE R' or from section_path when the table header rows say otherwise.\n\nBody rows supply Skill candidates. Each bulleted learner statement in the CONTENT/CONCEPTS/SKILLS body (for example 'Listens without interrupting' or 'Recognises and names some letters of the alphabet: 2 vowels and at least 6 consonants') is one Skill, a Standard SFI with statement_type Skill. Preserve the full bullet text, including examples introduced by 'e.g.', 'such as' or 'For example' and bracketed elaborations, as part of the one Skill they qualify. CAPS prints no codes for these statements, so leave statement_code empty. When a bullet ends with an unfinished lead-in such as 'including:' or 'such as', and the bullets right after it are fragments that complete it rather than learner statements of their own, emit the lead-in bullet and those fragment bullets together as one Skill. In this document that happens in two places: 'Develops basic concepts of print including:' with the four bullets after it ('Concept of book', 'Concept of text', 'Directionality', 'Punctuation') in Grade 1 Term 1 Reading and Phonics, and the bullet ending 'different spelling choices such as' with the four sound-list bullets after it ('ow (cow) ou (found)' through 'few, blue)') in Grade 3 Term 2 Reading and Phonics.\n\nDo not extract as SFIs: rows in the ASSESSMENT band (including 'Suggestions for Assessment', 'Suggestions for Informal Assessment Activities', 'Suggestions for Formal Assessment Activities', 'Formal Assessment Activity 1' to 'Formal Assessment Activity 3' and the strand labels under them such as 'Phonics: (oral and/or practical)', 'Informal', 'Oral and / or practical', 'Observation', the assessment bullet lists and lines such as 'Use checklists and a holistic rubric'), which repeat skills as assessment suggestions and are not skills; contact-time text ('SUGGESTED CONTACT TIME', 'Minimum Time', 'Maximum Time', hours per week or day); the 'CONTENT/CONCEPTS/SKILLS' column label; scheduling and organising labels such as 'Weeks 1 - 5', 'Daily / Weekly activities', 'Twice weekly focussed listening and speaking activities', 'Daily Reading Activities' or 'Group Guided Reading'; sub-labels that introduce a list (for example 'Processes information:' or 'Uses visual and pictorial cues to make meaning') unless they are themselves a bulleted learner statement; teacher guidance and explanatory prose (for example 'In Grade R perceptual work is extremely important...'); and running headers or page numbers. Treat the front matter, the overview of skills and content, time allocation tables, and assessment sections outside the REQUIREMENTS PER TERM tables as non-target material. Do not extract LearningComponents or decompose a statement into subskills.",
-			"sfi_extraction_validation_instructions": "Independently validate each CAPS English Home Language Grades R-3 extraction against the exact compact source window. Require candidate-local source fidelity: for every candidate, the cited header/body row indexes must contain its complete description and source_text. Remove or correct candidates with wrong row citations, truncated statements, or source_text assembled from unrelated rows or bullets.\n\nConfirm that Grade, Term and Skill Area candidates come from the table's header rows (the REQUIREMENTS PER TERM banner), not from section headings or section_path. Continuation rows inherit the Grade, Term and Skill Area of the table they continue. Accept only the controlled Grade values (Grade R, Grade 1, Grade 2, Grade 3), Term values (Term 1 to Term 4) and Skill Area values (Listening and Speaking (Oral), Emergent Reading, Emergent Writing, Reading and Phonics, Writing).\n\nConfirm that each Skill is one bulleted learner statement from the CONTENT/CONCEPTS/SKILLS body, with its examples and bracketed elaborations kept attached. When a bullet ends with an unfinished lead-in such as 'including:' or 'such as', the fragment bullets that complete it are part of that one Skill: reject them as separate Skills, and reject a Skill made of the lead-in alone. This covers 'Develops basic concepts of print including:' (Grade 1 Term 1) and the 'different spelling choices such as' bullet (Grade 3 Term 2). Reject as non-SFIs: ASSESSMENT-band rows and their bullet lists (including the 'Suggestions for Assessment', 'Suggestions for Informal Assessment Activities', 'Suggestions for Formal Assessment Activities' and 'Formal Assessment Activity' blocks), contact-time text, column labels, week and scheduling labels, list-introducing sub-labels that are not learner statements, teacher guidance prose, and running headers. Return zero candidates for a window that contains only such material. Each window result must stay source-faithful; repeated statements across terms or grades are handled by deduplication and identity scope later.",
-			"sfi_has_child_instructions": "Resolve direct hasChild relationships for the CAPS English Home Language Grades R-3 curriculum. Use only supplied finalized SFIs and parent_candidates. The direct hierarchy is StandardsFramework -> Grade -> Term -> Skill Area -> Skill. Each item has exactly one direct parent unless it must be marked unresolved.\n\n- Grade R, Grade 1, Grade 2 and Grade 3 attach directly to the StandardsFramework root.\n- A Term attaches to its Grade. Term labels repeat across grades and are distinct per grade.\n- A Skill Area attaches to the Term of the same Grade.\n- A Skill attaches to the Skill Area of the same Grade and Term, as given by the header rows of the table it comes from (continuation rows inherit the header rows of the table they continue).\n- Apply finalized identity_scope values exactly to exclude cross-grade and cross-term candidates, while still checking the direct parent against the table's header rows and source evidence. section_path can be stale or truncated; prefer the table's header rows.\n\nStructured response contract:\n- For a Grade child, select only the StandardsFramework root endpoint with unresolved=false.\n- For every non-Grade child, never select the root as an ordinary resolved parent. If no supplied non-root candidate is a defensible direct parent, return unresolved=true and selected_parent_endpoint_ids=[]; the pipeline adds a separately marked audited root-fallback edge afterward.\n- For a resolved child, select exactly one supplied direct-parent endpoint and set unresolved=false. Do not select a broader ancestor, a sibling, or a nearby item merely to produce a resolved answer.\n- Do not create parents from ASSESSMENT rows, contact-time text, week labels, or teacher guidance.",
+			"sfi_dedup_instructions": "Deduplicate CAPS English Home Language Grades R-3 SFI candidates conservatively. Merge candidates only when they represent the same source-visible item, such as duplicate extraction of one printed heading or bullet within a table. Do not merge merely because wording or topic is similar.\n\nSkills: CAPS deliberately repeats the same learner statement across sub-strands, terms and grades (for example 'Listens without interrupting' appears in several terms). Apply the configured identity scope exactly: a Skill is identified within its Grade, Term, Skill Area and Sub-strand. Never merge Skills from different Grades, Terms, Skill Areas or Sub-strands, even when the wording is identical. For example, 'Recognises own name and names of at least five other children in the class' is printed under both Emergent reading skills and Begins to make meaning of written text in Grade R Term 1, and the two are separate Skills. Within one Grade, Term, Skill Area and Sub-strand, merge only true duplicate occurrences of the same printed bullet. ASSESSMENT-band bullets that repeat a skill are not SFIs and must not be used as merge evidence.\n\nGroupings: Grade R, Grade 1, Grade 2 and Grade 3 are distinct; merge only case or format variants of the same grade. Term labels are grade-scoped: TERM 1 under Grade R and TERM 1 under Grade 1 are different nodes. Each Grade-and-Term banner is printed once per skill area, so repeated occurrences of the same Term under the same Grade are one node and should be merged. Skill Area labels are scoped by Grade and Term; merge repeated occurrences only within the same Grade and Term. Sub-strands are scoped by Grade, Term and Skill Area: the same sub-strand name under a different Grade, Term or Skill Area is a different node, and only repeated occurrences within one table's Grade, Term and Skill Area may be merged.",
+			"sfi_extraction_instructions": "Extract candidate StandardsFrameworkItems only from the REQUIREMENTS PER TERM tables of the South Africa CAPS English Home Language curriculum for Grade R, Grade 1, Grade 2 and Grade 3. The intended hierarchy is Grade -> Term -> Skill Area -> Sub-strand -> Skill.\n\nGrade, Term and Skill Area come from each table's header rows. Every requirements table begins with banner header rows: the 'GRADE <R|1|2|3> HOME LANGUAGE ENGLISH' line, 'REQUIREMENTS PER TERM', the TERM label (TERM 1 to TERM 4), and the skill-area label (LISTENING AND SPEAKING (ORAL), EMERGENT READING, EMERGENT WRITING, READING AND PHONICS, or WRITING). Emit the Grade, the Term and the Skill Area in those header rows as Standard Grouping candidates in that order, preserving the visible label. Continuation rows on later pages belong to the same Grade, Term and Skill Area as the table's header rows, even though the banner is not repeated on those pages. Do not take Grade, Term or Skill Area from section headings such as '3.1 GRADE R' or from section_path when the table header rows say otherwise.\n\nSub-strands come from the body. Inside the CONTENT/CONCEPTS/SKILLS body, before the ASSESSMENT row, CAPS prints non-bulleted headings that group the bullets after them. Emit each such sub-strand heading once per table as a Standard Grouping candidate with statement_type Sub-strand, whose description is the printed heading text (for example 'Daily Phonic Activities of 15 minutes:' or 'Paired/Independent Reading (three times a week)'), with the Grade, Term and Skill Area of the table's header rows as its identity_scope_values.\n\nExpected Sub-strands per table, by canonical value (printed wording varies; use the canonical value in identity_scope_values):\n- Grade R, Listening and Speaking (Oral), every term: Daily activities in all areas of Language and other subjects; Uses language to develop concepts (printed 'Uses language to develop concepts in all subjects' in Term 1); Uses language to think and reason; Uses language to investigate and explore; Processes information; Uses visual and pictorial cues to make meaning.\n- Grade R, Emergent Reading: Emergent reading skills (printed 'Emergent reading' in Term 2), Shared Reading, Independent Reading and Phonological/Phonemic Awareness in every term; Begins to make meaning of written text in Term 1 only; Relates sounds to letters and words in Terms 1 to 3 only.\n- Grade R, Emergent Writing, every term: Handwriting (printed 'Emergent Handwriting', or 'Handwriting' in Term 2); Emergent Writing; Works with words.\n- Grades 1-3, Listening and Speaking (Oral), every term: Daily / Weekly activities in all areas of Language and other subjects; Twice weekly focussed listening and speaking activities.\n- Grades 1-3, Reading and Phonics, every term: Phonics (printed as a phonic-activity heading: 'Daily Phonemic Awareness/ Phonic Activities of 15 minutes', 'Daily Phonic Activities of 15 minutes' or 'Phonic Activities three times a week for 15 minutes'); Shared Reading; Group Guided Reading; Paired/Independent Reading (sometimes printed with a schedule in brackets, such as '(three times a week)'). Grade 1 Term 1 has Emergent reading skills (printed 'Emergent reading skills (taught in Shared and Group Guided Reading lessons)') instead of Paired/Independent Reading.\n- Grades 1-3, Writing, every term: Handwriting; Shared, Group and Independent Writing.\n\nLabels that appear in two roles: 'Emergent Writing' is both the Grade R Skill Area in the header rows and a Sub-strand heading inside the Grade R Emergent Writing body, and the Grade R Term 2 Sub-strand heading 'Emergent reading' looks like the Emergent Reading Skill Area. Take the Skill Area only from the header rows; inside the body these headings are Sub-strands.\n\nThese non-bulleted lines are not Sub-strands and not SFIs of any type: 'Reading' or 'Reading:' in Grade R Emergent Reading and 'Daily Reading Activities' in Grades 1-3, which only group sub-strands; week ranges such as 'Weeks 1 - 5' or 'Weeks 4 - 6'; Handwriting sub-headings such as 'Development of letter formation in formal handwriting lessons', 'Maintenance of the print script', 'Transition to a joined script or cursive writing' and 'Activities to strengthen fine muscles and develop fine and gross motor skills and eye-hand co-ordination'; schedule and time lines such as 'Daily 15 minute activities', 'Formal Lessons four times a week of 15 minutes', 'Group Guided Reading (two groups per day) and 2 - 3 Shared Reading sessions per week.', 'Daily Reading Activities: Group Guided Reading (two groups per day) ...', 'Whole class lessons 2 - 3 times weekly ...', 'Whole class / small group lessons ...' and 'Daily reading related activities for 20 minutes ...'; teacher notes and explanatory prose; and 'Daily activities in all areas of Language and other subjects' where it appears under Emergent Handwriting in Grade R Emergent Writing, because it is a sub-strand only in Grade R Listening and Speaking (Oral). Every heading in or after the ASSESSMENT row is not a Sub-strand, even when it repeats a sub-strand name such as 'Shared Reading', 'Group Guided Reading', 'Paired/Independent Reading', 'Handwriting', 'Writing' or 'Phonics: (oral and/or practical)'.\n\nBody bullets supply Skill candidates. Each bulleted learner statement in the CONTENT/CONCEPTS/SKILLS body (for example 'Listens without interrupting' or 'Recognises and names some letters of the alphabet: 2 vowels and at least 6 consonants') is one Skill, a Standard SFI with statement_type Skill. Preserve the full bullet text, including examples introduced by 'e.g.', 'such as' or 'For example' and bracketed elaborations, as part of the one Skill they qualify. CAPS prints no codes for these statements, so leave statement_code empty. Give each Skill the Grade, Term and Skill Area of its table's header rows and, as its Sub-strand identity_scope_value, the canonical value of the sub-strand heading in force above its bullet. That sub-strand stays in force across later body rows and page breaks of the same table until the next sub-strand heading: a continuation row that starts with bullets continues the sub-strand in force at the end of the previous row, and the non-sub-strand lines listed above do not change it. When a bullet ends with an unfinished lead-in such as 'including:' or 'such as', and the bullets right after it are fragments that complete it rather than learner statements of their own, emit the lead-in bullet and those fragment bullets together as one Skill. In this document that happens in two places: 'Develops basic concepts of print including:' with the four bullets after it ('Concept of book', 'Concept of text', 'Directionality', 'Punctuation') in Grade 1 Term 1 Reading and Phonics, and the bullet ending 'different spelling choices such as' with the four sound-list bullets after it ('ow (cow) ou (found)' through 'few, blue)') in Grade 3 Term 2 Reading and Phonics.\n\nDo not extract as SFIs: rows in the ASSESSMENT band (including 'Suggestions for Assessment', 'Suggestions for Informal Assessment Activities', 'Suggestions for Formal Assessment Activities', 'Formal Assessment Activity 1' to 'Formal Assessment Activity 3' and the strand labels under them such as 'Phonics: (oral and/or practical)', 'Informal', 'Oral and / or practical', 'Observation', the assessment bullet lists and lines such as 'Use checklists and a holistic rubric'), which repeat skills as assessment suggestions and are not skills; contact-time text ('SUGGESTED CONTACT TIME', 'Minimum Time', 'Maximum Time', hours per week or day); the 'CONTENT/CONCEPTS/SKILLS' column label; the non-sub-strand headings, schedule lines and notes listed above; other sub-labels that introduce a list but are neither a listed Sub-strand nor a bulleted learner statement; teacher guidance and explanatory prose (for example 'In Grade R perceptual work is extremely important...'); and running headers or page numbers. Treat the front matter, the overview of skills and content, time allocation tables, the RECOMMENDED TEXTS/RESOURCES boxes, and assessment sections outside the REQUIREMENTS PER TERM tables as non-target material. Do not extract LearningComponents or decompose a statement into subskills.",
+			"sfi_extraction_validation_instructions": "Independently validate each CAPS English Home Language Grades R-3 extraction against the exact compact source window. Require candidate-local source fidelity: for every candidate, the cited header/body row indexes must contain its complete description and source_text. Remove or correct candidates with wrong row citations, truncated statements, or source_text assembled from unrelated rows or bullets.\n\nConfirm that Grade, Term and Skill Area candidates come from the table's header rows (the REQUIREMENTS PER TERM banner), not from section headings, section_path or body headings. Continuation rows inherit the Grade, Term and Skill Area of the table they continue. Accept only the controlled Grade values (Grade R, Grade 1, Grade 2, Grade 3), Term values (Term 1 to Term 4) and Skill Area values (Listening and Speaking (Oral), Emergent Reading, Emergent Writing, Reading and Phonics, Writing).\n\nConfirm the Sub-strand candidates. Each is one non-bulleted heading in the CONTENT/CONCEPTS/SKILLS body before the ASSESSMENT row, emitted once per table, with the printed heading text as its description and the table's Grade, Term and Skill Area as its identity_scope_values. Accept only the sub-strands expected for that table's Grade, Term and Skill Area; add an expected Sub-strand whose heading is in the window but missing.\n\nExpected Sub-strands per table, by canonical value (printed wording varies; use the canonical value in identity_scope_values):\n- Grade R, Listening and Speaking (Oral), every term: Daily activities in all areas of Language and other subjects; Uses language to develop concepts (printed 'Uses language to develop concepts in all subjects' in Term 1); Uses language to think and reason; Uses language to investigate and explore; Processes information; Uses visual and pictorial cues to make meaning.\n- Grade R, Emergent Reading: Emergent reading skills (printed 'Emergent reading' in Term 2), Shared Reading, Independent Reading and Phonological/Phonemic Awareness in every term; Begins to make meaning of written text in Term 1 only; Relates sounds to letters and words in Terms 1 to 3 only.\n- Grade R, Emergent Writing, every term: Handwriting (printed 'Emergent Handwriting', or 'Handwriting' in Term 2); Emergent Writing; Works with words.\n- Grades 1-3, Listening and Speaking (Oral), every term: Daily / Weekly activities in all areas of Language and other subjects; Twice weekly focussed listening and speaking activities.\n- Grades 1-3, Reading and Phonics, every term: Phonics (printed as a phonic-activity heading: 'Daily Phonemic Awareness/ Phonic Activities of 15 minutes', 'Daily Phonic Activities of 15 minutes' or 'Phonic Activities three times a week for 15 minutes'); Shared Reading; Group Guided Reading; Paired/Independent Reading (sometimes printed with a schedule in brackets, such as '(three times a week)'). Grade 1 Term 1 has Emergent reading skills (printed 'Emergent reading skills (taught in Shared and Group Guided Reading lessons)') instead of Paired/Independent Reading.\n- Grades 1-3, Writing, every term: Handwriting; Shared, Group and Independent Writing.\n\nThese non-bulleted lines are not Sub-strands and not SFIs of any type: 'Reading' or 'Reading:' in Grade R Emergent Reading and 'Daily Reading Activities' in Grades 1-3, which only group sub-strands; week ranges such as 'Weeks 1 - 5' or 'Weeks 4 - 6'; Handwriting sub-headings such as 'Development of letter formation in formal handwriting lessons', 'Maintenance of the print script', 'Transition to a joined script or cursive writing' and 'Activities to strengthen fine muscles and develop fine and gross motor skills and eye-hand co-ordination'; schedule and time lines such as 'Daily 15 minute activities', 'Formal Lessons four times a week of 15 minutes', 'Group Guided Reading (two groups per day) and 2 - 3 Shared Reading sessions per week.', 'Daily Reading Activities: Group Guided Reading (two groups per day) ...', 'Whole class lessons 2 - 3 times weekly ...', 'Whole class / small group lessons ...' and 'Daily reading related activities for 20 minutes ...'; teacher notes and explanatory prose; and 'Daily activities in all areas of Language and other subjects' where it appears under Emergent Handwriting in Grade R Emergent Writing, because it is a sub-strand only in Grade R Listening and Speaking (Oral). Every heading in or after the ASSESSMENT row is not a Sub-strand, even when it repeats a sub-strand name such as 'Shared Reading', 'Group Guided Reading', 'Paired/Independent Reading', 'Handwriting', 'Writing' or 'Phonics: (oral and/or practical)'. Reject a Sub-strand or Skill Area made from any of them, and reject a Skill Area taken from a body heading such as 'Emergent Writing'.\n\nConfirm that each Skill is one bulleted learner statement from the CONTENT/CONCEPTS/SKILLS body before the ASSESSMENT row, with its examples and bracketed elaborations kept attached, and that its Sub-strand identity_scope_value is the canonical value of the sub-strand heading in force above its bullet in the same table, carried across body rows and page breaks until the next sub-strand heading. Correct a Skill whose Sub-strand is wrong. When a bullet ends with an unfinished lead-in such as 'including:' or 'such as', the fragment bullets that complete it are part of that one Skill: reject them as separate Skills, and reject a Skill made of the lead-in alone. This covers 'Develops basic concepts of print including:' (Grade 1 Term 1) and the 'different spelling choices such as' bullet (Grade 3 Term 2).\n\nReject as non-SFIs: ASSESSMENT-band rows and their headings and bullet lists (including the 'Suggestions for Assessment', 'Suggestions for Informal Assessment Activities', 'Suggestions for Formal Assessment Activities' and 'Formal Assessment Activity' blocks), contact-time text, column labels, week and scheduling labels, list-introducing sub-labels that are neither an expected Sub-strand nor a learner statement, teacher guidance prose, and running headers. Return zero candidates for a window that contains only such material. Each window result must stay source-faithful; repeated statements across terms or grades are handled by deduplication and identity scope later.",
+			"sfi_has_child_instructions": "Resolve direct hasChild relationships for the CAPS English Home Language Grades R-3 curriculum. Use only supplied finalized SFIs and parent_candidates. The direct hierarchy is StandardsFramework -> Grade -> Term -> Skill Area -> Sub-strand -> Skill. Each item has exactly one direct parent unless it must be marked unresolved.\n\n- Grade R, Grade 1, Grade 2 and Grade 3 attach directly to the StandardsFramework root.\n- A Term attaches to its Grade. Term labels repeat across grades and are distinct per grade.\n- A Skill Area attaches to the Term of the same Grade.\n- A Sub-strand attaches to the Skill Area of the same Grade and Term, as given by the header rows of the table it comes from.\n- A Skill attaches to the Sub-strand that matches its identity scope: the sub-strand heading printed above it in its table, under the same Grade, Term and Skill Area (continuation rows inherit the header rows of the table they continue and the sub-strand in force at the page break). Never attach a Skill directly to a Skill Area.\n- Apply finalized identity_scope values exactly to exclude cross-grade, cross-term, cross-skill-area and cross-sub-strand candidates, while still checking the direct parent against the table's header rows and source evidence. section_path can be stale or truncated; prefer the table's header rows.\n\nStructured response contract:\n- For a Grade child, select only the StandardsFramework root endpoint with unresolved=false.\n- For every non-Grade child, never select the root as an ordinary resolved parent. If no supplied non-root candidate is a defensible direct parent, return unresolved=true and selected_parent_endpoint_ids=[]; the pipeline adds a separately marked audited root-fallback edge afterward.\n- For a resolved child, select exactly one supplied direct-parent endpoint and set unresolved=false. Do not select a broader ancestor, a sibling, or a nearby item merely to produce a resolved answer.\n- Do not create parents from ASSESSMENT rows, contact-time text, week labels, schedule lines, or teacher guidance.",
 			"sfi_has_child_parent_policy": {
 				"Grade": [],
 				"Term": [
@@ -111,9 +118,16 @@
 						"max_count": 1
 					}
 				],
-				"Skill": [
+				"Sub-strand": [
 					{
 						"parent_statement_type": "Skill Area",
+						"min_count": 1,
+						"max_count": 1
+					}
+				],
+				"Skill": [
+					{
+						"parent_statement_type": "Sub-strand",
 						"min_count": 1,
 						"max_count": 1
 					}
@@ -123,9 +137,10 @@
 				"Grade",
 				"Term",
 				"Skill Area",
+				"Sub-strand",
 				"Skill"
 			],
-			"sfi_has_child_validation_instructions": "Independently validate every CAPS English Home Language Grades R-3 hasChild resolution against the supplied child context, bounded parent candidates, deterministic evidence, and runtime hierarchy policy. Correct the complete response whenever any child has the wrong parent, an unsupported parent, an incorrect unresolved flag, or an invalid root selection.\n\n- Enforce exactly StandardsFramework -> Grade -> Term -> Skill Area -> Skill. Reject broader ancestors, siblings, or wrong-level parents.\n- Grade is the only statement_type whose resolved parent is the root: require unresolved=false and exactly the root endpoint. For Term, Skill Area and Skill, the root is never an ordinary resolved parent; if no supplied non-root candidate is defensible, require unresolved=true with no selected parents. Reject a resolved child with zero or multiple selected parents.\n- Term, Skill Area and Skill labels repeat across grades and terms. Use finalized identity_scope values to reject cross-grade and cross-term candidates, and verify the parent against the header rows of the child's source table; continuation rows inherit those header rows. Section paths can be stale or truncated and are not automatic truth.\n- When the correct direct parent is absent from the bounded candidate set, require unresolved rather than the nearest plausible candidate.\n- Never accept parents created from ASSESSMENT rows, contact-time text, week labels, or teacher guidance.",
+			"sfi_has_child_validation_instructions": "Independently validate every CAPS English Home Language Grades R-3 hasChild resolution against the supplied child context, bounded parent candidates, deterministic evidence, and runtime hierarchy policy. Correct the complete response whenever any child has the wrong parent, an unsupported parent, an incorrect unresolved flag, or an invalid root selection.\n\n- Enforce exactly StandardsFramework -> Grade -> Term -> Skill Area -> Sub-strand -> Skill. Reject broader ancestors, siblings, or wrong-level parents; a Skill's parent is a Sub-strand, never a Skill Area.\n- Grade is the only statement_type whose resolved parent is the root: require unresolved=false and exactly the root endpoint. For Term, Skill Area, Sub-strand and Skill, the root is never an ordinary resolved parent; if no supplied non-root candidate is defensible, require unresolved=true with no selected parents. Reject a resolved child with zero or multiple selected parents.\n- Term, Skill Area, Sub-strand and Skill labels repeat across grades, terms and skill areas. Use finalized identity_scope values to reject cross-grade, cross-term, cross-skill-area and cross-sub-strand candidates: a Sub-strand's parent is the Skill Area of its Grade and Term, and a Skill's parent is the Sub-strand matching its Grade, Term, Skill Area and Sub-strand scope. Verify the parent against the header rows of the child's source table and the sub-strand heading above a Skill; continuation rows inherit those header rows and the sub-strand in force at the page break. Section paths can be stale or truncated and are not automatic truth.\n- When the correct direct parent is absent from the bounded candidate set, require unresolved rather than the nearest plausible candidate.\n- Never accept parents created from ASSESSMENT rows, contact-time text, week labels, schedule lines, or teacher guidance.",
 			"statement_type_policy": [
 				{
 					"aliases": [
@@ -261,6 +276,118 @@
 				},
 				{
 					"aliases": [
+						"SUB-STRAND",
+						"Substrand",
+						"SUBSTRAND"
+					],
+					"controlled_values": [
+						{
+							"canonical_value": "Daily activities in all areas of Language and other subjects",
+							"aliases": []
+						},
+						{
+							"canonical_value": "Uses language to develop concepts",
+							"aliases": [
+								"Uses language to develop concepts in all subjects"
+							]
+						},
+						{
+							"canonical_value": "Uses language to think and reason",
+							"aliases": []
+						},
+						{
+							"canonical_value": "Uses language to investigate and explore",
+							"aliases": []
+						},
+						{
+							"canonical_value": "Processes information",
+							"aliases": []
+						},
+						{
+							"canonical_value": "Uses visual and pictorial cues to make meaning",
+							"aliases": []
+						},
+						{
+							"canonical_value": "Emergent reading skills",
+							"aliases": [
+								"Emergent reading",
+								"Emergent reading skills (taught in Shared and Group Guided Reading lessons)"
+							]
+						},
+						{
+							"canonical_value": "Begins to make meaning of written text",
+							"aliases": []
+						},
+						{
+							"canonical_value": "Shared Reading",
+							"aliases": []
+						},
+						{
+							"canonical_value": "Independent Reading",
+							"aliases": []
+						},
+						{
+							"canonical_value": "Phonological/Phonemic Awareness",
+							"aliases": [
+								"Phonological/ Phonemic Awareness"
+							]
+						},
+						{
+							"canonical_value": "Relates sounds to letters and words",
+							"aliases": []
+						},
+						{
+							"canonical_value": "Handwriting",
+							"aliases": [
+								"Emergent Handwriting"
+							]
+						},
+						{
+							"canonical_value": "Emergent Writing",
+							"aliases": []
+						},
+						{
+							"canonical_value": "Works with words",
+							"aliases": []
+						},
+						{
+							"canonical_value": "Daily / Weekly activities in all areas of Language and other subjects",
+							"aliases": []
+						},
+						{
+							"canonical_value": "Twice weekly focussed listening and speaking activities",
+							"aliases": []
+						},
+						{
+							"canonical_value": "Phonics",
+							"aliases": [
+								"Daily Phonemic Awareness/ Phonic Activities of 15 minutes",
+								"Daily Phonic Activities of 15 minutes",
+								"Phonic Activities three times a week for 15 minutes"
+							]
+						},
+						{
+							"canonical_value": "Group Guided Reading",
+							"aliases": []
+						},
+						{
+							"canonical_value": "Paired/Independent Reading",
+							"aliases": [
+								"Paired/Independent Reading (three times a week)",
+								"Paired/Independent Reading (twice a week in Language focus time)"
+							]
+						},
+						{
+							"canonical_value": "Shared, Group and Independent Writing",
+							"aliases": []
+						}
+					],
+					"description": "Sub-strand heading printed inside the CONTENT/CONCEPTS/SKILLS body of a REQUIREMENTS PER TERM table, before its ASSESSMENT row, that groups the bulleted learner statements after it (for example Phonics, Shared Reading or Handwriting); scoped under the table's Grade, Term and Skill Area. A Standard Grouping between Skill Area and Skill.",
+					"normalized_statement_type": "Standard Grouping",
+					"statement_type": "Sub-strand"
+				},
+				{
+					"aliases": [
 						"SKILL",
 						"skill",
 						"CONTENT/CONCEPTS/SKILLS",
@@ -268,7 +395,7 @@
 						"content/concepts/skills"
 					],
 					"controlled_values": [],
-					"description": "Official CAPS learner requirement: one bulleted statement in the CONTENT/CONCEPTS/SKILLS body of a REQUIREMENTS PER TERM table (or its continuation rows), scoped under the active Grade, Term and Skill Area. CAPS prints no codes for these statements.",
+					"description": "Official CAPS learner requirement: one bulleted statement in the CONTENT/CONCEPTS/SKILLS body of a REQUIREMENTS PER TERM table (or its continuation rows), scoped under the active Grade, Term and Skill Area and the Sub-strand heading printed above it. CAPS prints no codes for these statements.",
 					"normalized_statement_type": "Standard",
 					"statement_type": "Skill"
 				}

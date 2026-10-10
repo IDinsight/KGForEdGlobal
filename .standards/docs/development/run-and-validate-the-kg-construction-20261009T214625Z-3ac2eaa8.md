@@ -6,8 +6,8 @@ Cycle: run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8
 # Development Plan
 
 `Cycle`: `run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8` `Mode`: `STEPWISE`
-`User Style`: `tony` `User Style Locked`: `false`
-`Status`: `PROPOSED` `Verification Cadence`:
+`User Style`: `tony` `User Style Locked`: `true`
+`Status`: `IN_PROGRESS` `Verification Cadence`:
 `AFTER_IMPLEMENTATION` `Current Increment`: `NONE`
 
 ## Implementation Contract
@@ -26,7 +26,7 @@ Cycle: run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8
 
 ### DEV-001 — Sub-strand config and preflight
 
-`Status`: `PENDING` `Depends On`: `NONE`
+`Status`: `IN_PROGRESS` `Depends On`: `NONE`
 `Acceptance`: `AC-001, AC-002, AC-004, AC-025, AC-030, AC-005, AC-026, AC-027, AC-008, AC-028, AC-029, AC-010`
 
 **Goal**
@@ -70,6 +70,31 @@ windows; run the heading check (per table, non-bullet lines before the
 ASSESSMENT row yield exactly the scope's expected sub-strands, each
 normalizing via `normalize_controlled_value_key` to a `Sub-strand` canonical
 value or alias): 152 matched, zero unmatched printed sub-strand headings.
+
+**Implementation Notes**
+
+Config edited 2026-10-09 by scratchpad `edit_caps_kgs_as.py` (tab-indented
+JSON round-trips byte for byte; only the 11 contract keys of `kgs.as`
+change). The 21 canonical values carry the printed variants with distinct
+normalized keys as aliases (`Uses language to develop concepts in all
+subjects`, `Emergent reading`, `Emergent reading skills (taught in Shared and
+Group Guided Reading lessons)`, `Phonological/ Phonemic Awareness`, `Emergent
+Handwriting`, the three Phonics headings, and the two bracketed
+Paired/Independent Reading variants); colon, period and case variants share a
+key. Type aliases: `SUB-STRAND`, `Substrand`, `SUBSTRAND`.
+
+Tools (run from the repo root so settings load the root `.env`):
+`logs/kg_construction/tools/manifest.py` (`create` / `compare` SHA-256
+manifests; never overwrites a manifest) and
+`logs/kg_construction/dev001/preflight.py` (config contract and loads, AS
+steps 3-4, heading check; writes only into `--out-dir`). Developer trial runs
+wrote to the scratchpad only: preflight passed (55 windows = 48 whole tables
++ 7 blocks; 152 sub-strands; 924 expected Skills after joining the two
+lead-ins; every other non-bullet line is a column label, grouping heading,
+week range, Handwriting sub-heading, schedule, teacher note or the Grade R
+Emergent Handwriting `Daily activities ...` line; no bullet without a
+sub-strand or under a grouping-only heading); S0 trial hashed 705 files and
+compared identical. The recorded self-check is the user's run.
 
 ---
 
