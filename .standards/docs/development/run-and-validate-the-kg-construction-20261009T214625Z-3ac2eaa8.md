@@ -123,7 +123,7 @@ Developer:
 
 ### DEV-002 — AS run and AS checks
 
-`Status`: `IN_PROGRESS` `Depends On`: `DEV-001`
+`Status`: `DONE` `Depends On`: `DEV-001`
 `Acceptance`: `AC-002, AC-003, AC-004, AC-025, AC-005, AC-026, AC-027, AC-007, AC-008, AC-028, AC-029, AC-010, AC-030`
 
 **Goal**
@@ -216,6 +216,40 @@ defects: Learning Commons nodes carry the printed label as `description`
 minutes:`; Grade, Term and Skill Area read as the uppercase banner text),
 while the canonical value sits in the item metadata; the two lead-in Skills
 keep line breaks between the lead-in and its fragments.
+
+Self-check run 2026-10-10 15:08 UTC by the user from the repo root on
+`03aed4b` (clean tree, no stop in `create_kgs.py`; `kgs/` from AS run 1 as
+reviewed above); outputs reviewed by Developer:
+
+- `logs/kg_construction/dev002/as_checks.py --out-dir logs/kg_construction/dev002`:
+  `passed: True`, exit 0, all 6 checks with 0 problems, details identical to
+  the Developer trial. AC-002/AC-003: `document_ir_fp` is
+  `<repo>/results/kg_for_ed/<doc_key>/stitching/document_ir.json`; the AS
+  validation report passed with no errors. AC-007: 1144 edges, 4 root edges
+  (exactly the Grades), 0 root fallbacks; unresolved edges, unresolved items,
+  merge conflicts and needs-review all empty; final, hasChild-export and
+  Learning Commons edge sets equal. AC-004/AC-025/AC-030: 4 Grade, 16 Term,
+  48 Skill Area, 152 Sub-strand, 924 Skill; each item has one parent of the
+  level above, Grade children are Term 1-4, Term children the expected Skill
+  Areas, Skill Area children exactly the expected Sub-strands; groupings
+  `Standard Grouping` and Skills `Standard` in records, items and nodes;
+  every grouping has a canonical value; identity scopes equal the ancestor
+  chain. AC-010: every item's local grade is its Grade ancestor and its
+  Learning Commons grade the mapped value (Skills: K 312, 1 188, 2 213,
+  3 211). AC-005/AC-026/AC-027/AC-029: 924 of 924 printed bullets matched by
+  (Grade, Term, Skill Area, Sub-strand in force, whitespace-collapsed text),
+  no extra Skill, no fragment-only Skill, both lead-ins joined, the `AC-029`
+  pair under Begins to make meaning of written text and Emergent reading
+  skills. AC-008/AC-028/AC-027: all 1220 candidate citations are in their own
+  requirements table; Grade/Term/Skill Area cite banner rows printing their
+  label, Sub-strands the row printing their heading, Skills the row printing
+  their bullet, all before the ASSESSMENT row.
+- `as_outline.md` (1265 lines, the export tree in printed order with PDF
+  pages) is identical to the trial outline apart from its timestamp; it is
+  the input to the user's DEV-003 review.
+- Interim S0 compare after AS (`manifest.py compare`,
+  `logs/kg_construction/dev002/s0_compare_after_as.json`): identical, 705
+  files, none added, removed or changed.
 
 ---
 
