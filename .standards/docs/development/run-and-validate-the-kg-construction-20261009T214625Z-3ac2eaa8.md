@@ -26,7 +26,7 @@ Cycle: run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8
 
 ### DEV-001 — Sub-strand config and preflight
 
-`Status`: `IN_PROGRESS` `Depends On`: `NONE`
+`Status`: `DONE` `Depends On`: `NONE`
 `Acceptance`: `AC-001, AC-002, AC-004, AC-025, AC-030, AC-005, AC-026, AC-027, AC-008, AC-028, AC-029, AC-010`
 
 **Goal**
@@ -95,6 +95,29 @@ week range, Handwriting sub-heading, schedule, teacher note or the Grade R
 Emergent Handwriting `Daily activities ...` line; no bullet without a
 sub-strand or under a grouping-only heading); S0 trial hashed 705 files and
 compared identical. The recorded self-check is the user's run.
+
+Self-check run 2026-10-10 02:40 UTC by the user from the repo root on
+`ec6df04` (config committed; `logs/` untracked); outputs reviewed by
+Developer:
+
+- S0 (`logs/kg_construction/tools/manifest.py create`):
+  `logs/kg_construction/dev001/s0_manifest.json`, 705 files (401
+  `extraction/`, 301 `verification/`, 3 `stitching/`), identical to the
+  Developer trial hashes; `results/kg_for_ed/<doc_key>/` holds only
+  `extraction/`, `verification/`, `stitching/` (no `kgs/`), so S0 predates
+  every KG run.
+- Preflight (`logs/kg_construction/dev001/preflight.py --out-dir
+  logs/kg_construction/dev001`): `passed: True`, exit 0. Configs: CAPS
+  `output_dir` `<repo>/results/kg_for_ed`, both page stages 35/135, loads as
+  `RunConfig` (AC-001); `overwrite` false, `lc_max_failure_rate` 0.05,
+  `max_rows_per_table_window` null; versus `da7ad46` only `kgs.as` changed, in
+  exactly the 11 contract keys; the six other example configs are unchanged
+  and load. Windows: 55 = 48 whole-table + 7 block, no input warnings; the
+  largest window payload is about 65k characters (7.8k source text). Headings:
+  152 sub-strands matched with none missing, duplicated or unexpected; 0
+  unclassified lines; 924 expected Skills; both lead-ins found with 4
+  fragments each (`Emergent reading skills`, Grade 1 Term 1; `Phonics`,
+  Grade 3 Term 2). Per-table outline in `preflight_summary.txt`.
 
 ---
 
