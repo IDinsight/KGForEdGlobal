@@ -123,7 +123,7 @@ Developer:
 
 ### DEV-002 — AS run and AS checks
 
-`Status`: `PENDING` `Depends On`: `DEV-001`
+`Status`: `IN_PROGRESS` `Depends On`: `DEV-001`
 `Acceptance`: `AC-002, AC-003, AC-004, AC-025, AC-005, AC-026, AC-027, AC-007, AC-008, AC-028, AC-029, AC-010, AC-030`
 
 **Goal**
@@ -166,6 +166,56 @@ DocumentIR row text and logged.
 
 Two pauses: after handing over the run instructions (Stop A edit and command),
 and after the analysis.
+
+AS run 1 handed over 2026-10-10 on `ec6df04` plus the local Stop A edit:
+in `build_kgs`, right after the step-10 `logger.success(...)` AS export count,
+`sys.exit("Temporary Stop A: ...")`. Run from the repo root with output teed
+to `logs/kg_construction/dev002/as_run_1.log`. Check scripts are written
+against the actual run outputs after the run.
+
+Interim review 2026-10-10 about 12:00 UTC, user-requested while AS run 1
+was in hasChild (read-only; scratchpad `interim_as_review.py`; not the
+formal self-check): run started 02:43 UTC; extraction (55 windows) took
+about 2.5 h, dedup and finalization about 1.7 h. Extraction: 1220
+candidates (48 Grade, 48 Term, 48 Skill Area, 152 Sub-strand, 924 Skill);
+final: 4 Grade, 16 Term, 48 Skill Area, 152 Sub-strand, 924 Skill; merge
+conflicts and needs-review empty. All 924 Skills equal a printed bullet
+(whitespace-collapsed text) under the expected Grade, Term, Skill Area and
+sub-strand in force, both lead-ins joined with their fragments; every
+table's Sub-strand set equals the expected set, all with canonical values;
+the `AC-029` example is two Skills (Emergent reading skills; Begins to make
+meaning of written text). hasChild: 559 of 1144 resolved, all to the
+structurally correct parent, none unresolved, checker passed every draft
+unchanged; for all 1140 non-Grade children the single correct parent is in
+the (truncated, max 24) candidate set. Log: one checker correction (Grade 2
+Term 1 Reading and Phonics window, issues=2, final output still exact), one
+integrity-check retry, three benign repeated-description warnings (the
+`AC-029` pair). Pace about 32 s per hasChild request.
+
+AS run 1 result (user-run, ended at Stop A as intended): started 02:43:55,
+ended 14:56:50 UTC (12 h 13 min). hasChild: 1144 edges, 0 checker
+corrections, 4 root edges (the Grades), 0 unresolved, 0 root fallbacks;
+1044 of 1144 candidate sets truncated to 24, the correct parent kept in
+all. Export: 1 framework, 1144 items, 1144 hasChild relationships;
+`as_validation_report.json` `passed: true`, no errors, 0 unresolved
+fallback relationships. Usage (`kg_run.json`): 3010 requests, 80.75M
+input and 2.02M output tokens, no prompt caching; hasChild producer 1476
+requests for 1144 children (output retries), checker 1144.
+
+Developer review 2026-10-10 (read-only; `logs/kg_construction/dev002/as_checks.py`
+trial output in the scratchpad, all 6 checks passing, plus ad hoc reads):
+merges only fold the 12 Grade and 3 Term banner occurrences per node (no
+Skill, Sub-strand or Skill Area merged); every Skill reads as a learner
+statement (104 distinct opening words, all learner verbs such as Uses,
+Reads, Listens; `Can`, `With help`, `Role plays` are printed that way); no
+audit flags; confidence 0.85-0.97, the lowest on Reading and Phonics
+sub-strands whose names recur in schedule lines and the ASSESSMENT band.
+Observations for the user's review, matching the design rather than
+defects: Learning Commons nodes carry the printed label as `description`
+(for example a Phonics Sub-strand reads `Daily Phonic Activities of 15
+minutes:`; Grade, Term and Skill Area read as the uppercase banner text),
+while the canonical value sits in the item metadata; the two lead-in Skills
+keep line breaks between the lead-in and its fragments.
 
 ---
 
