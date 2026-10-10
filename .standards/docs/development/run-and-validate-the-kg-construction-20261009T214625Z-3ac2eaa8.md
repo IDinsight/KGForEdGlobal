@@ -255,7 +255,7 @@ reviewed above); outputs reviewed by Developer:
 
 ### DEV-003 — User AS confirmation and S_AS
 
-`Status`: `IN_PROGRESS` `Depends On`: `DEV-002`
+`Status`: `DONE` `Depends On`: `DEV-002`
 `Acceptance`: `AC-011`
 
 **Goal**
@@ -289,6 +289,28 @@ Architecture's 13 files: `sfi_final_records.json`,
 `has_child_unresolved_edges.json` and the nine `as_*` exports. A Developer
 trial hash of the same files (scratchpad) was taken right after the
 confirmation for comparison with the user's manifest.
+
+Self-check run 2026-10-10 15:12:48 UTC by the user from the repo root on
+`442beb4` (clean tree): `manifest.py create` wrote
+`logs/kg_construction/dev003/s_as_manifest.json` (root
+`<repo>/results/kg_for_ed/<doc_key>/kgs`, 13 files), identical to the
+Developer trial hashes taken after the confirmation, so the files are the
+ones reviewed. S_AS combined digest (SHA-256 of the sorted
+`<path> <sha256>` lines): `deb631a3b76cea871f1b3ca4ebea4b45a7ff8f30d5ad36e4a8eb0a9fafb6e649`. Per-file SHA-256:
+
+  - `as_entity_provenance.json`: `f12d141fd68154d2278bdfa9415355edbc2c42a8df37b3671e8f6584aa035fd3`
+  - `as_kg_bundle.json`: `ad0b9d72197b9230190cb4b6ff3af8f451566884ad918d0d16faf9f40d6b2003`
+  - `as_nodes.jsonl`: `25159132725dd464cebba394181ae6f4c5c2da7e717137306a41bed34ad54b52`
+  - `as_relationships.jsonl`: `b2b30734fa8cf9730e988328f8179a1b74206acaba9ab761d38265aac35085e6`
+  - `as_relationships_has_child.jsonl`: `a8d652ebf5c02665006a3b3675703c462febcea3b563312c88408cdfa3a6406d`
+  - `as_standards_framework.json`: `9cf5a06dfa0c1a1b63bafd46b738a8d52ab57376ccd68982054f2f2c094913b8`
+  - `as_standards_framework_items.jsonl`: `865f92f88ea7e317bac364c3568135331661cf1d8925da2a16da8c7b26ad1d50`
+  - `as_unresolved_items.json`: `f6ffdd6b47267163ddd83fc9b3fa2207a03d603dfd20e9bbef66fb219c479fe2`
+  - `as_validation_report.json`: `c262544abb019e2d142cf997ee9bec4ed017288862f1a62c18422b20d2421f25`
+  - `has_child_edges_final.json`: `a15e51ba5405ddfb331814fa31699d5074eaf06563aab768fe7415541419c13c`
+  - `has_child_unresolved_edges.json`: `4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945`
+  - `sfi_final_contexts.json`: `06e685f7d6faa0c9b0162a22e87b2c7e9752689b8ce67c8eecfdd4f0d2bc2d8a`
+  - `sfi_final_records.json`: `a92329ca9953f98fbb0f49b00b6aa4311a14d8cd9537e58aee0004a71d1b54fd`
 
 ---
 
