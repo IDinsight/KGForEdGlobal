@@ -50,6 +50,16 @@ Repository facts that shape the design (paths under `backend/src/kgfeg/`):
   `.lp_generation.lock`.
 - `kgs/lp_candidates.py` records `total_candidate_pairs_dropped_by_per_sfi_budget`
   and `..._by_total_budget` in `lp_candidate_summary.json`.
+- LP keeps at most `min(max_total_candidates, N(N-1)/2,
+  N*max_candidates_per_sfi//2)` candidate pairs (`kgs/lp_candidates.py`). Both
+  budgets are strict positive integers with no upper limit (`schemas.py:2768-2780`).
+- LP execution material includes a hash of the complete `kgs` config and
+  `max_concurrent_requests` (`kgs/lp_generation.py:931-956`). Any config change
+  after LP has started makes LP fail closed.
+- Scope rework (2026-10-11) adds `AC-033`: LP budgets of 30 pairs per Skill and
+  14,000 in total. LP had not run yet. The confirmed AS (S_AS) and LC run 2
+  (924 Skills, zero failed requests) stand. An offline candidate build on that
+  AS+LC bundle keeps about 12,892 pairs.
 - `page_ir_verification` has no `output_dir` field; it reads and writes under
   `page_ir_extraction.output_dir` (`entries/verify_page_ir_continuity.py:209`,
   `:241`). Commit `7ccfb3a` set that to `results/kg_for_ed` and both stages to
@@ -159,6 +169,9 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
   edges. Term order and relationship meaning come from the LP producer and
   checker instructions. A Term-order violation or relationship defect is fixed
   by changing instructions and regenerating LP.
+- `AC-033`: The CAPS config sets `kgs.lp.candidate_policy.budgets` to 30 and
+  14,000 before the first LP run. With 924 Skills, the per-Skill budget is the
+  binding one, and the final `lp_candidate_summary.json` records the budgets.
 - `AC-019`: The results review lives in the development plan. It draws on the
   export summaries, `lp_candidate_summary.json` dropped-pair counts, the run
   log and the sample checks.
@@ -291,10 +304,21 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
   A Sub-strand attaches to the Skill Area of the same Grade and Term. A Skill
   attaches to the Sub-strand matching its identity scope, which is the heading
   above it in its table. The existing root, unresolved and exclusion rules stay.
-- `kgs.lc`, `kgs.lp`: no planned change. The LP producer and checker
-  instructions already state the Term order. They change only to fix an
-  `AC-016`, `AC-031`, `AC-018` or `AC-032` finding, and changing them requires
-  regenerating that phase.
+- `kgs.lc`: changes only to fix an `AC-016` or `AC-031` finding. Any change
+  requires LC regeneration.
+- `kgs.lp.candidate_policy.budgets`: `max_candidates_per_sfi: 30`,
+  `max_total_candidates: 14000`, both written as JSON integers (`AC-033`).
+  - Set them before the first LP invocation. No LP artifacts exist yet, so this
+    needs no move-aside.
+  - With 924 eligible Skills, the retention bound is
+    `min(14000, 426426, 924*30//2) = 13860`. The per-Skill budget binds and the
+    total budget leaves headroom.
+  - `evidence_limits` and the other `kgs.lp` fields keep their values.
+- `kgs.lp` producer and checker instructions: they already state the Term
+  order, and change only to fix an `AC-018` or `AC-032` finding.
+- Any `kgs.lp` change after LP has started requires LP regeneration. This
+  includes the budgets and `max_concurrent_requests`, so the user fixes
+  concurrency before the LP run starts.
 
 ### Run and regeneration contract
 
@@ -429,6 +453,13 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
 - `AC-018`: For every buildsTowards edge, the source's (Grade rank, Term rank)
   is not later than the target's. Rank comes from `ordered_values` and the Term
   ancestor's canonical value.
+- `AC-033`: The committed CAPS config has
+  `kgs.lp.candidate_policy.budgets.max_candidates_per_sfi` 30 and
+  `max_total_candidates` 14000, and loads as a `RunConfig`. The
+  `lp_candidate_summary.json` from the final successful LP run records
+  `max_candidates_per_sfi` 30, `max_total_candidates` 14000 and a
+  `candidate_pair_bound` of 13860 for 924 eligible Skills, with
+  `total_candidate_pairs` no greater than that bound.
 - `AC-020`, `AC-021`: The cycle's diff touches no example config other than
   CAPS, and each of the six other example configs loads as a `RunConfig`. Any
   backend diff contains no curriculum names or curriculum-specific text.
@@ -440,8 +471,9 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
 2. Run AS with Stop A and run the AS checks. Iterate fixes, using AS
    regeneration, until they pass. Record the user's confirmation with S_AS.
 3. Run LC with Stop B. Retry failures, run the LC checks and fix as needed.
-4. Run the full no-stop invocation and the LP checks. Fix with LP regeneration
-   as needed, ending on a successful no-stop invocation.
+4. Set the LP budgets (`AC-033`) and confirm the config loads. Run the full
+   no-stop invocation and the LP checks. Fix with LP regeneration as needed,
+   ending on a successful no-stop invocation.
 5. Compare S0 and S_AS, write the `AC-019` review, and run the test suite, lint
    and the other-config load check.
 
@@ -457,15 +489,21 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
 - **Assessment-band look-alikes:** headings in the ASSESSMENT band reuse
   sub-strand names. A miss shows up as extra Sub-strands in the structure check.
 - **buildsTowards cycles:** with Term order kept, a cycle can only form among
-  Skills of one Grade and Term, and it raises `LPFinalizationCycleError`. Fix
-  it first in the prompt, then regenerate LP. A code-level cycle policy comes
-  back to Architect.
-- **LP candidate cap:** about 924 Skills makes `6N` larger than 5000, so the
-  total budget binds. The dropped counts are reported (`AC-019`) and are not a
-  defect in themselves.
-- **Runtime:** hasChild makes about 1,100 sequential producer/checker requests,
-  and LP makes about 5,000 pairs × 2 calls at concurrency 4. Expect
-  multi-hour runs.
+  Skills of one Grade and Term, and it raises `LPFinalizationCycleError`. The
+  larger budgets judge more same-Grade, same-Term pairs, which raises this risk.
+  Fix it first in the prompt, then regenerate LP. A code-level cycle policy
+  comes back to Architect.
+- **LP candidate cap:** at 30 per Skill the per-Skill budget binds (bound
+  13,860). The offline build keeps about 12,892 pairs. A smaller share of them
+  is structurally plausible (38%, against 58% at 12 per Skill), so more
+  `no_relation` outcomes are expected. The dropped counts are reported
+  (`AC-019`) and are not a defect in themselves.
+- **Runtime:** LP makes about 12,900 pairs × 2 calls (about 25,800 calls) at
+  concurrency 4, which can take a day or more of wall-clock time. Raising
+  `kgs.lp.max_concurrent_requests` is a config choice for the user, limited by
+  provider rate limits. It must be set before the LP run starts, because
+  changing it mid-run makes LP fail closed and needs LP regeneration.
+  Interrupted runs resume with `overwrite=false` when the config is unchanged.
 - **Large windows:** whole-table windows produce up to about 60 candidates each.
   If output limits force splitting, the sub-strand context guarantee breaks, so
   that change comes back to Architect.
