@@ -579,6 +579,60 @@ context max 2395 (0 over 3000), candidate bound 13860, 12892 candidates and
 74 s. Handed over 2026-10-11: commit, run the preflight, and only when it
 passes start LP run 2 (`lp_run_2.log`) as described for LP run 1.
 
+LP run 2 (user-run 2026-10-11 02:40 UTC on `14ad0e0`, clean tree, LP
+preflight `passed: True`, `lp_run_2.log`): AS and LC reused (LC
+`resumed=924`, dedup `resumed=195`, AS+LC bundle reused on matching
+fingerprints); LP wrote its candidate and request artifacts (12892 requests)
+and began dispatching at 02:45 UTC. Interim review at 12:14 UTC (user
+question; read-only scratchpad `lp_review.py`, nothing written into `kgs/`):
+168 requests through both stages, no failures, no retries, no warning or
+error lines. Of 164 reconciled responses, 127 are relatesTo, 37 buildsTowards
+and 0 no_relation; the checker corrected 14 drafts, all buildsTowards to
+relatesTo on reprinted CAPS bullets; no buildsTowards edge goes to an earlier
+(Grade, Term), so `AC-018` holds so far. Sampled buildsTowards edges extend an
+earlier-Term Skill in a later Term (for example Grade 1 'Draws pictures to
+convey a message', Term 1, to '... adding a label or caption', Term 2). The
+first 168 requests are near-duplicate cross-Term pairs (mean SFI text Jaccard
+0.83, against 0.07-0.21 over later request ranges); the population is 7546
+same-Grade same-Term pairs, 4558 same-Grade cross-Term and 788 cross-Grade,
+so the interim decision mix is not representative. Usage per request is about
+58.3k input and 3.8k output tokens (`anthropic:claude-opus-5`, effort high,
+adaptive thinking; no cache reads).
+
+Defect D-LP-2 (design, found in LP run 2): throughput is about 17.6 requests
+an hour, steady across the run, so 12892 requests take about 30 days; the
+design expects a day or more at concurrency 4. Log timing per batch of 4
+requests: draft dispatch checkpoints 4 x about 25 s in series
+(`checkpoint_seconds` median 24.85, n 336), model calls in parallel (stage
+median 31.5 s), draft retention 4 x about 53 s, verdict dispatch 4 x about
+25 s, verdict retention 4 x about 77 s; about 13.7 minutes per 4 requests,
+under 10% of it model time. Cause (code reading, consistent with those
+timings): `LPGenerationCheckpoints._save` (`kgs/lp_checkpoints.py:660-692`)
+calls `verify_execution_authority` twice and `_commit` (`:192-208`) calls it
+once per written file and once more, so each save runs the execution check
+about 10 times. Each check is `LPRequestPopulationVerifier.verify`
+(`kgs/lp_requests.py:309-337`): `_population_material_hash` (`:669`)
+re-serializes all 12892 candidates and requests, and the 569 MB request file
+and the other inputs are stream-hashed; about 2.5 s per check. A request takes
+7 saves (two dispatches, two attempt completions with promotion, one
+reconciled append) plus about 7 further `_verify_execution_material` calls,
+about 77 checks. The single coordinator holds the dispatch gate while it
+saves, so `max_concurrent_requests` cannot raise throughput. Each save also
+rewrites the whole checkpoint state twice (transaction journal and every
+artifact) and re-encodes every record, so saves slow as rows accumulate
+(state about 4.5 MB now, about 150 MB projected at completion; about 15 TB of
+writes projected over a full run). A fix changes when and how the store
+re-verifies inputs and checkpoint bytes (resume and fail-closed semantics),
+outside the code-fix boundary, and the design's runtime premise needs
+correcting, so this routes to Architect as an `ARCHITECTURE` failure (user
+decision, 2026-10-11, after the interim review; not chosen: lowering the
+`AC-033` budgets, still about 12 days at 12 / 5000 with LP restarted, or
+letting run 2 finish unchanged). Run 2 keeps running meanwhile (user
+decision). Its completed requests stay reusable after a code-only fix that
+leaves the LP execution material (`lp_execution_material`: `kgs` config hash,
+`prompts.py` hash, schemas, model, request manifest) and the checkpoint
+format unchanged.
+
 ---
 
 ### DEV-006 — Close-out checks and results review
@@ -689,3 +743,9 @@ AS equal to S_AS; LC run 2 stands). DEV-005 gains the 3000 bound and the
 preflight as in-step config and self-check work under unchanged approved
 intent; no reapproval required. Next: set the bound, write and hand over the
 preflight, then LP run 2.
+
+### Suspended Assignment 3
+
+`Recovery Frame`: `1` `Recovery Reason`: `LP run 2 completes about 17.6 requests an hour (168 of 12,892 after 9.5 h; about 30 days in all) against the design's day or more: every LP checkpoint save re-verifies the full 569 MB request population about 10 times (about 77 times per request, about 2.5 s each) on the single coordinator thread, so concurrency cannot help; a fix changes checkpoint verification semantics, outside the Developer code-fix boundary.` `Purpose`: `DEVELOPMENT`
+`Target`: `NONE` `Assessed Inputs`: `DEV-001 to DEV-004 DONE; CAPS config at 9478365 (LP budgets 30 / 14000, concurrency 4, evidence bound 3000); AS equal to S_AS (LP preflight); LC run 2; LP run 2 still running on 14ad0e0 (168 of 12,892 requests at 2026-10-11 12:14 UTC, no failures)`
+`Next Action`: `Reconcile the plan with the corrected design (a new DEV step with reapproval if the LP checkpoint throughput fix is assigned to Developer), then hand over stopping LP run 2 and resuming LP from its checkpoints with no stops.`
