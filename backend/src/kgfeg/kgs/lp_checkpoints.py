@@ -15,10 +15,12 @@ import os
 import re
 import tempfile
 
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 # Third Party Library
+from loguru import logger
 from pydantic import Field, JsonValue, TypeAdapter
 from pydantic_core import to_json
 
@@ -29,6 +31,7 @@ from kgfeg.kgs.lp_requests import (
     LPGenerationRequest,
     LPRequestManifest,
     LPRequestPopulation,
+    file_stat_identity,
     read_lp_request_population,
 )
 from kgfeg.kgs.prompts import (
@@ -123,7 +126,7 @@ class LPGenerationCheckpoints:
     def __init__(
         self,
         *,
-        execution_check: Callable[[], None] | None = None,
+        execution_check: Callable[..., None] | None = None,
         material: dict[str, Any],
         ownership_check: Callable[[], None] | None = None,
         population: LPRequestPopulation,
@@ -135,7 +138,9 @@ class LPGenerationCheckpoints:
         Parameters
         ----------
         execution_check
-            Optional immutable-input assertion immediately before writer publication.
+            Optional immutable-input assertion around writer publication, called with
+            `full` (complete proof) and `request_indices` (requests to re-hash when
+            only the cheap guard runs).
         material
             Actual upstream, configuration, prompt-definition, and model identities.
         ownership_check
@@ -154,6 +159,8 @@ class LPGenerationCheckpoints:
         """
 
         # Proofs are private to this invocation and retain only immutable material.
+        self._committed_status: str | None = None
+        self._file_identities: dict[str, tuple[int, int, int, int, int]] = {}
         self._record_encodings: dict[tuple[str, int], tuple[bytes, bytes]] = {}
         self._row_proofs: dict[tuple[str, int], tuple[bytes, ...]] = {}
         self._validated_byte_hashes: tuple[tuple[str, bytes], ...] = ()
@@ -189,21 +196,76 @@ class LPGenerationCheckpoints:
         else:
             self._save()
 
-    def _commit(self, payloads: dict[str, bytes]) -> None:
+    def _check_checkpoint_files(self, *, full: bool) -> None:
+        """Require every checkpoint file to hold the last validated bytes.
+
+        A guard compares each file's stat identity with the one recorded after the
+        store's own last write or full readback, and reads a file only when that
+        identity differs. A full check reads every file. Either way, the bytes read
+        must match the validated digest, and their identity becomes the new record.
+
+        Parameters
+        ----------
+        full
+            Read every file instead of trusting unchanged stat identities.
+
+        Raises
+        ------
+        ValueError
+            If a file's bytes differ from the validated state, or a file changes while
+            it is being read.
+        """
+
+        refreshed = []
+
+        for name, digest in self._validated_byte_hashes:
+            path = self.root / name
+            identity = file_stat_identity(path)
+
+            if not full and identity == self._file_identities.get(name):
+                continue
+
+            payload = path.read_bytes()
+
+            if (
+                hashlib.sha256(payload).digest() != digest
+                or file_stat_identity(path) != identity
+            ):
+                raise ValueError(f"LP checkpoint material changed: {name}.")
+
+            if not full and name in self._file_identities:
+                refreshed.append(name)
+
+            self._file_identities[name] = identity
+
+        if refreshed:
+            logger.info(
+                "LP checkpoint file identity changed with identical bytes; refreshed "
+                "after readback: {}",
+                ", ".join(refreshed),
+            )
+
+    def _commit(
+        self, payloads: dict[str, bytes], *, request_indices: Iterable[int] = ()
+    ) -> None:
         """Finish a journaled state replacement and retire its durable transaction.
+
+        The applied files are read back against the journal's next state, and one
+        authority check runs before the journal is retired.
 
         Parameters
         ----------
         payloads
             Complete validated artifact and receipt bytes already stored in the journal.
+        request_indices
+            Requests published by this commit, re-hashed by the authority guard.
         """
 
         for name in payloads:
-            self.verify_execution_authority()
             _atomic_write(path=self.root / name, payload=payloads[name])
 
-        self.verify_bytes()
-        self.verify_execution_authority()
+        self._check_checkpoint_files(full=True)
+        self.verify_execution_authority(full=False, request_indices=request_indices)
         (self.root / _TRANSACTION).unlink()
         _sync_directory(self.root)
 
@@ -239,7 +301,7 @@ class LPGenerationCheckpoints:
             }
         )
 
-        self.verify_bytes()
+        self.verify_bytes(full=True)
 
     def _load_snapshot(self, payloads: dict[str, bytes]) -> None:
         """Validate a complete checkpoint snapshot without changing persisted files.
@@ -267,6 +329,7 @@ class LPGenerationCheckpoints:
             raise ValueError("LP execution material changed; regenerate before reuse.")
 
         self.run_number = receipt["run_number"]
+        self._committed_status = receipt["status"]
 
         if (
             isinstance(self.run_number, bool)
@@ -457,35 +520,26 @@ class LPGenerationCheckpoints:
         Raises
         ------
         ValueError
-            If the predecessor is incomplete, its receipt is invalid, or its artifact
-            hashes have changed.
+            If the predecessor is incomplete, was never validated by this store, or
+            its files have changed since the store's last write or full readback.
         """
 
-        names = (*self._payloads(), _RECEIPT)
-
         if not (self.root / _RECEIPT).exists():
-            if any((self.root / name).exists() for name in names):
+            if any((self.root / name).exists() for name in _CHECKPOINT_NAMES):
                 raise ValueError("LP checkpoint predecessor is incomplete.")
 
-            return dict.fromkeys(names)
+            return dict.fromkeys(_CHECKPOINT_NAMES)
 
-        receipt_bytes = (self.root / _RECEIPT).read_bytes()
-        receipt = _read_receipt(receipt_bytes)
-        _read_usage((self.root / _USAGE).read_bytes())
+        if {name for name, _ in self._validated_byte_hashes} != _CHECKPOINT_NAMES:
+            raise ValueError(
+                "LP checkpoint predecessor was not validated by this store."
+            )
 
-        hashes: dict[str, str | None] = {
-            _RECEIPT: hashlib.sha256(receipt_bytes).hexdigest()
-        }
+        # Unchanged stat identities vouch for the recorded digests; any difference
+        # forces a readback against them before they become the journal's predecessor.
+        self._check_checkpoint_files(full=False)
 
-        for name, expected_digest in receipt["artifact_byte_hashes"].items():
-            actual = hashlib.sha256((self.root / name).read_bytes()).hexdigest()
-
-            if actual != expected_digest:
-                raise ValueError(f"LP checkpoint predecessor changed: {name}.")
-
-            hashes[name] = actual
-
-        return hashes
+        return {name: digest.hex() for name, digest in self._validated_byte_hashes}
 
     def _receipt(self, payloads: dict[str, bytes]) -> dict[str, Any]:
         """Compute the complete material receipt and truthful processing status.
@@ -574,6 +628,8 @@ class LPGenerationCheckpoints:
                 )
 
         if not read_only:
+            # The one authority check before applying a journal written earlier.
+            self.verify_execution_authority(full=False)
             self._commit(payloads)
 
     def _record_bytes(self, *, key: tuple[str, int], record: BaseSchema) -> bytes:
@@ -657,8 +713,18 @@ class LPGenerationCheckpoints:
 
         return states
 
-    def _save(self) -> None:
+    def _save(self, *, request_indices: Iterable[int] = ()) -> None:
         """Validate and durably journal complete state before replacing any files.
+
+        One authority check runs before the journal is written and one before it is
+        retired. The save whose receipt status first becomes `completed` runs the
+        full input and checkpoint proofs first.
+
+        Parameters
+        ----------
+        request_indices
+            Requests whose records this save adds or changes; pending completions
+            are always included because every save republishes them.
 
         Raises
         ------
@@ -667,13 +733,26 @@ class LPGenerationCheckpoints:
             transaction already exists.
         """
 
-        self.verify_execution_authority()
+        indices = sorted(
+            {
+                *request_indices,
+                *(index for rows in self.pending.values() for index in rows),
+            }
+        )
         self._validate()
         payloads = self._payloads()
-        payloads[_RECEIPT] = _canonical_bytes(self._receipt(payloads))
+        receipt = self._receipt(payloads)
+        payloads[_RECEIPT] = _canonical_bytes(receipt)
 
         if (self.root / _TRANSACTION).exists():
             raise ValueError("LP checkpoint has an unfinished transaction; reload it.")
+
+        if receipt["status"] == "completed" and self._committed_status != "completed":
+            # Completion boundary: complete proofs before completion is first recorded.
+            self.verify_execution_authority(full=True)
+
+            if self._validated_byte_hashes:
+                self._check_checkpoint_files(full=True)
 
         transaction = _LPCheckpointTransaction(
             next_payloads={
@@ -681,7 +760,7 @@ class LPGenerationCheckpoints:
             },
             previous_byte_hashes=self._previous_hashes(),
         )
-        self.verify_execution_authority()
+        self.verify_execution_authority(full=False, request_indices=indices)
         self._validated_byte_hashes = tuple(
             (name, hashlib.sha256(payloads[name]).digest()) for name in sorted(payloads)
         )
@@ -689,7 +768,8 @@ class LPGenerationCheckpoints:
             path=self.root / _TRANSACTION,
             payload=_canonical_bytes(transaction.model_dump(mode="json")),
         )
-        self._commit(payloads)
+        self._commit(payloads, request_indices=indices)
+        self._committed_status = receipt["status"]
 
     def _store_result(
         self, *, payload: BaseSchema, request_index: int, stage: str
@@ -1276,7 +1356,7 @@ class LPGenerationCheckpoints:
                     payload.model_dump(mode="json")
                 )
 
-        self.promote()
+        self.promote(request_indices=(request_index,))
 
     def begin_run(self) -> None:
         """Retain interrupted call identities and assign a new persisted invocation."""
@@ -1388,8 +1468,8 @@ class LPGenerationCheckpoints:
             raise ValueError("LP attempt outcome is invalid.")
 
         # Saving precedes promotion, so a crash never discards a valid suffix.
-        self._save()
-        self.promote()
+        self._save(request_indices=(attempt.request_index,))
+        self.promote(request_indices=(attempt.request_index,))
 
     def get_row(self, *, request_index: int, stage: str) -> _LPCheckpoint | None:
         """Resolve one fully validated durable prefix or pending stage.
@@ -1412,16 +1492,25 @@ class LPGenerationCheckpoints:
 
         return self.pending[stage].get(request_index)
 
-    def promote(self) -> None:
-        """Promote newly contiguous stages without losing saved suffix completions."""
+    def promote(self, *, request_indices: Iterable[int] = ()) -> None:
+        """Promote newly contiguous stages without losing saved suffix completions.
+
+        Parameters
+        ----------
+        request_indices
+            Requests the caller just changed, guarded together with promoted rows.
+        """
+
+        promoted = set(request_indices)
 
         for stage in _FILENAMES:
             pending = self.pending[stage]
 
             while len(self.rows[stage]) in pending:
+                promoted.add(len(self.rows[stage]))
                 self.rows[stage].append(pending.pop(len(self.rows[stage])))
 
-        self._save()
+        self._save(request_indices=promoted)
 
     def record_dispatch(self, *, request_index: int, stage: str) -> int:
         """Persist one bounded attempt identity before giving a worker its call.
@@ -1476,11 +1565,17 @@ class LPGenerationCheckpoints:
                 status="dispatched",
             )
         )
-        self._save()
+        self._save(request_indices=(request_index,))
         return len(self.attempts) - 1
 
-    def verify_bytes(self) -> None:
+    def verify_bytes(self, *, full: bool = False) -> None:
         """Fail closed if persisted progress changed since this store was validated.
+
+        Parameters
+        ----------
+        full
+            Read back every checkpoint file. Otherwise a file is read only when its
+            stat identity differs from the store's last write or full readback.
 
         Raises
         ------
@@ -1503,17 +1598,25 @@ class LPGenerationCheckpoints:
                 "LP in-memory checkpoint material changed after validation."
             )
 
-        for name, payload in payloads.items():
-            if (self.root / name).read_bytes() != payload:
-                raise ValueError(f"LP checkpoint material changed: {name}.")
+        self._check_checkpoint_files(full=full)
 
-    def verify_execution_authority(self) -> None:
-        """Recheck immutable inputs and ownership before any durable publication."""
+    def verify_execution_authority(
+        self, *, full: bool = True, request_indices: Iterable[int] = ()
+    ) -> None:
+        """Recheck immutable inputs and ownership before any durable publication.
+
+        Parameters
+        ----------
+        full
+            Run the complete input proof instead of the cheap guard.
+        request_indices
+            Requests the guard re-hashes; a full proof covers every request.
+        """
 
         self.verify_ownership()
 
         if self.execution_check is not None:
-            self.execution_check()
+            self.execution_check(full=full, request_indices=tuple(request_indices))
 
     def verify_ownership(self) -> None:
         """Reject publication or dispatch after losing generation-directory ownership."""

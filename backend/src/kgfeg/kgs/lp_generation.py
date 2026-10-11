@@ -171,7 +171,9 @@ def _admit_lp_requests(
         Sole checkpoint writer and durable stage authority.
     """
 
-    _verify_execution_material(kg_config=kg_config, population=population, store=store)
+    _verify_execution_material(
+        full=False, kg_config=kg_config, population=population, store=store
+    )
     start = len(store.rows["response"])
     active_indices = {index for index, _ in active.values()}
 
@@ -191,7 +193,11 @@ def _admit_lp_requests(
             break
 
         _verify_execution_material(
-            kg_config=kg_config, population=population, store=store
+            full=False,
+            kg_config=kg_config,
+            population=population,
+            request_indices=(index,),
+            store=store,
         )
         draft_row = store.get_row(request_index=index, stage="draft")
         draft = (
@@ -419,15 +425,16 @@ def _finish_lp_requests(  # pylint: disable=too-complex
         Run-local aggregate updated only by this coordinator.
     """
 
+    active: dict[Future[_LPAttemptOutcome], tuple[int, int]] = {}
     gate = LPDispatchGate(
         check_material=partial(
-            _verify_execution_material,
+            _verify_active_material,
+            active=active,
             kg_config=kg_config,
             population=population,
             store=store,
         )
     )
-    active: dict[Future[_LPAttemptOutcome], tuple[int, int]] = {}
     stopped: BaseException | None = None
     integrity_error: BaseException | None = None
     capacity = kg_config.learning_progressions.max_concurrent_requests
@@ -686,8 +693,14 @@ def _retain_lp_outcome(
     if isinstance(outcome.error, LPDispatchIntegrityError):
         raise outcome.error
 
-    _verify_execution_material(kg_config=kg_config, population=population, store=store)
     attempt = store.attempts[attempt_index]
+    _verify_execution_material(
+        full=False,
+        kg_config=kg_config,
+        population=population,
+        request_indices=(attempt.request_index,),
+        store=store,
+    )
     bucket = (
         outcome.usage_tracker.lp_generation
         if attempt.stage == "draft"
@@ -726,21 +739,65 @@ def _retain_lp_outcome(
     )
 
 
-def _verify_execution_material(
+def _verify_active_material(
     *,
+    active: dict[Future[_LPAttemptOutcome], tuple[int, int]],
     kg_config: CreateKGConfig,
     population: LPRequestPopulation,
     store: LPGenerationCheckpoints,
-    verify_checkpoints: bool = True,
 ) -> None:
-    """Reconcile all population and checkpoint material around each dispatched call.
+    """Guard a transport dispatch together with every request in the bounded window.
+
+    The dispatch gate is shared by all workers and cannot name the calling request,
+    so the guard re-hashes every admitted request. The coordinator changes `active`
+    only while it holds the same gate lock, so the window is stable here.
 
     Parameters
     ----------
+    active
+        Calls admitted to the bounded window and their request indices.
     kg_config
         Frozen effective configuration.
     population
         Complete authoritative request population.
+    store
+        Current validated checkpoint state and directory owner.
+    """
+
+    _verify_execution_material(
+        full=False,
+        kg_config=kg_config,
+        population=population,
+        request_indices=tuple(sorted(index for index, _ in active.values())),
+        store=store,
+    )
+
+
+def _verify_execution_material(
+    *,
+    full: bool = True,
+    kg_config: CreateKGConfig,
+    population: LPRequestPopulation,
+    request_indices: tuple[int, ...] = (),
+    store: LPGenerationCheckpoints,
+    verify_checkpoints: bool = True,
+) -> None:
+    """Reconcile population and checkpoint material around each dispatched call.
+
+    A full check proves every population and checkpoint byte. Otherwise the cheap
+    guards run: stat identities, the named requests' digests and execution-material
+    equality; any guard that sees a difference escalates to the full proof.
+
+    Parameters
+    ----------
+    full
+        Run the complete proofs instead of the guards.
+    kg_config
+        Frozen effective configuration.
+    population
+        Complete authoritative request population.
+    request_indices
+        Requests being dispatched or published, re-hashed by the guard.
     store
         Current validated checkpoint state and directory owner.
     verify_checkpoints
@@ -748,7 +805,7 @@ def _verify_execution_material(
         so they can validate a stable snapshot without racing publication.
     """
 
-    store.verify_execution_authority()
+    store.verify_execution_authority(full=full, request_indices=request_indices)
 
     if store.execution_check is None:
         _verify_lp_inputs(
@@ -759,14 +816,16 @@ def _verify_execution_material(
         )
 
     if verify_checkpoints:
-        store.verify_bytes()
+        store.verify_bytes(full=full)
 
 
 def _verify_lp_inputs(
     *,
+    full: bool = True,
     kg_config: CreateKGConfig,
     material: dict[str, Any],
     population: LPRequestPopulation,
+    request_indices: tuple[int, ...] = (),
     root: Path,
     verifier: LPRequestPopulationVerifier | None = None,
 ) -> None:
@@ -774,12 +833,17 @@ def _verify_lp_inputs(
 
     Parameters
     ----------
+    full
+        Stream every population byte and hash the whole population. Otherwise the
+        verifier's guard runs, which escalates to the full proof on any stat change.
     kg_config
         Frozen effective policy.
     material
         Captured execution identity.
     population
         Complete materialized candidate and request population.
+    request_indices
+        Requests the guard re-hashes against their full-verification digests.
     root
         Generation directory containing the immutable population artifacts.
     verifier
@@ -794,8 +858,12 @@ def _verify_lp_inputs(
 
     if verifier is None:
         read_lp_request_population(expected=population, root=root)
-    else:
+    elif full:
         verifier.verify(population=population, root=root)
+    else:
+        verifier.guard(
+            population=population, request_indices=request_indices, root=root
+        )
 
     if lp_execution_material(kg_config=kg_config, population=population) != material:
         raise ValueError("LP prompt or model material changed during execution.")
@@ -912,7 +980,9 @@ def generate_learning_progressions(
             store=store,
             usage_tracker=usage_tracker,
         )
-        _verify_execution_material(kg_config=config, population=population, store=store)
+        _verify_execution_material(
+            full=True, kg_config=config, population=population, store=store
+        )
 
         if any(
             failure.resolved_run_number is None for failure in store.failures
