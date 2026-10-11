@@ -171,13 +171,16 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
    CAPS-specific, so they live outside `backend/` and are never committed. Their
    method and results go in the development plan, as the previous cycle's run
    results did.
-9. **Make LP checkpoint cost per save independent of the number of completed
-   requests.** Run full verification at the points where trust changes: start of
+9. **Stop LP checkpoint saves from re-proving and rewriting the whole store.** Run full verification at the points where trust changes: start of
    each invocation, completion, read-only loads, and any guard trip. Between
    those points, use cheap guards that fail closed in the same cases. Write only
    what changed, while keeping every at-rest checkpoint byte identical to
    today's writer. Run 2's completed requests then resume as they are, and the
-   LP run becomes bound by model calls, so concurrency helps again.
+   LP run becomes bound by model calls, so concurrency helps again. The small
+   whole-file rewrites (`usage`, receipt) still grow slowly with progress.
+   Late saves are expected to take about 2.5-3× as long as early ones, which is
+   negligible next to model time. So there is no save-time ratio criterion;
+   real-run throughput (`AC-017`) is the measure (user rework, 2026-10-11).
 
 ## Acceptance Coverage
 
@@ -628,15 +631,11 @@ proofs run and how much each save writes.
 - `AC-017` (checkpoint scale): on a synthetic store of 12,892 requests with
   payloads the size of run 2's (about 11 kB of stage rows per request), driving
   every save with stub calls and no model calls:
-  - the median per-save time over the last 500 requests is within 2× of the
-    median over the first 500;
   - between full verification points, no save, dispatch or transport check
     reads `lp_generation_requests.jsonl` or a whole checkpoint file;
   - the at-rest files and receipt equal those of the full-rewrite writer.
 - `AC-017` (real run): run 2's completed requests are reused, with no repeated
   model call for any request that already has a response.
-  - Per-request checkpoint time in the run log shows no upward trend with the
-    number of completed requests.
   - Once 500 requests are complete, throughput over any 2-hour window is at
     least 70% of the model-bound rate. That rate is concurrency × 3600 ÷ the
     median per-request model seconds.

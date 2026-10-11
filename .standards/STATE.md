@@ -1,6 +1,6 @@
 # S.T.A.N.D.A.R.D.S. Workflow State
 
-`WorkflowState`: `ARCHITECTING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
+`WorkflowState`: `TESTING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
 `PendingCycleRequest`: `UNSET` `PendingCycleBlockedOn`: `NONE`
 
 ## Active Work
@@ -25,18 +25,12 @@ Preserve existing entries; see PROTOCOL.md, Baseline Reconciliation Format.
 
 ## Handoff
 
-`Kind`: `USER_REWORK` `From`: `TESTING` `FailureType`: `ARCHITECTURE` `Reason`:
-`User drops the AC-017 checkpoint-scale 2x save-time criterion from the design.`
+`Kind`: `RESUME` `From`: `ARCHITECTING` `FailureType`: `NONE` `Reason`:
+`Design drops the AC-017 checkpoint-scale 2x save-time criterion; resume Increment 1 assessment (Tester first records the interrupted Increment 1 assignment).`
 
 ## Recovery
 
-`Active`: `true`
-
-### Frame 1
-
-`From`: `TESTING` `Owner`: `ARCHITECTING` `FailureType`: `ARCHITECTURE`
-`Reason`: `User rework: remove the design's LP checkpoint-scale criterion (median save over the last 500 requests within 2x of the first 500); late saves are expected near 2.5-3x early ones from the whole-file usage rewrite, with negligible real-run effect.`
-`ResumeAt`: `TESTING` `RerunThrough`: `NONE`
+`Active`: `false`
 
 ## Outstanding Obligations
 
