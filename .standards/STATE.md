@@ -13,7 +13,7 @@
 `.standards/docs/specs/run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8.md` `Development`:
 `.standards/docs/development/run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8.md`
 `PromotionReason`: `NONE` `AuditTarget`: `NONE` `BlockedOn`:
-`DEV-007 done; user confirms continuing with DEV-008 (LP checkpoint record authority).`
+`DEV-008 done; user confirms continuing with DEV-009 (incremental journaled LP checkpoint commits).`
 `PendingVerificationCadence`: `NONE`
 
 `BaselineReconciliation`: `NONE`

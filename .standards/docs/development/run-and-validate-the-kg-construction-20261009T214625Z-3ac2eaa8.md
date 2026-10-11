@@ -817,7 +817,7 @@ uncommitted tree on `cb7d9dc`; git blob ids `lp_checkpoints.py` `0437a8a`,
 
 ### DEV-008 — LP checkpoint record authority
 
-`Status`: `PENDING` `Depends On`: `DEV-007`
+`Status`: `DONE` `Depends On`: `DEV-007`
 `Acceptance`: `AC-017, AC-020`
 
 **Goal**
@@ -854,6 +854,94 @@ read-only users in `kgs/lp_generation.py`, `kgs/lp_finalization.py` and
 As DEV-007, plus a scratch script that mutates returned records and confirms
 persisted bytes and store decisions are unchanged, and that counts records
 re-proved per save on a small synthetic store.
+
+**Implementation Notes**
+
+Implemented 2026-10-11 (uncommitted, on `61f6c81`):
+
+- `lp_checkpoints.py`: stage rows, pending rows, attempts, failures and the
+  execution material are private (`_rows`, `_pending`, `_attempts`,
+  `_failures`, `_material`, a deep copy of the constructor's material). The
+  public `rows`, `pending`, `attempts` and `failures` are read-only live views
+  (`_RecordSequence`, `_PendingRecords`, `MappingProxyType`) whose items are
+  deep copies; `get_row` returns a copy; `material` returns a deep copy; the new
+  `retry_limits` returns a copy of the captured limits. Records are never
+  mutated in place: `_store_result`, `_put_attempt` and `_set_failures`
+  validate a new record and store its canonical bytes in `_record_encodings`,
+  which `_payloads` joins without re-proving anything. Failures are rare, so a
+  changed failure history is re-encoded whole.
+- `_validate(indices=None)`: without indices it validates every record (load,
+  read-only load, completion boundary); with indices it validates those
+  requests' rows (`_validate_index_rows`, proofs keyed as before) and attempts
+  (`_validate_index_attempts`), plus stage length order, pending capacity and
+  boundaries, the whole (short) failure history and the dispatched count.
+  `_save` validates its changed requests plus pending rows, or runs the
+  complete validation at the completion boundary. The proof material digest is
+  computed once per store.
+- Usage `request_states` are cached per request (`_request_state_encodings`)
+  and re-encoded only for the requests a save changes; the joined bytes equal
+  the previous whole-list encoding.
+- `verify_bytes` no longer re-serializes the in-memory store (records cannot
+  change outside validated updates); it checks the files only. An update that
+  raises after changing any record, encoding or file marks the store failed
+  (`_updating`), and every later update or `verify_bytes` is refused; a rejected
+  precondition changes nothing and does not.
+- `lp_generation.py`: `_observe_lp_failures` reads `store.retry_limits`
+  instead of indexing `store.material` (which is now a deep copy).
+
+Developer trial (Developer-run; from `backend/` with the test environment):
+black, isort, ruff, mypy (with `lp_finalization.py` and
+`evals/lp_eval/sampling.py`) clean, pylint 10.00/10. LP tests: 1828 passed, 20
+failed. All 20 pin replaced behavior and are listed for Tester: the DEV-007
+`test_transaction_publication_rechecks_changed_population`, and 19 in
+`test_lp_checkpoint_proofs.py` that mutate store records or material through
+the public attributes and expect the store to notice, assign into the views,
+or call `_validate_cached_row` with the removed `material` argument:
+`test_cache_history_is_bounded_by_current_positions`,
+`test_changed_nested_record_revalidates[draft|verdict|response]`,
+`test_changed_request_and_execution_material_revalidate[producer|checker|model|retry|manifest]`
+(the `request` case, a population edit, still passes),
+`test_failed_validation_cannot_install_partial_proofs`,
+`test_order_and_prerequisite_edits_fail_closed[missing_draft|missing_verdict|gap|duplicate|order|pending_overlap]`,
+`test_resealed_disk_cannot_replace_last_validated_snapshot[True]` (the disk-only
+`[False]` case passes) and
+`test_unchanged_response_revalidates_changed_prerequisite[draft|verdict]`.
+`tests/kgfeg/evals`: 816 passed. `logs/kg_construction/dev008/lp_record_authority.py`:
+passed; incremental saves (106 at 15 requests, 463 at 66) average about 1
+record encoding, 1.4 row proofs and 0.85 semantic row validations per save in
+both halves of each run and at both sizes, with at most 3 row proofs in one
+save (bound 3 × (capacity + 1) = 15); one complete validation per run (the
+completion boundary); every caller-reachable record mutated with payload
+bytes, files (full readback), retry limits and the dispatch decision
+unchanged, and writes into the views rejected. `lp_guard_reads.py` still
+passes (3 full population verifications at 107 and 464 saves). Handed over
+for the user-run self-check.
+
+Self-check of record (user-run 2026-10-11 from the repo root, uncommitted tree
+on `61f6c81`; git blob ids `lp_checkpoints.py` `d76a824`, `lp_generation.py`
+`194c220`, `lp_requests.py` unchanged since DEV-007; outputs in
+`logs/kg_construction/dev008/`):
+
+- `lint.log`: black and isort report the three modules unchanged; ruff on
+  `src/kgfeg/kgs/` passes; mypy finds no issues in the five modules
+  (including `lp_finalization.py` and `evals/lp_eval/sampling.py`); pylint
+  10.00/10.
+- `pytest_lp.log`: 2644 passed, 20 failed; the 20 are exactly the tests listed
+  above (19 in `test_lp_checkpoint_proofs.py` plus the DEV-007
+  `test_transaction_publication_rechecks_changed_population`), all pinning
+  replaced behavior, for Tester.
+- `lp_record_authority.json`: `passed: true`; per incremental save about 1
+  encoding, 1.3-1.5 row proofs and 0.8-0.9 semantic row validations in both
+  halves at 15 and 66 requests (at most 6 row proofs in one save, bound 15);
+  one complete validation per run; caller mutation changed nothing.
+- `lp_guard_reads.json`: `passed: true` (3 full population verifications at
+  107 and 464 saves).
+
+Commit-hook fix (2026-10-11): the pre-commit `interrogate` hook (100% docstring
+coverage) rejected the commit because the two `_RecordSequence.__getitem__`
+`@overload` stubs had no docstrings. Added one-line docstrings to both stubs,
+no code change (`lp_checkpoints.py` blob `639486e`); Developer reran
+interrogate on `src/kgfeg/kgs/` (100%), ruff, mypy and pylint (10.00/10) clean.
 
 ---
 
