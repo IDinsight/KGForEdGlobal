@@ -947,7 +947,7 @@ interrogate on `src/kgfeg/kgs/` (100%), ruff, mypy and pylint (10.00/10) clean.
 
 ### DEV-009 — Incremental journaled LP checkpoint commits
 
-`Status`: `PENDING` `Depends On`: `DEV-008`
+`Status`: `DONE` `Depends On`: `DEV-008`
 `Acceptance`: `AC-017, AC-020`
 
 **Goal**
@@ -999,6 +999,115 @@ calls, nothing written under `results/`):
   pre-change full-payload journal: reload recovers or fails closed as the
   design requires.
 
+**Implementation Notes**
+
+Implemented 2026-10-11 (uncommitted, on `00c466e`):
+
+- `lp_checkpoints.py`: a save journals a `_LPCheckpointDeltaTransaction`:
+  per stage file its previous length and digest, appended bytes, next length
+  and digest; per small file (pending, failures, usage) and the receipt its
+  previous digest and complete next bytes. `_commit_delta` extends stage files
+  in place (`_append_bytes`, which refuses a file whose size is not the
+  journaled previous length), replaces the small files and receipt atomically,
+  checks stage files by length plus a readback of only the appended tail and
+  small files by length, records each file's identity, runs the guard and
+  retires the journal. Running SHA-256 digests (`_stage_hashers`) and persisted
+  row counts are seeded by every full load and advanced only after a
+  successful commit; `_previous_state` takes predecessor lengths and digests
+  from the store's recorded identities after a stat guard. `_receipt_bytes`
+  encodes the receipt from the material bytes encoded once per store; the
+  bytes equal encoding the whole receipt object. `_recover` dispatches on the
+  journal form: the full-payload journal path is unchanged, and
+  `_recover_delta` rolls forward only when every stage file is exactly at its
+  previous or next length and digest (absent counts as previous only for a
+  fresh store) and every small file at its previous or next digest, after
+  validating the complete next snapshot; anything else fails closed.
+  `_read_transaction` reads and validates both forms, so
+  `validate_lp_checkpoint_format` accepts both. Small files are rewritten
+  whole on every save, as before.
+- `lp_generation.py`: `_retain_lp_outcome` now guards the published request
+  together with every request still in the bounded window (`in_flight`). The
+  DEV-008 store guard re-hashed only the published request and pending rows,
+  so a worker-side mutation of another admitted request could precede a
+  publication (`test_changed_worker_evidence_closes_dispatch_and_publication[returning_call-4]`
+  failed intermittently under DEV-009's faster saves); the transport check
+  already covered the whole window.
+
+Developer trial (Developer-run): black, isort, ruff, mypy, pylint (10.00/10)
+and interrogate (100%) clean. LP tests plus `tests/kgfeg/evals`: 2636 passed,
+28 failed: the 20 listed under DEV-008 and 8 that pin the full-payload journal
+or the atomic replacement of stage files, for Tester:
+`test_lp_checkpoint_formats.py::test_current_transactions_recover_every_authenticated_old_new_file_mixture[initialize|update]`
+(asserts the journal carries every checkpoint file's full bytes) and
+`test_lp_orchestration.py::test_pending_transaction_never_authorizes_arbitrary_corruption_repair[file_corruption|journal_invalid|journal_material|journal_partial|journal_payload|missing_file]`
+(injects the crash through `_atomic_write` of the draft stage file, which is
+now appended, and edits `next_payloads` of a full-payload journal). The
+interruption tests in `test_lp_concurrency_recovery.py` that interrupt every
+journal and small-file write in every phase pass against the delta journal.
+Scripts in `logs/kg_construction/dev009/` (shared driver `lp_drive.py`, which
+loads the pre-change writer from `cb7d9dc`):
+
+- `lp_byte_equivalence.py`: passed; 93 operations (dispatch, success, failure
+  and retry, exhausted failure resolved in a later run, checker correction,
+  out-of-order promotion, cancelled and unknown outcomes, new runs, reload
+  after an interrupted dispatch, through the completion boundary) leave every
+  checkpoint file and the receipt byte-identical to the pre-change writer's,
+  and each writer's class loads the other's directory.
+- `lp_crash_recovery.py`: passed; 360 interruptions (before and after every
+  journal write, stage append or creation, small-file write and final
+  directory sync of 18 representative operations, including the completion
+  boundary): 273 left a delta journal and all recovered to the uninterrupted
+  run's exact files; 32 pre-change full-payload journals (interrupted after the
+  journal and after each file replacement) recovered to the same files; a torn
+  stage-file append and a small file matching neither state both fail closed on
+  load with no file changed.
+- `lp_scale_benchmark.py --limit 300` (real CAPS population of 12,892 requests,
+  stub calls, rows about 11 kB per request): 7 saves per request, median save
+  0.021 s, no population or whole-checkpoint-file read between
+  full-verification points. A cProfile trial of 200 requests puts setup (two
+  request-population builds and verifications) at about 4-5 minutes and
+  checkpoint work at about 0.15-0.2 s per request against a model-bound
+  15.75 s per request at concurrency 4. The full run is part of the user-run
+  self-check.
+- `lp_record_authority.py` and `lp_guard_reads.py` still pass.
+
+Full scale benchmark dropped from the Developer self-check (user decision,
+2026-10-11, after Developer's estimate below; non-material: no build step,
+behavior or approach changes). The other self-checks stand. Developer
+micro-measurement of the save work that grows with progress (usage file
+rewritten whole and journaled with the 1 MB receipt, three 3.5 kB stage
+appends, `_canonical_bytes` and `_atomic_write` as used by the store): 19.5 ms
+per save with usage at 2.3 MB (about 1,000 attempts) and 54.9 ms at 12.1 MB
+(about 25,800 attempts, the end of a 12,892-request run). With the observed
+early median save of 0.021 s, late saves are expected near 0.055-0.06 s, about
+2.5-3x early ones, so the `AC-017` checkpoint-scale criterion (last-500 median
+within 2x of first-500) may not be met: the growth comes from the design's
+whole-file usage rewrite, not from re-proving records or re-reading inputs.
+Expected real-run effect: about 0.4 s of checkpoint work per request at the
+end of the run against about 15.75 s of model time per request at concurrency
+4 (run 2 before the fix: about 200 s per request), so throughput stays
+model-bound. The `AC-017` checkpoint-scale criterion remains Architect's
+technical criterion for Tester to verify in Increment 1;
+`logs/kg_construction/dev009/lp_scale_benchmark.py` (about 1 hour, no model
+calls) is available for that.
+
+Self-check of record (user-run 2026-10-11 from the repo root, uncommitted tree
+on `00c466e`; git blob ids `lp_checkpoints.py` `65c44a6`, `lp_generation.py`
+`d0ed431`, `lp_requests.py` unchanged since DEV-007 (`0695aed`); outputs in
+`logs/kg_construction/dev009/`):
+
+- `lint.log`: black and isort report the three modules unchanged; ruff on
+  `src/kgfeg/kgs/` passes; mypy finds no issues in the five modules; pylint
+  10.00/10; interrogate 100% on `src/kgfeg/kgs/`.
+- `pytest_lp.log`: 2636 passed, 28 failed; the 28 are exactly those listed
+  above (19 in `test_lp_checkpoint_proofs.py`, 1 in
+  `test_lp_population_verifier.py`, 2 in `test_lp_checkpoint_formats.py`, 6 in
+  `test_lp_orchestration.py`), all pinning replaced behavior, for Tester.
+- `lp_byte_equivalence.json`: `passed: true`, 93 operations.
+- `lp_crash_recovery.json`: `passed: true`; 360 interruptions, 273 delta
+  journals recovered, 32 pre-change full-payload journals recovered, torn
+  append and unexplained small file fail closed unchanged.
+
 ---
 
 ## Verification Increments
@@ -1018,6 +1127,36 @@ journal forms), with DEV-007 to DEV-009 self-checks passed. Ready for Tester's
 existing tests that pin the old every-check cadence) and the suite and lint
 run (`AC-023`) before DEV-005 stops run 2 and resumes LP on the fixed code.
 The real-run part of `AC-017` stays with DEV-005.
+
+**Readiness** (2026-10-11): DEV-007 to DEV-009 are `DONE` with their
+self-checks of record (see each step). Assessed implementation: the commits
+that land `lp_checkpoints.py` blob `65c44a6`, `lp_generation.py` blob
+`d0ed431` and `lp_requests.py` blob `0695aed` (changed only by `8040c56`,
+DEV-007). Claims for Tester to assess:
+
+- Contract items 1, 2 and 5: full proofs only at store construction, the
+  completion boundary, read-only loads and guard trips; stat-identity and
+  per-request guards between them, now covering the published request and
+  every in-flight request at publication; one authority check per side of the
+  journal (DEV-007, and the DEV-009 `in_flight` note).
+- Contract item 3: private records, read-only views of copies, encoding at
+  creation or change, per-request incremental validation, fail-closed after a
+  failed update (DEV-008).
+- Contract items 4 and 6: delta journal, in-place appends, running digests,
+  at-rest files and receipt byte-identical to the pre-change writer, recovery
+  of both journal forms, unchanged execution material and file set (DEV-009).
+
+Existing tests that pin replaced behavior (28, listed under DEV-007, DEV-008
+and DEV-009) need updating to the new cadence and journal, not deleting, per
+the design's `AC-022` list, which also asks for the crash-injection, byte
+equivalence, guard and caller-mutation tests that the Developer scripts in
+`logs/kg_construction/dev007/` to `dev009/` exercise informally. Known risk:
+the `AC-017` checkpoint-scale ratio (last-500 median save within 2x of
+first-500) is estimated at about 2.5-3x because of the design's whole-file
+usage rewrite; the full benchmark was dropped from the Developer self-check by
+user decision (see DEV-009). Not part of this increment: DEV-005 (stop run 2,
+read-only load of its checkpoints with the new code, resume) and DEV-006;
+`AC-024` documentation is Documenter's.
 
 ---
 
