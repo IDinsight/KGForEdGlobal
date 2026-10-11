@@ -316,7 +316,7 @@ ones reviewed. S_AS combined digest (SHA-256 of the sorted
 
 ### DEV-004 — LC run with zero failed requests
 
-`Status`: `IN_PROGRESS` `Depends On`: `DEV-003`
+`Status`: `DONE` `Depends On`: `DEV-003`
 `Acceptance`: `AC-012, AC-014, AC-015, AC-016, AC-031`
 
 **Goal**
@@ -413,6 +413,69 @@ copy with `diff -rq`, then remove the 18 LC files from `kgs/` (`lc_*`,
 `learning_components.jsonl`, `as_lc_*`; no `lp_*` files or LP lock exist).
 The copy keeps LC run 1 as D-LC-1 evidence. Then LC run 2 with Stop B still
 in place, teed to `logs/kg_construction/dev004/lc_run_2.log`.
+
+LC run 2 (user-run 2026-10-10 19:30-22:38 UTC on `d249c7e`, the config fix
+committed; `lc_run_2.log`; ended at Stop B): the backup
+`kgs_superseded/20261010T185810Z-lc/` holds all 51 run-1 files (its
+`lc_generation_summary.json` is run 1's: 698 LCs, 1208 edges). AS reused
+with no AS LLM calls; a Developer trial S_AS compare was identical (13/13).
+Generation: 924 of 924 succeeded, 0 failed, 22 validator corrections, 1204
+claims. Dedup: 984 unique texts, 4859 candidate pairs, 195 judge requests,
+89 judged same (run 1: 515), 1 chaining-guard conflict (run 1: 72); 912
+LCs (run 1: 698), 1204 supports edges, 152 LCs shared by 2-8 Skills.
+`as_lc_validation_report.json` passed with no errors.
+
+D-LC-1 resolved: the merged-LC screen flags 16 links (13 LCs), down from
+146 (96 LCs), and all 16 are rewordings (clarity/clarification,
+tense/tenses, learned/learnt, sequence/string, 'phonic words'/'words from
+phonics lessons'). Each run-1 case now has its own LC per distinct Skill
+wording (the four vowel-digraph Skills, 'Listens without interrupting' with
+and without 'showing respect for the speaker', 'ten or more' versus 'at
+least 12 sentences', the two 'Spells words correctly' variants, the seven
+word-bank variants, 'Begins to' versus 'Continues to build a sight
+vocabulary'); merges remain only for identical or interchangeable wording.
+No LC adds ancestor scope such as 'in own writing'; the single-Skill
+differences are inflection and linking words. LCs naming the teacher or a
+pace carry the Skill's own printed wording (for example 'Copies at least
+two letters of joined script or cursive writing per week').
+
+LC check script: `logs/kg_construction/dev004/lc_checks.py` (S_AS compare,
+AS+LC validation, zero failures and `lc_max_failure_rate` 0.05, supports
+coverage and claimant equality; review lists for merged-LC additions and
+teacher/timing words; `lc_outline.md`, every Skill with its LCs). Developer
+trial in the scratchpad: all 3 checks pass. The recorded self-check is the
+user's run.
+
+Self-check run 2026-10-11 00:16 UTC by the user from the repo root on
+`d249c7e` plus local Stop B (`kgs/` from LC run 2): `lc_checks.py --out-dir
+logs/kg_construction/dev004` `passed: True`, exit 0, identical to the
+Developer trial. AC-012: `s_as_compare.json` identical, 13/13. AC-014/AC-015:
+`as_lc_validation_report.json` passed, no errors (912 LCs, 1204 supports,
+1144 hasChild); `lc_generation_failures.json` empty, 0 failed SFIs;
+`lc_max_failure_rate` 0.05. AC-015/AC-031: 924 of 924 Skills have supports
+edges (LCs per Skill 1: 679, 2: 215, 3: 25, 4: 5); every LC's edges equal its
+claiming Skills; no duplicate or non-Skill targets. Review lists: 16 merged
+links (the rewordings above), 41 LCs with teacher or timing words (Skill
+wording such as 'with the teacher' or 'per week'). AC-016/AC-031 content
+judgement: the Developer review above (D-LC-1 resolved; single learner
+skills; no teacher guidance, routines, assessment, contact time or
+scheduling labels).
+
+Caps and limits in the AS and LC runs (user question, 2026-10-11): neither
+log reports truncation or budget drops. Config caps off: whole-table
+extraction windows, unsplit dedup review sets, no skills-per-Skill or
+skill-length limits. Applied: hasChild candidate sets are bounded to 24
+including the root (1044 of 1144 truncated; the exact-scope parent is
+indispensable and was present in all, with 0 corrections and 0 unresolved);
+LC dedup compares all pairs only within a Sub-strand of up to 12 skill
+texts (26 of 152 Sub-strands are larger, where lexical rules alone nominate
+pairs; this can only miss merges, never add one). Context-only limits: up
+to 2 neighbouring headings per extraction window, evidence labels cut to
+180 characters, at most 12 section-path labels (the DocumentIR has up to
+7). Every LC and hasChild request carried the full Skill text (924/924,
+1144/1144). Next, LP caps candidates at 12 per Skill and 5000 in total
+(924 x 12 / 2 = 5544, so the total binds) and evidence at 8 LCs, 4 items
+and 2000 characters per Skill; `AC-019` reports the dropped pairs.
 
 ---
 
