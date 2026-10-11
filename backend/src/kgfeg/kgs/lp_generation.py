@@ -612,7 +612,7 @@ def _observe_lp_failures(
         if outcome.error is not None and (
             not isinstance(outcome.error, Exception)
             or isinstance(outcome.error, LPDispatchIntegrityError)
-            or attempt.attempt == store.material["retry_limits"][attempt.stage] + 1
+            or attempt.attempt == store.retry_limits[attempt.stage] + 1
         ):
             gate.close()
 

@@ -9,15 +9,18 @@ caller holds the exclusive generation lock for the lifetime of this store.
 from __future__ import annotations
 
 # Standard Library
+import copy
 import hashlib
 import json
 import os
 import re
 import tempfile
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Literal
+from types import MappingProxyType
+from typing import Any, Literal, TypeVar, overload
 
 # Third Party Library
 from loguru import logger
@@ -62,6 +65,7 @@ _USAGE = "lp_generation_usage.json"
 _RECEIPT = "lp_generation_checkpoint_manifest.json"
 _TRANSACTION = "lp_generation_checkpoint_transaction.json"
 _CHECKPOINT_NAMES = {*_FILENAMES.values(), _FAILURES, _PENDING, _USAGE, _RECEIPT}
+_Record = TypeVar("_Record", bound=BaseSchema)
 
 
 class _LPAttempt(BaseSchema):
@@ -115,12 +119,125 @@ class _LPFailure(BaseSchema):
     stage: Literal["draft", "verdict"]
 
 
+class _PendingRecords(Mapping[int, _Record]):
+    """Read-only live pending completions; every record read is a copy."""
+
+    def __init__(self, records: dict[int, _Record]) -> None:
+        """Wrap the store's private pending records without copying them.
+
+        Parameters
+        ----------
+        records
+            Pending records keyed by request index.
+        """
+
+        self._records = records
+
+    def __getitem__(self, key: int) -> _Record:
+        """Return a deep copy of one pending record.
+
+        Parameters
+        ----------
+        key
+            Request index.
+
+        Returns
+        -------
+        _Record
+            Independent copy; mutating it cannot reach the store.
+        """
+
+        return self._records[key].model_copy(deep=True)
+
+    def __iter__(self) -> Iterator[int]:
+        """Iterate over a snapshot of the pending request indices.
+
+        Returns
+        -------
+        Iterator[int]
+            Request indices in insertion order.
+        """
+
+        return iter(list(self._records))
+
+    def __len__(self) -> int:
+        """Return the number of pending records.
+
+        Returns
+        -------
+        int
+            Pending record count.
+        """
+
+        return len(self._records)
+
+
+class _RecordSequence(Sequence[_Record]):
+    """Read-only live record sequence; every record read is a copy."""
+
+    def __init__(self, records: list[_Record]) -> None:
+        """Wrap one of the store's private record lists without copying it.
+
+        Parameters
+        ----------
+        records
+            Stage prefix, attempt history or failure history.
+        """
+
+        self._records = records
+
+    @overload
+    def __getitem__(self, index: int) -> _Record:
+        """Type one position read as a single record copy."""
+
+    @overload
+    def __getitem__(self, index: slice) -> tuple[_Record, ...]:
+        """Type one slice read as a tuple of record copies."""
+
+    def __getitem__(self, index: int | slice) -> _Record | tuple[_Record, ...]:
+        """Return deep copies of the selected records.
+
+        Parameters
+        ----------
+        index
+            Position or slice.
+
+        Returns
+        -------
+        _Record or tuple[_Record, ...]
+            Independent copies; mutating them cannot reach the store.
+        """
+
+        if isinstance(index, slice):
+            return tuple(
+                record.model_copy(deep=True) for record in self._records[index]
+            )
+
+        return self._records[index].model_copy(deep=True)
+
+    def __len__(self) -> int:
+        """Return the number of records.
+
+        Returns
+        -------
+        int
+            Record count.
+        """
+
+        return len(self._records)
+
+
 class LPGenerationCheckpoints:
     """Persist separate success prefixes and auditable processing attempts.
 
     The store verifies exact artifact bytes, request alignment, stage prerequisites,
     complete corrections, and failure dispositions before allowing any reuse.
     Completion denotes processing coverage only, never graph or semantic validity.
+
+    Records (stage rows, pending rows, attempts and failures) are private. Each is
+    validated when the store creates or changes it, and its canonical bytes become
+    the authority the store publishes. Callers read copies through read-only views,
+    so no caller or worker can change persisted bytes or store decisions.
     """
 
     def __init__(
@@ -143,6 +260,7 @@ class LPGenerationCheckpoints:
             only the cheap guard runs).
         material
             Actual upstream, configuration, prompt-definition, and model identities.
+            The store keeps its own copy.
         ownership_check
             Optional live directory-ownership assertion for the generation writer.
         population
@@ -159,23 +277,32 @@ class LPGenerationCheckpoints:
         """
 
         # Proofs are private to this invocation and retain only immutable material.
+        self._attempt_positions: dict[int, list[int]] = {}
+        self._attempts: list[_LPAttempt] = []
+        self._changes = 0
         self._committed_status: str | None = None
+        self._failed_update = False
+        self._failures: list[_LPFailure] = []
         self._file_identities: dict[str, tuple[int, int, int, int, int]] = {}
-        self._record_encodings: dict[tuple[str, int], tuple[bytes, bytes]] = {}
-        self._row_proofs: dict[tuple[str, int], tuple[bytes, ...]] = {}
-        self._validated_byte_hashes: tuple[tuple[str, bytes], ...] = ()
-        self.execution_check = execution_check
-        self.ownership_check = ownership_check
-        self.pending: dict[str, dict[int, _LPCheckpoint]] = {
+        self._material = copy.deepcopy(material)
+        self._pending: dict[str, dict[int, _LPCheckpoint]] = {
             stage: {} for stage in _FILENAMES
         }
-        self.attempts: list[_LPAttempt] = []
-        self.material = material
+        self._record_encodings: dict[tuple[str, int], bytes] = {}
+        self._request_state_encodings = [b""] * len(population.requests)
+        self._row_proofs: dict[tuple[str, int], tuple[bytes, ...]] = {}
+        self._rows: dict[str, list[_LPCheckpoint]] = {stage: [] for stage in _FILENAMES}
+        self._validated_byte_hashes: tuple[tuple[str, bytes], ...] = ()
+        self.execution_check = execution_check
+        self.execution_hash = content_hash(self._material)
+        self._material_digest = hashlib.sha256(
+            _canonical_bytes(
+                {"execution_hash": self.execution_hash, "material": self._material}
+            )
+        ).digest()
+        self.ownership_check = ownership_check
         self.population = population
         self.root = root
-        self.execution_hash = content_hash(material)
-        self.rows: dict[str, list[_LPCheckpoint]] = {stage: [] for stage in _FILENAMES}
-        self.failures: list[_LPFailure] = []
         self.run_number = 0
         paths = [
             root / name
@@ -194,6 +321,7 @@ class LPGenerationCheckpoints:
         elif read_only:
             raise ValueError("LP checkpoint evidence is missing.")
         else:
+            self._refresh_request_states(range(len(population.requests)))
             self._save()
 
     def _check_checkpoint_files(self, *, full: bool) -> None:
@@ -269,6 +397,42 @@ class LPGenerationCheckpoints:
         (self.root / _TRANSACTION).unlink()
         _sync_directory(self.root)
 
+    def _encode_records(self) -> None:
+        """Validate every parsed record and make its canonical bytes its authority."""
+
+        self._record_encodings = {}
+
+        for stage in _FILENAMES:
+            for index, row in enumerate(self._rows[stage]):
+                self._record_bytes(key=(stage, index), record=row)
+
+            for index, row in self._pending[stage].items():
+                self._record_bytes(key=(stage, index), record=row)
+
+        for position, attempt in enumerate(self._attempts):
+            self._record_bytes(key=("attempt", position), record=attempt)
+
+        for position, failure in enumerate(self._failures):
+            self._record_bytes(key=("failure", position), record=failure)
+
+    def _failed_pair_ids(self) -> list[str]:
+        """Return the sorted pair identities of unresolved failures.
+
+        Returns
+        -------
+        list[str]
+            Pair identities whose failure has no completed response yet.
+        """
+
+        return sorted(
+            {
+                pair_id
+                for failure in self._failures
+                if failure.resolved_run_number is None
+                for pair_id in failure.pair_ids
+            }
+        )
+
     def _load(self, *, read_only: bool) -> None:
         """Recover a proven interrupted commit, then validate every persisted byte.
 
@@ -321,9 +485,9 @@ class LPGenerationCheckpoints:
         receipt = _read_receipt(payloads[_RECEIPT])
 
         if (
-            receipt["material"] != self.material
+            receipt["material"] != self._material
             or receipt["execution_content_hash"] != self.execution_hash
-            or self.material["request_manifest"]
+            or self._material["request_manifest"]
             != self.population.manifest.model_dump(mode="json")
         ):
             raise ValueError("LP execution material changed; regenerate before reuse.")
@@ -342,7 +506,9 @@ class LPGenerationCheckpoints:
             raise ValueError("LP checkpoint receipt has incomplete artifact coverage.")
 
         self._parse_artifacts(payloads=payloads, receipt=receipt)
+        self._encode_records()
         self._validate()
+        self._refresh_request_states(range(len(self.population.requests)))
 
         # Canonical byte equality also rejects duplicate JSON keys, non-finite values,
         # blank lines, missing terminal newlines, and schema-normalized alterations.
@@ -393,7 +559,7 @@ class LPGenerationCheckpoints:
                 if not isinstance(raw, list):
                     raise ValueError("LP failure artifact must be an ordered list.")
 
-                self.failures = [_LPFailure.model_validate(item) for item in raw]
+                self._failures = [_LPFailure.model_validate(item) for item in raw]
             elif name == _PENDING:
                 self._parse_pending(payload)
             elif name == _USAGE:
@@ -402,15 +568,22 @@ class LPGenerationCheckpoints:
                     raise ValueError(
                         "LP usage capacity differs from execution material."
                     )
-                self.attempts = [
+                self._attempts = [
                     _LPAttempt.model_validate(row) for row in raw["attempts"]
                 ]
             else:
                 stage = next(key for key, value in _FILENAMES.items() if value == name)
-                self.rows[stage] = [
+                self._rows[stage] = [
                     _LPCheckpoint.model_validate_json(line)
                     for line in payload.splitlines()
                 ]
+
+        self._attempt_positions = {}
+
+        for position, attempt in enumerate(self._attempts):
+            self._attempt_positions.setdefault(attempt.request_index, []).append(
+                position
+            )
 
     def _parse_pending(self, payload: bytes) -> None:
         """Parse unique ordered pending results for each successful stage.
@@ -431,7 +604,7 @@ class LPGenerationCheckpoints:
         if not isinstance(raw, dict) or set(raw) != set(_FILENAMES):
             raise ValueError("LP pending journal has invalid stage coverage.")
 
-        self.pending = {}
+        self._pending = {}
 
         for stage, records in raw.items():
             parsed = [_LPCheckpoint.model_validate(row) for row in records]
@@ -441,10 +614,13 @@ class LPGenerationCheckpoints:
             ):
                 raise ValueError("LP pending journal has duplicate or unordered rows.")
 
-            self.pending[stage] = {row.request_index: row for row in parsed}
+            self._pending[stage] = {row.request_index: row for row in parsed}
 
     def _payloads(self) -> dict[str, bytes]:
-        """Serialize the separate canonical stage prefixes and failure history.
+        """Assemble the canonical artifacts from each record's authority bytes.
+
+        No record is re-proved here: every record was validated and encoded when the
+        store created or changed it.
 
         Returns
         -------
@@ -452,20 +628,18 @@ class LPGenerationCheckpoints:
             Exact artifact payloads covered by the commit receipt.
         """
 
+        encodings = self._record_encodings
         pending = {
             stage: b"["
-            + b",".join(
-                self._record_bytes(key=(stage, index), record=rows[index])
-                for index in sorted(rows)
-            )
+            + b",".join(encodings[(stage, index)] for index in sorted(rows))
             + b"]"
-            for stage, rows in self.pending.items()
+            for stage, rows in self._pending.items()
         }
         attempts = (
             b"["
             + b",".join(
-                self._record_bytes(key=("attempt", index), record=attempt)
-                for index, attempt in enumerate(self.attempts)
+                encodings[("attempt", position)]
+                for position in range(len(self._attempts))
             )
             + b"]"
         )
@@ -473,41 +647,29 @@ class LPGenerationCheckpoints:
             "attempts": attempts,
             "max_concurrent_requests": _canonical_bytes(self.capacity).rstrip(b"\n"),
             "available_cost": b"null",
-            "request_states": _canonical_bytes(self._request_states()).rstrip(b"\n"),
+            "request_states": b"[" + b",".join(self._request_state_encodings) + b"]",
             "unknown_usage_attempts": str(
-                sum(attempt.usage is None for attempt in self.attempts)
+                sum(attempt.usage is None for attempt in self._attempts)
             ).encode("ascii"),
         }
-        payloads = {
+
+        return {
             _PENDING: _encoded_object(pending),
             _USAGE: _encoded_object(usage),
             **{
                 filename: b"".join(
-                    self._record_bytes(key=(stage, index), record=row) + b"\n"
-                    for index, row in enumerate(self.rows[stage])
+                    encodings[(stage, index)] + b"\n"
+                    for index in range(len(self._rows[stage]))
                 )
                 for stage, filename in _FILENAMES.items()
             },
             _FAILURES: b"["
             + b",".join(
-                self._record_bytes(key=("failure", index), record=failure)
-                for index, failure in enumerate(self.failures)
+                encodings[("failure", position)]
+                for position in range(len(self._failures))
             )
             + b"]\n",
         }
-
-        # Drop retired/replaced positions; history size, not save count, bounds memory.
-        keys = {
-            (stage, index)
-            for stage in _FILENAMES
-            for index in (*range(len(self.rows[stage])), *self.pending[stage])
-        }
-        keys.update(("attempt", index) for index in range(len(self.attempts)))
-        keys.update(("failure", index) for index in range(len(self.failures)))
-        self._record_encodings = {
-            key: value for key, value in self._record_encodings.items() if key in keys
-        }
-        return payloads
 
     def _previous_hashes(self) -> dict[str, str | None]:
         """Identify the committed predecessor before starting another transaction.
@@ -541,6 +703,40 @@ class LPGenerationCheckpoints:
 
         return {name: digest.hex() for name, digest in self._validated_byte_hashes}
 
+    def _put_attempt(self, *, attempt: _LPAttempt, position: int) -> None:
+        """Validate a new or changed attempt and make its bytes its authority.
+
+        Parameters
+        ----------
+        attempt
+            Complete attempt record, never shared with any caller.
+        position
+            Existing position to replace, or the next position to append.
+
+        Raises
+        ------
+        ValueError
+            If the position is neither existing nor next, or the attempt moves to a
+            different request.
+        """
+
+        attempt = _LPAttempt.model_validate(attempt.model_dump(mode="python"))
+
+        if position == len(self._attempts):
+            self._record_bytes(key=("attempt", position), record=attempt)
+            self._attempts.append(attempt)
+            self._attempt_positions.setdefault(attempt.request_index, []).append(
+                position
+            )
+        elif (
+            0 <= position < len(self._attempts)
+            and self._attempts[position].request_index == attempt.request_index
+        ):
+            self._record_bytes(key=("attempt", position), record=attempt)
+            self._attempts[position] = attempt
+        else:
+            raise ValueError("LP attempt position or request is invalid.")
+
     def _receipt(self, payloads: dict[str, bytes]) -> dict[str, Any]:
         """Compute the complete material receipt and truthful processing status.
 
@@ -555,33 +751,17 @@ class LPGenerationCheckpoints:
             File hashes, stage counts, failure coverage, and execution material.
         """
 
-        failed = sorted(
-            {
-                pair_id
-                for failure in self.failures
-                if failure.resolved_run_number is None
-                for pair_id in failure.pair_ids
-            }
-        )
         return {
             "artifact_byte_hashes": {
                 name: hashlib.sha256(payload).hexdigest()
                 for name, payload in payloads.items()
             },
             "execution_content_hash": self.execution_hash,
-            "failed_pair_ids": failed,
-            "material": self.material,
+            "failed_pair_ids": self._failed_pair_ids(),
+            "material": self._material,
             "run_number": self.run_number,
-            "stage_counts": {stage: len(rows) for stage, rows in self.rows.items()},
-            "status": (
-                "failed"
-                if failed
-                else (
-                    "completed"
-                    if len(self.rows["response"]) == len(self.population.requests)
-                    else "incomplete"
-                )
-            ),
+            "stage_counts": {stage: len(rows) for stage, rows in self._rows.items()},
+            "status": self._status(),
         }
 
     def _recover(self, *, read_only: bool) -> None:
@@ -633,14 +813,17 @@ class LPGenerationCheckpoints:
             self._commit(payloads)
 
     def _record_bytes(self, *, key: tuple[str, int], record: BaseSchema) -> bytes:
-        """Reuse canonical encoding only after checking the complete live record.
+        """Validate one record and make its canonical bytes its publication authority.
+
+        Called only when the store creates, changes or loads a record; publication
+        reuses the stored bytes without re-proving them.
 
         Parameters
         ----------
         key
             Store-local collection and position, never an authority by itself.
         record
-            Current record, including every nested payload or usage value.
+            Complete record, including every nested payload or usage value.
 
         Returns
         -------
@@ -649,21 +832,73 @@ class LPGenerationCheckpoints:
         """
 
         # Validate before JSON-mode coercion: an invalid datetime/tuple/object must not
-        # inherit a prior proof merely by encoding like a valid JSON value.
+        # become authority merely by encoding like a valid JSON value.
         material = _JSON_RECORD.validate_python(
             record.model_dump(mode="python", warnings="error"), strict=True
         )
-        live = hashlib.sha256(
-            to_json(inf_nan_mode="constants", value=material)
-        ).digest()
-        previous = self._record_encodings.get(key)
-
-        if previous is not None and previous[0] == live:
-            return previous[1]
-
         encoded = _canonical_bytes(material)[:-1]
-        self._record_encodings[key] = (live, encoded)
+        self._changes += 1
+        self._record_encodings[key] = encoded
         return encoded
+
+    def _refresh_request_states(self, indices: Iterable[int]) -> None:
+        """Re-encode the processing state of the requests a change can affect.
+
+        Parameters
+        ----------
+        indices
+            Requests whose rows, attempts or failures changed.
+        """
+
+        for index in indices:
+            self._request_state_encodings[index] = _canonical_bytes(
+                self._request_state(index)
+            )[:-1]
+
+    def _request_state(self, index: int) -> dict[str, Any]:
+        """Describe one request's unfinished, unknown, cancelled or unstarted work.
+
+        Parameters
+        ----------
+        index
+            Request position.
+
+        Returns
+        -------
+        dict[str, Any]
+            Population-aligned processing state, independent of semantic judgments.
+        """
+
+        finished = [
+            stage
+            for stage in _FILENAMES
+            if self._row(request_index=index, stage=stage) is not None
+        ]
+        positions = self._attempt_positions.get(index)
+        attempt = None if not positions else self._attempts[positions[-1]]
+
+        if "response" in finished:
+            state = "completed"
+        elif any(
+            failure.request_index == index and failure.resolved_run_number is None
+            for failure in self._failures
+        ):
+            state = "failed"
+        elif attempt is None:
+            state = "unfinished" if finished else "not_started"
+        else:
+            state = {
+                "dispatched": "dispatch_outcome_pending",
+                "unknown": "unknown",
+                "cancelled": "cancelled",
+            }.get(attempt.status, "unfinished")
+
+        return {
+            "completed_stages": finished,
+            "request_id": str(self.population.requests[index].request_id),
+            "request_index": index,
+            "state": state,
+        }
 
     def _request_states(self) -> list[dict[str, Any]]:
         """Describe unfinished, unknown, cancelled and unstarted work explicitly.
@@ -674,57 +909,44 @@ class LPGenerationCheckpoints:
             Population-aligned processing states, independent of semantic judgments.
         """
 
-        last_attempt = {attempt.request_index: attempt for attempt in self.attempts}
-        failed = {
-            failure.request_index
-            for failure in self.failures
-            if failure.resolved_run_number is None
-        }
-        states = []
+        return [
+            self._request_state(index) for index in range(len(self.population.requests))
+        ]
 
-        for index, request in enumerate(self.population.requests):
-            finished = [
-                stage
-                for stage in _FILENAMES
-                if self.get_row(request_index=index, stage=stage) is not None
-            ]
-            attempt = last_attempt.get(index)
+    def _row(self, *, request_index: int, stage: str) -> _LPCheckpoint | None:
+        """Resolve one private prefix or pending row without copying it.
 
-            if "response" in finished:
-                state = "completed"
-            elif index in failed:
-                state = "failed"
-            elif attempt is None:
-                state = "unfinished" if finished else "not_started"
-            else:
-                state = {
-                    "dispatched": "dispatch_outcome_pending",
-                    "unknown": "unknown",
-                    "cancelled": "cancelled",
-                }.get(attempt.status, "unfinished")
-            states.append(
-                {
-                    "completed_stages": finished,
-                    "request_id": str(request.request_id),
-                    "request_index": index,
-                    "state": state,
-                }
-            )
+        Parameters
+        ----------
+        request_index
+            Deterministic request position.
+        stage
+            Required draft, verdict, or response stage.
 
-        return states
+        Returns
+        -------
+        _LPCheckpoint or None
+            The store's own record, which must never leave the store.
+        """
+
+        if request_index < len(self._rows[stage]):
+            return self._rows[stage][request_index]
+
+        return self._pending[stage].get(request_index)
 
     def _save(self, *, request_indices: Iterable[int] = ()) -> None:
-        """Validate and durably journal complete state before replacing any files.
+        """Validate and durably journal the changed state before replacing any files.
 
-        One authority check runs before the journal is written and one before it is
+        A save validates only the requests it changed (plus pending completions,
+        which every save republishes) and re-proves only their records. One
+        authority check runs before the journal is written and one before it is
         retired. The save whose receipt status first becomes `completed` runs the
-        full input and checkpoint proofs first.
+        complete record validation and the full input and checkpoint proofs first.
 
         Parameters
         ----------
         request_indices
-            Requests whose records this save adds or changes; pending completions
-            are always included because every save republishes them.
+            Requests whose records this save adds or changes.
 
         Raises
         ------
@@ -733,26 +955,31 @@ class LPGenerationCheckpoints:
             transaction already exists.
         """
 
+        self._changes += 1
         indices = sorted(
             {
                 *request_indices,
-                *(index for rows in self.pending.values() for index in rows),
+                *(index for rows in self._pending.values() for index in rows),
             }
         )
-        self._validate()
+
+        if self._status() == "completed" and self._committed_status != "completed":
+            # Completion boundary: complete proofs before completion is first recorded.
+            self._validate()
+            self.verify_execution_authority(full=True)
+
+            if self._validated_byte_hashes:
+                self._check_checkpoint_files(full=True)
+        else:
+            self._validate(indices=indices)
+
+        self._refresh_request_states(indices)
         payloads = self._payloads()
         receipt = self._receipt(payloads)
         payloads[_RECEIPT] = _canonical_bytes(receipt)
 
         if (self.root / _TRANSACTION).exists():
             raise ValueError("LP checkpoint has an unfinished transaction; reload it.")
-
-        if receipt["status"] == "completed" and self._committed_status != "completed":
-            # Completion boundary: complete proofs before completion is first recorded.
-            self.verify_execution_authority(full=True)
-
-            if self._validated_byte_hashes:
-                self._check_checkpoint_files(full=True)
 
         transaction = _LPCheckpointTransaction(
             next_payloads={
@@ -771,10 +998,59 @@ class LPGenerationCheckpoints:
         self._commit(payloads, request_indices=indices)
         self._committed_status = receipt["status"]
 
+    def _set_failures(self, failures: list[_LPFailure]) -> None:
+        """Order, validate and encode a changed failure history.
+
+        Failures are rare, so the whole history is re-encoded whenever it changes.
+
+        Parameters
+        ----------
+        failures
+            Complete failure history, never shared with any caller.
+        """
+
+        ordered = sorted(
+            (
+                _LPFailure.model_validate(failure.model_dump(mode="python"))
+                for failure in failures
+            ),
+            key=lambda failure: (
+                failure.run_number,
+                failure.request_index,
+                0 if failure.stage == "draft" else 1,
+                failure.attempt,
+            ),
+        )
+
+        for position in range(len(self._failures)):
+            self._record_encodings.pop(("failure", position), None)
+
+        for position, failure in enumerate(ordered):
+            self._record_bytes(key=("failure", position), record=failure)
+
+        self._failures = ordered
+
+    def _status(self) -> str:
+        """Return the truthful processing status recorded in the receipt.
+
+        Returns
+        -------
+        str
+            `failed`, `completed` or `incomplete`.
+        """
+
+        if self._failed_pair_ids():
+            return "failed"
+
+        if len(self._rows["response"]) == len(self.population.requests):
+            return "completed"
+
+        return "incomplete"
+
     def _store_result(
         self, *, payload: BaseSchema, request_index: int, stage: str
     ) -> _LPCheckpoint:
-        """Construct and validate one pending result with exact saved dependencies.
+        """Construct, validate and encode one pending result with saved dependencies.
 
         Parameters
         ----------
@@ -788,7 +1064,7 @@ class LPGenerationCheckpoints:
         Returns
         -------
         _LPCheckpoint
-            Pending result ready for atomic publication with attempt evidence.
+            The store's own pending record, ready for atomic publication.
 
         Raises
         ------
@@ -797,7 +1073,7 @@ class LPGenerationCheckpoints:
             fails validation.
         """
 
-        if self.get_row(request_index=request_index, stage=stage) is not None:
+        if self._row(request_index=request_index, stage=stage) is not None:
             raise ValueError("LP stage completion is already durable.")
 
         request = self.population.requests[request_index]
@@ -805,13 +1081,13 @@ class LPGenerationCheckpoints:
         previous = (
             None
             if previous_stage is None
-            else self.get_row(request_index=request_index, stage=previous_stage)
+            else self._row(request_index=request_index, stage=previous_stage)
         )
 
         if previous_stage is not None and previous is None:
             raise ValueError("LP stage lacks its durable dependency.")
 
-        draft_row = self.get_row(request_index=request_index, stage="draft")
+        draft_row = self._row(request_index=request_index, stage="draft")
         row = _LPCheckpoint(
             execution_content_hash=self.execution_hash,
             payload=payload.model_dump(mode="json"),
@@ -827,7 +1103,7 @@ class LPGenerationCheckpoints:
                     if draft_row is None
                     else LPGenerationResponse.model_validate(draft_row.payload)
                 ),
-                material=self.material,
+                material=self._material,
                 request=request,
                 stage=stage,
             ),
@@ -835,11 +1111,54 @@ class LPGenerationCheckpoints:
             stage=stage,
         )
         self._validate_row(index=request_index, row=row, stage=stage)
-        self.pending[stage][request_index] = row
+        self._record_bytes(key=(stage, request_index), record=row)
+        self._pending[stage][request_index] = row
         return row
 
-    def _validate(self) -> None:
-        """Require complete stage-specific contiguous prefixes and honest failures.
+    @contextmanager
+    def _updating(self) -> Iterator[None]:
+        """Fail closed for the rest of the invocation if an update fails midway.
+
+        An update that raises after changing any record, encoding or file may leave
+        in-memory state ahead of the persisted state, so every later update or
+        verification is refused. A rejected precondition changes nothing.
+
+        Yields
+        ------
+        None
+            Exclusive update scope.
+
+        Raises
+        ------
+        ValueError
+            If an earlier update of this store failed.
+        """
+
+        if self._failed_update:
+            raise ValueError("LP checkpoint store failed an earlier update; reload it.")
+
+        changes = self._changes
+
+        try:
+            yield
+        except BaseException:
+            if self._changes != changes:
+                self._failed_update = True
+
+            raise
+
+    def _validate(self, *, indices: Iterable[int] | None = None) -> None:
+        """Require stage-specific contiguous prefixes and honest failures.
+
+        Without `indices`, every record is validated (a full verification point).
+        With `indices`, only those requests' rows and attempts are validated, along
+        with the cross-record invariants a change to them can affect: stage length
+        order, pending capacity and boundaries, and failure and attempt dispositions.
+
+        Parameters
+        ----------
+        indices
+            Requests whose records changed, or None for complete validation.
 
         Raises
         ------
@@ -847,9 +1166,9 @@ class LPGenerationCheckpoints:
             If stage prefixes, row dependencies, or failure dispositions are invalid.
         """
 
-        drafts = self.rows["draft"]
-        verdicts = self.rows["verdict"]
-        responses = self.rows["response"]
+        drafts = self._rows["draft"]
+        verdicts = self._rows["verdict"]
+        responses = self._rows["response"]
 
         if (
             not len(responses)
@@ -859,55 +1178,31 @@ class LPGenerationCheckpoints:
         ):
             raise ValueError("LP checkpoint stage lengths are misaligned.")
 
-        material = hashlib.sha256(
-            _canonical_bytes(
-                {
-                    "execution_hash": self.execution_hash,
-                    "material": self.material,
-                }
-            )
-        ).digest()
-        requests: dict[int, bytes] = {}
-        proofs: dict[tuple[str, int], tuple[bytes, ...]] = {}
-
-        for stage, rows in self.rows.items():
-            for index, row in enumerate(rows):
-                self._validate_cached_row(
-                    index=index,
-                    material=material,
-                    proofs=proofs,
-                    requests=requests,
-                    row=row,
-                    stage=stage,
-                )
-
-        pending_indices = set()
-
-        for stage, pending_rows in self.pending.items():
-            for index, row in pending_rows.items():
-                if not len(self.rows[stage]) <= index < len(self.population.requests):
-                    raise ValueError(
-                        "LP pending completion overlaps a prefix or population boundary."
-                    )
-
-                self._validate_cached_row(
-                    index=index,
-                    material=material,
-                    proofs=proofs,
-                    requests=requests,
-                    row=row,
-                    stage=stage,
-                )
-                pending_indices.add(index)
+        pending_indices = {index for rows in self._pending.values() for index in rows}
 
         if len(pending_indices) > self.capacity:
             raise ValueError(
                 "LP pending completions exceed the admitted request capacity."
             )
 
+        targets = (
+            set(range(len(drafts))) | pending_indices
+            if indices is None
+            else set(indices)
+        )
+        proofs: dict[tuple[str, int], tuple[bytes, ...]] = {}
+        requests: dict[int, bytes] = {}
+
+        for index in sorted(targets):
+            self._validate_index_rows(index=index, proofs=proofs, requests=requests)
+
         self._validate_failures()
-        self._validate_attempts()
-        self._row_proofs = proofs
+        self._validate_attempts(indices=None if indices is None else targets)
+
+        if indices is None:
+            self._row_proofs = proofs
+        else:
+            self._row_proofs.update(proofs)
 
     def _validate_attempt_completion(
         self, *, attempt: _LPAttempt, successful: set[tuple[int, str]]
@@ -934,7 +1229,7 @@ class LPGenerationCheckpoints:
             raise ValueError("LP attempt repeats an already completed stage.")
 
         if attempt.status == "succeeded":
-            row = self.get_row(request_index=index, stage=attempt.stage)
+            row = self._row(request_index=index, stage=attempt.stage)
             stage_key = (index, attempt.stage)
 
             if (
@@ -953,7 +1248,7 @@ class LPGenerationCheckpoints:
 
         matching = [
             failure
-            for failure in self.failures
+            for failure in self._failures
             if (
                 failure.run_number,
                 failure.request_index,
@@ -1020,8 +1315,14 @@ class LPGenerationCheckpoints:
         if attempt.status == "dispatched" and attempt.usage is not None:
             raise ValueError("LP pending outcome claims observed usage.")
 
-    def _validate_attempts(self) -> None:
+    def _validate_attempts(self, *, indices: Iterable[int] | None = None) -> None:
         """Require unique bounded attempts, honest usage, and exact completion links.
+
+        Parameters
+        ----------
+        indices
+            Requests whose attempts to validate, or None for every request with any
+            row, attempt or failure.
 
         Raises
         ------
@@ -1030,83 +1331,39 @@ class LPGenerationCheckpoints:
         """
 
         if (
-            sum(attempt.status == "dispatched" for attempt in self.attempts)
+            sum(attempt.status == "dispatched" for attempt in self._attempts)
             > self.capacity
         ):
             raise ValueError("LP active dispatch records exceed capacity.")
 
-        seen: dict[tuple[int, int, str, int], str] = {}
-        successful: set[tuple[int, str]] = set()
-
-        for attempt in self.attempts:
-            index = attempt.request_index
-            key = (attempt.run_number, index, attempt.stage, attempt.attempt)
-
-            if (
-                key in seen
-                or (
-                    attempt.stage == "verdict"
-                    and self.get_row(request_index=index, stage="draft") is None
-                )
-                or index >= len(self.population.requests)
-                or attempt.run_number > self.run_number
-                or attempt.attempt > self.material["retry_limits"][attempt.stage] + 1
-                or (
-                    attempt.attempt > 1
-                    and seen.get((*key[:3], attempt.attempt - 1)) != "failed"
-                )
-                or attempt.request_id != str(self.population.requests[index].request_id)
-            ):
-                raise ValueError(
-                    "LP attempt identity, order, or retry budget is invalid."
-                )
-
-            seen[key] = attempt.status
-            self._validate_attempt_usage(attempt)
-            self._validate_attempt_completion(attempt=attempt, successful=successful)
-
-        for stage in ("draft", "verdict"):
-            indices = set(range(len(self.rows[stage]))) | set(self.pending[stage])
-
-            if any((index, stage) not in successful for index in indices):
-                raise ValueError("LP completion lacks durable attempt accounting.")
-
-        if any(
-            seen.get(
-                (
-                    failure.run_number,
-                    failure.request_index,
-                    failure.stage,
-                    failure.attempt,
-                )
+        if indices is None:
+            indices = (
+                set(self._attempt_positions)
+                | {failure.request_index for failure in self._failures}
+                | set(range(len(self._rows["draft"])))
+                | {index for rows in self._pending.values() for index in rows}
             )
-            != "failed"
-            for failure in self.failures
-        ):
-            raise ValueError(
-                "LP failure lacks its durable dispatch and outcome record."
-            )
+
+        for index in sorted(set(indices)):
+            self._validate_index_attempts(index)
 
     def _validate_cached_row(
         self,
         *,
         index: int,
-        material: bytes,
         proofs: dict[tuple[str, int], tuple[bytes, ...]],
         requests: dict[int, bytes],
         row: _LPCheckpoint,
         stage: str,
     ) -> None:
-        """Revalidate changed rows and every changed semantic dependency.
+        """Revalidate a row whenever it or a semantic dependency changed.
 
         Parameters
         ----------
         index
             Expected request position in the prefix or pending journal.
-        material
-            Digest of actual execution material computed for this validation pass.
         proofs
-            New proof set, installed only after the complete state validates.
+            New proofs, installed only after the validation pass succeeds.
         requests
             Request digests computed from live records during this pass only.
         row
@@ -1125,24 +1382,15 @@ class LPGenerationCheckpoints:
                 )
             ).digest()
 
-        dependencies = []
-
-        for dependency in ("draft", "verdict") if stage != "draft" else ():
-            saved = (
-                row
-                if dependency == stage
-                else self.get_row(request_index=index, stage=dependency)
-            )
-            dependencies.append(
-                b""
-                if saved is None
-                else self._record_bytes(key=(dependency, index), record=saved)
-            )
+        dependencies = [
+            self._record_encodings.get((dependency, index), b"")
+            for dependency in (("draft", "verdict") if stage != "draft" else ())
+        ]
         key = (stage, index)
         proof = (
-            material,
+            self._material_digest,
             requests[index],
-            self._record_bytes(key=key, record=row),
+            self._record_encodings[key],
             *dependencies,
         )
 
@@ -1164,7 +1412,7 @@ class LPGenerationCheckpoints:
         seen: set[tuple[int, int, str, int]] = set()
         previous_order = (0, -1, -1, 0)
 
-        for failure in self.failures:
+        for failure in self._failures:
             index = failure.request_index
 
             if index >= len(self.population.requests):
@@ -1184,7 +1432,7 @@ class LPGenerationCheckpoints:
                 0 if failure.stage == "draft" else 1,
                 failure.attempt,
             )
-            maximum = self.material["retry_limits"][failure.stage] + 1
+            maximum = self._material["retry_limits"][failure.stage] + 1
 
             if (
                 order <= previous_order
@@ -1192,7 +1440,7 @@ class LPGenerationCheckpoints:
                 or failure.exhausted != (failure.attempt == maximum)
                 or (
                     failure.stage == "verdict"
-                    and self.get_row(request_index=index, stage="draft") is None
+                    and self._row(request_index=index, stage="draft") is None
                 )
             ):
                 raise ValueError("LP failure order, retry budget, or stage is invalid.")
@@ -1213,7 +1461,7 @@ class LPGenerationCheckpoints:
                 raise ValueError("LP failure identity or coverage is misaligned.")
 
             resolved = failure.resolved_run_number
-            response = self.get_row(request_index=index, stage="response")
+            response = self._row(request_index=index, stage="response")
 
             if resolved is None:
                 if (
@@ -1231,6 +1479,119 @@ class LPGenerationCheckpoints:
             ):
                 raise ValueError(
                     "LP resumed failure disposition lacks matching completion."
+                )
+
+    def _validate_index_attempts(self, index: int) -> None:
+        """Validate one request's attempts, completion links and failure links.
+
+        Parameters
+        ----------
+        index
+            Request position.
+
+        Raises
+        ------
+        ValueError
+            If an attempt's identity, order, retry budget, usage or evidence link is
+            invalid, or a completed stage lacks its successful attempt.
+        """
+
+        seen: dict[tuple[int, int, str, int], str] = {}
+        successful: set[tuple[int, str]] = set()
+
+        for position in self._attempt_positions.get(index, ()):
+            attempt = self._attempts[position]
+            key = (attempt.run_number, index, attempt.stage, attempt.attempt)
+
+            if (
+                key in seen
+                or attempt.request_index != index
+                or (
+                    attempt.stage == "verdict"
+                    and self._row(request_index=index, stage="draft") is None
+                )
+                or index >= len(self.population.requests)
+                or attempt.run_number > self.run_number
+                or attempt.attempt > self._material["retry_limits"][attempt.stage] + 1
+                or (
+                    attempt.attempt > 1
+                    and seen.get((*key[:3], attempt.attempt - 1)) != "failed"
+                )
+                or attempt.request_id != str(self.population.requests[index].request_id)
+            ):
+                raise ValueError(
+                    "LP attempt identity, order, or retry budget is invalid."
+                )
+
+            seen[key] = attempt.status
+            self._validate_attempt_usage(attempt)
+            self._validate_attempt_completion(attempt=attempt, successful=successful)
+
+        for stage in ("draft", "verdict"):
+            if (
+                self._row(request_index=index, stage=stage) is not None
+                and (index, stage) not in successful
+            ):
+                raise ValueError("LP completion lacks durable attempt accounting.")
+
+        if any(
+            seen.get(
+                (
+                    failure.run_number,
+                    failure.request_index,
+                    failure.stage,
+                    failure.attempt,
+                )
+            )
+            != "failed"
+            for failure in self._failures
+            if failure.request_index == index
+        ):
+            raise ValueError(
+                "LP failure lacks its durable dispatch and outcome record."
+            )
+
+    def _validate_index_rows(
+        self,
+        *,
+        index: int,
+        proofs: dict[tuple[str, int], tuple[bytes, ...]],
+        requests: dict[int, bytes],
+    ) -> None:
+        """Validate one request's prefix and pending rows in every stage.
+
+        Parameters
+        ----------
+        index
+            Request position.
+        proofs
+            New proofs collected during this validation pass.
+        requests
+            Request digests computed during this validation pass.
+
+        Raises
+        ------
+        ValueError
+            If a pending row overlaps a prefix or the population boundary, or a row
+            fails validation.
+        """
+
+        for stage in _FILENAMES:
+            in_prefix = index < len(self._rows[stage])
+            pending_row = self._pending[stage].get(index)
+
+            if pending_row is not None and (
+                in_prefix or index >= len(self.population.requests)
+            ):
+                raise ValueError(
+                    "LP pending completion overlaps a prefix or population boundary."
+                )
+
+            row = self._rows[stage][index] if in_prefix else pending_row
+
+            if row is not None:
+                self._validate_cached_row(
+                    index=index, proofs=proofs, requests=requests, row=row, stage=stage
                 )
 
     def _validate_row(self, *, index: int, row: _LPCheckpoint, stage: str) -> None:
@@ -1252,11 +1613,11 @@ class LPGenerationCheckpoints:
             the selected complete response differs from the expected state.
         """
 
-        draft_row = self.get_row(request_index=index, stage="draft")
+        draft_row = self._row(request_index=index, stage="draft")
         verdict_row = (
             row
             if stage == "verdict"
-            else self.get_row(request_index=index, stage="verdict")
+            else self._row(request_index=index, stage="verdict")
         )
 
         if (
@@ -1313,7 +1674,7 @@ class LPGenerationCheckpoints:
 
         expected_prompt = _stage_prompt_hash(
             draft=draft,
-            material=self.material,
+            material=self._material,
             request=request,
             stage=stage,
         )
@@ -1339,42 +1700,76 @@ class LPGenerationCheckpoints:
             If request_index is greater than the total number of requests available.
         """
 
-        self.verify_bytes()
+        with self._updating():
+            self.verify_bytes()
 
-        if stage != "response":
-            raise ValueError("LP call results require atomic attempt accounting.")
+            if stage != "response":
+                raise ValueError("LP call results require atomic attempt accounting.")
 
-        self._store_result(payload=payload, request_index=request_index, stage=stage)
+            self._store_result(
+                payload=payload, request_index=request_index, stage=stage
+            )
+            resolved = False
+            failures = []
 
-        for failure in self.failures:
-            if (
-                failure.request_index == request_index
-                and failure.resolved_run_number is None
-            ):
-                failure.resolved_run_number = self.run_number
-                failure.resolved_response_content_hash = content_hash(
-                    payload.model_dump(mode="json")
-                )
+            for failure in self._failures:
+                if (
+                    failure.request_index == request_index
+                    and failure.resolved_run_number is None
+                ):
+                    failure = failure.model_copy(
+                        update={
+                            "resolved_response_content_hash": content_hash(
+                                payload.model_dump(mode="json")
+                            ),
+                            "resolved_run_number": self.run_number,
+                        }
+                    )
+                    resolved = True
 
-        self.promote(request_indices=(request_index,))
+                failures.append(failure)
+
+            if resolved:
+                self._set_failures(failures)
+
+            self.promote(request_indices=(request_index,))
+
+    @property
+    def attempts(self) -> Sequence[_LPAttempt]:
+        """Return the attempt history as a read-only view of copies.
+
+        Returns
+        -------
+        Sequence[_LPAttempt]
+            Live view whose items are independent copies.
+        """
+
+        return _RecordSequence(self._attempts)
 
     def begin_run(self) -> None:
         """Retain interrupted call identities and assign a new persisted invocation."""
 
-        self.verify_bytes()
+        with self._updating():
+            self.verify_bytes()
+            interrupted = []
 
-        for attempt in self.attempts:
-            if attempt.status == "dispatched":
-                attempt.status = "unknown"
+            for position, attempt in enumerate(self._attempts):
+                if attempt.status == "dispatched":
+                    self._put_attempt(
+                        attempt=attempt.model_copy(update={"status": "unknown"}),
+                        position=position,
+                    )
+                    interrupted.append(attempt.request_index)
 
-        self.run_number += 1
-        self._save()
+            self._changes += 1
+            self.run_number += 1
+            self._save(request_indices=interrupted)
 
     @property
     def capacity(self) -> int:
         """Return the immutable effective capacity captured for this execution."""
 
-        capacity = self.material.get("max_concurrent_requests")
+        capacity = self._material.get("max_concurrent_requests")
 
         if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
             raise ValueError("LP execution material lacks a valid captured capacity.")
@@ -1411,65 +1806,85 @@ class LPGenerationCheckpoints:
             If the LP attempt contains errors.
         """
 
-        self.verify_bytes()
-        attempt = self.attempts[attempt_index]
+        with self._updating():
+            self.verify_bytes()
+            attempt = self._attempts[attempt_index]
 
-        if attempt.status != "dispatched":
-            raise ValueError("LP attempt already has an observed outcome.")
+            if attempt.status != "dispatched":
+                raise ValueError("LP attempt already has an observed outcome.")
 
-        attempt.status = status
-        attempt.usage = usage
+            changes: dict[str, Any] = {
+                "status": status,
+                "usage": None if usage is None else dict(usage),
+            }
 
-        if error is not None:
-            attempt.error_type = f"{type(error).__module__}.{type(error).__qualname__}"
-            attempt.error_content_hash = content_hash(str(error))
-
-        if status == "succeeded":
-            if payload is None or error is not None:
-                raise ValueError(
-                    "LP successful attempt requires its validated payload."
+            if error is not None:
+                changes["error_type"] = (
+                    f"{type(error).__module__}.{type(error).__qualname__}"
                 )
+                changes["error_content_hash"] = content_hash(str(error))
 
-            row = self._store_result(
-                payload=payload,
-                request_index=attempt.request_index,
-                stage=attempt.stage,
-            )
-            attempt.checkpoint_content_hash = content_hash(row.model_dump(mode="json"))
-        elif status == "failed":
-            if error is None or payload is not None:
-                raise ValueError("LP failed attempt requires failure evidence only.")
+            if status == "succeeded":
+                if payload is None or error is not None:
+                    raise ValueError(
+                        "LP successful attempt requires its validated payload."
+                    )
 
-            request = self.population.requests[attempt.request_index]
-            self.failures.append(
-                _LPFailure(
-                    attempt=attempt.attempt,
-                    error_content_hash=content_hash(str(error)),
-                    error_type=f"{type(error).__module__}.{type(error).__qualname__}",
-                    exhausted=attempt.attempt
-                    == self.material["retry_limits"][attempt.stage] + 1,
-                    pair_ids=[pair.pair_id for pair in request.pairs],
-                    request_content_hash=request.request_content_hash,
-                    request_id=str(request.request_id),
+                row = self._store_result(
+                    payload=payload,
                     request_index=attempt.request_index,
-                    run_number=self.run_number,
                     stage=attempt.stage,
                 )
-            )
-            self.failures.sort(
-                key=lambda failure: (
-                    failure.run_number,
-                    failure.request_index,
-                    0 if failure.stage == "draft" else 1,
-                    failure.attempt,
+                changes["checkpoint_content_hash"] = content_hash(
+                    row.model_dump(mode="json")
                 )
-            )
-        elif status not in {"unknown", "cancelled"} or payload is not None:
-            raise ValueError("LP attempt outcome is invalid.")
+            elif status == "failed":
+                if error is None or payload is not None:
+                    raise ValueError(
+                        "LP failed attempt requires failure evidence only."
+                    )
 
-        # Saving precedes promotion, so a crash never discards a valid suffix.
-        self._save(request_indices=(attempt.request_index,))
-        self.promote(request_indices=(attempt.request_index,))
+                request = self.population.requests[attempt.request_index]
+                self._set_failures(
+                    [
+                        *self._failures,
+                        _LPFailure(
+                            attempt=attempt.attempt,
+                            error_content_hash=content_hash(str(error)),
+                            error_type=changes["error_type"],
+                            exhausted=attempt.attempt
+                            == self._material["retry_limits"][attempt.stage] + 1,
+                            pair_ids=[pair.pair_id for pair in request.pairs],
+                            request_content_hash=request.request_content_hash,
+                            request_id=str(request.request_id),
+                            request_index=attempt.request_index,
+                            run_number=self.run_number,
+                            stage=attempt.stage,
+                        ),
+                    ]
+                )
+            elif status not in {"unknown", "cancelled"} or payload is not None:
+                raise ValueError("LP attempt outcome is invalid.")
+
+            self._put_attempt(
+                attempt=attempt.model_copy(update=changes), position=attempt_index
+            )
+
+            # Saving precedes promotion, so a crash never discards a valid suffix.
+            self._save(request_indices=(attempt.request_index,))
+            self.promote(request_indices=(attempt.request_index,))
+
+    @property
+    def failures(self) -> Sequence[_LPFailure]:
+        """Return the failure history as a read-only view of copies.
+
+        Returns
+        -------
+        Sequence[_LPFailure]
+            Live view whose items are independent copies.
+        """
+
+        return _RecordSequence(self._failures)
 
     def get_row(self, *, request_index: int, stage: str) -> _LPCheckpoint | None:
         """Resolve one fully validated durable prefix or pending stage.
@@ -1484,13 +1899,39 @@ class LPGenerationCheckpoints:
         Returns
         -------
         _LPCheckpoint or None
-            Durable stage evidence, or absence without an invented success.
+            Independent copy of the durable stage evidence, or absence without an
+            invented success.
         """
 
-        if request_index < len(self.rows[stage]):
-            return self.rows[stage][request_index]
+        row = self._row(request_index=request_index, stage=stage)
 
-        return self.pending[stage].get(request_index)
+        return None if row is None else row.model_copy(deep=True)
+
+    @property
+    def material(self) -> dict[str, Any]:
+        """Return a copy of the captured execution material.
+
+        Returns
+        -------
+        dict[str, Any]
+            Independent copy; mutating it cannot change the store's receipts.
+        """
+
+        return copy.deepcopy(self._material)
+
+    @property
+    def pending(self) -> Mapping[str, Mapping[int, _LPCheckpoint]]:
+        """Return pending completions as read-only views of copies.
+
+        Returns
+        -------
+        Mapping[str, Mapping[int, _LPCheckpoint]]
+            Live views keyed by stage and request index.
+        """
+
+        return MappingProxyType(
+            {stage: _PendingRecords(rows) for stage, rows in self._pending.items()}
+        )
 
     def promote(self, *, request_indices: Iterable[int] = ()) -> None:
         """Promote newly contiguous stages without losing saved suffix completions.
@@ -1501,16 +1942,19 @@ class LPGenerationCheckpoints:
             Requests the caller just changed, guarded together with promoted rows.
         """
 
-        promoted = set(request_indices)
+        with self._updating():
+            promoted = set(request_indices)
 
-        for stage in _FILENAMES:
-            pending = self.pending[stage]
+            for stage in _FILENAMES:
+                pending = self._pending[stage]
 
-            while len(self.rows[stage]) in pending:
-                promoted.add(len(self.rows[stage]))
-                self.rows[stage].append(pending.pop(len(self.rows[stage])))
+                # The row keeps its key, so its authority bytes move with it.
+                while len(self._rows[stage]) in pending:
+                    self._changes += 1
+                    promoted.add(len(self._rows[stage]))
+                    self._rows[stage].append(pending.pop(len(self._rows[stage])))
 
-        self._save(request_indices=promoted)
+            self._save(request_indices=promoted)
 
     def record_dispatch(self, *, request_index: int, stage: str) -> int:
         """Persist one bounded attempt identity before giving a worker its call.
@@ -1534,42 +1978,73 @@ class LPGenerationCheckpoints:
             or unknown attempt, or exceed the configured retry budget.
         """
 
-        self.verify_bytes()
+        with self._updating():
+            self.verify_bytes()
 
-        if self.get_row(request_index=request_index, stage=stage) is not None:
-            raise ValueError("LP dispatch would repeat a durably completed stage.")
+            if self._row(request_index=request_index, stage=stage) is not None:
+                raise ValueError("LP dispatch would repeat a durably completed stage.")
 
-        prior = [
-            item
-            for item in self.attempts
-            if item.run_number == self.run_number
-            and item.request_index == request_index
-            and item.stage == stage
-        ]
+            prior = [
+                self._attempts[position]
+                for position in self._attempt_positions.get(request_index, ())
+                if self._attempts[position].run_number == self.run_number
+                and self._attempts[position].stage == stage
+            ]
 
-        if any(item.status != "failed" for item in prior):
-            raise ValueError("LP dispatch duplicates an active or unknown attempt.")
+            if any(item.status != "failed" for item in prior):
+                raise ValueError("LP dispatch duplicates an active or unknown attempt.")
 
-        attempt = len(prior) + 1
+            attempt = len(prior) + 1
 
-        if attempt > self.material["retry_limits"][stage] + 1:
-            raise ValueError("LP dispatch exceeds the configured retry budget.")
+            if attempt > self._material["retry_limits"][stage] + 1:
+                raise ValueError("LP dispatch exceeds the configured retry budget.")
 
-        self.attempts.append(
-            _LPAttempt(
-                attempt=attempt,
-                request_id=str(self.population.requests[request_index].request_id),
-                request_index=request_index,
-                run_number=self.run_number,
-                stage=stage,
-                status="dispatched",
+            position = len(self._attempts)
+            self._put_attempt(
+                attempt=_LPAttempt(
+                    attempt=attempt,
+                    request_id=str(self.population.requests[request_index].request_id),
+                    request_index=request_index,
+                    run_number=self.run_number,
+                    stage=stage,
+                    status="dispatched",
+                ),
+                position=position,
             )
+            self._save(request_indices=(request_index,))
+            return position
+
+    @property
+    def retry_limits(self) -> dict[str, int]:
+        """Return a copy of the captured retry limits per stage.
+
+        Returns
+        -------
+        dict[str, int]
+            Maximum retries for `draft` and `verdict`.
+        """
+
+        return dict(self._material["retry_limits"])
+
+    @property
+    def rows(self) -> Mapping[str, Sequence[_LPCheckpoint]]:
+        """Return the stage prefixes as read-only views of copies.
+
+        Returns
+        -------
+        Mapping[str, Sequence[_LPCheckpoint]]
+            Live views keyed by stage.
+        """
+
+        return MappingProxyType(
+            {stage: _RecordSequence(rows) for stage, rows in self._rows.items()}
         )
-        self._save(request_indices=(request_index,))
-        return len(self.attempts) - 1
 
     def verify_bytes(self, *, full: bool = False) -> None:
-        """Fail closed if persisted progress changed since this store was validated.
+        """Fail closed if persisted progress changed since this store validated it.
+
+        Records cannot change outside the store's own validated updates, so only the
+        files need checking.
 
         Parameters
         ----------
@@ -1580,24 +2055,14 @@ class LPGenerationCheckpoints:
         Raises
         ------
         ValueError
-            If persisted artifact bytes differ from the validated in-memory state.
+            If an earlier update failed, or persisted artifact bytes differ from the
+            validated state.
         """
 
+        if self._failed_update:
+            raise ValueError("LP checkpoint store failed an earlier update; reload it.")
+
         self.verify_ownership()
-        payloads = self._payloads()
-        payloads[_RECEIPT] = _canonical_bytes(self._receipt(payloads))
-
-        # Disk and live records cannot jointly replace the last validated snapshot.
-        # Only a fully validated load/save can establish a new byte authority.
-        current = tuple(
-            (name, hashlib.sha256(payloads[name]).digest()) for name in sorted(payloads)
-        )
-
-        if current != self._validated_byte_hashes:
-            raise ValueError(
-                "LP in-memory checkpoint material changed after validation."
-            )
-
         self._check_checkpoint_files(full=full)
 
     def verify_execution_authority(
