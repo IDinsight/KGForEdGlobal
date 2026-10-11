@@ -29,6 +29,7 @@ from kgfeg.kgs import lp_checkpoints, lp_dispatch, lp_generation, lp_requests
 from kgfeg.kgs.lp_dispatch import LPDispatchGate, LPDispatchIntegrityError
 from kgfeg.kgs.utils import KGDirs
 from tests.kgfeg.kgs import test_lp_checker as _checker
+from tests.kgfeg.kgs import test_lp_checkpoint_cadence as _cadence
 from tests.kgfeg.kgs import test_lp_dispatch_concurrency as _sdk
 from tests.kgfeg.kgs import test_lp_generation as _fixtures
 from tests.kgfeg.kgs import test_lp_orchestration as _old
@@ -575,7 +576,11 @@ def test_resealed_manifest_does_not_authorize_modified_population(
 def test_transaction_publication_rechecks_changed_population(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A material change after transaction publication stops remaining replacements.
+    """A material change after transaction publication stops the commit retiring.
+
+    The one authority check after the journal's replacements fails closed, so the
+    journal stays for recovery, and the next invocation rejects the changed
+    population before recovery or any call.
 
     Parameters
     ----------
@@ -587,7 +592,7 @@ def test_transaction_publication_rechecks_changed_population(
     harness = _old._Harness(root=tmp_path)
     _old._install(harness=harness, monkeypatch=monkeypatch)
     original = lp_checkpoints._atomic_write
-    snapshot: dict[str, bytes] = {}
+    journals: list[bytes] = []
 
     def _write(*, path: Path, payload: bytes) -> None:
         """Corrupt request bytes after a durable transaction has been published.
@@ -600,15 +605,21 @@ def test_transaction_publication_rechecks_changed_population(
             Unchanged real transaction bytes.
         """
         original(path=path, payload=payload)
-        if path.name == _old._JOURNAL:
+        if path.name == _old._JOURNAL and not journals:
+            journals.append(payload)
             _edit(kind="same_size_restored_time", path=tmp_path / _FILES[2])
-            snapshot.update(_old._snapshot(tmp_path))
 
-    monkeypatch.setattr(name="_atomic_write", target=lp_checkpoints, value=_write)
-    with pytest.raises(expected_exception=ValueError, match="artifact"):
+    with monkeypatch.context() as patch:
+        patch.setattr(name="_atomic_write", target=lp_checkpoints, value=_write)
+        with pytest.raises(expected_exception=ValueError, match="artifact"):
+            harness._run()
+    assert not harness.calls
+    assert (tmp_path / _old._JOURNAL).read_bytes() == journals[0]
+    before = _old._snapshot(tmp_path)
+    with pytest.raises(expected_exception=ValueError):
         harness._run()
-    assert harness.calls == []
-    assert _old._snapshot(tmp_path) == snapshot
+    assert not harness.calls
+    assert _old._snapshot(tmp_path) == before
 
 
 @pytest.mark.parametrize(argnames="phase", argvalues=["cached", "initial"])
@@ -652,3 +663,83 @@ def test_valid_alternative_population_cannot_replace_bound_authority(
         else:
             verifier.verify(population=population, root=root)
     assert _old._snapshot(root) == before
+
+
+def test_guard_rejects_same_size_edit_with_restored_mtime(tmp_path: Path) -> None:
+    """The cheap guard catches a content edit whose size and mtime are restored.
+
+    Parameters
+    ----------
+    tmp_path
+        Isolated validated input files.
+    """
+    population = _population(tmp_path)
+    verifier = lp_requests.LPRequestPopulationVerifier(
+        population=population, root=tmp_path
+    )
+    verifier.guard(population=population, request_indices=(0,), root=tmp_path)
+    _edit(kind="same_size_restored_time", path=tmp_path / _FILES[2])
+    before = _old._snapshot(tmp_path)
+    with pytest.raises(expected_exception=ValueError, match="artifact differs"):
+        verifier.guard(population=population, request_indices=(), root=tmp_path)
+    assert _old._snapshot(tmp_path) == before
+
+
+def test_guard_reads_nothing_until_an_identity_changes_then_refreshes_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Unchanged identities cost no reads; identical rewritten bytes refresh once.
+
+    Parameters
+    ----------
+    monkeypatch
+        Real-stream read counter.
+    tmp_path
+        Isolated validated input files.
+    """
+    population = _population(tmp_path)
+    verifier = lp_requests.LPRequestPopulationVerifier(
+        population=population, root=tmp_path
+    )
+    names = (*population.manifest.artifact_byte_hashes, lp_requests.MANIFEST_FILENAME)
+    counts: dict[str, int] = {}
+    original = Path.open
+
+    def _open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        """Count bytes streamed from population artifacts.
+
+        Parameters
+        ----------
+        self
+            File path.
+        args
+            Original positional arguments.
+        kwargs
+            Original keyword arguments.
+
+        Returns
+        -------
+        Any
+            Real stream or counting proxy.
+        """
+        stream = original(self, *args, **kwargs)  # pylint: disable=R1732
+        if self.parent == tmp_path and self.name in names:
+            return _cadence._CountedStream(counts=counts, name=self.name, stream=stream)
+        return stream
+
+    path = tmp_path / _FILES[2]
+    payload = path.read_bytes()
+    stat = path.stat()
+    monkeypatch.setattr(name="open", target=Path, value=_open)
+    every = tuple(range(len(population.requests)))
+    verifier.guard(population=population, request_indices=every, root=tmp_path)
+    assert not counts
+    path.write_bytes(payload)
+    os.utime(ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9), path=path)
+    verifier.guard(population=population, request_indices=every, root=tmp_path)
+    # The changed identity ran one full verification of every artifact byte.
+    hashed = dict(verifier._artifact_hashes)
+    assert counts == {name: (tmp_path / name).stat().st_size for name in hashed}
+    counts.clear()
+    verifier.guard(population=population, request_indices=every, root=tmp_path)
+    assert not counts

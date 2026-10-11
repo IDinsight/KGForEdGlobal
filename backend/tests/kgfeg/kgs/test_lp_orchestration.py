@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 
+from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
 from textwrap import dedent
@@ -50,6 +51,13 @@ _INPUTS = (
     "lp_generation_requests_manifest.json",
 )
 _STORED = (_DRAFT, _VERDICT, _RESPONSE, _FAILURE, _RECEIPT)
+# Stage files are created at initialization and only extended afterwards, by the
+# transition that promotes rows into them; no other transition writes them.
+_STAGE_WRITES = {
+    _DRAFT: ("initialize", "draft_promotion"),
+    _VERDICT: ("initialize", "verdict_promotion"),
+    _RESPONSE: ("initialize", "response"),
+}
 _PROFILES = (
     "ghana_english",
     "ghana_math",
@@ -294,6 +302,56 @@ def _install(*, harness: _Harness, monkeypatch: pytest.MonkeyPatch) -> None:
         target=lp_generation,
         value=harness._call,
     )
+
+
+def _patch_writes(
+    *, interrupt: Callable[[Path, bytes, bool], None], patch: pytest.MonkeyPatch
+) -> None:
+    """Route every checkpoint write, whole-file or appended, through one injector.
+
+    Parameters
+    ----------
+    interrupt
+        Called with the path, the written bytes and whether the real write already
+        happened, before and after each write; it may raise to interrupt.
+    patch
+        Restoring monkeypatch context.
+    """
+    write = lp_checkpoints._atomic_write
+    append = lp_checkpoints._append_bytes
+
+    def _write(*, path: Path, payload: bytes) -> None:
+        """Replace one file whole between the two injection points.
+
+        Parameters
+        ----------
+        path
+            Actual destination file.
+        payload
+            Complete bytes.
+        """
+        interrupt(path, payload, False)
+        write(path=path, payload=payload)
+        interrupt(path, payload, True)
+
+    def _append(*, offset: int, path: Path, payload: bytes) -> None:
+        """Extend one stage file between the two injection points.
+
+        Parameters
+        ----------
+        offset
+            Journaled previous length.
+        path
+            Actual stage file.
+        payload
+            Appended rows.
+        """
+        interrupt(path, payload, False)
+        append(offset=offset, path=path, payload=payload)
+        interrupt(path, payload, True)
+
+    patch.setattr(name="_atomic_write", target=lp_checkpoints, value=_write)
+    patch.setattr(name="_append_bytes", target=lp_checkpoints, value=_append)
 
 
 def _reseal(*, name: str, root: Path) -> None:
@@ -554,6 +612,9 @@ def test_atomic_rename_interruptions_preserve_durable_draft_without_repeated_cal
 ) -> None:
     """Interrupt actual renames inside atomic writes, including before directory sync.
 
+    Stage files are only ever extended in place, so the draft transaction, which
+    appends no stage row, renames none of them and runs to completion.
+
     Parameters
     ----------
     after
@@ -569,6 +630,7 @@ def test_atomic_rename_interruptions_preserve_durable_draft_without_repeated_cal
     _install(harness=harness, monkeypatch=monkeypatch)
     original = lp_checkpoints.os.replace
     transaction = ""
+    renamed: list[str] = []
 
     def _replace(*, dst: Path, src: str) -> None:
         """Interrupt one rename while retaining the real atomic write implementation.
@@ -583,6 +645,8 @@ def test_atomic_rename_interruptions_preserve_durable_draft_without_repeated_cal
         nonlocal transaction
         if dst.name == _JOURNAL:
             transaction = _transaction_phase(Path(src).read_bytes())
+        if transaction == "draft":
+            renamed.append(dst.name)
         hit = transaction == "draft" and dst.name == name
         if hit and not after:
             raise _Interruption()
@@ -590,6 +654,13 @@ def test_atomic_rename_interruptions_preserve_durable_draft_without_repeated_cal
         if hit and after:
             raise _Interruption()
 
+    if name in (_DRAFT, _VERDICT, _RESPONSE):
+        with monkeypatch.context() as patch:
+            patch.setattr(name="replace", target=lp_checkpoints.os, value=_replace)
+            assert len(harness._run()) == 1
+        assert renamed and name not in renamed
+        assert harness.calls == [("draft", 0), ("verdict", 0)]
+        return
     with monkeypatch.context() as patch:
         patch.setattr(name="replace", target=lp_checkpoints.os, value=_replace)
         with pytest.raises(expected_exception=_Interruption):
@@ -1047,16 +1118,27 @@ def test_journal_removal_interruption_preserves_all_completed_calls(
 @pytest.mark.slow
 @pytest.mark.parametrize(argnames="after", argvalues=[False, True])
 @pytest.mark.parametrize(
-    argnames="phase",
-    argvalues=["initialize", "begin", "draft", "verdict", "response", "failure"],
-)
-@pytest.mark.parametrize(
-    argnames="name",
+    argnames=("name", "phase"),
     argvalues=[
-        _JOURNAL,
-        *_STORED,
-        "lp_generation_pending_completions.json",
-        "lp_generation_usage.json",
+        *(
+            (name, phase)
+            for name in (
+                _JOURNAL,
+                _FAILURE,
+                _RECEIPT,
+                "lp_generation_pending_completions.json",
+                "lp_generation_usage.json",
+            )
+            for phase in (
+                "initialize",
+                "begin",
+                "draft",
+                "verdict",
+                "response",
+                "failure",
+            )
+        ),
+        *((name, phase) for name, phases in _STAGE_WRITES.items() for phase in phases),
     ],
 )
 def test_journaled_transactions_resume_at_every_artifact_write_boundary(
@@ -1064,12 +1146,15 @@ def test_journaled_transactions_resume_at_every_artifact_write_boundary(
 ) -> None:
     """Recover exact old/new transaction states without repeating durable valid calls.
 
+    Stage files are interrupted at the transitions that create or append to them;
+    other transitions write no stage bytes.
+
     Parameters
     ----------
     after
-        Interrupt after atomic replacement instead of before it.
+        Interrupt after the write instead of before it.
     monkeypatch
-        Restoring atomic-write fault injector.
+        Restoring write fault injector.
     name
         Journal, stage artifact, failure artifact, or receipt boundary.
     phase
@@ -1081,11 +1166,10 @@ def test_journaled_transactions_resume_at_every_artifact_write_boundary(
     if phase == "failure":
         harness.script[("verdict", 0)] = [TimeoutError("synthetic")]
     _install(harness=harness, monkeypatch=monkeypatch)
-    original = lp_checkpoints._atomic_write
     transaction = ""
     fired = False
 
-    def _write(*, path: Path, payload: bytes) -> None:
+    def _interrupt(path: Path, payload: bytes, written: bool) -> None:
         """Interrupt exactly one observed durable publication boundary.
 
         Parameters
@@ -1093,22 +1177,24 @@ def test_journaled_transactions_resume_at_every_artifact_write_boundary(
         path
             Actual destination file.
         payload
-            Proposed complete bytes.
+            Proposed complete or appended bytes.
+        written
+            Whether the real write has already happened.
         """
         nonlocal fired, transaction
-        if path.name == _JOURNAL:
+        if path.name == _JOURNAL and not written:
             transaction = _transaction_phase(payload)
-        hit = not fired and transaction == phase and path.name == name
-        if hit and not after:
-            fired = True
-            raise _Interruption()
-        original(path=path, payload=payload)
-        if hit and after:
+        if (
+            not fired
+            and transaction == phase
+            and path.name == name
+            and written == after
+        ):
             fired = True
             raise _Interruption()
 
     with monkeypatch.context() as patch:
-        patch.setattr(name="_atomic_write", target=lp_checkpoints, value=_write)
+        _patch_writes(interrupt=_interrupt, patch=patch)
         with pytest.raises(expected_exception=_Interruption):
             harness._run()
     assert fired
@@ -1123,12 +1209,14 @@ def test_journaled_transactions_resume_at_every_artifact_write_boundary(
         "initialize": [("draft", 0), ("verdict", 0)],
         "begin": [("draft", 0), ("verdict", 0)],
         "draft": [("verdict", 0)] if durable else [("draft", 0), ("verdict", 0)],
+        "draft_promotion": [("verdict", 0)],
         "verdict": [] if durable else [("verdict", 0)],
+        "verdict_promotion": [],
         "response": [],
         "failure": [("verdict", 0)],
     }[phase]
     assert harness.calls == expected
-    if phase in {"draft", "verdict", "response", "failure"}:
+    if phase not in {"initialize", "begin"}:
         assert ("draft", 0) in before_calls
     history = json.loads((tmp_path / _FAILURE).read_bytes())
     assert len(history) == int(phase == "failure" and durable)
@@ -1312,24 +1400,26 @@ def test_pending_transaction_never_authorizes_arbitrary_corruption_repair(
     """
     harness = _Harness(count=2, root=tmp_path)
     _install(harness=harness, monkeypatch=monkeypatch)
-    original = lp_checkpoints._atomic_write
+    original = lp_checkpoints._append_bytes
 
-    def _write(*, path: Path, payload: bytes) -> None:
-        """Leave a durable draft transaction and an old receipt.
+    def _append(*, offset: int, path: Path, payload: bytes) -> None:
+        """Leave a durable draft-promotion journal, its append and old small files.
 
         Parameters
         ----------
+        offset
+            Journaled previous length.
         path
-            Artifact selected for replacement.
+            Stage file being extended.
         payload
-            Complete proposed bytes.
+            Appended rows.
         """
-        original(path=path, payload=payload)
-        if path.name == _DRAFT and payload:
+        original(offset=offset, path=path, payload=payload)
+        if path.name == _DRAFT:
             raise _Interruption()
 
     with monkeypatch.context() as patch:
-        patch.setattr(name="_atomic_write", target=lp_checkpoints, value=_write)
+        patch.setattr(name="_append_bytes", target=lp_checkpoints, value=_append)
         with pytest.raises(expected_exception=_Interruption):
             harness._run()
     if attack == "file_corruption":
@@ -1343,16 +1433,21 @@ def test_pending_transaction_never_authorizes_arbitrary_corruption_repair(
         if attack == "journal_partial":
             del journal["next_payloads"][_FAILURE]
         elif attack == "journal_payload":
-            row = json.loads(journal["next_payloads"][_DRAFT])
+            # A self-consistent journal append with an invalid draft, and the draft
+            # file back at its previous state, so recovery reaches validation.
+            append = journal["appends"][_DRAFT]
+            row = json.loads(append["appended"])
             row["payload"]["judgments"] = []
             row["payload_content_hash"] = hashlib.sha256(
                 _bytes(row["payload"])
             ).hexdigest()
-            journal["next_payloads"][_DRAFT] = _bytes(row).decode()
+            previous = (tmp_path / _DRAFT).read_bytes()[: append["previous_length"]]
+            (tmp_path / _DRAFT).write_bytes(previous)
+            append["appended"] = _bytes(row).decode()
+            append["next_length"] = len(previous) + len(_bytes(row))
+            append["next_digest"] = hashlib.sha256(previous + _bytes(row)).hexdigest()
             receipt = json.loads(journal["next_payloads"][_RECEIPT])
-            receipt["artifact_byte_hashes"][_DRAFT] = hashlib.sha256(
-                _bytes(row)
-            ).hexdigest()
+            receipt["artifact_byte_hashes"][_DRAFT] = append["next_digest"]
             journal["next_payloads"][_RECEIPT] = _bytes(receipt).decode()
         else:
             receipt = json.loads(journal["next_payloads"][_RECEIPT])

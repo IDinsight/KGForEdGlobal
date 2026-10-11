@@ -72,7 +72,10 @@ def _store(
 def test_cache_history_is_bounded_by_current_positions(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Repeated validation and equivalent encoding replacements do not retain versions.
+    """Repeated validation and edited record copies do not retain extra versions.
+
+    Records only grow through validated store updates, so the caches hold exactly
+    one proof per stage row and one encoding per row, attempt and failure.
 
     Parameters
     ----------
@@ -83,18 +86,16 @@ def test_cache_history_is_bounded_by_current_positions(
     """
     store = _store(monkeypatch=monkeypatch, root=tmp_path)
     before = store._payloads()
+    rows = sum(len(store.rows[stage]) for stage in store.rows)
     sizes = (len(store._row_proofs), len(store._record_encodings))
+    assert sizes == (rows, rows + len(store.attempts) + len(store.failures))
     for _ in range(30):
+        # Reordered payload copies are equivalent edits that never reach the store.
         for row in store.rows["response"]:
             row.payload = dict(reversed(list(row.payload.items())))
         store._validate()
         assert store._payloads() == before
         assert (len(store._row_proofs), len(store._record_encodings)) == sizes
-    store.rows["response"].pop()
-    store._validate()
-    store._payloads()
-    assert len(store._row_proofs) == sizes[0] - 1
-    assert len(store._record_encodings) == sizes[1] - 1
 
 
 @pytest.mark.parametrize(argnames="stage", argvalues=["draft", "verdict", "response"])
@@ -102,6 +103,9 @@ def test_changed_nested_record_revalidates(
     monkeypatch: pytest.MonkeyPatch, stage: str, tmp_path: Path
 ) -> None:
     """A nested payload edit cannot borrow an earlier record's semantic proof.
+
+    A caller's edit of a returned copy never reaches the store's bytes or
+    decisions; an edited record that does become authority is revalidated.
 
     Parameters
     ----------
@@ -113,10 +117,21 @@ def test_changed_nested_record_revalidates(
         Synthetic checkpoint directory.
     """
     store = _store(monkeypatch=monkeypatch, root=tmp_path)
+    before = old._snapshot(tmp_path)
+    payloads = store._payloads()
     row = store.rows[stage][0]
     row.payload["unexpected"] = {"nested": [True]}
     row.payload_content_hash = cp.content_hash(row.payload)
-    before = old._snapshot(tmp_path)
+    store._validate()
+    store.verify_bytes(full=True)
+    assert store._payloads() == payloads
+    assert store.get_row(request_index=0, stage=stage) != row
+    if stage != "response":
+        with pytest.raises(expected_exception=ValueError, match="durably completed"):
+            store.record_dispatch(request_index=0, stage=stage)
+    # The same edit installed as the record's authority must fail validation.
+    store._rows[stage][0] = row
+    store._record_bytes(key=(stage, 0), record=row)
     with pytest.raises(expected_exception=ValueError):
         store._validate()
     assert old._snapshot(tmp_path) == before
@@ -130,6 +145,11 @@ def test_changed_request_and_execution_material_revalidate(
     change: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Recompute semantic validation when any consumed request or execution value changes.
+
+    The live request population is shared, so its edits force revalidation. The
+    store keeps its own execution material: editing the returned copy changes
+    nothing, and changed material is only ever presented by a new store, which
+    rejects it before touching any file.
 
     Parameters
     ----------
@@ -158,19 +178,32 @@ def test_changed_request_and_execution_material_revalidate(
     monkeypatch.setattr(name="_validate_row", target=store, value=_observe)
     if change == "request":
         store.population.requests[0].sfis[0].context.description.text += " changed"
-    elif change in {"producer", "checker"}:
-        store.material[change + "_instructions"] += " changed"
+        try:
+            store._validate()
+        except (ValueError, QualityError):
+            pass
+        assert calls, "Changed material inherited semantic proof without revalidation."
+        return
+    captured = store.material
+    material = store.material
+    if change in {"producer", "checker"}:
+        material[change + "_instructions"] += " changed"
     elif change == "model":
-        store.material["model_settings"]["temperature"] = 0.125
+        material["model_settings"]["temperature"] = 0.125
     elif change == "retry":
-        store.material["retry_limits"]["draft"] += 1
+        material["retry_limits"]["draft"] += 1
     else:
-        store.material["request_manifest"]["total_requests"] += 1
-    try:
-        store._validate()
-    except (ValueError, QualityError):
-        pass
-    assert calls, "Changed material inherited semantic proof without revalidation."
+        material["request_manifest"]["total_requests"] += 1
+    payloads = store._payloads()
+    store._validate()
+    assert store.material == captured != material
+    assert store._payloads() == payloads
+    before = old._snapshot(tmp_path)
+    with pytest.raises(expected_exception=ValueError, match="material"):
+        cp.LPGenerationCheckpoints(
+            material=material, population=store.population, root=tmp_path
+        )
+    assert old._snapshot(tmp_path) == before
 
 
 def test_cold_load_inherits_no_prior_proofs(
@@ -227,12 +260,51 @@ def test_failed_validation_cannot_install_partial_proofs(
         Synthetic checkpoint directory.
     """
     store = _store(monkeypatch=monkeypatch, root=tmp_path)
+    # Drop one proof so the pass computes a fresh one before attempts fail.
+    del store._row_proofs["response", 0]
     proofs = deepcopy(store._row_proofs)
-    store.material["retry_limits"]["draft"] += 1
-    store.attempts.append(store.attempts[0].model_copy(deep=True))
-    with pytest.raises(expected_exception=ValueError):
+    duplicate = store.attempts[0]
+    position = len(store.attempts)
+    store._attempts.append(duplicate)
+    store._attempt_positions[duplicate.request_index].append(position)
+    store._record_bytes(key=("attempt", position), record=duplicate)
+    with pytest.raises(expected_exception=ValueError, match="attempt"):
         store._validate()
     assert store._row_proofs == proofs
+
+
+def _seal_attack(*, attack: str, root: Path) -> str:
+    """Write one prefix or dependency attack into the checkpoint files.
+
+    Parameters
+    ----------
+    attack
+        Altered position or prerequisite collection.
+    root
+        Completed synthetic checkpoint directory.
+
+    Returns
+    -------
+    str
+        Altered file, for the caller to reseal in the receipt.
+    """
+    if attack == "pending_overlap":
+        value = concurrent._read(root / concurrent._PENDING)
+        value["response"] = old._rows(root / old._RESPONSE)[:1]
+        (root / concurrent._PENDING).write_bytes(old._bytes(value))
+        return concurrent._PENDING
+    name = old._VERDICT if attack == "missing_verdict" else old._DRAFT
+    rows = old._rows(root / name)
+    if attack == "duplicate":
+        rows[1] = rows[0]
+    elif attack == "gap":
+        rows.pop(1)
+    elif attack == "order":
+        rows.reverse()
+    elif attack in {"missing_draft", "missing_verdict"}:
+        rows.clear()
+    (root / name).write_bytes(b"".join(old._bytes(row) for row in rows))
+    return name
 
 
 @pytest.mark.parametrize(
@@ -251,6 +323,9 @@ def test_order_and_prerequisite_edits_fail_closed(
 ) -> None:
     """Prefix and dependency checks remain mandatory when row bytes are cached.
 
+    The read-only views refuse the edit, and the same edit sealed into the files
+    fails closed at the next full verification (a new store) without changes.
+
     Parameters
     ----------
     attack
@@ -261,20 +336,30 @@ def test_order_and_prerequisite_edits_fail_closed(
         Synthetic checkpoint directory.
     """
     store = _store(monkeypatch=monkeypatch, root=tmp_path)
-    if attack == "duplicate":
-        store.rows["draft"][1] = store.rows["draft"][0]
-    elif attack == "gap":
-        store.rows["draft"].pop(1)
-    elif attack == "order":
-        store.rows["draft"].reverse()
-    elif attack == "pending_overlap":
-        store.pending["response"][0] = store.rows["response"][0]
-    elif attack == "missing_draft":
-        store.rows["draft"].clear()
-    else:
-        store.rows["verdict"].clear()
+    views: Any = store.rows
+    with pytest.raises(expected_exception=(AttributeError, TypeError)):
+        if attack == "duplicate":
+            views["draft"][1] = store.rows["draft"][0]
+        elif attack == "gap":
+            views["draft"].pop(1)
+        elif attack == "order":
+            views["draft"].reverse()
+        elif attack == "pending_overlap":
+            pending: Any = store.pending
+            pending["response"][0] = store.rows["response"][0]
+        else:
+            views["draft" if attack == "missing_draft" else "verdict"].clear()
+    payloads = store._payloads()
+    store._validate()
+    assert store._payloads() == payloads
+    name = _seal_attack(attack=attack, root=tmp_path)
+    old._reseal(name=name, root=tmp_path)
+    before = old._snapshot(tmp_path)
     with pytest.raises(expected_exception=ValueError):
-        store._validate()
+        cp.LPGenerationCheckpoints(
+            material=store.material, population=store.population, root=tmp_path
+        )
+    assert old._snapshot(tmp_path) == before
 
 
 @pytest.mark.parametrize(
@@ -330,7 +415,10 @@ def test_resealed_disk_cannot_replace_last_validated_snapshot(
     (tmp_path / old._RESPONSE).write_bytes(b"".join(old._bytes(row) for row in rows))
     old._reseal(name=old._RESPONSE, root=tmp_path)
     if simultaneous:
-        store.rows["response"][0] = cp._LPCheckpoint.model_validate(rows[0])
+        # Live records cannot be replaced to match the altered disk.
+        views: Any = store.rows
+        with pytest.raises(expected_exception=TypeError):
+            views["response"][0] = cp._LPCheckpoint.model_validate(rows[0])
     before = old._snapshot(tmp_path)
     with pytest.raises(expected_exception=ValueError):
         store.verify_bytes()
@@ -400,18 +488,18 @@ def test_unchanged_response_revalidates_changed_prerequisite(
         Synthetic checkpoint directory.
     """
     store = _store(monkeypatch=monkeypatch, root=tmp_path)
-    proof = store._row_proofs["response", 0]
+    response = store._rows["response"][0]
+    encoding = store._record_encodings["response", 0]
     saved = store.rows[dependency][0]
     saved.payload["unexpected_nested"] = {"wrong": [1]}
     saved.payload_content_hash = cp.content_hash(saved.payload)
+    # The changed prerequisite becomes authority; the response keeps its bytes.
+    store._rows[dependency][0] = saved
+    store._record_bytes(key=(dependency, 0), record=saved)
+    assert store._record_encodings["response", 0] == encoding
     with pytest.raises(expected_exception=(ValueError, QualityError)):
         store._validate_cached_row(
-            index=0,
-            material=proof[0],
-            proofs={},
-            requests={},
-            row=store.rows["response"][0],
-            stage="response",
+            index=0, proofs={}, requests={}, row=response, stage="response"
         )
 
 

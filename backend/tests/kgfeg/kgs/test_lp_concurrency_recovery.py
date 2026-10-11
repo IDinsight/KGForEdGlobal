@@ -14,7 +14,7 @@ from typing import Any, cast
 import pytest
 
 # Package Library
-from kgfeg.kgs import lp_checkpoints, lp_generation
+from kgfeg.kgs import lp_generation
 from tests.kgfeg.kgs import test_lp_concurrency as _concurrent
 from tests.kgfeg.kgs import test_lp_orchestration as _old
 
@@ -44,21 +44,30 @@ def _block_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.parametrize(argnames="after", argvalues=[False, True])
 @pytest.mark.parametrize(
-    argnames="name",
+    argnames=("name", "phase"),
     argvalues=[
-        pytest.param(
-            name,
-            marks=(
-                ()
-                if name in {_old._JOURNAL, _concurrent._PENDING}
-                else pytest.mark.slow
-            ),
-        )
-        for name in _NAMES
+        *(
+            pytest.param(
+                name,
+                phase,
+                marks=(
+                    ()
+                    if name in {_old._JOURNAL, _concurrent._PENDING}
+                    else pytest.mark.slow
+                ),
+            )
+            for name in _NAMES
+            if name not in _old._STAGE_WRITES
+            for phase in ("draft", "draft_promotion", "verdict", "response")
+        ),
+        # Stage files are interrupted at the promotion that appends to them.
+        *(
+            pytest.param(name, phase, marks=pytest.mark.slow)
+            for name, phases in _old._STAGE_WRITES.items()
+            for phase in phases
+            if phase != "initialize"
+        ),
     ],
-)
-@pytest.mark.parametrize(
-    argnames="phase", argvalues=["draft", "draft_promotion", "verdict", "response"]
 )
 def test_interrupted_pending_and_promotion_transactions_reuse_every_durable_stage(
     after: bool, monkeypatch: pytest.MonkeyPatch, name: str, phase: str, tmp_path: Path
@@ -70,7 +79,7 @@ def test_interrupted_pending_and_promotion_transactions_reuse_every_durable_stag
     after
         Interrupt after the write rather than before it.
     monkeypatch
-        Restoring atomic-write fault injector.
+        Restoring write fault injector.
     name
         Actual journal, pending, usage, prefix, failure or receipt boundary.
     phase
@@ -80,10 +89,9 @@ def test_interrupted_pending_and_promotion_transactions_reuse_every_durable_stag
     """
     harness = _concurrent._Scenario(count=2, root=tmp_path)
     _old._install(harness=harness, monkeypatch=monkeypatch)
-    original = lp_checkpoints._atomic_write
     current, fired = "", False
 
-    def _write(*, path: Path, payload: bytes) -> None:
+    def _interrupt(path: Path, payload: bytes, written: bool) -> None:
         """Interrupt one transaction without mocking persistence or recovery.
 
         Parameters
@@ -91,22 +99,19 @@ def test_interrupted_pending_and_promotion_transactions_reuse_every_durable_stag
         path
             Actual target path.
         payload
-            Complete bytes proposed by the sole writer.
+            Complete or appended bytes proposed by the sole writer.
+        written
+            Whether the real write has already happened.
         """
         nonlocal current, fired
-        if path.name == _old._JOURNAL:
+        if path.name == _old._JOURNAL and not written:
             current = _old._transaction_phase(payload)
-        hit = not fired and current == phase and path.name == name
-        if hit and not after:
-            fired = True
-            raise _old._Interruption()
-        original(path=path, payload=payload)
-        if hit and after:
+        if not fired and current == phase and path.name == name and written == after:
             fired = True
             raise _old._Interruption()
 
     with monkeypatch.context() as patch:
-        patch.setattr(name="_atomic_write", target=lp_checkpoints, value=_write)
+        _old._patch_writes(interrupt=_interrupt, patch=patch)
         with pytest.raises(expected_exception=_old._Interruption):
             harness._run()
     assert fired
