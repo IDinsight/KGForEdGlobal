@@ -747,6 +747,26 @@ change and no regeneration. To watch: same-term buildsTowards density (cycle
 risk at finalization; the run check reports cycles) and the cross-Grade pairs
 once they are judged.
 
+Run check at 16:35 (user reported a pass; its output files were not found
+under `logs/kg_construction/dev005/`, so the Developer reran it into the
+scratchpad; the user reruns it for the record): all four pass with 1282
+responses. Reuse: 2085 attempts since the stop, none for a stage done at the
+stop, run 3. Throughput: 234 two-hour windows from the 500th request, lowest
+328.5 requests an hour against a floor of 268.8 (70% of a model-bound 384.0;
+median 37.5 model seconds per request), 313.2 an hour overall since the
+resume, mean 3.52 calls in flight; checkpoint seconds median 0.03 (0.02 in the
+first hour), max 6.11 once at 15:31:38 (one dispatch save, no guard refresh
+or warning logged, neighbours 0.03; an isolated disk stall). `AC-018`: 0
+backward. Cycles: 0 among 210 buildsTowards edges (58 cross-Term, 152 within
+one (Grade, Term)). Since 561: 726 judgments, nearly all same-term (555
+relatesTo, 98 buildsTowards, 71 no_relation); sampled same-term buildsTowards
+remain plausible prerequisites (fine-motor play to copying patterns; forming
+letters to familiar forms of writing; planning with a partner to writing six to
+eight sentences) and sampled no_relation pairs are unrelated. Request order
+ahead: 1000-3999 almost all same-term; cross-Term mostly 4000-7999 and
+10000-11999; cross-Grade 206 in 4000-4999 and 535 from 12000. At about 330
+an hour the run ends around 2026-10-13 04:00 local.
+
 ---
 
 ### DEV-006 — Close-out checks and results review
