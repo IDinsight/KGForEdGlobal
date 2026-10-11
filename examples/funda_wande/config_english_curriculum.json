@@ -472,8 +472,8 @@
 			},
 			"candidate_policy": {
 				"budgets": {
-					"max_candidates_per_sfi": 12,
-					"max_total_candidates": 5000
+					"max_candidates_per_sfi": 30,
+					"max_total_candidates": 14000
 				}
 			},
 			"checker_instructions": "Independently check Skill-pair judgments within the Grade R through Grade 3 order and the Term 1 to Term 4 order within a grade. In this repetitive curriculum, require substantive extension for buildsTowards, meaningful reinforcement without dependency for relatesTo, and no_relation for generic repetition; preserve unresolved-placement warnings and reject claims based only on shared wording, hierarchy, or Learning Components. Within one Grade, buildsTowards may only go from an earlier Term to the same or a later Term. A buildsTowards from a later Term to an earlier Term of the same Grade is invalid; use relatesTo or no_relation instead.",
