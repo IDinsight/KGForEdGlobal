@@ -1268,3 +1268,9 @@ verification (explicit user choice at approval, applied at this safe
 Developer boundary: no recovery active, no Tester assignment open).
 Increment 1 is DEV-007 to DEV-009; DEV-005 and DEV-006 follow it, then full
 verification.
+
+Increment 1 handed to Tester as a checkpoint 2026-10-11 (Tester had not started).
+The user then asked to drop the design's `AC-017` checkpoint-scale 2x
+save-time criterion; routed as `USER_REWORK` to Architect from `TESTING`
+(recovery frame 1, `ResumeAt` `TESTING`). Increment 1 stays the assignment to
+resume: `Current Increment` 1 and its Readiness above are unchanged.
