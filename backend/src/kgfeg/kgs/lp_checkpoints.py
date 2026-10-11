@@ -65,7 +65,11 @@ _USAGE = "lp_generation_usage.json"
 _RECEIPT = "lp_generation_checkpoint_manifest.json"
 _TRANSACTION = "lp_generation_checkpoint_transaction.json"
 _CHECKPOINT_NAMES = {*_FILENAMES.values(), _FAILURES, _PENDING, _USAGE, _RECEIPT}
+_DIGEST_PATTERN = r"^[0-9a-f]{64}$"
 _Record = TypeVar("_Record", bound=BaseSchema)
+
+# Small files are rewritten whole on every save; stage files only grow by appends.
+_SMALL_NAMES = {_FAILURES, _PENDING, _USAGE, _RECEIPT}
 
 
 class _LPAttempt(BaseSchema):
@@ -95,8 +99,35 @@ class _LPCheckpoint(BaseSchema):
     stage: Literal["draft", "verdict", "response"]
 
 
+class _LPCheckpointAppend(BaseSchema):
+    """One stage file's journaled append and its exact previous and next states."""
+
+    appended: str
+    next_digest: str = Field(pattern=_DIGEST_PATTERN)
+    next_length: int = Field(ge=0, strict=True)
+    previous_digest: str | None = Field(default=None, pattern=_DIGEST_PATTERN)
+    previous_length: int | None = Field(default=None, ge=0, strict=True)
+
+
+class _LPCheckpointDeltaTransaction(BaseSchema):
+    """Journaled stage-file appends plus the complete next small files and receipt.
+
+    Each stage file records its previous length and digest and the exact appended
+    bytes; each small file and the receipt record their previous digest and complete
+    next bytes. Previous values are all absent only for an entirely fresh store.
+    """
+
+    appends: dict[str, _LPCheckpointAppend]
+    next_payloads: dict[str, str]
+    previous_byte_hashes: dict[str, str | None]
+
+
 class _LPCheckpointTransaction(BaseSchema):
-    """Complete intended checkpoint state and exact predecessor artifact hashes."""
+    """Complete intended checkpoint state and exact predecessor artifact hashes.
+
+    This full-payload journal is written only by the pre-incremental writer; it is
+    still recovered so an interrupted commit from that writer can resume.
+    """
 
     next_payloads: dict[str, str]
     previous_byte_hashes: dict[str, str | None]
@@ -285,13 +316,16 @@ class LPGenerationCheckpoints:
         self._failures: list[_LPFailure] = []
         self._file_identities: dict[str, tuple[int, int, int, int, int]] = {}
         self._material = copy.deepcopy(material)
+        self._material_bytes = _canonical_bytes(self._material)[:-1]
         self._pending: dict[str, dict[int, _LPCheckpoint]] = {
             stage: {} for stage in _FILENAMES
         }
         self._record_encodings: dict[tuple[str, int], bytes] = {}
         self._request_state_encodings = [b""] * len(population.requests)
         self._row_proofs: dict[tuple[str, int], tuple[bytes, ...]] = {}
+        self._persisted_rows = dict.fromkeys(_FILENAMES, 0)
         self._rows: dict[str, list[_LPCheckpoint]] = {stage: [] for stage in _FILENAMES}
+        self._stage_hashers = {stage: hashlib.sha256() for stage in _FILENAMES}
         self._validated_byte_hashes: tuple[tuple[str, bytes], ...] = ()
         self.execution_check = execution_check
         self.execution_hash = content_hash(self._material)
@@ -393,6 +427,85 @@ class LPGenerationCheckpoints:
             _atomic_write(path=self.root / name, payload=payloads[name])
 
         self._check_checkpoint_files(full=True)
+        self.verify_execution_authority(full=False, request_indices=request_indices)
+        (self.root / _TRANSACTION).unlink()
+        _sync_directory(self.root)
+
+    def _commit_delta(
+        self,
+        *,
+        appends: dict[str, tuple[int | None, bytes]],
+        request_indices: Iterable[int] = (),
+        small: dict[str, bytes],
+    ) -> None:
+        """Apply a journaled delta, check it against the next state, then retire it.
+
+        Stage files are extended in place at their journaled previous length; small
+        files and the receipt are replaced whole and atomically, as before. Only the
+        appended tails are read back and small files are checked by length, so no
+        whole checkpoint file is read and the work follows the change, not the
+        store.
+
+        Parameters
+        ----------
+        appends
+            Previous length (None when absent) and appended bytes per stage file.
+        request_indices
+            Requests published by this commit, re-hashed by the authority guard.
+        small
+            Complete next bytes of each small file and the receipt.
+
+        Raises
+        ------
+        ValueError
+            If a file is not at its journaled previous state before the append, or
+            the applied state differs from the journal's next state.
+        """
+
+        for name, (previous_length, appended) in sorted(appends.items()):
+            path = self.root / name
+
+            if previous_length is None:
+                _atomic_write(path=path, payload=appended)
+            elif appended:
+                _append_bytes(offset=previous_length, path=path, payload=appended)
+
+        for name, payload in sorted(small.items()):
+            _atomic_write(path=self.root / name, payload=payload)
+
+        # Check the applied state against the journal's next state.
+        for name, (previous_length, appended) in appends.items():
+            path = self.root / name
+            identity = file_stat_identity(path)
+            start = previous_length or 0
+
+            with path.open("rb") as stream:
+                stream.seek(start)
+                tail = stream.read()
+
+            if (
+                identity[2] != start + len(appended)
+                or tail != appended
+                or file_stat_identity(path) != identity
+            ):
+                raise ValueError(
+                    f"LP checkpoint append did not reach its journaled state: {name}."
+                )
+
+            self._file_identities[name] = identity
+
+        # Small files were just replaced atomically from the journaled bytes; their
+        # length and new identity are checked without reading them back whole.
+        for name, payload in small.items():
+            identity = file_stat_identity(self.root / name)
+
+            if identity[2] != len(payload):
+                raise ValueError(
+                    f"LP checkpoint file did not reach its journaled state: {name}."
+                )
+
+            self._file_identities[name] = identity
+
         self.verify_execution_authority(full=False, request_indices=request_indices)
         (self.root / _TRANSACTION).unlink()
         _sync_directory(self.root)
@@ -513,8 +626,14 @@ class LPGenerationCheckpoints:
         # Canonical byte equality also rejects duplicate JSON keys, non-finite values,
         # blank lines, missing terminal newlines, and schema-normalized alterations.
         expected_payloads = self._payloads()
+        expected_receipt = self._receipt_bytes(
+            {
+                name: hashlib.sha256(payload).hexdigest()
+                for name, payload in expected_payloads.items()
+            }
+        )
 
-        if payloads[_RECEIPT] != _canonical_bytes(self._receipt(expected_payloads)):
+        if payloads[_RECEIPT] != expected_receipt:
             raise ValueError("LP checkpoint receipt counts or disposition differ.")
 
         for name, expected in expected_payloads.items():
@@ -524,6 +643,13 @@ class LPGenerationCheckpoints:
         self._validated_byte_hashes = tuple(
             (name, hashlib.sha256(payloads[name]).digest()) for name in sorted(payloads)
         )
+
+        # Running digests let later saves hash only the bytes they append.
+        self._stage_hashers = {
+            stage: hashlib.sha256(payloads[filename])
+            for stage, filename in _FILENAMES.items()
+        }
+        self._persisted_rows = {stage: len(rows) for stage, rows in self._rows.items()}
 
     def _parse_artifacts(
         self, *, payloads: dict[str, bytes], receipt: dict[str, Any]
@@ -617,10 +743,10 @@ class LPGenerationCheckpoints:
             self._pending[stage] = {row.request_index: row for row in parsed}
 
     def _payloads(self) -> dict[str, bytes]:
-        """Assemble the canonical artifacts from each record's authority bytes.
+        """Assemble every canonical artifact from each record's authority bytes.
 
-        No record is re-proved here: every record was validated and encoded when the
-        store created or changed it.
+        Used where the whole store is proved (load and recovery). Saves publish only
+        the small files and the stage-file appends.
 
         Returns
         -------
@@ -628,56 +754,22 @@ class LPGenerationCheckpoints:
             Exact artifact payloads covered by the commit receipt.
         """
 
-        encodings = self._record_encodings
-        pending = {
-            stage: b"["
-            + b",".join(encodings[(stage, index)] for index in sorted(rows))
-            + b"]"
-            for stage, rows in self._pending.items()
-        }
-        attempts = (
-            b"["
-            + b",".join(
-                encodings[("attempt", position)]
-                for position in range(len(self._attempts))
-            )
-            + b"]"
-        )
-        usage = {
-            "attempts": attempts,
-            "max_concurrent_requests": _canonical_bytes(self.capacity).rstrip(b"\n"),
-            "available_cost": b"null",
-            "request_states": b"[" + b",".join(self._request_state_encodings) + b"]",
-            "unknown_usage_attempts": str(
-                sum(attempt.usage is None for attempt in self._attempts)
-            ).encode("ascii"),
-        }
-
         return {
-            _PENDING: _encoded_object(pending),
-            _USAGE: _encoded_object(usage),
+            **self._small_payloads(),
             **{
-                filename: b"".join(
-                    encodings[(stage, index)] + b"\n"
-                    for index in range(len(self._rows[stage]))
-                )
+                filename: self._stage_bytes(start=0, stage=stage)
                 for stage, filename in _FILENAMES.items()
             },
-            _FAILURES: b"["
-            + b",".join(
-                encodings[("failure", position)]
-                for position in range(len(self._failures))
-            )
-            + b"]\n",
         }
 
-    def _previous_hashes(self) -> dict[str, str | None]:
+    def _previous_state(self) -> dict[str, tuple[int | None, str | None]]:
         """Identify the committed predecessor before starting another transaction.
 
         Returns
         -------
-        dict[str, str or None]
-            Verified file hashes, or explicit absence for an entirely fresh store.
+        dict[str, tuple[int or None, str or None]]
+            Verified length and hash of every checkpoint file, or explicit absence
+            for an entirely fresh store.
 
         Raises
         ------
@@ -690,18 +782,21 @@ class LPGenerationCheckpoints:
             if any((self.root / name).exists() for name in _CHECKPOINT_NAMES):
                 raise ValueError("LP checkpoint predecessor is incomplete.")
 
-            return dict.fromkeys(_CHECKPOINT_NAMES)
+            return dict.fromkeys(_CHECKPOINT_NAMES, (None, None))
 
         if {name for name, _ in self._validated_byte_hashes} != _CHECKPOINT_NAMES:
             raise ValueError(
                 "LP checkpoint predecessor was not validated by this store."
             )
 
-        # Unchanged stat identities vouch for the recorded digests; any difference
-        # forces a readback against them before they become the journal's predecessor.
+        # Unchanged stat identities vouch for the recorded digests and lengths; any
+        # difference forces a readback before they become the journal's predecessor.
         self._check_checkpoint_files(full=False)
 
-        return {name: digest.hex() for name, digest in self._validated_byte_hashes}
+        return {
+            name: (self._file_identities[name][2], digest.hex())
+            for name, digest in self._validated_byte_hashes
+        }
 
     def _put_attempt(self, *, attempt: _LPAttempt, position: int) -> None:
         """Validate a new or changed attempt and make its bytes its authority.
@@ -737,35 +832,42 @@ class LPGenerationCheckpoints:
         else:
             raise ValueError("LP attempt position or request is invalid.")
 
-    def _receipt(self, payloads: dict[str, bytes]) -> dict[str, Any]:
-        """Compute the complete material receipt and truthful processing status.
+    def _receipt_bytes(self, digests: dict[str, str]) -> bytes:
+        """Encode the complete material receipt and truthful processing status.
+
+        The execution material is encoded once per store, so a save does not
+        re-serialize it.
 
         Parameters
         ----------
-        payloads
-            Actual canonical artifact bytes.
+        digests
+            Full-file SHA-256 of every checkpoint artifact except the receipt.
 
         Returns
         -------
-        dict[str, Any]
-            File hashes, stage counts, failure coverage, and execution material.
+        bytes
+            Canonical receipt, byte-identical to encoding the whole receipt object.
         """
 
-        return {
-            "artifact_byte_hashes": {
-                name: hashlib.sha256(payload).hexdigest()
-                for name, payload in payloads.items()
-            },
-            "execution_content_hash": self.execution_hash,
-            "failed_pair_ids": self._failed_pair_ids(),
-            "material": self._material,
-            "run_number": self.run_number,
-            "stage_counts": {stage: len(rows) for stage, rows in self._rows.items()},
-            "status": self._status(),
-        }
+        return _encoded_object(
+            {
+                "artifact_byte_hashes": _canonical_bytes(digests)[:-1],
+                "execution_content_hash": _canonical_bytes(self.execution_hash)[:-1],
+                "failed_pair_ids": _canonical_bytes(self._failed_pair_ids())[:-1],
+                "material": self._material_bytes,
+                "run_number": _canonical_bytes(self.run_number)[:-1],
+                "stage_counts": _canonical_bytes(
+                    {stage: len(rows) for stage, rows in self._rows.items()}
+                )[:-1],
+                "status": _canonical_bytes(self._status())[:-1],
+            }
+        )
 
     def _recover(self, *, read_only: bool) -> None:
         """Roll forward only a validated transaction with exact old/new file states.
+
+        Both journal forms are recovered: the delta journal written by this store
+        and the full-payload journal of the pre-incremental writer.
 
         Parameters
         ----------
@@ -780,6 +882,11 @@ class LPGenerationCheckpoints:
         """
 
         transaction = _read_transaction(self.root)
+
+        if isinstance(transaction, _LPCheckpointDeltaTransaction):
+            self._recover_delta(read_only=read_only, transaction=transaction)
+            return
+
         names = set(transaction.next_payloads)
         previous = transaction.previous_byte_hashes
 
@@ -811,6 +918,87 @@ class LPGenerationCheckpoints:
             # The one authority check before applying a journal written earlier.
             self.verify_execution_authority(full=False)
             self._commit(payloads)
+
+    def _recover_delta(
+        self, *, read_only: bool, transaction: _LPCheckpointDeltaTransaction
+    ) -> None:
+        """Roll a delta journal forward only from exact previous or next file states.
+
+        Parameters
+        ----------
+        read_only
+            Validate the complete recovery state without writing it.
+        transaction
+            Canonical delta journal.
+
+        Raises
+        ------
+        ValueError
+            If any file is neither exactly at its previous nor its next state
+            (length and digest), or the intended snapshot is invalid.
+        """
+
+        payloads = {
+            name: payload.encode("utf-8")
+            for name, payload in transaction.next_payloads.items()
+        }
+        appends: dict[str, tuple[int | None, bytes]] = {}
+
+        for name, append in transaction.appends.items():
+            path = self.root / name
+            current = path.read_bytes() if path.exists() or path.is_symlink() else None
+            appended = append.appended.encode("utf-8")
+
+            if (
+                current is not None
+                and len(current) == append.next_length
+                and hashlib.sha256(current).hexdigest() == append.next_digest
+            ):
+                payloads[name] = current
+            elif (current is None and append.previous_length is None) or (
+                current is not None
+                and len(current) == append.previous_length
+                and hashlib.sha256(current).hexdigest() == append.previous_digest
+            ):
+                payloads[name] = (current or b"") + appended
+                appends[name] = (append.previous_length, appended)
+
+                if hashlib.sha256(payloads[name]).hexdigest() != append.next_digest:
+                    raise ValueError(
+                        f"LP interrupted checkpoint append is inconsistent: {name}."
+                    )
+            else:
+                raise ValueError(
+                    f"LP interrupted checkpoint has unexplained material: {name}."
+                )
+
+        # Validate the complete intended snapshot before repairing any file.
+        self._load_snapshot(payloads)
+
+        for name in transaction.next_payloads:
+            path = self.root / name
+            actual = (
+                hashlib.sha256(path.read_bytes()).hexdigest()
+                if path.exists() or path.is_symlink()
+                else None
+            )
+            following = hashlib.sha256(payloads[name]).hexdigest()
+
+            if actual not in (transaction.previous_byte_hashes[name], following):
+                raise ValueError(
+                    f"LP interrupted checkpoint has unexplained material: {name}."
+                )
+
+        if not read_only:
+            # The one authority check before applying a journal written earlier.
+            self.verify_execution_authority(full=False)
+            self._commit_delta(
+                appends=appends,
+                small={name: payloads[name] for name in transaction.next_payloads},
+            )
+
+            # Record every file's identity, including those already at next state.
+            self._check_checkpoint_files(full=True)
 
     def _record_bytes(self, *, key: tuple[str, int], record: BaseSchema) -> bytes:
         """Validate one record and make its canonical bytes its publication authority.
@@ -935,10 +1123,11 @@ class LPGenerationCheckpoints:
         return self._pending[stage].get(request_index)
 
     def _save(self, *, request_indices: Iterable[int] = ()) -> None:
-        """Validate and durably journal the changed state before replacing any files.
+        """Validate and durably journal the changed state before changing any file.
 
         A save validates only the requests it changed (plus pending completions,
-        which every save republishes) and re-proves only their records. One
+        which every save republishes) and re-proves only their records. It journals
+        the stage-file appends and the complete small files, then applies them. One
         authority check runs before the journal is written and one before it is
         retired. The save whose receipt status first becomes `completed` runs the
         complete record validation and the full input and checkpoint proofs first.
@@ -962,8 +1151,9 @@ class LPGenerationCheckpoints:
                 *(index for rows in self._pending.values() for index in rows),
             }
         )
+        status = self._status()
 
-        if self._status() == "completed" and self._committed_status != "completed":
+        if status == "completed" and self._committed_status != "completed":
             # Completion boundary: complete proofs before completion is first recorded.
             self._validate()
             self.verify_execution_authority(full=True)
@@ -974,29 +1164,63 @@ class LPGenerationCheckpoints:
             self._validate(indices=indices)
 
         self._refresh_request_states(indices)
-        payloads = self._payloads()
-        receipt = self._receipt(payloads)
-        payloads[_RECEIPT] = _canonical_bytes(receipt)
 
         if (self.root / _TRANSACTION).exists():
             raise ValueError("LP checkpoint has an unfinished transaction; reload it.")
 
-        transaction = _LPCheckpointTransaction(
-            next_payloads={
-                name: payload.decode("utf-8") for name, payload in payloads.items()
+        previous = self._previous_state()
+        small = self._small_payloads()
+        appends = {}
+        hashers = {}
+        digests = {}
+
+        for stage, filename in _FILENAMES.items():
+            appends[filename] = self._stage_bytes(
+                start=self._persisted_rows[stage], stage=stage
+            )
+            hashers[stage] = self._stage_hashers[stage].copy()
+            hashers[stage].update(appends[filename])
+            digests[filename] = hashers[stage].hexdigest()
+
+        for name, payload in small.items():
+            digests[name] = hashlib.sha256(payload).hexdigest()
+
+        small[_RECEIPT] = self._receipt_bytes(digests)
+        digests[_RECEIPT] = hashlib.sha256(small[_RECEIPT]).hexdigest()
+        transaction = {
+            "appends": {
+                name: {
+                    "appended": appended.decode("utf-8"),
+                    "next_digest": digests[name],
+                    "next_length": (previous[name][0] or 0) + len(appended),
+                    "previous_digest": previous[name][1],
+                    "previous_length": previous[name][0],
+                }
+                for name, appended in appends.items()
             },
-            previous_byte_hashes=self._previous_hashes(),
-        )
+            "next_payloads": {
+                name: payload.decode("utf-8") for name, payload in small.items()
+            },
+            "previous_byte_hashes": {name: previous[name][1] for name in small},
+        }
         self.verify_execution_authority(full=False, request_indices=indices)
         self._validated_byte_hashes = tuple(
-            (name, hashlib.sha256(payloads[name]).digest()) for name in sorted(payloads)
+            (name, bytes.fromhex(digests[name])) for name in sorted(digests)
         )
         _atomic_write(
-            path=self.root / _TRANSACTION,
-            payload=_canonical_bytes(transaction.model_dump(mode="json")),
+            path=self.root / _TRANSACTION, payload=_canonical_bytes(transaction)
         )
-        self._commit(payloads, request_indices=indices)
-        self._committed_status = receipt["status"]
+        self._commit_delta(
+            appends={
+                name: (previous[name][0], appended)
+                for name, appended in appends.items()
+            },
+            request_indices=indices,
+            small=small,
+        )
+        self._stage_hashers = hashers
+        self._persisted_rows = {stage: len(rows) for stage, rows in self._rows.items()}
+        self._committed_status = status
 
     def _set_failures(self, failures: list[_LPFailure]) -> None:
         """Order, validate and encode a changed failure history.
@@ -1029,6 +1253,73 @@ class LPGenerationCheckpoints:
             self._record_bytes(key=("failure", position), record=failure)
 
         self._failures = ordered
+
+    def _small_payloads(self) -> dict[str, bytes]:
+        """Assemble the small files every save rewrites whole.
+
+        Returns
+        -------
+        dict[str, bytes]
+            Pending completions, usage and failure history, joined from authority
+            bytes without re-proving any record.
+        """
+
+        encodings = self._record_encodings
+        pending = {
+            stage: b"["
+            + b",".join(encodings[(stage, index)] for index in sorted(rows))
+            + b"]"
+            for stage, rows in self._pending.items()
+        }
+        attempts = (
+            b"["
+            + b",".join(
+                encodings[("attempt", position)]
+                for position in range(len(self._attempts))
+            )
+            + b"]"
+        )
+        usage = {
+            "attempts": attempts,
+            "max_concurrent_requests": _canonical_bytes(self.capacity).rstrip(b"\n"),
+            "available_cost": b"null",
+            "request_states": b"[" + b",".join(self._request_state_encodings) + b"]",
+            "unknown_usage_attempts": str(
+                sum(attempt.usage is None for attempt in self._attempts)
+            ).encode("ascii"),
+        }
+
+        return {
+            _FAILURES: b"["
+            + b",".join(
+                encodings[("failure", position)]
+                for position in range(len(self._failures))
+            )
+            + b"]\n",
+            _PENDING: _encoded_object(pending),
+            _USAGE: _encoded_object(usage),
+        }
+
+    def _stage_bytes(self, *, start: int, stage: str) -> bytes:
+        """Join one stage file's rows from a given position as JSON lines.
+
+        Parameters
+        ----------
+        start
+            First row to include; the persisted row count yields only the append.
+        stage
+            Draft, verdict or response.
+
+        Returns
+        -------
+        bytes
+            Canonical rows, each with its terminal newline.
+        """
+
+        return b"".join(
+            self._record_encodings[(stage, index)] + b"\n"
+            for index in range(start, len(self._rows[stage]))
+        )
 
     def _status(self) -> str:
         """Return the truthful processing status recorded in the receipt.
@@ -2090,6 +2381,35 @@ class LPGenerationCheckpoints:
             self.ownership_check()
 
 
+def _append_bytes(*, offset: int, path: Path, payload: bytes) -> None:
+    """Extend one stage file in place with flushed bytes at its journaled length.
+
+    Parameters
+    ----------
+    offset
+        Journaled previous length; the file must still have exactly this size.
+    path
+        Existing stage file within the locked generation directory.
+    payload
+        Complete canonical rows to append.
+
+    Raises
+    ------
+    ValueError
+        If the file's size differs from its journaled previous length.
+    """
+
+    with path.open("ab") as stream:
+        if os.fstat(stream.fileno()).st_size != offset:
+            raise ValueError(
+                f"LP checkpoint file changed before its journaled append: {path.name}."
+            )
+
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
 def _atomic_write(*, path: Path, payload: bytes) -> None:
     """Replace one artifact atomically with flushed complete bytes.
 
@@ -2245,8 +2565,14 @@ def _read_receipt(payload: bytes) -> dict[str, Any]:
     return receipt
 
 
-def _read_transaction(root: Path) -> _LPCheckpointTransaction:
+def _read_transaction(
+    root: Path,
+) -> _LPCheckpointDeltaTransaction | _LPCheckpointTransaction:
     """Read only complete native initialization or update transactions.
+
+    Two journal forms are accepted: the delta journal (stage-file appends plus
+    complete small files) and the full-payload journal of the pre-incremental
+    writer, so an interrupted commit from either writer can be recovered.
 
     Parameters
     ----------
@@ -2255,7 +2581,7 @@ def _read_transaction(root: Path) -> _LPCheckpointTransaction:
 
     Returns
     -------
-    _LPCheckpointTransaction
+    _LPCheckpointDeltaTransaction or _LPCheckpointTransaction
         Canonical complete transaction pending semantic and old/new byte validation.
 
     Raises
@@ -2266,20 +2592,45 @@ def _read_transaction(root: Path) -> _LPCheckpointTransaction:
     """
 
     raw = (root / _TRANSACTION).read_bytes()
-    transaction = _LPCheckpointTransaction.model_validate_json(raw)
-    previous = transaction.previous_byte_hashes
+    parsed = json.loads(raw)
+    transaction: _LPCheckpointDeltaTransaction | _LPCheckpointTransaction
+
+    if isinstance(parsed, dict) and "appends" in parsed:
+        transaction = _LPCheckpointDeltaTransaction.model_validate(parsed)
+        stage_names = _CHECKPOINT_NAMES - _SMALL_NAMES
+        previous = [
+            *transaction.previous_byte_hashes.values(),
+            *(append.previous_digest for append in transaction.appends.values()),
+        ]
+        valid = (
+            set(transaction.appends) == stage_names
+            and set(transaction.next_payloads) == _SMALL_NAMES
+            and set(transaction.previous_byte_hashes) == _SMALL_NAMES
+            and all(
+                (append.previous_length is None) == (append.previous_digest is None)
+                and append.next_length
+                == (append.previous_length or 0) + len(append.appended.encode("utf-8"))
+                for append in transaction.appends.values()
+            )
+        )
+    else:
+        transaction = _LPCheckpointTransaction.model_validate(parsed)
+        previous = list(transaction.previous_byte_hashes.values())
+        valid = (
+            set(transaction.next_payloads) == _CHECKPOINT_NAMES
+            and set(transaction.previous_byte_hashes) == _CHECKPOINT_NAMES
+        )
 
     if (
-        raw != _canonical_bytes(transaction.model_dump(mode="json"))
-        or set(transaction.next_payloads) != _CHECKPOINT_NAMES
-        or set(previous) != _CHECKPOINT_NAMES
-        or (
-            any(value is None for value in previous.values())
-            and not all(value is None for value in previous.values())
+        not valid
+        or raw != _canonical_bytes(transaction.model_dump(mode="json"))
+        or (  # Only an entirely fresh store lacks every predecessor
+            any(value is None for value in previous)
+            and not all(value is None for value in previous)
         )
         or any(
             value is not None and re.fullmatch(r"[0-9a-f]{64}", value) is None
-            for value in previous.values()
+            for value in previous
         )
     ):
         raise ValueError("LP checkpoint transaction is incomplete or noncanonical.")

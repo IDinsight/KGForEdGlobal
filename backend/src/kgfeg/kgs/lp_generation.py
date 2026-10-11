@@ -14,6 +14,7 @@ import fcntl
 import hashlib
 import os
 
+from collections.abc import Iterable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from functools import partial
@@ -279,6 +280,7 @@ def _drain_lp_outcomes(
             try:
                 _retain_lp_outcome(
                     attempt_index=attempt_index,
+                    in_flight=[index for index, _ in active.values()],
                     kg_config=kg_config,
                     outcome=outcome,
                     population=population,
@@ -464,6 +466,7 @@ def _finish_lp_requests(  # pylint: disable=too-complex
                         index, attempt_index = active.pop(future)
                         _retain_lp_outcome(
                             attempt_index=attempt_index,
+                            in_flight=[other for other, _ in active.values()],
                             kg_config=kg_config,
                             outcome=outcome,
                             population=population,
@@ -664,6 +667,7 @@ def _reconcile_lp_request(
 def _retain_lp_outcome(
     *,
     attempt_index: int,
+    in_flight: Iterable[int] = (),
     kg_config: CreateKGConfig,
     outcome: _LPAttemptOutcome,
     population: LPRequestPopulation,
@@ -676,6 +680,9 @@ def _retain_lp_outcome(
     ----------
     attempt_index
         Durable dispatch identity within the usage journal.
+    in_flight
+        Other requests still in the bounded window. Their in-memory records are
+        re-hashed too, so a change to any admitted request blocks publication.
     kg_config
         Frozen effective policy.
     outcome
@@ -698,7 +705,7 @@ def _retain_lp_outcome(
         full=False,
         kg_config=kg_config,
         population=population,
-        request_indices=(attempt.request_index,),
+        request_indices=tuple(sorted({attempt.request_index, *in_flight})),
         store=store,
     )
     bucket = (
