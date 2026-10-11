@@ -680,6 +680,73 @@ Handed over: commit, stop run 2 (Ctrl-C), run the resume preflight on the real
 directory, and only when it passes resume LP with no stops, teed to
 `lp_run_3.log`. The throughput and reuse script is written against that log.
 
+LP resume (user-run 2026-10-11, local times): run 2 stopped with Ctrl-C; the
+resume preflight passed at 13:09 (`lp_resume_preflight_summary.txt`): LP lock
+free, config committed, `validate_lp_checkpoint_format` on the fixed code
+accepted the directory in 35 s with a pre-change full-payload journal left by
+the stop (Ctrl-C interrupted a commit), population and execution material
+unchanged, S_AS identical, no file changed. Stop state: 240 responses, 244
+drafts, 240 verdicts, run number 2. LP run 3 started 13:10 on `9697ac4` (clean
+tree, `lp_run_3.log`): AS and LC reused as before; LP resumed at 13:15 after
+about 3.5 minutes of startup (request rebuild, full verification at
+construction, roll-forward of the stop journal) with receipt run number 3; its
+first attempts were the verdicts of requests 241-244 (drafts already done),
+then new drafts from 245.
+
+Run check `logs/kg_construction/dev005/lp_run_check.py` (reads the run log,
+`lp_stop_state.json` and `kgs/` read-only, ignoring a torn last line of a live
+stage file; writes into `--out-dir`): `AC-017` reuse (no attempt after the
+stop's run for a request stage that had a row at the stop; the stop's responses
+kept; receipt run number moved on); `AC-017` throughput (2-hour windows from
+the 500th completed request against 70% of concurrency x 3600 / median
+per-request model seconds; `PENDING` until the log holds one full window);
+`AC-018` Term order with Grade rank from `ordered_values` and Term rank from
+each Skill's Term ancestor in the hasChild tree (cross-checked against identity
+scope); a cycle early warning over the buildsTowards edges so far; decision mix
+and checker changes for information. Developer trial at 14:25 (561
+responses): reuse PASS (645 attempts since the stop, none for a stage done at
+the stop; 240 stop responses kept; run 3); throughput PENDING at 277.5
+requests an hour since the resume against a model-bound 377.1 (median 38.2
+model seconds per request; floor 263.9), checkpoint seconds median 0.02, max
+0.06 (run 2: about 25), mean 3.26 calls in flight; `AC-018` PASS (0 backward,
+0 ancestor and scope mismatches); 0 cycles among 112 buildsTowards edges.
+
+Throughput note: the gap to the model-bound rate is not checkpoint time. The
+dispatcher admits a new request only while in-flight attempts plus
+out-of-order completions stay within capacity 4, so an earlier request still
+in flight holds a slot while later ones finish (log 13:16:07-13:16:46),
+about 3.3 calls in flight on average; the bound also uses the median model
+time (38 s) where the mean is higher. At 277.5 an hour the remaining 12,330
+requests take about 44 hours. The margin over the 70% floor is about 4 points.
+
+Interim LP review (Developer, read-only, scratchpad `lp_review3.py`, 529 to
+561 responses, 2026-10-11 14:20): every pair judged so far is same-Grade; the
+request order puts the 788 cross-Grade pairs from index 4061, most after
+12,000. Mix: relatesTo 75%, buildsTowards 20%, no_relation 5%, no
+needs_review. buildsTowards: 58 from an earlier to a later Term (median
+confidence 0.72) and 54 within one (Grade, Term) (0.62); none backward, and
+no draft proposed a backward edge. Cross-Term edges follow CAPS's printed
+term expansions: Grade R Handwriting 'Copies patterns onto pegboards' (Term 1)
+to '... and copies patterns, words and letters onto paper' (Term 2); Grade R
+Emergent Writing 'with help adds a word or phrase' (Term 3) to '... a word,
+phrase or sentence' (Term 4); identical phonics bullets where the term's
+printed phonics content grows, for example Grade 1 Term 2 'Teach the remainder
+of the single letters' to Term 3 'introduce common consonant blends and
+consonant digraphs' (both found verbatim in the DocumentIR). Same-term edges
+are inferred prerequisites (holding a crayon and pencil to written recording;
+word spacing to writing sentences), mostly plausible, a few loose ('Uses the
+writing process' to 'Writes and illustrates sentences (4 - 6 sentences)').
+The checker overturned 57 draft buildsTowards (repeated wording plus term
+placement, or parallel same-cell bullets) and moved 2 relatesTo to
+no_relation. Verbatim CAPS repeats across Terms (148 pairs): 131 relatesTo
+(reinforcement), 15 buildsTowards (the term's phonics content grows), 2
+no_relation. Same-cell siblings in different sub-strands are mostly relatesTo,
+some thinly linked ('Acts out a story, song or rhyme' and ''Reads' books
+independently for pleasure'). No `AC-018` or `AC-032` defect: no instruction
+change and no regeneration. To watch: same-term buildsTowards density (cycle
+risk at finalization; the run check reports cycles) and the cross-Grade pairs
+once they are judged.
+
 ---
 
 ### DEV-006 — Close-out checks and results review
