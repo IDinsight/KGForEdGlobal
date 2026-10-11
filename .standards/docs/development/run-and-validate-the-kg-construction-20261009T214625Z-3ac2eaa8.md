@@ -535,6 +535,33 @@ signals as before; LC `Decomposed LC-source SFIs ... resumed=924` and
 `LPFinalizationCycleError`, is kept as is and reported. LP check scripts are
 written against the actual outputs after the run.
 
+LP run 1 (user-run 2026-10-11 01:26 UTC on `a70996b`, clean tree,
+`lp_run_1.log`): AS and LC reused (LC `resumed=924`, dedup `resumed=195`,
+AS+LC bundle reused on matching fingerprints), then LP request building raised
+`ValueError: LP SFI cdb52a2a-49ba-50ff-8857-d12b94b8f0b3 audit context exceeds
+max_source_evidence_characters_per_sfi; increase the evidence bound.`
+(`kgs/lp_requests.py:483-487`). No `lp_*` file, `as_lc_lp_*` file or LP lock
+was written, so no LP material exists to move aside.
+
+Defect D-LP-1 (design, found in LP run 1): `_context_sfi` requires each LP
+endpoint's and ancestor's complete audit context (metadata and provenance
+`audit*`/`merge*` fields, `normalized_statement_code`,
+`statement_value_canonicalization`) to fit in
+`max_source_evidence_characters_per_sfi` (2000, unchanged by the design). An
+offline `build_lp_selection` measurement (scratchpad `lp_audit_sizes.py`)
+finds 81 Skills (max 2395) and 6 Sub-strands (max 2155) over 2000; Grades
+1515-1627, Terms 1361-1837, Skill Areas 741-783. The text is mostly the dedup
+`merge_reason`, stored in both metadata and provenance; no item carries audit
+flags or notes. The failing `cdb52a2a` is the Grade R Sub-strand 'Uses visual
+and pictorial cues to make meaning' (2127), an ancestor of Skill endpoints.
+The original 12 / 5000 budgets would have failed too: every Skill is an
+endpoint at 12 per Skill. Offline `build_lp_generation_requests` (scratchpad
+`lp_requests_try.py`, no LLM, no writes): bound 2000 reproduces the error;
+2400 and 3000 build all 12892 requests with no other bound failure (payload
+median 43144 / 43475 characters, max 58735 / 61183, total 563.9M / 568.5M).
+The design keeps `evidence_limits` fixed, so this routes to Architect as an
+`ARCHITECTURE` failure.
+
 ---
 
 ### DEV-006 — Close-out checks and results review
@@ -628,3 +655,9 @@ the first LP run, recorded in `lp_candidate_summary.json`); DEV-006 checks
 the committed budgets. Traceability and an in-step config setting under
 unchanged approved intent; no reapproval required. Next: DEV-005 (user
 decides `max_concurrent_requests` before LP starts, per the design).
+
+### Suspended Assignment 2
+
+`Recovery Frame`: `1` `Recovery Reason`: `LP request build fails: the 2000-character LP evidence bound (kgs.lp.evidence_limits.max_source_evidence_characters_per_sfi) is below the CAPS SFI audit context of 81 Skills and 6 Sub-strands (max 2395 characters).` `Purpose`: `DEVELOPMENT`
+`Target`: `NONE` `Assessed Inputs`: `DEV-001 to DEV-004 DONE; CAPS config at a70996b (LP budgets 30 / 14000, concurrency 4, evidence bound 2000); AS equal to S_AS; LC run 2; LP run 1 failed before writing LP artifacts`
+`Next Action`: `Reconcile DEV-005 with the corrected design (evidence bound and any related config), confirm the full LP request population builds offline, then hand over LP run 2 with no stops.`
