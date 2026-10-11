@@ -550,8 +550,8 @@ for paths and curriculum terms; `make test`, `make lint`.
 ## Plan Notes
 
 - The user runs every command (user decision, 2026-10-09): `create_kgs`
-  invocations (from `backend/`,
-  `.venv/bin/python src/kgfeg/entries/create_kgs.py ../examples/funda_wande/config_english_curriculum.json`),
+  invocations (from the repo root,
+  `backend/.venv/bin/python backend/src/kgfeg/entries/create_kgs.py examples/funda_wande/config_english_curriculum.json`),
   Stop A / Stop B edits and their removal, move-asides, snapshots, check
   scripts, `make test` and `make lint`. Developer edits the CAPS config,
   writes the scripts, hands over exact instructions, then pauses; the user
@@ -570,5 +570,24 @@ for paths and curriculum terms; `make test`, `make lint`.
   is a material plan revision (new `DEV-NNN`, reapproval) within the
   Architecture's code-fix boundary; its formal tests (`AC-022`) are
   Tester-owned. Anything beyond that boundary routes to Architect.
+- LP candidate budget analysis (user question, 2026-10-11; offline
+  `build_lp_candidates` on the LC run 2 AS+LC bundle, no LLM calls, scratchpad
+  scripts `lp_pool.py`, `lp_pool_dump.py`): uncapped (923 per Skill, 426426
+  total) keeps 385629 of the 426426 Skill pairs (every pair with any evidence;
+  about 771k LLM calls at 2 per pair). Recall proxy: 890 likely progression
+  pairs (same sub-strand, 1-4 terms apart, at least 50% word overlap; or
+  sharing an LC). Per-Skill budget k with total at least 924 x k / 2: k 12
+  (total 5000, current) 5000-5058 pairs, 60% of the proxy, 79% of the 533
+  shared-LC pairs; k 20 (9300) 8559, 73%, 89%; k 30 (14000) 12892, 82%, 95%;
+  k 50 (23100) 21523, 87%, 100%. The structurally plausible share of
+  candidates falls from 58% (k 12) to 38% (k 30). Raising the budgets changes
+  the scope assumption and design choice of 12 per Skill / 5000 total, so it
+  routes to Architect as user rework; config-only (`kgs.lp.candidate_policy.budgets`).
 - Test commands run from `backend/` with
   `CHAT_ENV=testing LEARNING_COMMONS_EXPORT_SCHEMA_VERSION=2026-07-09 OPENAI_API_KEY=sk-fake PATHS_PROJECT_DIR=<repo root>`.
+
+### Suspended Assignment 1
+
+`Recovery Frame`: `1` `Recovery Reason`: `User rework: raise the LP candidate budgets to 30 per Skill and 14,000 total (kgs.lp.candidate_policy.budgets).` `Purpose`: `DEVELOPMENT`
+`Target`: `NONE` `Assessed Inputs`: `DEV-001 to DEV-004 DONE; CAPS config at d249c7e (LP budgets 12 per Skill, 5000 total); AS equal to S_AS; LC run 2 outputs checked 2026-10-11 00:16 UTC; local uncommitted Stop B in create_kgs.py`
+`Next Action`: `Reconcile DEV-005 with the corrected scope and design (set kgs.lp.candidate_policy.budgets as decided there), then hand over the no-stop LP run with Stop B removed.`
