@@ -222,7 +222,9 @@ by the Skill's own text.
 ### 5. Learning Progressions
 
 **Intent:** Relate CAPS Skills across the Grade R to Grade 3 sequence, with
-Term 1 to Term 4 as the order within a grade.
+Term 1 to Term 4 as the order within a grade. LP judges more candidate pairs
+than the earlier 12 per Skill / 5000 total, for higher recall of progression
+pairs (user rework, 2026-10-11).
 
 **Done when:**
 
@@ -235,6 +237,10 @@ Term 1 to Term 4 as the order within a grade.
   Skill supports success in the target Skill, and relatesTo edges only where
   two Skills share a meaningful conceptual or skill link without sequence or
   dependency, as Learning Commons defines these relationships.
+- `AC-033`: The CAPS config sets the LP candidate budgets
+  (`kgs.lp.candidate_policy.budgets`) to 30 candidate pairs per Skill and
+  14,000 in total, and the final LP run's candidate summary records those
+  budgets (user rework, 2026-10-11).
 
 **Depends on:** Work item 4.
 
@@ -310,8 +316,11 @@ there.
   Architect starts: the lead-in bullet rule (`AC-026`) and the Grades 1-3
   assessment labels, in `sfi_extraction_instructions` and
   `sfi_extraction_validation_instructions` (2026-10-09).
-- Candidate pairs dropped by the LP budgets (12 per Skill, 5000 total) are a
-  design choice, not a defect by themselves; `AC-019` reports them.
+- Candidate pairs dropped by the LP budgets (30 per Skill, 14,000 total) are a
+  design choice, not a defect by themselves; `AC-019` reports them. An offline
+  count on the current AS and LC results gives about 12,892 candidate pairs
+  (about 25,800 LLM calls), against 5,000 at the earlier budgets; the larger
+  run falls under the no-cost-limit constraint.
 - Conditions that judge LLM output (the AS structure and content, LC content
   and LP relationships) are not waived when a run misses them; the miss is
   routed to its owner (config wording or pipeline code).

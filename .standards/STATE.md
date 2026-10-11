@@ -1,6 +1,6 @@
 # S.T.A.N.D.A.R.D.S. Workflow State
 
-`WorkflowState`: `SCOPING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
+`WorkflowState`: `ARCHITECTING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
 `PendingCycleRequest`: `UNSET` `PendingCycleBlockedOn`: `NONE`
 
 ## Active Work
@@ -25,8 +25,8 @@ Preserve existing entries; see PROTOCOL.md, Baseline Reconciliation Format.
 
 ## Handoff
 
-`Kind`: `USER_REWORK` `From`: `DEVELOPING` `FailureType`: `SCOPING` `Reason`:
-`User raises the LP candidate budgets to 30 per Skill and 14,000 total.`
+`Kind`: `FORWARD` `From`: `SCOPING` `FailureType`: `NONE` `Reason`:
+`Scope replanned: AC-033 sets the LP candidate budgets to 30 per Skill and 14,000 total; Architect reruns before Developer resumes.`
 
 ## Recovery
 
@@ -36,7 +36,7 @@ Preserve existing entries; see PROTOCOL.md, Baseline Reconciliation Format.
 
 `From`: `DEVELOPING` `Owner`: `SCOPING` `FailureType`: `SCOPING`
 `Reason`: `User rework: raise the LP candidate budgets to 30 per Skill and 14,000 total (kgs.lp.candidate_policy.budgets).`
-`ResumeAt`: `DEVELOPING` `RerunThrough`: `NONE`
+`ResumeAt`: `DEVELOPING` `RerunThrough`: `ARCHITECTING`
 
 ## Outstanding Obligations
 
