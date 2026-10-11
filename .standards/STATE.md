@@ -12,7 +12,8 @@
 `.standards/docs/scope/run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8.md` `Architecture`:
 `.standards/docs/specs/run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8.md` `Development`:
 `.standards/docs/development/run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8.md`
-`PromotionReason`: `NONE` `AuditTarget`: `NONE` `BlockedOn`: `NONE`
+`PromotionReason`: `NONE` `AuditTarget`: `NONE` `BlockedOn`:
+`DEV-005: user commits the LP evidence bound, runs the LP preflight, then LP run 2 (lp_run_2.log) and reports back.`
 `PendingVerificationCadence`: `NONE`
 
 `BaselineReconciliation`: `NONE`

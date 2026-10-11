@@ -487,7 +487,8 @@ and 2000 characters per Skill; `AC-019` reports the dropped pairs.
 **Goal**
 
 Set the LP candidate budgets to 30 per Skill and 14,000 in total (`AC-033`)
-before the first LP run, then run `create_kgs` with no stop and an unmodified
+and the LP evidence bound to 3000 (`AC-017`) before the next LP run, pass the
+offline LP request-build preflight, then run `create_kgs` with no stop and an unmodified
 `create_kgs.py`, pass the LP checks, and fix any Term-order or relationship
 defect through the CAPS `kgs.lp` instructions plus LP regeneration.
 
@@ -511,7 +512,9 @@ successful invocation ran with no stop and `git diff` shows no change to
 
 **Self-Check**
 
-Config load with the new budgets; LP Term-order script (ranks from
+Config load with the new budgets and evidence bound; LP preflight
+(`logs/kg_construction/dev005/lp_preflight.py`: selection, candidates and the
+full request population built offline with no bound error); LP Term-order script (ranks from
 `ordered_values` and each Skill's Term ancestor); S_AS comparison; sampled LP
 review recorded here; `git diff --stat -- backend`.
 
@@ -561,6 +564,20 @@ endpoint at 12 per Skill. Offline `build_lp_generation_requests` (scratchpad
 median 43144 / 43475 characters, max 58735 / 61183, total 563.9M / 568.5M).
 The design keeps `evidence_limits` fixed, so this routes to Architect as an
 `ARCHITECTURE` failure.
+
+D-LP-1 fix (design `ec6dfe6`): `kgs.lp.evidence_limits.max_source_evidence_characters_per_sfi`
+set to 3000 in the CAPS config (JSON integer; the only change versus
+`ec6dfe6`; the other `evidence_limits` fields unchanged; the config loads).
+LP preflight `logs/kg_construction/dev005/lp_preflight.py` (committed config
+with the designed LP values; S_AS identical and no LP artifacts; offline
+`build_lp_selection`, `build_lp_candidates` and `build_lp_generation_requests`
+with no bound error and one request per retained pair; writes only into
+`--out-dir`). Developer trial in the scratchpad before the commit: all passes
+except the expected `config_not_committed`; 1144 selection SFIs, audit
+context max 2395 (0 over 3000), candidate bound 13860, 12892 candidates and
+12892 requests (median payload 43475, max 61183 characters), request build
+74 s. Handed over 2026-10-11: commit, run the preflight, and only when it
+passes start LP run 2 (`lp_run_2.log`) as described for LP run 1.
 
 ---
 
@@ -661,3 +678,14 @@ decides `max_concurrent_requests` before LP starts, per the design).
 `Recovery Frame`: `1` `Recovery Reason`: `LP request build fails: the 2000-character LP evidence bound (kgs.lp.evidence_limits.max_source_evidence_characters_per_sfi) is below the CAPS SFI audit context of 81 Skills and 6 Sub-strands (max 2395 characters).` `Purpose`: `DEVELOPMENT`
 `Target`: `NONE` `Assessed Inputs`: `DEV-001 to DEV-004 DONE; CAPS config at a70996b (LP budgets 30 / 14000, concurrency 4, evidence bound 2000); AS equal to S_AS; LC run 2; LP run 1 failed before writing LP artifacts`
 `Next Action`: `Reconcile DEV-005 with the corrected design (evidence bound and any related config), confirm the full LP request population builds offline, then hand over LP run 2 with no stops.`
+
+### Recovery Reconciliation 2
+
+Frame 1 (D-LP-1, LP evidence bound) closed 2026-10-11 (design `ec6dfe6`:
+`kgs.lp.evidence_limits.max_source_evidence_characters_per_sfi` 3000 and an
+offline LP request-build preflight before any paid LP call). Restored
+Suspended Assignment 2. DEV-001 to DEV-004 unaffected (no LP artifacts exist;
+AS equal to S_AS; LC run 2 stands). DEV-005 gains the 3000 bound and the
+preflight as in-step config and self-check work under unchanged approved
+intent; no reapproval required. Next: set the bound, write and hand over the
+preflight, then LP run 2.
