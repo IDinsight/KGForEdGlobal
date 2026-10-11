@@ -8,7 +8,7 @@ Cycle: run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8
 `Cycle`: `run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8` `Mode`: `STEPWISE`
 `User Style`: `tony` `User Style Locked`: `true`
 `Status`: `IN_PROGRESS` `Verification Cadence`:
-`AFTER_IMPLEMENTATION` `Current Increment`: `NONE`
+`INCREMENTAL` `Current Increment`: `1`
 
 ## Implementation Contract
 
@@ -481,7 +481,7 @@ and 2000 characters per Skill; `AC-019` reports the dropped pairs.
 
 ### DEV-005 — LP run and no-stop final invocation
 
-`Status`: `IN_PROGRESS` `Depends On`: `DEV-004`
+`Status`: `IN_PROGRESS` `Depends On`: `DEV-004, DEV-009`
 `Acceptance`: `AC-012, AC-013, AC-017, AC-018, AC-032, AC-033`
 
 **Goal**
@@ -490,7 +490,12 @@ Set the LP candidate budgets to 30 per Skill and 14,000 in total (`AC-033`)
 and the LP evidence bound to 3000 (`AC-017`) before the next LP run, pass the
 offline LP request-build preflight, then run `create_kgs` with no stop and an unmodified
 `create_kgs.py`, pass the LP checks, and fix any Term-order or relationship
-defect through the CAPS `kgs.lp` instructions plus LP regeneration.
+defect through the CAPS `kgs.lp` instructions plus LP regeneration. LP
+continues past run 2 only with the LP checkpoint fix (DEV-007 to DEV-009)
+committed and its self-checks passed: the user stops run 2, a read-only load of
+run 2's checkpoint directory with the new code
+(`validate_lp_checkpoint_format`) passes, and LP resumes from run 2's
+checkpoints with the execution material unchanged (concurrency stays 4).
 
 **Affected Area**
 
@@ -508,15 +513,23 @@ and relatesTo edges checked against the Learning Commons meanings; the last
 successful invocation ran with no stop and `git diff` shows no change to
 `create_kgs.py`; `lp_candidate_summary.json` records `max_candidates_per_sfi`
 30, `max_total_candidates` 14000 and `candidate_pair_bound` 13860, with
-`total_candidate_pairs` within that bound.
+`total_candidate_pairs` within that bound. After the checkpoint fix, run 2's
+completed requests are reused with no repeated model call for any request that
+already has a response; per-request checkpoint time in the run log shows no
+upward trend with the completed count; once 500 requests are complete,
+throughput over any 2-hour window is at least 70% of the model-bound rate
+(concurrency × 3600 ÷ median per-request model seconds).
 
 **Self-Check**
 
 Config load with the new budgets and evidence bound; LP preflight
 (`logs/kg_construction/dev005/lp_preflight.py`: selection, candidates and the
-full request population built offline with no bound error); LP Term-order script (ranks from
-`ordered_values` and each Skill's Term ancestor); S_AS comparison; sampled LP
-review recorded here; `git diff --stat -- backend`.
+full request population built offline with no bound error); read-only load of
+run 2's checkpoints with the new code after run 2 stops; LP run-log throughput
+and reuse script (checkpoint seconds by completed count, 2-hour windows, no
+model call for a request that already had a response); LP Term-order script
+(ranks from `ordered_values` and each Skill's Term ancestor); S_AS comparison;
+sampled LP review recorded here; `git diff --stat -- backend`.
 
 **Implementation Notes**
 
@@ -633,6 +646,19 @@ leaves the LP execution material (`lp_execution_material`: `kgs` config hash,
 `prompts.py` hash, schemas, model, request manifest) and the checkpoint
 format unchanged.
 
+Run 2 restart (user, 2026-10-11, reported at the next Developer session): the
+user stopped run 2's first invocation after 12:14 UTC and restarted it unchanged
+on the pre-fix code at 12:40 UTC, teed to the same `lp_run_2.log`, which
+replaced that invocation's log. Developer's ANSI-stripped capture of the first
+invocation up to 12:14 UTC is kept as
+`logs/kg_construction/dev005/lp_run_2_invocation1_until_0814.log` (local
+times); about 26 minutes of log lines before the stop are lost. The checkpoint
+store resumed as designed: receipt `run_number` 2, 176 responses by 13:01 UTC,
+and the two run-1 draft attempts in flight at the stop recorded as `unknown`
+and dispatched again in run 2. No acceptance evidence depends on the lost
+lines: D-LP-2 evidence is recorded above, and the `AC-017` real-run criteria
+apply to the post-fix invocation's own log.
+
 ---
 
 ### DEV-006 — Close-out checks and results review
@@ -670,6 +696,243 @@ for paths and curriculum terms; `make test`, `make lint`.
 
 ---
 
+### DEV-007 — LP full-verification points and cheap guards
+
+`Status`: `DONE` `Depends On`: `NONE`
+`Acceptance`: `AC-017, AC-020`
+
+**Goal**
+
+Run the full LP input and checkpoint proofs only at the design's
+full-verification points, with guards between them that fail closed in the same
+cases at a cost that does not depend on the population or store size (LP
+checkpoint contract items 1, 2 and 5).
+
+**Affected Area**
+
+`backend/src/kgfeg/kgs/lp_requests.py` (`LPRequestPopulationVerifier`);
+`backend/src/kgfeg/kgs/lp_generation.py` (`_verify_execution_material`,
+`_verify_lp_inputs`, the dispatch-gate material check and their call sites);
+`backend/src/kgfeg/kgs/lp_checkpoints.py` (`verify_execution_authority`,
+`verify_bytes`, `_save`, `_commit`, `_previous_hashes`).
+
+**Expected Outcome**
+
+- Full verification (stream every population byte, hash the whole in-memory
+  population, execution-material equality, complete `_validate`, read back
+  every checkpoint file against the receipt) runs at store construction in
+  every invocation, before the save whose receipt status first becomes
+  `completed`, in every read-only load, and when a guard trips.
+- Before each dispatch, dispatch-gate transport check and publication, the
+  guards compare population-artifact stat identity (`st_dev`, `st_ino`,
+  `st_size`, `st_mtime_ns`, `st_ctime_ns`) with the last full verification (a
+  difference runs a full population verification: identical bytes refresh and
+  log the identity, different bytes fail closed); re-hash only the requests
+  being dispatched or published against per-request digests from the last full
+  verification; recompute execution-material equality; and compare checkpoint
+  files' stat identity and length with the store's last write (a difference
+  runs a full readback; a mismatch fails closed).
+- `_commit` runs one authority check (guards plus ownership) before writing the
+  journal and one before retiring it, not one per file; `_previous_hashes`
+  uses recorded digests and stat identities instead of re-reading files.
+- Between full points, no dispatch, transport check or publication reads
+  `lp_generation_requests.jsonl` or re-serializes the whole population.
+
+**Self-Check**
+
+User-run from `backend/` with the test environment in Plan Notes: ruff, mypy
+and pylint on the changed modules; the LP test files (`tests/kgfeg/kgs/test_lp_*.py`
+and `test_create_kgs_lp.py`), every failure attributed to a test that pins the
+old every-check cadence (listed here for Tester) and none to other behavior; a
+scratch script counting population-artifact reads per save on a small synthetic
+store.
+
+**Implementation Notes**
+
+Implemented 2026-10-11 (uncommitted, on `cb7d9dc`):
+
+- `lp_requests.py`: `LPRequestPopulationVerifier` keeps per-request digests
+  and each artifact's stat identity (`file_stat_identity`: `st_dev`, `st_ino`,
+  `st_size`, `st_mtime_ns`, `st_ctime_ns`, captured unchanged across the
+  verified read). `verify` stays the full proof and refreshes the identities;
+  the new `guard` runs a full `verify` on any stat difference (identical bytes
+  refresh and log, different bytes fail closed) and re-hashes only the named
+  requests. `_population_material_digests` computes the whole hash and the
+  request digests in one pass; `_population_material_hash` keeps its result.
+- `lp_checkpoints.py`: `execution_check` is called with `full` and
+  `request_indices`; `verify_execution_authority(full=True)` by default.
+  `_check_checkpoint_files` reads a checkpoint file only when its stat identity
+  differs from the store's last write or full readback (always on a full check)
+  and requires the validated digest. `_save` takes the changed request indices
+  (plus pending rows), runs one guard before writing the journal and `_commit`
+  one before retiring it (no per-file checks), and runs the full input and
+  checkpoint proofs before the save whose receipt status first becomes
+  `completed`. `_previous_hashes` uses the validated digests after a stat
+  guard. `_recover` runs one guard before applying a journal. `_load` reads
+  every file back (`verify_bytes(full=True)`). `verify_bytes` keeps the
+  in-memory payload recheck (removed by DEV-008) with a stat guard on files.
+- `lp_generation.py`: admission and retention guard the dispatched or
+  published request; the dispatch-gate transport check
+  (`_verify_active_material`) guards every request in the bounded window,
+  which the coordinator changes only under the same gate lock; the end of an
+  invocation runs the full proofs.
+
+Developer trial (Developer-run, not the self-check of record; from `backend/`
+with the test environment): black and isort clean after `black` on the two
+files; ruff, mypy and pylint (10.00/10) clean on the three modules; LP tests
+(`tests/kgfeg/kgs/test_lp_*.py`, `test_create_kgs_lp.py`): 1847 passed, 1
+failed: `test_lp_population_verifier.py::test_transaction_publication_rechecks_changed_population`,
+which pins the per-file authority check inside `_commit` (a population edit
+after the journal is written must stop the remaining file replacements); under
+contract item 5 the replacements complete and the check before retiring the
+journal fails closed, leaving the journal for recovery. Listed for Tester.
+`tests/kgfeg/evals`: 816 passed. `logs/kg_construction/dev007/lp_guard_reads.py`
+(real orchestration, stub model call that passes the real transport check):
+6 standards, 15 requests, 107 saves, 351 guards; 12 standards, 66 requests,
+464 saves, 1525 guards; full population verifications 3 in both (store
+construction, completion boundary, end of invocation) and population bytes
+read about 7.7 requests-file equivalents in both, so population reads no
+longer grow with saves. Handed over for the user-run self-check.
+
+Self-check of record (user-run 2026-10-11 13:25-13:29 UTC from the repo root,
+uncommitted tree on `cb7d9dc`; git blob ids `lp_checkpoints.py` `0437a8a`,
+`lp_generation.py` `34f4424`, `lp_requests.py` `0695aed`; outputs in
+`logs/kg_construction/dev007/`):
+
+- `lint.log`: black and isort report the three modules unchanged; ruff on
+  `src/kgfeg/kgs/` passes; mypy finds no issues in the three modules; pylint
+  10.00/10.
+- `pytest_lp.log` (`tests/kgfeg/kgs/test_lp_*.py`, `test_create_kgs_lp.py`,
+  `tests/kgfeg/evals`, `-n auto`): 2663 passed, 1 failed. The failure is the
+  expected
+  `test_lp_population_verifier.py::test_transaction_publication_rechecks_changed_population`
+  (asserts the checkpoint files stay unreplaced after a post-journal population
+  edit; the run did fail closed with the expected `artifact` error and made no
+  model call). It pins the removed per-file check and is listed for Tester.
+- `lp_guard_reads.json`: `passed: true`, counts as in the Developer trial (3
+  full population verifications at 107 and at 464 saves; population bytes read
+  7.75 and 7.65 requests-file equivalents); no guard-trip refresh was logged.
+
+---
+
+### DEV-008 — LP checkpoint record authority
+
+`Status`: `PENDING` `Depends On`: `DEV-007`
+`Acceptance`: `AC-017, AC-020`
+
+**Goal**
+
+Make each checkpoint record's validated canonical bytes its authority, so a
+save re-proves only the records it adds or changes (LP checkpoint contract item
+3).
+
+**Affected Area**
+
+`backend/src/kgfeg/kgs/lp_checkpoints.py` (record creation and change in
+`begin_run`, `record_dispatch`, `complete_attempt`, `append` and `promote`;
+`_validate`, `_validate_cached_row`, `_payloads`, `_record_bytes`; the
+`rows`, `pending`, `attempts` and `failures` accessors and `get_row`); their
+read-only users in `kgs/lp_generation.py`, `kgs/lp_finalization.py` and
+`evals/lp_eval/sampling.py`.
+
+**Expected Outcome**
+
+- A stage row, pending row, attempt or failure is validated when the store
+  creates or changes it, and publication uses only its canonical bytes.
+- Accessors return copies or immutable views: mutating a returned object
+  changes neither persisted bytes nor store decisions.
+- A save re-proves only the added or changed records plus the rows they depend
+  on for the same request index, and rechecks the cross-record invariants the
+  change can affect (stage length order, prefix contiguity, pending capacity,
+  failure and attempt dispositions for that request).
+- The complete `_validate` still runs at every full-verification point.
+- Per-save record work does not grow with the completed count; callers behave
+  as before.
+
+**Self-Check**
+
+As DEV-007, plus a scratch script that mutates returned records and confirms
+persisted bytes and store decisions are unchanged, and that counts records
+re-proved per save on a small synthetic store.
+
+---
+
+### DEV-009 — Incremental journaled LP checkpoint commits
+
+`Status`: `PENDING` `Depends On`: `DEV-008`
+`Acceptance`: `AC-017, AC-020`
+
+**Goal**
+
+Write only what changed on each save while every at-rest checkpoint file and
+the receipt stay byte-identical to the current full-rewrite writer, so run 2's
+checkpoints resume as they are (LP checkpoint contract items 4 and 6).
+
+**Affected Area**
+
+`backend/src/kgfeg/kgs/lp_checkpoints.py` (`_save`, `_commit`, `_recover`,
+`_read_transaction`, `_LPCheckpointTransaction`, `_payloads`, running
+digests, `validate_lp_checkpoint_format`).
+
+**Expected Outcome**
+
+- Stage JSONL saves append exactly the new rows' bytes; `pending`, `failures`,
+  `usage` and the receipt are rewritten whole; receipt `artifact_byte_hashes`
+  stay full-file SHA-256, kept as running digests seeded by the full load.
+- After every save, each checkpoint file and the receipt equal the pre-change
+  writer's bytes for the same state.
+- The journal holds, per stage file, its previous length, previous digest and
+  appended bytes, and the full next bytes of each small file and the receipt.
+  Commit order is unchanged (write and fsync the journal, apply, check against
+  the journal's next state, retire it, sync the directory). Recovery rolls
+  forward only when every file is exactly at its previous or next state
+  (length and digest); anything else fails closed.
+- A pre-change full-payload journal is still recovered, and
+  `validate_lp_checkpoint_format` accepts both journal forms.
+- Unchanged: `lp_execution_material`, the at-rest file set, formats and receipt
+  fields, retry/attempt/usage/failure accounting, lock ownership, `overwrite`
+  archiving, finalization, artifacts and export; no config field.
+
+**Self-Check**
+
+As DEV-007, plus scratch scripts in `logs/kg_construction/dev009/` (no model
+calls, nothing written under `results/`):
+
+- synthetic scale benchmark: 12,892 requests with about 11 kB of stage rows
+  each, every save driven with stub results; the median per-save time over the
+  last 500 requests is within 2× of the first 500, and no save, dispatch or
+  transport check between full-verification points reads
+  `lp_generation_requests.jsonl` or a whole checkpoint file;
+- byte equivalence: dispatch, completion, promotion, retry, failure and
+  recovery sequences through the new store and through the pre-change writer
+  (the `HEAD` modules loaded from `git show`) give identical at-rest files and
+  receipts;
+- crash injection after each commit step of the new journal, and on a
+  pre-change full-payload journal: reload recovers or fails closed as the
+  design requires.
+
+---
+
+## Verification Increments
+
+### Increment 1
+
+`Development Steps`: `DEV-007, DEV-008, DEV-009` `Acceptance`: `AC-017, AC-020, AC-022, AC-023`
+
+**Ready Outcome**
+
+The LP checkpoint store and verifiers implement the design's LP checkpoint
+integrity and throughput contract (full-verification points with cheap guards
+between them, record authority, incremental journaled commits with at-rest
+files and receipt byte-identical to the pre-change writer, recovery of both
+journal forms), with DEV-007 to DEV-009 self-checks passed. Ready for Tester's
+`AC-022` tests (including crash injection at each commit step and the update of
+existing tests that pin the old every-check cadence) and the suite and lint
+run (`AC-023`) before DEV-005 stops run 2 and resumes LP on the fixed code.
+The real-run part of `AC-017` stays with DEV-005.
+
+---
+
 ## Plan Notes
 
 - The user runs every command (user decision, 2026-10-09): `create_kgs`
@@ -689,10 +952,18 @@ for paths and curriculum terms; `make test`, `make lint`.
 - Check scripts and their outputs live in git-ignored
   `logs/kg_construction/devNNN/` so Tester and Reviewer can rerun them; they
   never write into `extraction/`, `verification/`, `stitching/` or `kgs/`.
-- No KG code change is planned. A generic pipeline defect needing a code fix
-  is a material plan revision (new `DEV-NNN`, reapproval) within the
-  Architecture's code-fix boundary; its formal tests (`AC-022`) are
-  Tester-owned. Anything beyond that boundary routes to Architect.
+- The one planned KG code change is the LP checkpoint throughput fix
+  (DEV-007 to DEV-009, design `cb7d9dc`, LP checkpoint contract). Developer
+  does not edit tests: its formal tests (`AC-022`), including the
+  crash-injection tests and the update of existing tests that pin the old
+  every-check cadence, are Tester-owned, and its documentation (`AC-024`) is
+  Documenter-owned. Any other generic pipeline defect needing a code fix is a
+  material plan revision (new `DEV-NNN`, reapproval) within the code-fix
+  boundary; anything beyond it routes to Architect.
+- Code edits do not affect a running `create_kgs` process (its modules are
+  already imported), but `lp_execution_material` re-reads `prompts.py` on every
+  check, so `prompts.py` and the CAPS config stay untouched while run 2 is
+  running.
 - LP candidate budget analysis (user question, 2026-10-11; offline
   `build_lp_candidates` on the LC run 2 AS+LC bundle, no LLM calls, scratchpad
   scripts `lp_pool.py`, `lp_pool_dump.py`): uncapped (923 per Skill, 426426
@@ -749,3 +1020,24 @@ preflight, then LP run 2.
 `Recovery Frame`: `1` `Recovery Reason`: `LP run 2 completes about 17.6 requests an hour (168 of 12,892 after 9.5 h; about 30 days in all) against the design's day or more: every LP checkpoint save re-verifies the full 569 MB request population about 10 times (about 77 times per request, about 2.5 s each) on the single coordinator thread, so concurrency cannot help; a fix changes checkpoint verification semantics, outside the Developer code-fix boundary.` `Purpose`: `DEVELOPMENT`
 `Target`: `NONE` `Assessed Inputs`: `DEV-001 to DEV-004 DONE; CAPS config at 9478365 (LP budgets 30 / 14000, concurrency 4, evidence bound 3000); AS equal to S_AS (LP preflight); LC run 2; LP run 2 still running on 14ad0e0 (168 of 12,892 requests at 2026-10-11 12:14 UTC, no failures)`
 `Next Action`: `Reconcile the plan with the corrected design (a new DEV step with reapproval if the LP checkpoint throughput fix is assigned to Developer), then hand over stopping LP run 2 and resuming LP from its checkpoints with no stops.`
+
+### Recovery Reconciliation 3
+
+Frame 1 (D-LP-2, LP checkpoint throughput) closed 2026-10-11 (design
+`cb7d9dc`: LP checkpoint integrity and throughput contract, Decision 9).
+Restored Suspended Assignment 3. DEV-001 to DEV-004 unaffected (AS equal to
+S_AS, LC run 2 stands; the fix changes no AS or LC code). The design assigns a
+generic code change to Developer, which no existing step represents, so the
+plan adds DEV-007 (full-verification points and guards), DEV-008 (record
+authority) and DEV-009 (incremental journaled commits) in the design's order,
+and DEV-005 now depends on DEV-009 and adds the stop, read-only load and
+resume of run 2 plus the real-run throughput and reuse criteria. This is a
+material revision: plan returned to `PROPOSED` for approval. Run 2 keeps
+running on the pre-fix code until DEV-005 resumes (user restart at 12:40 UTC
+recorded under DEV-005).
+
+Plan approved by the user 2026-10-11 with a switch to `INCREMENTAL`
+verification (explicit user choice at approval, applied at this safe
+Developer boundary: no recovery active, no Tester assignment open).
+Increment 1 is DEV-007 to DEV-009; DEV-005 and DEV-006 follow it, then full
+verification.
