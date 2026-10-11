@@ -1,6 +1,6 @@
 # S.T.A.N.D.A.R.D.S. Workflow State
 
-`WorkflowState`: `ARCHITECTING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
+`WorkflowState`: `DEVELOPING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
 `PendingCycleRequest`: `UNSET` `PendingCycleBlockedOn`: `NONE`
 
 ## Active Work
@@ -25,18 +25,12 @@ Preserve existing entries; see PROTOCOL.md, Baseline Reconciliation Format.
 
 ## Handoff
 
-`Kind`: `FAILURE` `From`: `DEVELOPING` `FailureType`: `ARCHITECTURE` `Reason`:
-`LP run 2 throughput is bound by LP checkpoint bookkeeping, not model calls or concurrency: 17.6 requests an hour, about 30 days for 12,892 requests.`
+`Kind`: `RESUME` `From`: `ARCHITECTING` `FailureType`: `NONE` `Reason`:
+`Design adds the LP checkpoint integrity and throughput contract (D-LP-2): full proofs at defined points, cheap guards between, incremental byte-identical commits; run 2 checkpoints stay resumable.`
 
 ## Recovery
 
-`Active`: `true`
-
-### Frame 1
-
-`From`: `DEVELOPING` `Owner`: `ARCHITECTING` `FailureType`: `ARCHITECTURE`
-`Reason`: `LP run 2 completes about 17.6 requests an hour (168 of 12,892 after 9.5 h; about 30 days in all) against the design's day or more: every LP checkpoint save re-verifies the full 569 MB request population about 10 times (about 77 times per request, about 2.5 s each) on the single coordinator thread, so concurrency cannot help; a fix changes checkpoint verification semantics, outside the Developer code-fix boundary.`
-`ResumeAt`: `DEVELOPING` `RerunThrough`: `NONE`
+`Active`: `false`
 
 ## Outstanding Obligations
 

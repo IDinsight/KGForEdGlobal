@@ -82,6 +82,38 @@ Repository facts that shape the design (paths under `backend/src/kgfeg/`):
   `start_page` 35 / `end_page` 135.
 - The committed CAPS `kgs` block already holds the user's four instruction edits
   (lead-in rule and Grades 1-3 assessment labels).
+- **LP checkpoint cost (D-LP-2, LP run 2, 2026-10-11).** Run 2 processed about
+  17.6 requests an hour (168 of 12,892 after 9.5 h). Less than 10% of that time
+  was model calls. The single coordinator does all checkpoint work while
+  holding the dispatch gate. Each save costs time in proportion to the whole
+  store and population, not to the change:
+  - `LPGenerationCheckpoints._save` and `_commit`
+    (`kgs/lp_checkpoints.py:192-208`, `:660-692`) run the execution check about
+    10 times per save. Each check streams the 569 MB
+    `lp_generation_requests.jsonl` and re-serializes all 12,892 requests
+    (`LPRequestPopulationVerifier.verify`, `kgs/lp_requests.py:309-337`, `:669`),
+    about 2.5 s each.
+  - `_validate` re-hashes the request behind every stored row
+    (`kgs/lp_checkpoints.py:1010-1074`).
+  - `_payloads` re-proves every record each time it is called: in the save, in
+    `_previous_hashes` and in `verify_bytes`.
+  - Every save rewrites all checkpoint files and also journals the full next
+    state.
+
+  A request takes about 7 saves. Per-request overhead therefore grows with the
+  number of completed requests, so total overhead grows with the square of the
+  request count. At-rest checkpoints are ordinary files:
+  - the three stage JSONL files grow only by appending (`promote`,
+    `kgs/lp_checkpoints.py:1415-1424`);
+  - `pending`, `failures` and `usage` (which holds the attempts and per-request
+    states) and the receipt are small JSON files.
+
+  `lp_execution_material` (`kgs/lp_generation.py:931-972`) hashes the config,
+  `prompts.py`, the schemas, the model and the request manifest, but not the
+  checkpoint code. A code-only fix therefore leaves run 2's completed requests
+  reusable. Tests in `tests/kgfeg/kgs/` pin the current every-check streaming
+  cadence: `test_lp_streaming_proofs.py`, `test_lp_population_verifier.py`,
+  `test_lp_checkpoint_proofs.py` and the concurrency and recovery tests.
 
 DocumentIR evidence for the sub-strand level: each of the 48 REQUIREMENTS PER
 TERM tables has 2-8 body rows, so no table is split at the current
@@ -106,9 +138,11 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
 
 ## Decision
 
-1. **Config only, no planned KG code change.** The sub-strand level, Learning
-   Commons alignment and Term order all go into the CAPS config. The existing
-   pipeline supports a fifth hierarchy level without code changes.
+1. **Config first, with one planned code change.** The sub-strand level,
+   Learning Commons alignment and Term order all go into the CAPS config; the
+   existing pipeline supports a fifth hierarchy level without code changes. The
+   one planned code change is the generic LP checkpoint throughput fix
+   (Decision 9).
 2. **New statement type `Sub-strand`** (normalized `Standard Grouping`) with a
    controlled vocabulary. It joins the Skill identity scope so same-worded
    Skills under different sub-strands get different identities (`AC-029`), and
@@ -137,6 +171,13 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
    CAPS-specific, so they live outside `backend/` and are never committed. Their
    method and results go in the development plan, as the previous cycle's run
    results did.
+9. **Make LP checkpoint cost per save independent of the number of completed
+   requests.** Run full verification at the points where trust changes: start of
+   each invocation, completion, read-only loads, and any guard trip. Between
+   those points, use cheap guards that fail closed in the same cases. Write only
+   what changed, while keeping every at-rest checkpoint byte identical to
+   today's writer. Run 2's completed requests then resume as they are, and the
+   LP run becomes bound by model calls, so concurrency helps again.
 
 ## Acceptance Coverage
 
@@ -184,7 +225,8 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
 - `AC-017`: LP can start only if every endpoint's and ancestor's full audit
   context fits the LP evidence bound. The bound is set to 3000, and an offline
   request-build preflight confirms the full population builds before any paid
-  LP call.
+  LP call. LP can finish in a practical time only with the checkpoint
+  throughput fix (Decision 9, LP checkpoint contract).
 - `AC-017`, `AC-018`, `AC-032`: The LP coordinate blocks later-to-earlier Grade
   edges. Term order and relationship meaning come from the LP producer and
   checker instructions. A Term-order violation or relationship defect is fixed
@@ -195,25 +237,39 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
 - `AC-019`: The results review lives in the development plan. It draws on the
   export summaries, `lp_candidate_summary.json` dropped-pair counts, the run
   log and the sample checks.
-- `AC-020`, `AC-022`: No KG code change is planned. A defect fix must be
-  generic and needs tests (see Interfaces, code-fix boundary).
+- `AC-020`, `AC-022`: The one planned code change is the LP checkpoint
+  throughput fix, in `kgs/lp_checkpoints.py`, the population verifier in
+  `kgs/lp_requests.py`, and the verification call sites in
+  `kgs/lp_generation.py`. It is curriculum-neutral and needs the tests listed
+  under Technical Acceptance Criteria. Any other defect fix follows the
+  code-fix boundary.
 - `AC-021`: Only the CAPS config changes. The six other example configs stay
   unchanged and must still load: `examples/ghana/` (English and math),
   `examples/india/madhi/`, `examples/india/pratham/`, `examples/nigeria/` and
   `examples/rwanda/`.
 - `AC-023`: The existing suite and `make lint` run with the cycle's changes in
   place.
-- `AC-024`: No architectural impact unless a code fix changes pipeline
-  behavior or config fields. Documenter then updates `docs/pipeline/` or
-  `docs/guides/`.
+- `AC-024`: The checkpoint fix changes documented LP resume and verification
+  behavior, so Documenter updates `docs/pipeline/learning-progressions.md`
+  ("Concurrency, checkpoints, and failure") and
+  `docs/guides/running-and-debugging.md` (the LP resume section). No config
+  field changes. Any other code fix that changes behavior is documented the
+  same way.
 
 ## Components
 
 - **CAPS runtime config** (`examples/funda_wande/config_english_curriculum.json`,
-  `kgs` block): the only planned change. It holds the hierarchy, vocabulary and
-  instruction text.
-- **`create_kgs` pipeline** (`entries/create_kgs.py`, `kgs/`): used as-is. Local
-  stops are added only for staged runs.
+  `kgs` block): the only planned config change. It holds the hierarchy,
+  vocabulary and instruction text.
+- **`create_kgs` pipeline** (`entries/create_kgs.py`, `kgs/`): used as-is,
+  except for the LP checkpoint store and verifiers. Local stops are added only
+  for staged runs.
+- **LP checkpoint store and verifiers**: `LPGenerationCheckpoints` in
+  `kgs/lp_checkpoints.py`, `LPRequestPopulationVerifier` in
+  `kgs/lp_requests.py`, and `_verify_execution_material`, `_verify_lp_inputs`
+  and the dispatch-gate check in `kgs/lp_generation.py`. This is the only
+  planned code change, under the LP checkpoint contract below. Finalization,
+  artifacts, export and the at-rest checkpoint format stay unchanged.
 - **Local check scripts** (uncommitted, outside `backend/`, for example in a
   scratch directory or under the git-ignored `results/` tree): the preflight
   heading check, AS structure and coverage checks, LC checks, the LP Term-order
@@ -395,6 +451,83 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
   (`AC-011`, `AC-012`). These payloads are deterministic; AS export reuse
   requires exact payload equality.
 
+### LP checkpoint integrity and throughput contract (D-LP-2)
+
+The fail-closed guarantees keep their strength. What changes is where full
+proofs run and how much each save writes.
+
+1. **Full verification points.** Full verification means today's complete
+   checks:
+   - stream every population artifact byte;
+   - hash the whole in-memory population;
+   - check execution-material equality;
+   - run a complete `_validate` of every record;
+   - read back every checkpoint file against the receipt.
+
+   It runs at store construction in every invocation (fresh, resume or
+   recovery); at the completion boundary, before the save whose receipt status
+   first becomes `completed`; in every read-only load (finalization,
+   `validate_lp_checkpoint_format`); and whenever a guard in item 2 trips.
+2. **Guards between full verifications.** They run before each dispatch, each
+   dispatch-gate transport check and each publication, and do no work
+   proportional to the population or the store:
+   - **Population artifacts:** compare stat identity (`st_dev`, `st_ino`,
+     `st_size`, `st_mtime_ns`, `st_ctime_ns`) with the values captured at the
+     last full verification. Any difference triggers a full population
+     verification: identical bytes refresh the identity and log it; differing
+     bytes fail closed. `st_ctime_ns` catches a content edit followed by an
+     `os.utime` restore.
+   - **In-memory population:** re-hash the requests being dispatched or
+     published and compare them with per-request digests captured at the last
+     full verification. Recompute execution-material equality as today.
+   - **Checkpoint files:** compare stat identity and length with the values
+     recorded after the store's own last write. Any difference triggers a full
+     readback against the receipt; a mismatch fails closed.
+3. **Record authority.**
+   - A record (stage row, pending row, attempt, failure) is validated when the
+     store creates or changes it, and its canonical bytes become its authority.
+   - The store publishes only from those bytes. No caller or worker holds an
+     object whose mutation can change persisted bytes or store decisions;
+     accessors return copies or immutable views.
+   - Each save re-proves only the records it adds or changes, plus the rows
+     those records depend on for the same request index.
+   - It also rechecks the cross-record invariants the change can affect: stage
+     length order, prefix contiguity, pending capacity, and failure and attempt
+     dispositions for that request.
+4. **Incremental commits with identical at-rest bytes.**
+   - Stage JSONL files: a save appends exactly the new rows' bytes.
+   - `pending`, `failures`, `usage` and the receipt: rewritten whole, as today.
+   - Receipt `artifact_byte_hashes`: still full-file SHA-256, maintained as
+     running digests seeded by the full load.
+   - After every save, each checkpoint file and the receipt are byte-identical
+     to what the current full-rewrite writer produces for the same state.
+   - The transaction journal records, for each stage file, its previous length,
+     its previous digest and the appended bytes, and the full next bytes of each
+     small file and the receipt.
+   - Commit order is unchanged: write the journal and fsync, apply, check
+     against the journal's next state, retire the journal, sync the directory.
+     Recovery rolls forward only when every file is exactly at its previous or
+     next state (length and digest); anything else fails closed.
+   - A full-payload journal left by the pre-change code is still recovered by
+     the existing rules, because stopping run 2 can interrupt a commit.
+     `validate_lp_checkpoint_format` accepts both journal forms.
+5. **One authority check per side of the journal.** Run one check (the item 2
+   guards plus ownership) before writing the journal and one before retiring it.
+   This replaces the per-file checks in `_commit`. `_previous_hashes` uses the
+   recorded digests and stat identities instead of re-reading files.
+6. **Unchanged:** `lp_execution_material`; the at-rest file set, formats and
+   receipt fields; retry, attempt, usage and failure accounting; lock
+   ownership; `overwrite` archiving; finalization, artifacts and export. No
+   config field is added.
+7. **Operation.**
+   - Stop any running LP invocation, then resume with the fixed code and
+     `overwrite=false`.
+   - Run 2's completed requests are reused only while config, prompts, schemas
+     and model stay unchanged, including `max_concurrent_requests` 4.
+   - Choosing a different concurrency changes the execution material, so it
+     means LP regeneration (move-aside). That discards run 2's completed
+     requests, about 45 minutes of model time at concurrency 4.
+
 ### Code-fix boundary
 
 - If a run exposes a generic pipeline defect that needs no new config field, no
@@ -403,7 +536,8 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
   through Documenter (`AC-024`).
 - Anything that adds or changes a config field, a stage contract or resume
   behavior, adds stage selection, or enforces Term order in code comes back to
-  Architect.
+  Architect. The LP checkpoint contract above is such a change, designed here;
+  any departure from it also comes back to Architect.
 
 ## Data and Control Flow
 
@@ -430,7 +564,12 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
      selection, candidates and the full request population from the current
      AS+LC bundle and the committed config. It must build every candidate's
      request with no bound error.
-   - AS and LC are reused; check S_AS.
+   - The LP checkpoint fix must be in place before LP continues past run 2:
+     code committed, self-checks passed, and a read-only load of run 2's real
+     checkpoint directory with the new code (`validate_lp_checkpoint_format`)
+     passed. Any running LP invocation is stopped first.
+   - AS and LC are reused; check S_AS. LP resumes from run 2's checkpoints when
+     the execution material is unchanged.
    - Run the LP checks. LP defects get an instruction fix and LP regeneration,
      followed by another no-stop invocation.
    - The last invocation must succeed with no stop and an unmodified
@@ -486,6 +625,46 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
   preflight builds one request per retained candidate pair with no bound error.
   `lp_validation_report.json` and the AS+LC+LP bundle validation pass with no
   errors, and `as_lc_lp_kg_bundle.json` exists.
+- `AC-017` (checkpoint scale): on a synthetic store of 12,892 requests with
+  payloads the size of run 2's (about 11 kB of stage rows per request), driving
+  every save with stub calls and no model calls:
+  - the median per-save time over the last 500 requests is within 2× of the
+    median over the first 500;
+  - between full verification points, no save, dispatch or transport check
+    reads `lp_generation_requests.jsonl` or a whole checkpoint file;
+  - the at-rest files and receipt equal those of the full-rewrite writer.
+- `AC-017` (real run): run 2's completed requests are reused, with no repeated
+  model call for any request that already has a response.
+  - Per-request checkpoint time in the run log shows no upward trend with the
+    number of completed requests.
+  - Once 500 requests are complete, throughput over any 2-hour window is at
+    least 70% of the model-bound rate. That rate is concurrency × 3600 ÷ the
+    median per-request model seconds.
+- `AC-022` (checkpoint fix): tests show each of the following:
+  - at-rest bytes and receipt identical to the full-rewrite writer across
+    dispatch, completion, promotion, retry, failure and recovery sequences;
+  - crash recovery at each commit step of the new journal, and recovery of a
+    pre-change full-payload journal;
+  - unexplained file states fail closed;
+  - a population-artifact content edit with mtime restored is detected
+    (`st_ctime_ns`);
+  - a checkpoint-file edit between saves is detected before the next dispatch
+    or publication;
+  - a mutated dispatched request is detected before dispatch or publication;
+  - a caller's mutation of a returned record cannot change persisted bytes or
+    store decisions;
+  - full verification still streams every population byte at construction,
+    at completion and in read-only loads;
+  - per-save work (population bytes read and records re-proved) does not grow
+    with the completed count;
+  - a checkpoint directory written by the pre-change code loads and resumes.
+
+  Existing tests that pin every-check streaming are updated to this cadence,
+  not deleted.
+- `AC-024`: `docs/pipeline/learning-progressions.md` and
+  `docs/guides/running-and-debugging.md` describe the full-verification points,
+  the guards between them, and the incremental, journaled commits with
+  unchanged at-rest files.
 - `AC-018`: For every buildsTowards edge, the source's (Grade rank, Term rank)
   is not later than the target's. Rank comes from `ordered_values` and the Term
   ancestor's canonical value.
@@ -511,6 +690,12 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
    config loads and run the LP preflight. Then run the full no-stop invocation
    and the LP checks. Fix with LP regeneration as needed, ending on a
    successful no-stop invocation.
+   - Before LP continues past run 2, implement the LP checkpoint contract in
+     this order: the guards and full-verification points, then record
+     authority, then incremental commits.
+   - Self-checks: the synthetic scale benchmark, byte equivalence with the
+     full-rewrite writer, and a read-only load of run 2's checkpoints.
+   - Then stop run 2 and resume LP with the fixed code.
 5. Compare S0 and S_AS, write the `AC-019` review, and run the test suite, lint
    and the other-config load check.
 
@@ -535,12 +720,26 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
   is structurally plausible (38%, against 58% at 12 per Skill), so more
   `no_relation` outcomes are expected. The dropped counts are reported
   (`AC-019`) and are not a defect in themselves.
-- **Runtime:** LP makes about 12,900 pairs × 2 calls (about 25,800 calls) at
-  concurrency 4, which can take a day or more of wall-clock time. Raising
-  `kgs.lp.max_concurrent_requests` is a config choice for the user, limited by
-  provider rate limits. It must be set before the LP run starts, because
-  changing it mid-run makes LP fail closed and needs LP regeneration.
-  Interrupted runs resume with `overwrite=false` when the config is unchanged.
+- **Runtime:** LP makes about 12,900 pairs × 2 calls (about 25,800 calls).
+  - The original "a day or more" assumed model-bound throughput, which the
+    pre-fix checkpoint store cannot reach.
+  - After the fix, the run is bound by model calls: about 12,892 × 63 s ÷
+    concurrency, which is about 56 hours at concurrency 4. The 63 s is two
+    stages at a median of about 31.5 s each.
+  - Raising `kgs.lp.max_concurrent_requests` shortens this in proportion,
+    within provider rate limits. It changes the execution material, so it
+    means LP regeneration and losing run 2's completed requests.
+  - Interrupted runs resume with `overwrite=false` when the config is
+    unchanged.
+- **Checkpoint integrity change:** moving full proofs to defined points could
+  hide a change made between them. The stat-identity and per-request guards,
+  the full checks at completion and in every read-only load, the record-copy
+  rule and the `AC-022` tests cover this. Coarse file timestamps can only cause
+  extra full verifications, never a missed change, because any stat difference
+  triggers one.
+- **Recovery code risk:** the new delta journal and the retained pre-change
+  journal path are the riskiest code. Crash-injection tests at every commit
+  step are required before resuming the real run.
 - **LP request size:** requests carry each SFI's full audit context, mostly
   dedup merge reasons, for the endpoints and their ancestors. Payloads run about
   43k characters at the median and up to about 61k. That fits model context
@@ -573,3 +772,18 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
   first LP run already uses.
 - **Running LP without Stop B:** rejected. An LC layer with failures up to 5%
   would reach LP, and fixing it would discard a full LP run.
+- **Letting LP run 2 finish unchanged, or lowering the `AC-033` budgets:**
+  rejected by the user (2026-10-11). Overhead grows with the square of the
+  request count, so 30 days was a lower bound. Even 12 per Skill and 5000 in
+  total would take about 12 days.
+- **Only cutting the number of verifications per save:** rejected. Every save
+  would still re-prove every record, re-hash the request behind each row, and
+  rewrite the whole store plus a full-state journal. Late in the run that is
+  about 150 MB written twice per save, roughly 15 TB in all, and per-save cost
+  still grows with progress.
+- **A new append-only checkpoint format (v2):** rejected. It would change the
+  at-rest files, the finalization, artifact and format-validation consumers,
+  and the tests, and it would discard run 2's progress or need a migration.
+  The byte-identical incremental writer scales the same way without that.
+- **Dropping per-save checks entirely:** rejected. It gives up the fail-closed
+  design instead of moving full proofs to defined points.
