@@ -490,7 +490,7 @@
 				"max_ancestor_path_depth": 8,
 				"max_ancestor_paths_per_sfi": 4,
 				"max_learning_components_per_sfi": 8,
-				"max_source_evidence_characters_per_sfi": 2000,
+				"max_source_evidence_characters_per_sfi": 3000,
 				"max_source_evidence_items_per_sfi": 4
 			},
 			"max_concurrent_requests": 4,
