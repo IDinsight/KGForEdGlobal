@@ -658,6 +658,28 @@ and dispatched again in run 2. No acceptance evidence depends on the lost
 lines: D-LP-2 evidence is recorded above, and the `AC-017` real-run criteria
 apply to the post-fix invocation's own log.
 
+Resume preflight (after Increment 1, 2026-10-11):
+`logs/kg_construction/dev005/lp_resume_preflight.py` (no LLM calls; reads
+`kgs/`, the CAPS config, git and the S_AS manifest; writes only into
+`--out-dir`). It checks that the LP lock is free (run 2 stopped; nothing else
+is read otherwise), the CAPS config is committed with the designed LP values,
+`validate_lp_checkpoint_format` on the fixed code accepts the checkpoint
+directory, the request population rebuilt from the AS+LC bundle and config
+matches the one on disk and the current `lp_execution_material` equals run 2's
+receipt material (so the resume reuses run 2's requests), S_AS is unchanged,
+and no LP file changed while it ran. It saves `lp_stop_state.json` (receipt
+run number and the request indices with draft, verdict and response rows, taken
+from a stop journal's next state when one exists) as the baseline for the
+reuse check. Developer trial on an APFS clone (`cp -c`) of the live `kgs/`
+while run 2 was still running (`--kgs-dir`, scratchpad): passed; read-only load
+37 s, population rebuild and material comparison 90 s, no material key
+differs, 240 responses at the copy. A first clone taken mid-commit without the
+live journal failed the read-only load as it should (responses file at the
+next state, receipt at the previous one); that was the copy, not the store.
+Handed over: commit, stop run 2 (Ctrl-C), run the resume preflight on the real
+directory, and only when it passes resume LP with no stops, teed to
+`lp_run_3.log`. The throughput and reuse script is written against that log.
+
 ---
 
 ### DEV-006 — Close-out checks and results review
