@@ -56,6 +56,22 @@ Repository facts that shape the design (paths under `backend/src/kgfeg/`):
 - LP execution material includes a hash of the complete `kgs` config and
   `max_concurrent_requests` (`kgs/lp_generation.py:931-956`). Any config change
   after LP has started makes LP fail closed.
+- `kgs.lp.evidence_limits.max_source_evidence_characters_per_sfi` serves three
+  purposes in LP request building (`kgs/lp_requests.py:455-500`, `:770-840`):
+  - it caps each descriptive text field;
+  - it is the total source-excerpt budget per SFI;
+  - it is a hard ceiling on each endpoint's and ancestor's complete audit
+    context. Audit context covers the audit, merge and code fields and the
+    canonicalization, and request building raises rather than truncate it.
+
+  LP run 1 (2026-10-11) stopped at this check with the bound at 2000. No LP
+  artifacts were written. On the confirmed AS, 81 Skills (max 2395 characters)
+  and 6 Sub-strands (max 2155) exceed 2000. The text is mostly the dedup
+  `merge_reason`, stored twice. Developer's offline request build, with no LLM
+  calls and no writes, reproduces the error at 2000 and builds all 12,892
+  requests at 2400 and at 3000 with no other bound failure. The median payload
+  is about 43.1k characters at 2400 and 43.5k at 3000; the maximum is about 59k
+  and 61k.
 - Scope rework (2026-10-11) adds `AC-033`: LP budgets of 30 pairs per Skill and
   14,000 in total. LP had not run yet. The confirmed AS (S_AS) and LC run 2
   (924 Skills, zero failed requests) stand. An offline candidate build on that
@@ -165,6 +181,10 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
   Skill.
 - `AC-016`, `AC-031`: The existing LC generation and dedup instructions apply.
   Review findings are fixed in LC instruction text and LC is regenerated.
+- `AC-017`: LP can start only if every endpoint's and ancestor's full audit
+  context fits the LP evidence bound. The bound is set to 3000, and an offline
+  request-build preflight confirms the full population builds before any paid
+  LP call.
 - `AC-017`, `AC-018`, `AC-032`: The LP coordinate blocks later-to-earlier Grade
   edges. Term order and relationship meaning come from the LP producer and
   checker instructions. A Term-order violation or relationship defect is fixed
@@ -313,7 +333,16 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
   - With 924 eligible Skills, the retention bound is
     `min(14000, 426426, 924*30//2) = 13860`. The per-Skill budget binds and the
     total budget leaves headroom.
-  - `evidence_limits` and the other `kgs.lp` fields keep their values.
+- `kgs.lp.evidence_limits.max_source_evidence_characters_per_sfi`: `3000`, a
+  JSON integer, set before the next LP invocation. No LP artifacts exist, so
+  this needs no move-aside.
+  - 3000 fits the largest mandatory audit context (2395) with about 25%
+    headroom. The confirmed AS fixes the audit text, so headroom only guards
+    against measurement error.
+  - The cost is small: the source-excerpt budget per SFI grows from 2000 to
+    3000 characters, adding under 1% to median request payloads.
+  - The other `evidence_limits` fields and all other `kgs.lp` fields keep their
+    values.
 - `kgs.lp` producer and checker instructions: they already state the Term
   order, and change only to fix an `AC-018` or `AC-032` finding.
 - Any `kgs.lp` change after LP has started requires LP regeneration. This
@@ -397,6 +426,10 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
    - Run the LC checks, and retry failed requests until there are none.
    - LC content defects get an LC instruction fix and LC regeneration.
 4. **LP run** (no stops; one invocation running AS, LC and LP in order).
+   - LP preflight, with no LLM calls and no writes under `kgs/`: build the LP
+     selection, candidates and the full request population from the current
+     AS+LC bundle and the committed config. It must build every candidate's
+     request with no bound error.
    - AS and LC are reused; check S_AS.
    - Run the LP checks. LP defects get an instruction fix and LP regeneration,
      followed by another no-stop invocation.
@@ -448,8 +481,11 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
   `lc_generation_failures.json` holds no unresolved failure. Each Skill has at
   least one supports edge. `lc_max_failure_rate` is 0.05 in the committed
   config.
-- `AC-017`: `lp_validation_report.json` and the AS+LC+LP bundle validation pass
-  with no errors, and `as_lc_lp_kg_bundle.json` exists.
+- `AC-017`: The committed CAPS config has
+  `kgs.lp.evidence_limits.max_source_evidence_characters_per_sfi` 3000. The LP
+  preflight builds one request per retained candidate pair with no bound error.
+  `lp_validation_report.json` and the AS+LC+LP bundle validation pass with no
+  errors, and `as_lc_lp_kg_bundle.json` exists.
 - `AC-018`: For every buildsTowards edge, the source's (Grade rank, Term rank)
   is not later than the target's. Rank comes from `ordered_values` and the Term
   ancestor's canonical value.
@@ -471,9 +507,10 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
 2. Run AS with Stop A and run the AS checks. Iterate fixes, using AS
    regeneration, until they pass. Record the user's confirmation with S_AS.
 3. Run LC with Stop B. Retry failures, run the LC checks and fix as needed.
-4. Set the LP budgets (`AC-033`) and confirm the config loads. Run the full
-   no-stop invocation and the LP checks. Fix with LP regeneration as needed,
-   ending on a successful no-stop invocation.
+4. Set the LP budgets (`AC-033`) and the LP evidence bound (3000). Confirm the
+   config loads and run the LP preflight. Then run the full no-stop invocation
+   and the LP checks. Fix with LP regeneration as needed, ending on a
+   successful no-stop invocation.
 5. Compare S0 and S_AS, write the `AC-019` review, and run the test suite, lint
    and the other-config load check.
 
@@ -504,6 +541,12 @@ preflight in Data and Control Flow repeats this check as Developer evidence.
   provider rate limits. It must be set before the LP run starts, because
   changing it mid-run makes LP fail closed and needs LP regeneration.
   Interrupted runs resume with `overwrite=false` when the config is unchanged.
+- **LP request size:** requests carry each SFI's full audit context, mostly
+  dedup merge reasons, for the endpoints and their ancestors. Payloads run about
+  43k characters at the median and up to about 61k. That fits model context
+  windows but dominates LP input cost, which is within the no-cost-limit
+  constraint. Trimming the audit context would mean regenerating AS or changing
+  code, so it comes back to Architect.
 - **Large windows:** whole-table windows produce up to about 60 candidates each.
   If output limits force splitting, the sub-strand context guarantee breaks, so
   that change comes back to Architect.
