@@ -12,7 +12,8 @@
 `.standards/docs/scope/run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8.md` `Architecture`:
 `.standards/docs/specs/run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8.md` `Development`:
 `.standards/docs/development/run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8.md`
-`PromotionReason`: `NONE` `AuditTarget`: `NONE` `BlockedOn`: `NONE`
+`PromotionReason`: `NONE` `AuditTarget`: `NONE` `BlockedOn`:
+`Continue with DEV-005 (stop LP run 2, read-only load of its checkpoints with the fixed code, resume LP)?`
 `PendingVerificationCadence`: `NONE`
 
 `BaselineReconciliation`: `NONE`

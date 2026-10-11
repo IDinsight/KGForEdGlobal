@@ -8,7 +8,7 @@ Cycle: run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8
 `Cycle`: `run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8` `Mode`: `STEPWISE`
 `User Style`: `tony` `User Style Locked`: `true`
 `Status`: `IN_PROGRESS` `Verification Cadence`:
-`INCREMENTAL` `Current Increment`: `1`
+`INCREMENTAL` `Current Increment`: `NONE`
 
 ## Implementation Contract
 
@@ -515,8 +515,7 @@ successful invocation ran with no stop and `git diff` shows no change to
 30, `max_total_candidates` 14000 and `candidate_pair_bound` 13860, with
 `total_candidate_pairs` within that bound. After the checkpoint fix, run 2's
 completed requests are reused with no repeated model call for any request that
-already has a response; per-request checkpoint time in the run log shows no
-upward trend with the completed count; once 500 requests are complete,
+already has a response; once 500 requests are complete,
 throughput over any 2-hour window is at least 70% of the model-bound rate
 (concurrency × 3600 ÷ median per-request model seconds).
 
@@ -526,8 +525,8 @@ Config load with the new budgets and evidence bound; LP preflight
 (`logs/kg_construction/dev005/lp_preflight.py`: selection, candidates and the
 full request population built offline with no bound error); read-only load of
 run 2's checkpoints with the new code after run 2 stops; LP run-log throughput
-and reuse script (checkpoint seconds by completed count, 2-hour windows, no
-model call for a request that already had a response); LP Term-order script
+and reuse script (2-hour windows, no model call for a request that already
+had a response); LP Term-order script
 (ranks from `ordered_values` and each Skill's Term ancestor); S_AS comparison;
 sampled LP review recorded here; `git diff --stat -- backend`.
 
@@ -1042,8 +1041,11 @@ or the atomic replacement of stage files, for Tester:
 `test_lp_orchestration.py::test_pending_transaction_never_authorizes_arbitrary_corruption_repair[file_corruption|journal_invalid|journal_material|journal_partial|journal_payload|missing_file]`
 (injects the crash through `_atomic_write` of the draft stage file, which is
 now appended, and edits `next_payloads` of a full-payload journal). The
-interruption tests in `test_lp_concurrency_recovery.py` that interrupt every
-journal and small-file write in every phase pass against the delta journal.
+fast interruption tests in `test_lp_concurrency_recovery.py` pass against the
+delta journal; its slow-marked rows were not run here (corrected after
+Increment 1: 24 of them fail on `b697e8e` because they inject the crash
+through whole-file writes the delta journal no longer makes; Tester updated
+them in `b5a325c`).
 Scripts in `logs/kg_construction/dev009/` (shared driver `lp_drive.py`, which
 loads the pre-change writer from `cb7d9dc`):
 
@@ -1092,9 +1094,12 @@ technical criterion for Tester to verify in Increment 1;
 calls) is available for that.
 
 Self-check of record (user-run 2026-10-11 from the repo root, uncommitted tree
-on `00c466e`; git blob ids `lp_checkpoints.py` `65c44a6`, `lp_generation.py`
+on `00c466e`; working-tree blob ids `lp_checkpoints.py` `65c44a6`, `lp_generation.py`
 `d0ed431`, `lp_requests.py` unchanged since DEV-007 (`0695aed`); outputs in
-`logs/kg_construction/dev009/`):
+`logs/kg_construction/dev009/`. Correction after Increment 1: the committed
+`lp_checkpoints.py` in `b697e8e` is blob `32710db`; `65c44a6` was never
+committed and cannot be compared, so `32710db`, which Tester assessed, is the
+content of record):
 
 - `lint.log`: black and isort report the three modules unchanged; ruff on
   `src/kgfeg/kgs/` passes; mypy finds no issues in the five modules; pylint
@@ -1130,7 +1135,8 @@ The real-run part of `AC-017` stays with DEV-005.
 
 **Readiness** (2026-10-11): DEV-007 to DEV-009 are `DONE` with their
 self-checks of record (see each step). Assessed implementation: the commits
-that land `lp_checkpoints.py` blob `65c44a6`, `lp_generation.py` blob
+that land `lp_checkpoints.py` blob `32710db` (corrected after Increment 1;
+first recorded as the uncommitted `65c44a6`), `lp_generation.py` blob
 `d0ed431` and `lp_requests.py` blob `0695aed` (changed only by `8040c56`,
 DEV-007). Claims for Tester to assess:
 
@@ -1274,3 +1280,21 @@ The user then asked to drop the design's `AC-017` checkpoint-scale 2x
 save-time criterion; routed as `USER_REWORK` to Architect from `TESTING`
 (recovery frame 1, `ResumeAt` `TESTING`). Increment 1 stays the assignment to
 resume: `Current Increment` 1 and its Readiness above are unchanged.
+
+### Checkpoint Reconciliation 1
+
+Increment 1 returned `VERIFIED` by Tester 2026-10-11 (`b5a325c`, report
+`.standards/docs/verification/run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8.md`).
+Reconciled: the assessed source (`lp_checkpoints.py` `32710db`,
+`lp_generation.py` `d0ed431`, `lp_requests.py` `0695aed`) equals HEAD
+(`git diff b697e8e HEAD -- backend/src` is empty); Tester changed only tests
+(`test_lp_checkpoint_cadence.py` new; five LP test files updated to the new
+cadence and journal); Developer trial on HEAD, fast LP suite: 1856 passed.
+Design rework `cfbbf4d` removed the `AC-017` save-time ratio and the real-run
+trend check, so DEV-005 drops the trend criterion (the Increment 1 known risk
+no longer applies; Tester measured 2.8x for information). Tester's two record
+discrepancies are corrected in DEV-009 and the Readiness (blob id; slow
+`test_lp_concurrency_recovery.py` rows). `Current Increment` set to `NONE`:
+no further increment is scheduled; DEV-005 and DEV-006 go to full
+verification. Next: DEV-005 (stop run 2, read-only load of its checkpoints
+with the fixed code, resume LP), on the user's go-ahead (`STEPWISE`).
