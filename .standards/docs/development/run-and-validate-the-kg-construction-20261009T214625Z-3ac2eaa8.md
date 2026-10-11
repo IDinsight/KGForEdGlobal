@@ -481,20 +481,22 @@ and 2000 characters per Skill; `AC-019` reports the dropped pairs.
 
 ### DEV-005 — LP run and no-stop final invocation
 
-`Status`: `PENDING` `Depends On`: `DEV-004`
-`Acceptance`: `AC-012, AC-013, AC-017, AC-018, AC-032`
+`Status`: `IN_PROGRESS` `Depends On`: `DEV-004`
+`Acceptance`: `AC-012, AC-013, AC-017, AC-018, AC-032, AC-033`
 
 **Goal**
 
-Run `create_kgs` with no stop and an unmodified `create_kgs.py`, pass the LP
-checks, and fix any Term-order or relationship defect through the CAPS
-`kgs.lp` instructions plus LP regeneration.
+Set the LP candidate budgets to 30 per Skill and 14,000 in total (`AC-033`)
+before the first LP run, then run `create_kgs` with no stop and an unmodified
+`create_kgs.py`, pass the LP checks, and fix any Term-order or relationship
+defect through the CAPS `kgs.lp` instructions plus LP regeneration.
 
 **Affected Area**
 
-User-run `create_kgs`; LP artifacts in `kgs/`; local scripts in
-`logs/kg_construction/dev005/`; CAPS `kgs.lp` producer/checker instructions
-only if a finding requires it.
+CAPS `kgs.lp.candidate_policy.budgets` (and `max_concurrent_requests` only as
+the user decides before LP starts); user-run `create_kgs`; LP artifacts in
+`kgs/`; local scripts in `logs/kg_construction/dev005/`; CAPS `kgs.lp`
+producer/checker instructions only if a finding requires it.
 
 **Expected Outcome**
 
@@ -503,20 +505,42 @@ validation pass with no errors and `as_lc_lp_kg_bundle.json` exists; no
 buildsTowards edge goes to an earlier (Grade, Term); a sample of buildsTowards
 and relatesTo edges checked against the Learning Commons meanings; the last
 successful invocation ran with no stop and `git diff` shows no change to
-`create_kgs.py`.
+`create_kgs.py`; `lp_candidate_summary.json` records `max_candidates_per_sfi`
+30, `max_total_candidates` 14000 and `candidate_pair_bound` 13860, with
+`total_candidate_pairs` within that bound.
 
 **Self-Check**
 
-LP Term-order script (ranks from `ordered_values` and each Skill's Term
-ancestor); S_AS comparison; sampled LP review recorded here;
-`git diff --stat -- backend`.
+Config load with the new budgets; LP Term-order script (ranks from
+`ordered_values` and each Skill's Term ancestor); S_AS comparison; sampled LP
+review recorded here; `git diff --stat -- backend`.
+
+**Implementation Notes**
+
+Budgets set 2026-10-11 in the CAPS config: `kgs.lp.candidate_policy.budgets`
+`max_candidates_per_sfi` 30, `max_total_candidates` 14000 (JSON integers);
+the only changed key versus `9554a7d`; the config loads as a `RunConfig`.
+`kgs.lp.max_concurrent_requests` stays 4 (user decision, 2026-10-11, asked
+before LP starts per the design; it is LP execution material). The offline
+candidate build with these budgets keeps 12892 pairs (bound 13860).
+
+LP run 1 handed over 2026-10-11: the user commits the budget change, confirms
+`create_kgs.py` has no local edits (Stop B already removed, never
+committed), and runs from the repo root under `caffeinate -i`, teed to
+`logs/kg_construction/dev005/lp_run_1.log`. AS and LC must be reused (AS
+signals as before; LC `Decomposed LC-source SFIs ... resumed=924` and
+`Grouped duplicate skills ... (resumed=195)`). A stop with
+`LPGenerationFailed` (a request out of retries) is rerun unchanged
+(`lp_run_<n>.log`; resumes from checkpoints); any other failure, including
+`LPFinalizationCycleError`, is kept as is and reported. LP check scripts are
+written against the actual outputs after the run.
 
 ---
 
 ### DEV-006 — Close-out checks and results review
 
 `Status`: `PENDING` `Depends On`: `DEV-005`
-`Acceptance`: `AC-001, AC-002, AC-012, AC-013, AC-019, AC-020, AC-021, AC-023`
+`Acceptance`: `AC-001, AC-002, AC-012, AC-013, AC-019, AC-020, AC-021, AC-023, AC-033`
 
 **Goal**
 
@@ -533,7 +557,8 @@ This plan (results review); `logs/kg_construction/dev006/`.
 - The cycle diff touches no example config other than CAPS and no backend
   file (or, if a code fix was approved, no curriculum names in it); the six
   other example configs load as `RunConfig`; the CAPS config loads with
-  `start_page` 35 / `end_page` 135 and `output_dir` `results/kg_for_ed`.
+  `start_page` 35 / `end_page` 135, `output_dir` `results/kg_for_ed` and the
+  committed LP budgets 30 / 14000.
 - `make test` and `make lint` pass from `backend/`.
 - Results review (`AC-019`) recorded here: counts by statement type and
   relationship type, LP dropped-pair counts by budget, the defect log with
@@ -591,3 +616,15 @@ for paths and curriculum terms; `make test`, `make lint`.
 `Recovery Frame`: `1` `Recovery Reason`: `User rework: raise the LP candidate budgets to 30 per Skill and 14,000 total (kgs.lp.candidate_policy.budgets).` `Purpose`: `DEVELOPMENT`
 `Target`: `NONE` `Assessed Inputs`: `DEV-001 to DEV-004 DONE; CAPS config at d249c7e (LP budgets 12 per Skill, 5000 total); AS equal to S_AS; LC run 2 outputs checked 2026-10-11 00:16 UTC; local uncommitted Stop B in create_kgs.py`
 `Next Action`: `Reconcile DEV-005 with the corrected scope and design (set kgs.lp.candidate_policy.budgets as decided there), then hand over the no-stop LP run with Stop B removed.`
+
+### Recovery Reconciliation 1
+
+Frame 1 (user rework: LP candidate budgets) closed 2026-10-11 (scope
+`31c9f8f` adds `AC-033`; design `9554a7d`). Restored Suspended Assignment 1.
+DEV-001 to DEV-004 unaffected: AS stays equal to S_AS and LC run 2 stands
+(design: no LP artifacts exist yet, so no move-aside). DEV-005 gains `AC-033`
+and an in-step config change the user requested (budgets 30 / 14000 before
+the first LP run, recorded in `lp_candidate_summary.json`); DEV-006 checks
+the committed budgets. Traceability and an in-step config setting under
+unchanged approved intent; no reapproval required. Next: DEV-005 (user
+decides `max_concurrent_requests` before LP starts, per the design).
