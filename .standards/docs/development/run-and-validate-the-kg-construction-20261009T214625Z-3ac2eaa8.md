@@ -767,6 +767,50 @@ ahead: 1000-3999 almost all same-term; cross-Term mostly 4000-7999 and
 10000-11999; cross-Grade 206 in 4000-4999 and 535 from 12000. At about 330
 an hour the run ends around 2026-10-13 04:00 local.
 
+Run check of record (user-run 2026-10-11 16:38, `lp_run_check_summary.txt`,
+1299 responses): all four pass (reuse, 267 throughput windows with the lowest
+at 328.5 an hour against 268.9, `AC-018` 0 backward, 0 cycles among 212
+edges).
+
+Overnight (Developer trial 2026-10-12 07:01, 5698 responses): all four pass.
+Reuse: 10918 attempts since the stop, none for a stage done at the stop.
+Four attempts failed and succeeded on retry (requests 2029 `QualityError`,
+2395 `UnexpectedModelBehavior`, 2924 and 3894 `ModelHTTPError`); none
+exhausted. Checkpoint seconds median 0.04, max still the one 6.11. Throughput:
+lowest window 265.5 an hour against a floor of 258.1 (70% of a model-bound
+368.8 from the whole log's median of 39.0 s). From about 01:00 the work got
+heavier: requests from 4000 are cross-Term and cross-Grade pairs whose median
+output tokens rose about 15% (draft 1450 to 1680) with input unchanged, and
+median stage times rose (draft 16.6 to 19.5 s, verdict 20.5 to 22.5 s) while
+calls in flight stayed about 3.6. Against each window's own model-bound rate
+(median model seconds of the requests finished inside it) throughput held at
+79-88% all run. The run check now reports that per-window ratio as a
+diagnostic (`lowest_2h_window_vs_its_own_model_bound`); pass and fail still
+use the whole-log median. If the whole-log reading falls below 70% while the
+per-window ratio holds, the criterion's reading (whole-run or per-window model
+time) becomes material and goes to Architect.
+
+LP review at 5701 responses: relatesTo 3754, buildsTowards 1355, no_relation
+592. First 206 cross-Grade pairs (all adjacent Grades): 133 buildsTowards, all
+from the earlier to the later Grade (R to 1: 27, 1 to 2: 65, 2 to 3: 41), 73
+relatesTo, 0 no_relation; sampled edges extend the earlier Grade's skill
+(Grade R 'Listens without interrupting, ... takes turns to speak' to Grade 1
+'... and asking questions for clarification'; Grade R 'Listens to stories and
+acts these out' to Grade 1 'Listens to stories and identifies the main
+idea'). Verbatim repeats across Grades split 50 buildsTowards to 45 relatesTo
+on the evidence: buildsTowards where the printed phonics or decoding content
+grows (Grade 1 Term 4 blends to Grade 2 Term 1 vowel digraphs for 'Learns to
+spell ten words a week'), relatesTo where nothing in the source extends the
+repeated bullet; one borderline ('Sequences pictures of a story', Grade R to
+Grade 1, argued from a daily ring activity becoming a timetabled one).
+Cross-Term pairs from 4000 (1310): 563 buildsTowards, 552 relatesTo, 195
+no_relation, mostly different skills; sampled buildsTowards follow CAPS skill
+lines (Grade R 'Identifies whether two given sounds are the same or
+different' to 'Distinguishes aurally between different sounds'), a few loose
+at confidence 0.6. buildsTowards confidence by pair kind: cross-Grade median
+0.78 (2% at or below 0.62), cross-Term 0.74 (17%), same-term 0.66 (43%). No
+`AC-018` or `AC-032` defect.
+
 ---
 
 ### DEV-006 — Close-out checks and results review
