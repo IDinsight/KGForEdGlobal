@@ -438,7 +438,7 @@ Progress (2026-10-13):
 
 ### DEV-007 — Make both targets pass and record after-times
 
-`Status`: `IN_PROGRESS` `Depends On`: `DEV-006` `Acceptance`: `AC-007, AC-008,
+`Status`: `DONE` `Depends On`: `DEV-006` `Acceptance`: `AC-007, AC-008,
 AC-013`
 
 **Goal**
@@ -462,6 +462,11 @@ fixable in `src/` is recorded and raised with the user, not worked around.
 `time make test` and `time make test-all` from `backend/`, with the pytest
 summary lines captured; at least two runs of each target to catch
 order-dependent failures under different random seeds.
+
+Result (2026-10-13): all four runs passed (no test failures; the three
+`FAILED test_example.py::test_slow_failure` lines per log are inner pytester
+output from `tests/test_slow_selection.py`, as in the baseline). No test code
+needed isolation fixes. Times and comparison in **Measurements → After**.
 
 ---
 
@@ -554,6 +559,32 @@ Filled in by DEV-001, DEV-002, DEV-006, and DEV-007.
 
 Both runs: `-n auto` (12 workers), coverage on, random order, `kgfeg`
 coverage TOTAL 61%.
+
+### After (`AC-007`, `AC-008`, `AC-013`)
+
+- Date: 2026-10-13. Commit: `0a8770b` (DEV-001 to DEV-006 applied; plan and
+  cycle data uncommitted only). Machine and shell setup as in **Baseline**
+  (direnv-loaded shell); no env prefix, since both targets now set the test
+  environment themselves (`tests/test.env` plus `PATHS_PROJECT_DIR`). Run by
+  the user, sequentially, no other heavy work.
+- Command: `/usr/bin/time -p make <target>` from `backend/`, twice per target.
+  Logs: `after-make-test-1.log`, `after-make-test-2.log`,
+  `after-make-test-all-1.log`, `after-make-test-all-2.log`.
+- Runner: `-n auto --dist worksteal -rsPQ`, coverage on with
+  `concurrency = ["thread"]`, random order. `kgfeg` coverage TOTAL 61% in all
+  four runs.
+
+| Target | Baseline `real` (s), 1 run | After run 1 `real` (s) | After run 2 `real` (s) | Run 1 vs baseline | Passed / failed |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `make test` | 355.08 (`make test`) | 230.23 | 276.36 | −124.85 s (−35%) | 3,705 / 0 both runs |
+| `make test-all` | 714.49 (`make test TEST_ARGS=--run-slow`) | 340.74 | 283.91 | −373.75 s (−52%) | 4,448 / 0 both runs |
+
+- The baseline has one run per target, so the design's equal-run comparison
+  uses after run 1. Run 2 is also below the baseline for both targets; the
+  spread between the two after runs (46 s and 57 s) matches the about 50 s
+  run-to-run spread seen in DEV-006.
+- Counts: 3,705 = 3,855 default tests − 150 default-suite deletions (A1–A11);
+  4,448 = 4,741 − 293 (all of version 2).
 
 ### Timing measurement (`AC-001`, `AC-002`)
 
