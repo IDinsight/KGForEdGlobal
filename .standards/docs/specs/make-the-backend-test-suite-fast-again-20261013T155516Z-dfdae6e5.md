@@ -23,12 +23,18 @@ and a parallel full-suite CI run without losing coverage or test isolation.
     after sourcing `tests/test.env`.
   - `.github/workflows/tests.yml` job `backend-tests` runs the same pytest
     command serially, without `--run-slow`, and maps exit code 5 to success.
-  - `tests/test.env` sets only `LOGGING_LOG_LEVEL`. `BackendSettings`
-    (`backend/src/kgfeg/config.py`) requires `PATHS_PROJECT_DIR` and validates
-    `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION` as non-blank. CI supplies these plus
-    `CHAT_ENV` and a fake `OPENAI_API_KEY` in its workflow `env`. Locally they
-    come only from whatever the user's shell (direnv over the repo-root `.env`)
-    provides, so local and CI runs can differ.
+  - `tests/test.env` is git-ignored (`.gitignore:5`, `*.env*`) and has never
+    been committed. It exists only in the user's working copy, where it set
+    only `LOGGING_LOG_LEVEL=INFO` at cycle start. CI checkouts and fresh clones
+    lack it, and a recipe that sources it fails there before pytest runs.
+  - `BackendSettings` (`backend/src/kgfeg/config.py`) requires
+    `PATHS_PROJECT_DIR`, validates `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION` as
+    non-blank, and defaults `LOGGING_LOG_LEVEL` to `INFO`. CI supplies its test
+    values only through the workflow `env` block (`CHAT_ENV`,
+    `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION`, a fake `OPENAI_API_KEY`,
+    `PATHS_PROJECT_DIR`). Locally they come from whatever the user's shell
+    (direnv over the repo-root `.env` and `backend/.env.local`) provides, so
+    local and CI runs can differ.
   - Branch suite: 3,855 default tests, 4,741 with `--run-slow`; all slow marks
     are in `tests/kgfeg/kgs/`; `tests/kgfeg/evals/lp_eval/` (816 tests) has none.
     No test carries the `alembic` mark.
@@ -54,10 +60,12 @@ and a parallel full-suite CI run without losing coverage or test isolation.
    this purpose, so the default set cannot shrink without the same approval.
 4. **Two fixed Makefile targets share one runner definition** and differ only in
    test selection. No free-form argument variable replaces `TEST_ARGS`.
-5. **The Makefile targets set the test environment themselves.** `tests/test.env`
-   carries the same non-secret test values CI uses, and the recipe sets
-   `PATHS_PROJECT_DIR` to the repository root. Local and CI runs then see the
-   same settings, whatever the developer's shell exports.
+5. **`backend/tests/test.env` becomes a committed file and the single source of
+   fixed test values** for local runs and CI (user direction). Both targets
+   source it, as `make test` always has, so its values override the caller's
+   shell. A `.gitignore` exception tracks it. Only `PATHS_PROJECT_DIR`, which is
+   machine-specific, is set by the Makefile. The CI workflow drops its own copies
+   of these values.
 6. **CI calls `make test-all`.** Parallelism and coverage come from the target,
    so CI and developers run the same command.
 7. **Speed-ups stay inside test code and runner settings** and must keep every
@@ -78,10 +86,11 @@ and a parallel full-suite CI run without losing coverage or test isolation.
 - `AC-007`, `AC-008`: **Wall-clock measurement** protocol for after-times, and
   the permitted and forbidden speed-up levers under **Speed-up rules**.
 - `AC-009` through `AC-012`: **Makefile test targets** contract.
-- `AC-013`: **Makefile test targets** environment contract and the isolation
-  requirements in **Speed-up rules**; pass status is established by later
-  verification.
-- `AC-014`, `AC-015`: **CI workflow** contract.
+- `AC-013`: **Makefile test targets** and **Committed test environment**
+  contracts, and the isolation requirements in **Speed-up rules**; pass status
+  is established by later verification.
+- `AC-014`, `AC-015`: **CI workflow** contract; `AC-014` also relies on
+  **Committed test environment**.
 - `AC-016`: No architectural impact beyond the **CI workflow** contract. It is
   satisfied by an actual CI run on this branch during implementation and
   verification.
@@ -93,8 +102,10 @@ and a parallel full-suite CI run without losing coverage or test isolation.
 
 - `backend/Makefile` — owns the two test entry points and the shared runner
   options.
-- `backend/tests/test.env` — owns the non-secret test environment values sourced
-  by both targets.
+- `backend/tests/test.env` — committed; owns the fixed, non-secret test
+  environment values sourced by both targets.
+- Root `.gitignore` — gains one exception so `backend/tests/test.env` is
+  tracked; the `*.env*` rule stays for every other env file.
 - `backend/tests/pytest_slow.py` and `backend/tests/test_slow_selection.py` —
   unchanged. They remain the slow/default selection contract and its tests.
 - `backend/tests/**` test modules and `backend/tests/fixtures/**` — where
@@ -192,11 +203,33 @@ and a parallel full-suite CI run without losing coverage or test isolation.
 
 - Remove `TEST_ARGS` and the `run-tests` recipe. Do not add another free-form
   argument variable. Focused runs use pytest directly.
-- One shared runner definition used by both targets:
-  source `tests/test.env` (`set -a` / `set +a`, as today), export
-  `PATHS_PROJECT_DIR` as the absolute repository root (the parent of
-  `backend/`), then
+- One shared runner definition used by both targets: source
+  `tests/test.env` (`set -a` / `set +a`, as today), set `PATHS_PROJECT_DIR` to
+  the absolute repository root (the parent of `backend/`), then run
   `uv run pytest -n auto <report flags> --cov=. --cov-config=./pyproject.toml --cov-report term-missing <selection> tests`.
+  A missing `tests/test.env` is an error, as it is today.
+
+### Committed test environment (`AC-013`, `AC-014`)
+
+- `backend/tests/test.env` is tracked through a root `.gitignore` negation,
+  `!backend/tests/test.env`, placed after the `*.env*` rule. Do not rely on
+  `git add -f` alone.
+- It holds exactly these values:
+
+  | Variable                                 | Value                                       |
+  | ---------------------------------------- | ------------------------------------------- |
+  | `CHAT_ENV`                               | `testing`                                   |
+  | `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION` | `2026-07-09`                                |
+  | `LOGGING_LOG_LEVEL`                      | `INFO`                                      |
+  | `OPENAI_API_KEY`                         | `sk-fake` (the placeholder CI already uses) |
+
+- A header comment states that the file is committed, holds only fake or
+  non-secret test values, and must never hold real credentials.
+- The `OPENAI_API_KEY` line carries `# pragma: allowlist secret` so pre-commit
+  detect-secrets passes. The file is only ever sourced by bash, which treats
+  the trailing text as a comment.
+- `PATHS_PROJECT_DIR` is not in the file, because it is an absolute,
+  machine-specific path.
 - Selection:
   - `test`: `-m "not alembic"`, no `--run-slow`. Slow tests stay excluded by
     `pytest_slow.py`.
@@ -207,10 +240,6 @@ and a parallel full-suite CI run without losing coverage or test isolation.
 - `test` and `test-all` are in `.PHONY` and carry `##` help comments that state
   what each selects (fast default set excluding slow- and alembic-marked tests;
   every test including both).
-- `tests/test.env` adds `CHAT_ENV=testing`,
-  `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION=2026-07-09`, and
-  `OPENAI_API_KEY=sk-fake` with a `# pragma: allowlist secret` comment. Because
-  the file is sourced, these override shell values inside the targets.
 
 ### CI workflow (`AC-014`, `AC-015`)
 
@@ -220,9 +249,13 @@ and a parallel full-suite CI run without losing coverage or test isolation.
 - Parallelism comes from the target's `-n auto`. The coverage report comes from
   the target's `--cov-report term-missing`; pytest-cov combines worker data, so
   the job log still prints the `kgfeg` coverage table.
-- Triggers, path filters, the `changes` job, and the workflow `env` block stay
-  unchanged. Inside `make`, `tests/test.env` values take precedence over the
-  workflow `env` for the three overlapping variables; the values are identical.
+- Remove the workflow-level `env` block. Its `CHAT_ENV`,
+  `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION`, and `OPENAI_API_KEY` now come from
+  `tests/test.env`; `PATHS_PROJECT_DIR` comes from the Makefile and resolves to
+  the same checkout root as `${{ github.workspace }}`; and `LOGGING_LEVEL` is
+  not a setting `BackendSettings` reads (it reads `LOGGING_LOG_LEVEL`, which the
+  file sets). No other step in the workflow uses these variables.
+- Triggers, path filters, and the `changes` job stay unchanged.
 - The job must not fail because `tput` has no `TERM` when the Makefile is
   parsed. Developer chooses the fix (for example setting `TERM` for the step or
   guarding the color variables).
@@ -276,11 +309,13 @@ than working around it.
 - `AC-011`: `make test-all` passes `--run-slow` and no `-m` expression.
 - `AC-012`: `make help` prints `test` and `test-all` lines whose descriptions
   match the selections above.
-- `AC-013`: Both targets run with the environment from `tests/test.env` plus
-  `PATHS_PROJECT_DIR`, independent of the caller's shell values for those
-  variables.
+- `AC-013`: Both targets run pytest with the values from the committed
+  `tests/test.env` plus the Makefile's `PATHS_PROJECT_DIR`, independent of the
+  caller's shell values for those variables. `git ls-files` lists
+  `backend/tests/test.env`, and a fresh checkout of the branch has it.
 - `AC-014`: The `backend-tests` job's test step is `make test-all`, run from
-  `backend/`, with no direct pytest command.
+  `backend/`, with no direct pytest command, and the workflow defines no test
+  environment values of its own.
 - `AC-015`: The CI log of that step contains the `term-missing` coverage table
   for `kgfeg`.
 
@@ -291,7 +326,8 @@ than working around it.
    (`AC-001`, `AC-002`).
 3. Draft the deletion list with replacements from the rankings. Present it to
    the user and record approval (`AC-004`). Nothing is deleted before this.
-4. Rework `backend/Makefile` and `tests/test.env` (`AC-009` to `AC-012`).
+4. Rework `backend/Makefile`, commit `tests/test.env` with its `.gitignore`
+   exception (`AC-009` to `AC-013`).
 5. Apply the approved deletions, replacements, and helper moves (`AC-005`,
    `AC-006`).
 6. Apply speed-ups to the remaining slowest files, re-measuring as needed.
@@ -315,9 +351,15 @@ than working around it.
 - Changes that touch only `backend/Makefile` or `tests/test.env` do not trigger
   the workflow's path filters. Changing that is a scope non-goal; this branch
   triggers it through its `.py` and workflow changes.
-- After this change, the workflow `env` values for `CHAT_ENV`,
-  `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION`, and `OPENAI_API_KEY` no longer
-  affect the test step. A later cleanup could remove them from the workflow.
+- `tests/test.env` is the one committed env file, against the repository's
+  default of ignoring env files. Its header comment and the narrow
+  `.gitignore` exception carry that intent; a reviewer must reject real
+  credentials in it.
+- The file is no longer a per-machine override point: local edits show up as
+  diffs. A developer who wants other values for a focused run sets them on a
+  direct pytest command, as the scope already expects.
+- Documentation that tells developers how to set up test environment values
+  (if any) is Documenter's work in this cycle.
 - Documentation that mentions `TEST_ARGS` or only `make test` is Documenter's
   work in this cycle.
 
@@ -335,3 +377,10 @@ than working around it.
 - **Relying on the developer's shell for test environment values.** Rejected:
   local runs could pick up real keys or a different `CHAT_ENV` and diverge from
   CI.
+- **Fixed values in the Makefile, with `tests/test.env` left ignored.**
+  Rejected by the user in favor of one committed file that local runs and CI
+  both read. It would also have dropped the established `source` mechanism.
+- **Keeping the workflow `env` block alongside the file.** Rejected: two copies
+  of the same values can drift, and inside `make` the file wins anyway.
+- **Sourcing `tests/test.env` only when it exists.** Rejected: the file is now
+  always present in a checkout, and a silent fallback would hide a broken one.
