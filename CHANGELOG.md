@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.1](https://github.com/IDinsight/KGForEdGlobal/compare/v0.2.0...v0.2.1) (2026-10-13)
+
+
+### Performance Improvements
+
+* **backend:** speed up test suite and add make test-all ([#36](https://github.com/IDinsight/KGForEdGlobal/issues/36)) ([21c8a17](https://github.com/IDinsight/KGForEdGlobal/commit/21c8a172b26947e66fab0d641f6484bd5ca197f0))
+
 ## [0.2.0](https://github.com/IDinsight/KGForEdGlobal/compare/v0.1.0...v0.2.0) (2026-10-13)
 
 
