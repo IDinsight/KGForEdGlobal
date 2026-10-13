@@ -481,7 +481,7 @@ and 2000 characters per Skill; `AC-019` reports the dropped pairs.
 
 ### DEV-005 — LP run and no-stop final invocation
 
-`Status`: `IN_PROGRESS` `Depends On`: `DEV-004, DEV-009`
+`Status`: `DONE` `Depends On`: `DEV-004, DEV-009`
 `Acceptance`: `AC-012, AC-013, AC-017, AC-018, AC-032, AC-033`
 
 **Goal**
@@ -918,11 +918,20 @@ pass; throughput 23,487 windows, all at or above their own floor (lowest 78.5%
 of its own model-bound rate, window from 2026-10-12 00:33), 0 tolerated, 0
 failing.
 
+Self-check of record (user-run 2026-10-13 from the repo root on `c3b16e1`,
+outputs in `logs/kg_construction/dev005/`): `lp_checks.py` at 07:32 passed
+all nine checks; `lp_run_check.py` at 07:47 passed all four under the
+redesigned criterion (reuse; throughput 23,487 windows, 0 tolerated, 0
+failing, lowest 78.5% of its own model-bound rate; `AC-018`; 0 cycles), the
+same as the Developer trial. With the resume preflight (2026-10-11 13:09,
+passed) and the sampled review above, DEV-005's expected outcome holds.
+DEV-005 `DONE` 2026-10-13.
+
 ---
 
 ### DEV-006 — Close-out checks and results review
 
-`Status`: `PENDING` `Depends On`: `DEV-005`
+`Status`: `IN_PROGRESS` `Depends On`: `DEV-005`
 `Acceptance`: `AC-001, AC-002, AC-012, AC-013, AC-019, AC-020, AC-021, AC-023, AC-033`
 
 **Goal**
@@ -952,6 +961,120 @@ This plan (results review); `logs/kg_construction/dev006/`.
 
 S0/S_AS comparison scripts; config load script; `git diff` against `19f44f5`
 for paths and curriculum terms; `make test`, `make lint`.
+
+**Implementation Notes**
+
+Close-out script `logs/kg_construction/dev006/closeout_checks.py` (no LLM
+calls; reads the configs, git, the S0 and S_AS manifests, the DocumentIR and
+`kgs/`; writes `closeout_report.json`, `closeout_summary.txt`,
+`s0_compare_final.json`, `s_as_compare_closeout.json` and
+`closeout_sample.md` into `--out-dir`). Checks: S0 (`AC-002`); S_AS
+(`AC-012`); the committed CAPS config's output directory, page stages and LP
+budgets (`AC-001`, `AC-033`); the six other example configs unchanged since
+`19f44f5` and loading (`AC-021`); changed paths since `19f44f5` (committed,
+uncommitted and untracked) limited to `.standards/`, the CAPS config, the
+three LP checkpoint modules and `backend/tests/` (`AC-020`, `AC-021`); no
+added backend line carrying any of 61 curriculum terms (every example
+config's author, country, framework title and jurisdiction; CAPS Skill Area
+and Sub-strand labels and aliases of two or more words; four fixed CAPS
+terms) or the word `CAPS`; every line of every exported Skill's text printed
+in its source DocumentIR segment. Planted cases confirm the term scan and the
+source check catch a CAPS label and an altered Skill text.
+
+Developer trial 2026-10-13 (scratchpad): all seven pass. S0 identical (705
+files); S_AS identical (13 files); CAPS config committed, `output_dir`
+`<repo>/results/kg_for_ed`, pages 35/135 in both stages, budgets 30/14000;
+six other configs unchanged and loading; 15 changed paths, of them backend
+the three `kgs/` modules and six LP test files, examples only the CAPS
+config; 0 term hits in 2899 added backend lines; 924 of 924 Skills printed in
+their source segment. Backend source is unchanged since Tester's Increment 1
+`make test` (3854 passed) and `make lint` runs (`git diff b5a325c HEAD --
+backend` is empty).
+
+**Results review (`AC-019`, 2026-10-13)**
+
+Graph delivered (`as_lc_lp_kg_bundle.json`, `as_lc_lp_nodes.jsonl`,
+`as_lc_lp_relationships.jsonl`; export re-authenticated byte for byte, see
+DEV-005):
+
+- Nodes 2057: 1 framework, 1144 framework items, 912 Learning Components.
+- Framework items by statement type: Grade 4, Term 16, Skill Area 48,
+  Sub-strand 152 (all `Standard Grouping`, 220), Skill 924 (`Standard`);
+  Skills by Learning Commons grade: K 312, 1 188, 2 213, 3 211.
+- Relationships 11935: hasChild 1144, supports 1204, buildsTowards 2879,
+  relatesTo 6708. LP also judged 3305 pairs `no_relation` (not published)
+  and 0 `needs_review`.
+- LCs per Skill: 1: 679, 2: 215, 3: 25, 4: 5. Skills per LC: 1: 760, 2: 86,
+  3: 32, 4: 16, 5: 6, 6: 5, 7: 4, 8: 3.
+- LP candidates by budget: of 426,426 Skill pairs, 40,468 had evidence; the
+  per-Skill budget of 30 dropped 27,576 and the total budget of 14,000
+  dropped none, leaving 12,892 (bound 13,860), all judged.
+- LP by pair kind: buildsTowards share 10% within one Grade and Term, 36%
+  across Terms, 61% across adjacent Grades, 78% two or more Grades apart; all
+  491 cross-Grade edges go from the earlier Grade; median buildsTowards
+  confidence 0.65 / 0.72 / 0.78 (same Term / cross-Term / cross-Grade).
+- Model use: AS 3010 requests (80.75M input, 2.02M output tokens); LP 25,788
+  calls with usage over its three checkpoint runs (706.0M input, 43.6M output
+  tokens), 25,308 of them in the final run.
+
+Defects and their resolutions:
+
+- AS: none. AS run 1 passed every AS check; the user confirmed the AS with no
+  change (DEV-003, S_AS).
+- D-LC-1 (`AC-016`, LC run 1): merged LCs carried examples, qualifiers or
+  quantities that not every supported Skill states (146 links, 96 LCs);
+  cause, the CAPS LC dedup instructions merged scope-widening repeats. Fixed
+  in the CAPS `kgs.lc` instructions (stricter merging; no unstated scope) and
+  LC regeneration; LC run 2 flags 16 links, all rewordings (912 LCs).
+- D-LP-1 (design, LP run 1): the LP evidence bound of 2000 characters was
+  below the CAPS audit context (largest 2395), so request building failed.
+  Design `ec6dfe6` set it to 3000 with an offline LP preflight; all 12,892
+  requests built.
+- D-LP-2 (design, LP run 2): every checkpoint save re-verified the 569 MB
+  request population about ten times, limiting LP to about 17.6 requests an
+  hour (about 30 days). Design `cb7d9dc` (LP checkpoint integrity and
+  throughput contract) and the code fix DEV-007 to DEV-009 (Tester verified
+  Increment 1); run 3 resumed run 2's 240 requests and ran at about 320
+  requests an hour with checkpoint saves at a median of 0.06 s.
+- D-LP-3 (design, final run check): the `AC-017` throughput floor did not say
+  whose median model time sets it; design `66a24ab` uses each window's own
+  requests and accepts one-request misses that are not overhead (user
+  decision). All 23,487 windows pass (lowest 78.5%).
+- User reworks, not defects: Sub-strand level, Learning Commons alignment and
+  prompt-only Term order (2026-10-09); LP budgets 30 / 14,000 (2026-10-11);
+  checkpoint-scale save-time ratio dropped (2026-10-11); one-request
+  throughput misses accepted (2026-10-13).
+- Run events: LP run 2 restarted once unchanged by the user (part of its log
+  replaced); eight LP calls failed and succeeded on retry; one 6.1 s save
+  stall with no guard trip.
+
+Checked against the source:
+
+- Skills: all 924 exported Skills are printed, line by line, in their source
+  DocumentIR segment (close-out check), and DEV-002 matched all 924 printed
+  bullets by Grade, Term, Skill Area, Sub-strand and text. A sample of 10
+  (`closeout_sample.md`, seed 2026) reads the same in the source table under
+  the same placement (for example Grade 3 Term 2 Writing 'Keeps a diary for one
+  week, noting the weather and one other piece of information').
+- LCs: a sample of 10 are single learner skills taken from the supported
+  Skill's wording, splitting compound Skills ('Recalls details' from 'Recalls
+  details and states main idea'; 'Asks for explanations' from 'Asks
+  questions and asks for explanations'), with no teacher guidance, timing,
+  routine or assessment content; with DEV-004's review (D-LC-1 resolved).
+- LP relationships: `lp_sample.md` (30, seed 2026) and the interim reviews in
+  DEV-005: no edge runs against CAPS's Grade or Term order; about 17 of 30
+  clearly sound, about 10 plausible but loose, 3 weak, all at confidence 0.62
+  or lower.
+
+Limits a reader should know: LP relationships are model judgments the source
+does not state (the export records `pedagogical_correctness_established`
+false); same-Term buildsTowards edges are inferred prerequisites with the
+lowest confidence; relatesTo includes verbatim CAPS repeats across Terms and
+Grades (practice of the same skill); LP evidence per Skill is bounded (8 LCs,
+4 source items, 3000 characters), so most endpoints carry truncation
+warnings; Learning Commons node descriptions of groupings keep the printed
+labels (for example `Daily Phonic Activities of 15 minutes:`) with the
+canonical value in metadata.
 
 ---
 
