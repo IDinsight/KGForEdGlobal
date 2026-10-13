@@ -1,0 +1,12 @@
+# OpenAI Codex adapter. This file supplies the interface metadata Codex shows in its
+# agent picker. The skill's actual instructions live in ../SKILL.md, which the Agent
+# Skills client installs alongside this file and loads when the skill runs.
+interface:
+  default_prompt: "Use $developer to continue the persisted assignment while DEVELOPING, following the approved plan, collaboration mode, verification cadence, and locked user style. Reconcile Tester returns, record self-checks, apply pending cadence choices at the protocol's safe boundary, and use the applicable checkpoint, full-completion, or recovery handoff."
+  display_name: "Developer"
+  short_description: "Plan, approve, and implement the active change."
+
+policy:
+  allow_implicit_invocation: false
+  products:
+    - CODEX
