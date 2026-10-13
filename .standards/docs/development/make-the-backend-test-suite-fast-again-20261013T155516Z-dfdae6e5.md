@@ -472,7 +472,7 @@ needed isolation fixes. Times and comparison in **Measurements → After**.
 
 ### DEV-008 — Switch CI to `make test-all` and get a passing run
 
-`Status`: `PENDING` `Depends On`: `DEV-004, DEV-007` `Acceptance`: `AC-014,
+`Status`: `IN_PROGRESS` `Depends On`: `DEV-004, DEV-007` `Acceptance`: `AC-014,
 AC-015, AC-016`
 
 **Goal**
@@ -504,6 +504,25 @@ excerpt recorded here.
 
 Pushing the branch is outward-facing. Developer asks the user before pushing,
 or the user pushes and Developer reads the run with `gh`.
+
+Progress (2026-10-13):
+
+- `.github/workflows/tests.yml`: removed the workflow-level `env` block
+  (`CHAT_ENV`, `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION`, `LOGGING_LEVEL`,
+  `OPENAI_API_KEY`, `PATHS_PROJECT_DIR`); the `backend-tests` test step is now
+  `Run all tests with coverage` → `run: make test-all` (working directory
+  `backend` from the job defaults, after `uv sync --extra dev`). The direct
+  pytest command and the exit-code-5 special case are gone. Triggers, path
+  filters, the `changes` job, and the other steps are unchanged. No other
+  reference to the removed variables remains in the workflow (`grep`).
+- `pre-commit run --files .github/workflows/tests.yml`: check-yaml,
+  end-of-file, trailing-whitespace, detect-secrets, env-template-sync passed
+  (run outside the sandbox for uv's cache).
+- CI trigger: the workflow runs on `pull_request` (any branch) and on `push`
+  only to `main`, plus `workflow_dispatch`. A push of `tz6/fw` alone starts no
+  run; `gh pr list --head tz6/fw` shows no open PR. The user pushes and starts
+  the run (open a PR or dispatch the workflow on `tz6/fw`); Developer then
+  reads the run with `gh`.
 
 ---
 

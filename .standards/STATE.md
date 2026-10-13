@@ -13,7 +13,7 @@
 `.standards/docs/specs/make-the-backend-test-suite-fast-again-20261013T155516Z-dfdae6e5.md` `Development`:
 `.standards/docs/development/make-the-backend-test-suite-fast-again-20261013T155516Z-dfdae6e5.md` `PromotionReason`: `NONE`
 `AuditTarget`: `NONE` `BlockedOn`:
-`DEV-007 done; continue with DEV-008 (switch CI to make test-all)?` `PendingVerificationCadence`: `NONE`
+`DEV-008: user to push tz6/fw and start the Tests workflow (PR or workflow_dispatch), then share the run.` `PendingVerificationCadence`: `NONE`
 
 `BaselineReconciliation`: `NONE`
 

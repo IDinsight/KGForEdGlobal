@@ -20,13 +20,6 @@ on:
       - "backend/uv.lock"
       - "backend/tests/fixtures/**"
 
-env:
-  CHAT_ENV: testing
-  LEARNING_COMMONS_EXPORT_SCHEMA_VERSION: "2026-07-09"
-  LOGGING_LEVEL: DEBUG
-  OPENAI_API_KEY: sk-fake  # pragma: allowlist secret
-  PATHS_PROJECT_DIR: ${{ github.workspace }}
-
 jobs:
   changes:
     runs-on: ubuntu-latest
@@ -80,7 +73,6 @@ jobs:
       - name: Sync dev dependencies
         run: uv sync --extra dev
 
-      # Run Pytest with coverage for the backend.
-      - name: Run Pytest with coverage
-        run: |
-          uv run pytest -rsPQ -m "not alembic" --cov-report term-missing --cov-config=./pyproject.toml --cov=. tests; code=$?; if [ $code -eq 5 ]; then echo "✅  Pytest collected no tests – treating as pass"; exit 0; else exit $code; fi
+      # Run every test in parallel with coverage; test env values come from backend/tests/test.env.
+      - name: Run all tests with coverage
+        run: make test-all
