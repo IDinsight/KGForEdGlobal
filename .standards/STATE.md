@@ -1,6 +1,6 @@
 # S.T.A.N.D.A.R.D.S. Workflow State
 
-`WorkflowState`: `AUDITING` `CycleMode`: `STANDARD` `PendingCycleMode`:
+`WorkflowState`: `ARCHITECTING` `CycleMode`: `STANDARD` `PendingCycleMode`:
 `UNSET` `PendingCycleRequest`: `UNSET` `PendingCycleBlockedOn`: `NONE`
 
 ## Active Work
@@ -24,8 +24,8 @@ Preserve existing entries; see PROTOCOL.md, Baseline Reconciliation Format.
 
 ## Handoff
 
-`Kind`: `FAILURE` `From`: `DEVELOPING` `FailureType`: `PROJECT_CONTEXT`
-`Reason`: `backend/tests/test.env is gitignored (.gitignore:5 *.env*) and untracked, so the design's shared test env cannot reach CI or fresh clones.`
+`Kind`: `RESUME` `From`: `AUDITING` `FailureType`: `NONE`
+`Reason`: `Context now records that tests/test.env is git-ignored and never committed; the design's reliance on it needs an Architect rerun.`
 
 ## Recovery
 
@@ -35,7 +35,7 @@ Preserve existing entries; see PROTOCOL.md, Baseline Reconciliation Format.
 
 `From`: `DEVELOPING` `Owner`: `AUDITING` `FailureType`: `PROJECT_CONTEXT`
 `Reason`: `backend/tests/test.env is gitignored (.gitignore:5 *.env*) and untracked, so the design's shared test env cannot reach CI or fresh clones.`
-`ResumeAt`: `DEVELOPING` `RerunThrough`: `NONE`
+`ResumeAt`: `DEVELOPING` `RerunThrough`: `ARCHITECTING`
 
 ## Outstanding Obligations
 

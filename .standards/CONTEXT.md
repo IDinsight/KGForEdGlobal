@@ -86,12 +86,14 @@
 
 Run from `backend/`.
 
-- `make test` — the only test target. It runs the undocumented `run-tests`
-  recipe:
+- `make test` — before this cycle (commit `5359e04`), the only test target. It
+  runs the undocumented `run-tests` recipe:
   `set -a && source ./tests/test.env && set +a && uv run pytest -n auto -rsPQ -m "not alembic" --cov-report term-missing --cov-config=./pyproject.toml --cov=. tests $(TEST_ARGS)`.
   `TEST_ARGS ?=` is defined at `backend/Makefile:27`. The help text reads "Run
   focused tests; TEST_ARGS=--run-slow includes all integration matrices".
-  `run-tests` is not listed in `.PHONY`.
+  `run-tests` is not listed in `.PHONY`. The recipe works only where
+  `backend/tests/test.env` exists locally (see **Conventions and
+  Constraints**).
 - CI (`.github/workflows/tests.yml`, job `backend-tests`) runs from `backend/`
   after `uv sync --extra dev`:
   `uv run pytest -rsPQ -m "not alembic" --cov-report term-missing --cov-config=./pyproject.toml --cov=. tests`.
@@ -119,6 +121,25 @@ Run from `backend/`.
   linters, including docstrings.
 - The fake API key in `tests.yml` has a `# pragma: allowlist secret` comment
   for detect-secrets.
+- Env files are git-ignored by default. The root `.gitignore` ignores `.env*`
+  and `*.env*` (`:4-5`) and exempts only `!.envrc` and `!.template.env*`
+  (`:6-7`). The tracked env-related files are `.envrc`, `.template.env`,
+  `backend/.envrc`, and `backend/.template.env.local`. The templates carry the
+  key names, and `backend/.template.env.local` says to rename it to
+  `.env.local` and fill in values.
+- `backend/tests/test.env` matches `*.env*` (`.gitignore:5`) and has never been
+  committed on any branch (`git log --all -- backend/tests/test.env` is empty).
+  It exists only in this local working copy. CI checkouts and fresh clones do
+  not have it.
+- The pre-commit hook `env-template-sync` (`scripts/tools/check_env_template.py`)
+  checks that each `.env`, `.env.local`, `.env.development`, and
+  `.env.production` has the same key names as its `.template.*` partner, in
+  `.`, `backend`, `cicd/deployment/docker-compose`, and `frontend`. It does not
+  cover `backend/tests/` or a file named `test.env`.
+- Secret scanning: pre-commit detect-secrets runs against `.secrets.baseline`,
+  excluding only `frontend/pnpm-lock.yaml` and files ending `.template.env`.
+  `.github/workflows/trufflehog-pr.yml` scans PRs to `main` with
+  `--only-verified`.
 
 ## External Systems and Data
 
@@ -129,9 +150,14 @@ Run from `backend/`.
   access.
 - `Settings` reads `.env` relative to the working directory
   (`src/kgfeg/config.py:67`). `backend/` has `.env.local` and `.envrc` but no
-  `.env`; the repo root has `.env`. Values were not inspected.
-  `tests/test.env` defines only `LOGGING_LOG_LEVEL`. CI sets `LOGGING_LEVEL`,
-  which is not the setting name `config.py:56` reads.
+  `.env`; the repo root has `.env`. Values were not inspected. `backend/.envrc`
+  (direnv) sources the root `.envrc`, selects an env file from `PROJECT_ENV`,
+  and loads it with `dotenv`. At cycle start, the local untracked
+  `tests/test.env` defined only `LOGGING_LOG_LEVEL`. CI sets `LOGGING_LEVEL`,
+  which is not the setting name `config.py:56` reads. CI gets its test values
+  only from the workflow `env` block (`CHAT_ENV`,
+  `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION`, `LOGGING_LEVEL`, `OPENAI_API_KEY`,
+  `PATHS_PROJECT_DIR`).
 
 ## Testing and Verification Baseline
 
@@ -189,6 +215,11 @@ Run from `backend/`.
 - `make test` runs the suite in parallel with coverage and sources
   `tests/test.env`. Passing `TEST_ARGS=--run-slow` adds the 886 slow tests;
   other values are appended verbatim as pytest arguments.
+- If `tests/test.env` is missing, as in a fresh clone or CI checkout,
+  `source ./tests/test.env` fails with "No such file or directory". The `&&`
+  chain then stops before pytest and `make` exits non-zero. This was verified
+  with the same `set -a && source <missing> && set +a && ...` shape under bash.
+  The same applies to any recipe that sources the file.
 - `--run-slow` alone runs every collected test, because no test carries the
   `alembic` mark.
 - CI runs the default (non-slow) set serially with coverage on pull requests
@@ -197,6 +228,17 @@ Run from `backend/`.
   `changes` job gates the test job on `**.py` changes only.
 - `test_slow_selection.py` asserts the `--run-slow` contract of
   `pytest_slow.py`. Changing or removing that switch affects these tests.
+
+## Active-Cycle Non-Baseline Work
+
+- `Cycle: make-the-backend-test-suite-fast-again-20261013T155516Z-dfdae6e5; backend/Makefile`
+  — commit `b99c29e` replaced `TEST_ARGS`/`run-tests` with `test` and `test-all`
+  targets and guarded `tput`. These are tentative cycle changes. The pre-cycle
+  Makefile at `5359e04` is the baseline described above.
+- `Cycle: make-the-backend-test-suite-fast-again-20261013T155516Z-dfdae6e5; backend/tests/test.env`
+  — a local, uncommitted edit added `CHAT_ENV`,
+  `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION`, and `OPENAI_API_KEY` keys. The file
+  is ignored, so git does not record this edit and it does not reach CI.
 
 ## Known Unknowns
 
@@ -209,14 +251,23 @@ Run from `backend/`.
 - Whether local `make test` gets `CHAT_ENV`,
   `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION`, `OPENAI_API_KEY`, and
   `PATHS_PROJECT_DIR` from `backend/.envrc` (direnv) or the shell is not
-  established. `tests/test.env` does not set them, and the previous cycle
-  recorded that focused runs needed them supplied explicitly.
+  established. The pre-cycle `tests/test.env` did not set them, and the
+  previous cycle recorded that focused runs needed them supplied explicitly.
+- Whether detect-secrets flags a committed file containing the CI fake-key
+  value without an allowlist pragma has not been tested.
 - Whether every test passes under xdist with random ordering is not
   established. CI runs serially.
 
 ## Evidence
 
-- `backend/Makefile:27`, `:138-144` — `TEST_ARGS`, `test`, and `run-tests`.
+- `git show 5359e04:backend/Makefile` (`:27`, `:138-144`) — pre-cycle
+  `TEST_ARGS`, `test`, and `run-tests`.
+- `.gitignore:4-7`, `git check-ignore -v backend/tests/test.env`,
+  `git ls-files`, `git log --all -- backend/tests/test.env` — env-file ignore
+  rules and the untracked status of `tests/test.env`.
+- `.pre-commit-config.yaml`, `scripts/tools/check_env_template.py`,
+  `.github/workflows/trufflehog-pr.yml` — env-template sync and secret
+  scanning.
 - `backend/pyproject.toml:82-108`, `:152-175` — pytest, coverage, and test
   dependency pins.
 - `.github/workflows/tests.yml` — CI triggers, environment, and pytest command.
