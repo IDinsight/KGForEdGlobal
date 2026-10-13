@@ -38,6 +38,25 @@
     2. Run `source .venv/bin/activate`: This will activate the virtual environment created by `make fresh-env`.
 2. See [The Pipeline](#the-pipeline) section for instructions on how to run each step of the pipeline.
 
+## Running Tests
+
+From the `backend` directory, with the virtual environment active:
+
+1. `make test` runs the fast default suite in parallel with coverage. It leaves out
+   tests marked `slow` (large LP integration matrices) and `alembic`.
+2. `make test-all` runs every test, including the slow ones, in parallel with
+   coverage. This is what CI runs on pull requests.
+
+Both targets read their environment from `backend/tests/test.env`, which is
+committed and holds only fake or non-secret test values. Never put real
+credentials in it. The targets override any matching values in your shell, so
+local runs match CI.
+
+To run a subset, call pytest directly, for example
+`uv run pytest tests/kgfeg/kgs/test_lp_export.py --run-slow`. When you do, set the
+values from `tests/test.env` (and `PATHS_PROJECT_DIR`) yourself, because
+pytest does not read that file.
+
 ## Local Clean up Instructions
 
 1. In the backend directory, run `deactivate`. This will exit out of the virtual environment created by `uv`.

@@ -167,9 +167,8 @@ def _source(tmp_path_factory: pytest.TempPathFactory) -> Path:
         "transaction_next_failure_zero",
     ],
 )
-@pytest.mark.parametrize(
-    argnames="projection", argvalues=["internal", "converted", "wire"]
-)
+# Execution evidence is rejected before projections are read, so one family suffices.
+@pytest.mark.parametrize(argnames="projection", argvalues=["wire"])
 def test_checkpoint_contract_rejects_before_effects(
     _source: Path,
     attack: str,

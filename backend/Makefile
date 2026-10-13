@@ -1,7 +1,7 @@
 #!make
 
 .DEFAULT_GOAL := help
-.PHONY: clean clean-docker clean-docker-container fresh-env help install lint test uv-check-updates uv-lock uv-sync uv-update-deps
+.PHONY: clean clean-docker clean-docker-container fresh-env help install lint test test-all uv-check-updates uv-lock uv-sync uv-update-deps
 
 # Put it first so that "make" without argument is like "make help".
 help: ## Display available commands
@@ -9,11 +9,12 @@ help: ## Display available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[32m%-20s\033[0m %s\n", $$1, $$2}'
 
 ########## COLOR CODES FOR OUTPUT ##########
-RED := $(shell tput setaf 1)
-GREEN := $(shell tput setaf 2)
-YELLOW := $(shell tput setaf 3)
-BLUE := $(shell tput setaf 4)
-RESET := $(shell tput sgr0)
+# Silence tput when TERM is unset (e.g. in CI); colors are then empty.
+RED := $(shell tput setaf 1 2>/dev/null)
+GREEN := $(shell tput setaf 2 2>/dev/null)
+YELLOW := $(shell tput setaf 3 2>/dev/null)
+BLUE := $(shell tput setaf 4 2>/dev/null)
+RESET := $(shell tput sgr0 2>/dev/null)
 
 ########## GLOBALS ##########
 SHELL := /bin/bash
@@ -24,9 +25,15 @@ VENV ?= .venv
 PYTHON = $(VENV)/bin/python
 UV = uv
 UV_PIP = $(UV) pip
-TEST_ARGS ?=
+REPO_ROOT := $(abspath $(CURDIR)/..)
 
 export-test-env = set -a && source ./tests/test.env && set +a &&
+
+# Shared pytest runner for the test targets; each target appends only its test selection.
+# worksteal rebalances the few long LP evaluation tests across idle workers.
+run-pytest = $(export-test-env) \
+	PATHS_PROJECT_DIR="$(REPO_ROOT)" \
+	$(UV) run pytest -n auto --dist worksteal -rsPQ --cov=. --cov-config=./pyproject.toml --cov-report term-missing
 
 ########## CLEAN UP ##########
 # Delete all compiled Python files.
@@ -137,8 +144,8 @@ clean-docker-container = \
 	docker system prune -f
 
 ########## TEST SETUP ##########
-test: run-tests  ## Run focused tests; TEST_ARGS=--run-slow includes all integration matrices
+test: ## Run the fast default tests (excludes slow- and alembic-marked tests) in parallel with coverage
+	@$(run-pytest) -m "not alembic" tests
 
-run-tests:
-	@$(export-test-env) \
-	$(UV) run pytest -n auto -rsPQ -m "not alembic" --cov-report term-missing --cov-config=./pyproject.toml --cov=. tests $(TEST_ARGS)
+test-all: ## Run every test (includes slow- and alembic-marked tests) in parallel with coverage
+	@$(run-pytest) --run-slow tests

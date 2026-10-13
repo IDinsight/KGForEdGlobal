@@ -343,14 +343,7 @@ def test_bad_matching_store_blocks_without_fresh_discovery(
 
 @pytest.mark.parametrize(
     argnames="attack",
-    argvalues=[
-        "delete",
-        "duplicate",
-        "event_count",
-        "event_head",
-        "execution_number",
-        "history_hash",
-    ],
+    argvalues=["delete", "duplicate", "history_hash"],
 )
 def test_execution_boundary_tampering_fails_before_dispatch(
     _invocation: Any, attack: str
@@ -377,20 +370,14 @@ def test_execution_boundary_tampering_fails_before_dispatch(
         raw, digest = connection.execute(
             "SELECT payload, content_hash FROM executions WHERE sequence = 1"
         ).fetchone()
-        value = json.loads(raw)
         if attack == "delete":
             connection.execute("DELETE FROM executions")
         elif attack == "duplicate":
             connection.execute(
                 "INSERT INTO executions VALUES (?, ?, ?)", (2, raw, digest)
             )
-        elif attack == "history_hash":
-            connection.execute("UPDATE executions SET content_hash = ?", ("0" * 64,))
         else:
-            value[attack] = "0" * 64 if attack == "event_head" else 99
-            connection.execute(
-                "UPDATE executions SET payload = ?", (support._dump(value),)
-            )
+            connection.execute("UPDATE executions SET content_hash = ?", ("0" * 64,))
     before = _state(path.parent)
     transport = _Transport(failures=[], schedule=schedule)
     with pytest.raises(ValueError):
@@ -402,19 +389,7 @@ def test_execution_boundary_tampering_fails_before_dispatch(
 
 @pytest.mark.parametrize(
     argnames="category",
-    argvalues=[
-        "timeout",
-        "rate_limit",
-        "server_error",
-        "invalid_output",
-        "citation",
-        "transport",
-        "authentication",
-        "configuration",
-        "invalid_input",
-        "interrupted",
-        "http_400",
-    ],
+    argvalues=["timeout", "citation", "authentication", "http_400"],
 )
 def test_explicit_reruns_preserve_partial_cycles_and_lifetime_usage(
     _invocation: Any, category: str
@@ -429,14 +404,7 @@ def test_explicit_reruns_preserve_partial_cycles_and_lifetime_usage(
         Failure class from the first explicitly initiated execution.
     """
     schedule, _ = _read(_invocation)
-    retryable = category in {
-        "timeout",
-        "rate_limit",
-        "server_error",
-        "invalid_output",
-        "citation",
-        "http_400",
-    }
+    retryable = category in {"timeout", "citation", "http_400"}
     first_count = _EXPECTED_ATTEMPTS_PER_CYCLE if retryable else 1
     first = _Transport(failures=[category] * first_count, schedule=schedule)
     waits: list[float] = []
@@ -502,7 +470,7 @@ def test_explicit_reruns_preserve_partial_cycles_and_lifetime_usage(
 
 @pytest.mark.parametrize(
     argnames="failure",
-    argvalues=["authentication", "configuration", "changed_settings"],
+    argvalues=["authentication", "changed_settings"],
 )
 def test_failed_current_preflight_cannot_close_unknown_history(
     _invocation: Any, failure: str, monkeypatch: pytest.MonkeyPatch

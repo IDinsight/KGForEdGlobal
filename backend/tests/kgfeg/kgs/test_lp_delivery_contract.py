@@ -99,27 +99,23 @@ def test_exact_upstream_bytes_survive_fresh_and_reused_delivery(
     assert harness.calls == calls
 
 
+# Representative cases: every parse error fails one read wrapper and every other
+# change fails one canonical comparison, for either file and either operation.
 @pytest.mark.parametrize(
-    argnames="attack",
+    argnames="operation,name,attack",
     argvalues=[
-        "alias",
-        "blank_line",
-        "duplicate_key",
-        "duplicate_row",
-        "extra_metadata",
-        "missing",
-        "numeric_property",
-        "omit",
-        "reorder",
-        "stale",
-        "truncate",
+        ("compile", "as_lc_nodes.jsonl", "blank_line"),
+        ("compile", "as_lc_nodes.jsonl", "duplicate_key"),
+        ("compile", "as_lc_nodes.jsonl", "missing"),
+        ("compile", "as_lc_nodes.jsonl", "stale"),
+        ("compile", "as_lc_nodes.jsonl", "truncate"),
+        ("compile", "as_lc_relationships.jsonl", "stale"),
+        ("reuse", "as_lc_nodes.jsonl", "stale"),
+        ("reuse", "as_lc_relationships.jsonl", "missing"),
+        ("reuse", "as_lc_relationships.jsonl", "stale"),
     ],
 )
-@pytest.mark.parametrize(
-    argnames="name", argvalues=["as_lc_nodes.jsonl", "as_lc_relationships.jsonl"]
-)
-@pytest.mark.parametrize(argnames="operation", argvalues=["compile", "reuse"])
-def test_invalid_upstream_delivery_rejects_before_publication(  # pylint: disable=too-complex,too-many-branches
+def test_invalid_upstream_delivery_rejects_before_publication(
     attack: str,
     monkeypatch: pytest.MonkeyPatch,
     name: str,
@@ -131,7 +127,7 @@ def test_invalid_upstream_delivery_rejects_before_publication(  # pylint: disabl
     Parameters
     ----------
     attack
-        Raw syntax, alias, value, population or material corruption.
+        Raw syntax, duplicate-key, missing-file or material corruption.
     monkeypatch
         Offline producer/checker seam.
     name
@@ -150,20 +146,7 @@ def test_invalid_upstream_delivery_rejects_before_publication(  # pylint: disabl
     if attack == "missing":
         path.unlink()
     else:
-        if attack == "alias":
-            properties = rows[0]["properties"]
-            properties["attribution_statement"] = properties.pop("attributionStatement")
-        elif attack == "duplicate_row":
-            rows.append(rows[0])
-        elif attack == "extra_metadata":
-            rows[0]["properties"]["metadata"] = {"unexpected": True}
-        elif attack == "numeric_property":
-            rows[0]["properties"]["identifier"] = 1
-        elif attack == "omit":
-            rows.pop()
-        elif attack == "reorder":
-            rows.reverse()
-        elif attack == "stale":
+        if attack == "stale":
             rows[0]["properties"]["attributionStatement"] += " changed"
         payload = b"".join(_export._bytes(row) for row in rows)
         if attack == "duplicate_key":

@@ -358,10 +358,10 @@ def test_complete_upstream_content_and_standalone_audit_shapes_survive(  # pylin
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize(
-    argnames="attack", argvalues=["duplicate", "gap", "reorder", "stale_id", "truncate"]
-)
-@pytest.mark.parametrize(argnames="name", argvalues=_STAGES)
+# One representative case: the other stage and attack combinations are rejected
+# by the same preflight, covered by test_lp_reuse's prefix-corruption matrix.
+@pytest.mark.parametrize(argnames="attack", argvalues=["gap"])
+@pytest.mark.parametrize(argnames="name", argvalues=["lp_generation_responses.jsonl"])
 def test_corrupt_checkpoint_authority_blocks_compilation(
     attack: str, monkeypatch: pytest.MonkeyPatch, name: str, tmp_path: Path
 ) -> None:
@@ -384,18 +384,10 @@ def test_corrupt_checkpoint_authority_blocks_compilation(
     path = tmp_path / name
     rows = [json.loads(line) for line in path.read_bytes().splitlines()]
     assert len(rows) == 6
-    if attack == "duplicate":
-        rows.insert(1, deepcopy(rows[0]))
-    elif attack == "gap":
-        rows.pop(1)
-    elif attack == "reorder":
-        rows[0], rows[1] = rows[1], rows[0]
-    elif attack == "stale_id":
-        rows[0]["payload"]["request_id"] = "stale-request"
+    assert attack == "gap"
+    rows.pop(1)
     path.write_bytes(b"".join(_bytes(row) for row in rows))
     _storage._reseal(name=name, root=tmp_path)
-    if attack == "truncate":
-        path.write_bytes(path.read_bytes()[:-9])
     before = _snapshot(tmp_path)
     with pytest.raises(_REJECTIONS):
         _compile(harness=harness)
@@ -610,10 +602,16 @@ def test_missing_generation_evidence_cannot_be_reinitialized_by_compilation(
 
 
 @pytest.mark.slow
+# test_lp_artifacts covers every file and attack through read_lp_artifacts; these
+# cases keep one compile-entry check per attack, including the preflight-read file.
 @pytest.mark.parametrize(
-    argnames="attack", argvalues=["malformed", "missing", "noncanonical"]
+    argnames="name,attack",
+    argvalues=[
+        ("lp_generation_failures.json", "malformed"),
+        ("lp_generation_summary.json", "missing"),
+        ("lp_validation_report.json", "noncanonical"),
+    ],
 )
-@pytest.mark.parametrize(argnames="name", argvalues=_artifacts._FILES)
 def test_missing_malformed_and_noncanonical_standalone_artifacts_fail_closed(
     attack: str, monkeypatch: pytest.MonkeyPatch, name: str, tmp_path: Path
 ) -> None:

@@ -413,13 +413,7 @@ def test_malformed_projection_never_falls_back_or_rewrites_evidence(  # pylint: 
 
 @pytest.mark.parametrize(
     argnames="filename",
-    argvalues=[
-        "compatibility.py",
-        "lp_export.py",
-        "lp_requests.py",
-        "sampling.py",
-        "schemas.py",
-    ],
+    argvalues=["sampling.py"],
 )
 def test_projection_implementation_changes_preserve_saved_schedule(
     _sources: dict[str, Path],

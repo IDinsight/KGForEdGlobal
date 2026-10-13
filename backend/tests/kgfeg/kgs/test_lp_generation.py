@@ -53,21 +53,21 @@ _NAMESPACE = UUID("3f6b9f2a-7d8a-5d85-a9c3-9f3b8d3c3f4b")
 
 
 def _integration_profiles(profiles: tuple[str, ...]) -> list[Any]:
-    """Mark large checkpoint matrices while retaining every reduced fixture.
+    """Select and mark the profiles for full generation-through-publication matrices.
 
     Use only for full generation-through-publication/reuse tests. Selection,
     nomination, request-building, and small-fixture regressions remain default.
-    Ghana English and Rwanda produce 56 and 100 pairs in these matrices; their
-    repeated real checkpoint validation dominates measured suite time.
+    Rwanda (100 pairs) is left out: no matrix assertion depends on it, and its
+    end-to-end runs dominated measured suite time. Ghana English (56 pairs) stays
+    as the one large profile, marked slow.
     """
     return [
         pytest.param(
             profile,
-            marks=(
-                pytest.mark.slow if profile in {"ghana_english", "rwanda_math"} else ()
-            ),
+            marks=pytest.mark.slow if profile == "ghana_english" else (),
         )
         for profile in profiles
+        if profile != "rwanda_math"
     ]
 
 

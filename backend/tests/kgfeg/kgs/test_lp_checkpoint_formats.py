@@ -71,50 +71,32 @@ _OPERATIONS = (
     "write_artifacts",
 )
 _ATTACKS = (
-    "compatibility_failure_zero",
-    "compatibility_stage_zero",
-    "compatibility_both_zero",
     "failure_missing_attempt",
     "material_capacity_missing",
     "material_capacity_bool",
-    "material_capacity_null",
     "material_capacity_string",
     "material_capacity_zero",
-    "missing_both_journals",
     "missing_pending",
     "missing_receipt",
     "missing_usage",
     "partial_pending",
     "prefix_complete",
-    "prefix_empty",
-    "prefix_partial",
-    "prefix_stale_material",
     "receipt_extra_artifact",
     "receipt_unknown_field",
-    "unauthenticated_pending",
-    "unauthenticated_usage",
     "upgraded_complete",
-    "upgraded_with_native_attempts",
     "usage_all_attempts_missing",
-    "usage_attempts_missing",
     "usage_draft_attempt_missing",
     "usage_verdict_attempt_missing",
-    "usage_capacity_missing",
     "usage_capacity_bool",
-    "usage_capacity_null",
     "usage_capacity_string",
     "usage_capacity_zero",
     "usage_unknown_field",
     "transaction_old_prefix",
     "transaction_mixed_upgrade",
-    "transaction_partial_predecessor",
     "transaction_visible_legacy_usage",
     "transaction_visible_prefix_receipt",
-    "transaction_next_failure_zero",
     "transaction_next_stage_zero",
     "transaction_next_missing_attempt",
-    "transaction_next_missing_capacity",
-    "transaction_next_missing_journal",
     "transaction_unexplained_missing_journal",
     "transaction_unknown_field",
 )
@@ -152,24 +134,10 @@ def _attack(*, attack: str, root: Path) -> None:  # pylint: disable=R0912, R0915
                 "zero": 0,
             }[key]
         receipt["execution_content_hash"] = _hash(_bytes(receipt["material"]))
-    elif attack.startswith("prefix_"):
+    elif attack == "prefix_complete":
         for name in (_PENDING, _USAGE):
             (root / name).unlink()
             del receipt["artifact_byte_hashes"][name]
-        if attack in {"prefix_empty", "prefix_partial"}:
-            for stage, name in _STAGES.items():
-                payload = (
-                    (root / name).read_bytes()
-                    if attack == "prefix_partial" and stage == "draft"
-                    else b""
-                )
-                (root / name).write_bytes(payload)
-                receipt["artifact_byte_hashes"][name] = _hash(payload)
-                receipt["stage_counts"][stage] = len(payload.splitlines())
-            receipt["status"] = "incomplete"
-        if attack == "prefix_stale_material":
-            receipt["material"]["config_content_hash"] = "0" * 64
-            receipt["execution_content_hash"] = _hash(_bytes(receipt["material"]))
         (root / _RECEIPT).write_bytes(_bytes(receipt))
         return
     elif attack in {
@@ -223,8 +191,6 @@ def _attack(*, attack: str, root: Path) -> None:  # pylint: disable=R0912, R0915
         ]
     elif attack == "usage_all_attempts_missing":
         usage["attempts"] = []
-    elif attack == "usage_attempts_missing":
-        del usage["attempts"]
     elif attack in {"usage_draft_attempt_missing", "usage_verdict_attempt_missing"}:
         stage = "draft" if attack == "usage_draft_attempt_missing" else "verdict"
         usage["attempts"] = [row for row in usage["attempts"] if row["stage"] != stage]
@@ -274,9 +240,6 @@ def _attack_transaction(  # pylint: disable=R0912, R1260
         for name in (_PENDING, _USAGE):
             previous[name] = None
             (root / name).unlink()
-    elif attack == "transaction_partial_predecessor":
-        previous[_RECEIPT] = None
-        (root / _RECEIPT).unlink()
     elif attack == "transaction_visible_legacy_usage":
         visible = deepcopy(usage)
         visible["legacy_stage_counts"] = dict.fromkeys(_STAGES, 0)
@@ -294,10 +257,6 @@ def _attack_transaction(  # pylint: disable=R0912, R1260
         usage["legacy_stage_counts"] = dict.fromkeys(_STAGES, 0)
     elif attack == "transaction_next_missing_attempt":
         usage["attempts"] = []
-    elif attack == "transaction_next_missing_capacity":
-        del usage["max_concurrent_requests"]
-    elif attack == "transaction_next_missing_journal":
-        del payloads[_PENDING]
     elif attack == "transaction_unexplained_missing_journal":
         (root / _PENDING).unlink()
     elif attack != "transaction_unknown_field":

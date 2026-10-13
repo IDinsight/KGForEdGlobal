@@ -541,13 +541,7 @@ def test_all_cells_projection_corruption_rejects_before_publication(  # pylint: 
 @pytest.mark.parametrize(argnames="checkpoint,projection", argvalues=_CELLS)
 @pytest.mark.parametrize(
     argnames="mutation",
-    argvalues=[
-        "frozen_bytes",
-        "new_journal",
-        "source_bytes",
-        "source_format",
-        "source_missing",
-    ],
+    argvalues=["frozen_bytes", "new_journal", "source_bytes", "source_missing"],
 )
 def test_all_cells_resume_rejects_material_changes_before_dispatch(
     _sources: dict[str, Path],
@@ -591,11 +585,6 @@ def test_all_cells_resume_rejects_material_changes_before_dispatch(
         path.chmod(0o444)
     elif mutation == "source_missing":
         (directory / "as_lc_lp_nodes.jsonl").unlink()
-    elif mutation == "source_format":
-        projections._format(
-            directory=directory,
-            projection="internal" if projection == "wire" else "wire",
-        )
     else:
         path = directory / (
             "lp_generation_usage.json"

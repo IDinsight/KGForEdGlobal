@@ -5,6 +5,7 @@
 *.env*
 !.envrc
 !.template.env*
+!backend/tests/test.env
 .venv
 env/
 venv/

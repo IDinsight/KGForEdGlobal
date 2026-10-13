@@ -556,7 +556,8 @@ def test_complete_checker_corrections_replace_all_draft_interpretations(
     ],
 )
 @pytest.mark.parametrize(argnames="name", argvalues=_STAGES)
-@pytest.mark.parametrize(argnames="validate", argvalues=[False, True])
+# Finalize and read-only validation share the preflight that rejects these attacks.
+@pytest.mark.parametrize(argnames="validate", argvalues=[False])
 def test_corrupt_checkpoint_populations_fail_at_public_artifact_boundary(
     attack: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -577,7 +578,7 @@ def test_corrupt_checkpoint_populations_fail_at_public_artifact_boundary(
     tmp_path
         Isolated persisted artifacts.
     validate
-        Exercise read-only validation as well as finalization.
+        Whether to use read-only validation instead of finalization.
     """
     harness = _Harness(batch=1, count=3, root=tmp_path)
     _install(harness=harness, monkeypatch=monkeypatch)

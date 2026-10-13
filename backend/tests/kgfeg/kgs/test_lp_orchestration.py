@@ -1637,12 +1637,12 @@ def test_resealed_success_prefix_attacks_reach_structural_validation(
             profile,
             empty,
             marks=(
-                pytest.mark.slow
-                if not empty and profile in {"ghana_english", "rwanda_math"}
-                else ()
+                pytest.mark.slow if not empty and profile == "ghana_english" else ()
             ),
         )
+        # Rwanda is left out of this matrix, as in `_integration_profiles`.
         for profile in _PROFILES
+        if profile != "rwanda_math"
         for empty in (False, True)
     ],
 )

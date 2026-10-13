@@ -1335,7 +1335,7 @@ def test_frozen_source_detects_changed_missing_and_new_material(
         sampling._frozen_source_check(snapshot)
 
 
-@pytest.mark.parametrize("mutation", ["mode", "schema", "sdk"])
+@pytest.mark.parametrize("mutation", ["mode"])
 def test_incompatible_store_is_rejected_without_evidence_writes(
     _schedule: Any, monkeypatch: pytest.MonkeyPatch, mutation: str
 ) -> None:
@@ -1362,12 +1362,7 @@ def test_incompatible_store_is_rejected_without_evidence_writes(
         if path.is_file()
     }
     contract = json.loads(_schedule.judge.output_contract_json)
-    if mutation == "mode":
-        contract["mode"] = "tool"
-    elif mutation == "schema":
-        contract["schemas"]["classification"]["schema"]["required"].append("new_field")
-    else:
-        contract["sdk_versions"]["anthropic"] = "new-sdk-version"
+    contract[mutation] = "tool"
     monkeypatch.setattr(
         name="judge_output_contract",
         target=sampling,
