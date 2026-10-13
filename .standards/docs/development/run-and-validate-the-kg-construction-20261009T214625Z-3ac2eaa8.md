@@ -7,7 +7,7 @@ Cycle: run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8
 
 `Cycle`: `run-and-validate-the-kg-construction-20261009T214625Z-3ac2eaa8` `Mode`: `STEPWISE`
 `User Style`: `tony` `User Style Locked`: `true`
-`Status`: `IN_PROGRESS` `Verification Cadence`:
+`Status`: `COMPLETE` `Verification Cadence`:
 `INCREMENTAL` `Current Increment`: `NONE`
 
 ## Implementation Contract
@@ -931,7 +931,7 @@ DEV-005 `DONE` 2026-10-13.
 
 ### DEV-006 — Close-out checks and results review
 
-`Status`: `IN_PROGRESS` `Depends On`: `DEV-005`
+`Status`: `DONE` `Depends On`: `DEV-005`
 `Acceptance`: `AC-001, AC-002, AC-012, AC-013, AC-019, AC-020, AC-021, AC-023, AC-033`
 
 **Goal**
@@ -1075,6 +1075,26 @@ Grades (practice of the same skill); LP evidence per Skill is bounded (8 LCs,
 warnings; Learning Commons node descriptions of groupings keep the printed
 labels (for example `Daily Phonic Activities of 15 minutes:`) with the
 canonical value in metadata.
+
+Self-check of record (user-run 2026-10-13 from the repo root on `9595eca`,
+outputs in `logs/kg_construction/dev006/`):
+
+- `closeout_checks.py --out-dir logs/kg_construction/dev006` (07:59):
+  `passed: True`, all seven checks as in the Developer trial (S0 705/705 and
+  S_AS 13/13 identical; CAPS config; six other configs; diff bounds; 0 term
+  hits in 2899 added backend lines; 924 of 924 Skills printed in source).
+- `make -C backend test` with `CHAT_ENV=testing`,
+  `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION=2026-07-09`, a placeholder
+  `OPENAI_API_KEY` and `PATHS_PROJECT_DIR=<repo root>` (`make_test.log`):
+  3855 passed, 0 failed, 94 warnings, 9 min 17 s. The `FAILED
+  test_example.py::test_slow_failure` lines in the log are the inner pytester
+  run of `tests/test_slow_selection.py`, which passes by asserting that
+  failure propagates.
+- `make -C backend lint` with the same environment (`make_lint.log`): isort
+  and black left 178 files unchanged, ruff clean, interrogate 100%, mypy no
+  issues (92 and 86 files), pylint 10.00/10, cloc run; the tree stayed clean.
+
+DEV-006 `DONE` 2026-10-13. Every approved step is `DONE`; plan `COMPLETE`.
 
 ---
 
@@ -1700,3 +1720,33 @@ self-check update under unchanged approved intent; no reapproval). DEV-001 to
 DEV-004 and DEV-007 to DEV-009 are unaffected. Next: the user reruns
 `lp_run_check.py` for the record; then DEV-005 is `DONE` and DEV-006 follows
 on the user's go-ahead (`STEPWISE`).
+
+### Full Verification Readiness
+
+Plan `COMPLETE` 2026-10-13 (DEV-001 to DEV-009 `DONE`); handed to Tester for
+full verification (`Assessment Purpose` `FULL`). Assessed content:
+
+- Backend: unchanged since Increment 1 (last backend commit `b5a325c`, Tester's
+  tests; `lp_checkpoints.py` `32710db`, `lp_generation.py` `d0ed431`,
+  `lp_requests.py` `0695aed`). `create_kgs.py` unchanged since `19f44f5`.
+- CAPS config: `examples/funda_wande/config_english_curriculum.json` at HEAD
+  (last changed `9478365`, LP evidence bound 3000); the only example config the
+  cycle changed.
+- Run outputs (local, git-ignored): `results/kg_for_ed/<doc_key>/kgs/` from AS
+  run 1 (confirmed, S_AS), LC run 2 and LP run 3 (`lp_run_3.log`); page-stage
+  outputs equal S0.
+- Developer evidence per step, all scripts rerunnable from the repo root with
+  `backend/.venv/bin/python` and writing only into `--out-dir`:
+  DEV-001 `logs/kg_construction/dev001/preflight.py`; DEV-002
+  `dev002/as_checks.py`; DEV-003 `dev003/s_as_manifest.json`; DEV-004
+  `dev004/lc_checks.py`; DEV-005 `dev005/lp_preflight.py`,
+  `dev005/lp_resume_preflight.py`, `dev005/lp_run_check.py --log
+  logs/kg_construction/dev005/lp_run_3.log`, `dev005/lp_checks.py --log
+  logs/kg_construction/dev005/lp_run_3.log` (about 12 minutes) and
+  `lp_sample.md`; DEV-006 `dev006/closeout_checks.py`, `make_test.log`,
+  `make_lint.log`. Each step's Self-Check of record above gives the commands,
+  commits and results.
+- Not Developer evidence: `AC-019`'s review is recorded under DEV-006 for
+  assessment; `AC-024` documentation belongs to Documenter; LP relationship
+  meaning (`AC-032`) rests on sampled review, as LP outputs are model
+  judgments (`pedagogical_correctness_established` false).
