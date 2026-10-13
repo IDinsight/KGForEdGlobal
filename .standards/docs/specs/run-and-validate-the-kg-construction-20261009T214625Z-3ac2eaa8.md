@@ -637,8 +637,16 @@ proofs run and how much each save writes.
 - `AC-017` (real run): run 2's completed requests are reused, with no repeated
   model call for any request that already has a response.
   - Once 500 requests are complete, throughput over any 2-hour window is at
-    least 70% of the model-bound rate. That rate is concurrency × 3600 ÷ the
-    median per-request model seconds.
+    least 70% of that window's own model-bound rate: concurrency × 3600 ÷ the
+    median model seconds of the requests completed in that window. The
+    criterion measures checkpoint and coordinator overhead. Comparing each
+    window with its own requests keeps the mix of request types (same-Term,
+    cross-Term, cross-Grade) and their changing model time out of the
+    measure. One run-wide median would let later, faster requests raise the
+    floor for earlier windows after the fact.
+  - A window that misses by at most one request is accepted when the logged
+    checkpoint time shows the shortfall is not overhead (user decision,
+    2026-10-13).
 - `AC-022` (checkpoint fix): tests show each of the following:
   - at-rest bytes and receipt identical to the full-rewrite writer across
     dispatch, completion, promotion, retry, failure and recovery sequences;

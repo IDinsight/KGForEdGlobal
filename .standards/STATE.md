@@ -1,6 +1,6 @@
 # S.T.A.N.D.A.R.D.S. Workflow State
 
-`WorkflowState`: `ARCHITECTING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
+`WorkflowState`: `DEVELOPING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
 `PendingCycleRequest`: `UNSET` `PendingCycleBlockedOn`: `NONE`
 
 ## Active Work
@@ -25,18 +25,12 @@ Preserve existing entries; see PROTOCOL.md, Baseline Reconciliation Format.
 
 ## Handoff
 
-`Kind`: `FAILURE` `From`: `DEVELOPING` `FailureType`: `ARCHITECTURE` `Reason`:
-`AC-017 real-run throughput criterion: with one run-wide model-bound rate (median 37.96 s, 379.35/h), 7 of 23,487 two-hour windows complete 265.5/h, one request under the 70% floor (265.54); against their own requests' model time they ran at 79%. The design does not say whose median sets the rate; the dip comes from heavier cross-Term and cross-Grade requests, not checkpoint time.`
+`Kind`: `RESUME` `From`: `ARCHITECTING` `FailureType`: `NONE` `Reason`:
+`AC-017 throughput criterion now uses each 2-hour window's own model-bound rate; one-request misses with no checkpoint cause are accepted (user decision). No rerun needed.`
 
 ## Recovery
 
-`Active`: `true`
-
-### Frame 1
-
-`From`: `DEVELOPING` `Owner`: `ARCHITECTING` `FailureType`: `ARCHITECTURE`
-`Reason`: `AC-017 real-run throughput criterion: with one run-wide model-bound rate (median 37.96 s, 379.35/h), 7 of 23,487 two-hour windows complete 265.5/h, one request under the 70% floor (265.54); against their own requests' model time they ran at 79%. The design does not say whose median sets the rate; the dip comes from heavier cross-Term and cross-Grade requests, not checkpoint time.`
-`ResumeAt`: `DEVELOPING` `RerunThrough`: `NONE`
+`Active`: `false`
 
 ## Outstanding Obligations
 
