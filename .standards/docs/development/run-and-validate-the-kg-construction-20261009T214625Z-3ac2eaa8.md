@@ -516,8 +516,10 @@ successful invocation ran with no stop and `git diff` shows no change to
 `total_candidate_pairs` within that bound. After the checkpoint fix, run 2's
 completed requests are reused with no repeated model call for any request that
 already has a response; once 500 requests are complete,
-throughput over any 2-hour window is at least 70% of the model-bound rate
-(concurrency × 3600 ÷ median per-request model seconds).
+throughput over any 2-hour window is at least 70% of that window's own
+model-bound rate (concurrency × 3600 ÷ the median model seconds of the
+requests completed in that window); a window short by at most one request is
+accepted when its logged checkpoint time shows the shortfall is not overhead.
 
 **Self-Check**
 
@@ -892,6 +894,29 @@ the run-wide median fell later as faster same-term requests finished, raising
 the floor after the fact. Which reading the criterion means is the design's
 decision, so this routes to Architect as an `ARCHITECTURE` failure. Remaining
 DEV-005 work does not depend on it except this criterion.
+
+User-run checks of record before the redesign (2026-10-13):
+`lp_checks.py` at 07:32 passed all nine checks (`lp_checks_summary.txt`,
+`lp_sample.md`, `s_as_compare_final.json`); `lp_run_check.py` at 07:39
+matched the Developer trial (throughput FAIL under the run-wide reading; the
+other three pass).
+
+D-LP-3 resolved by design `66a24ab`: each 2-hour window is measured against
+70% of its own model-bound rate (median model seconds of the requests
+completed in that window), and a window short by at most one request is
+accepted when its logged checkpoint time shows the shortfall is not overhead
+(user decision, 2026-10-13). `lp_run_check.py` now grades windows that way:
+a window passes at or above its own floor; a window short by at most one
+request is tolerated only when its logged checkpoint seconds could not have
+cost one request even if every slot waited through every save (checkpoint
+seconds x concurrency / window median model seconds < 1); anything else fails.
+The run-wide figures are kept as information. Small synthetic cases confirm
+the grading (pass at the floor, tolerated, failed on checkpoint time, failed
+by four requests) and the cycle detection (a three-node and a two-node cycle
+found, a chain not). Developer trial on the complete log at 07:45: all four
+pass; throughput 23,487 windows, all at or above their own floor (lowest 78.5%
+of its own model-bound rate, window from 2026-10-12 00:33), 0 tolerated, 0
+failing.
 
 ---
 
@@ -1539,3 +1564,16 @@ with the fixed code, resume LP), on the user's go-ahead (`STEPWISE`).
 `Recovery Frame`: `1` `Recovery Reason`: `AC-017 real-run throughput criterion: with one run-wide model-bound rate (median 37.96 s, 379.35/h), 7 of 23,487 two-hour windows complete 265.5/h, one request under the 70% floor (265.54); against their own requests' model time they ran at 79%. The design does not say whose median sets the rate; the dip comes from heavier cross-Term and cross-Grade requests, not checkpoint time.` `Purpose`: `DEVELOPMENT`
 `Target`: `NONE` `Assessed Inputs`: `DEV-001 to DEV-004 and DEV-007 to DEV-009 DONE; Increment 1 verified; LP run 3 complete on 9697ac4 code and config (lp_run_3.log; 12892 responses; KG creation completed 2026-10-13 05:07 local); Developer trials 2026-10-13: lp_checks.py all pass, lp_run_check.py throughput FAIL under the run-wide reading`
 `Next Action`: `Apply the Architect's decision on the AC-017 throughput criterion to the run-3 log (change lp_run_check.py only if the criterion's reading changes), record the user-run lp_checks.py and lp_run_check.py results, mark DEV-005 DONE, then DEV-006.`
+
+### Recovery Reconciliation 4
+
+Frame 1 (D-LP-3, `AC-017` throughput criterion) closed by Architect in
+`66a24ab` with no rerun (`RESUME` to `DEVELOPING`). Restored Suspended
+Assignment 4. The design now measures each 2-hour window against its own
+model-bound rate and accepts a one-request miss that is not overhead; no LP
+rerun, code or config change follows. DEV-005's Expected Outcome takes the new
+criterion text and `lp_run_check.py` grades by it (traceability and a
+self-check update under unchanged approved intent; no reapproval). DEV-001 to
+DEV-004 and DEV-007 to DEV-009 are unaffected. Next: the user reruns
+`lp_run_check.py` for the record; then DEV-005 is `DONE` and DEV-006 follows
+on the user's go-ahead (`STEPWISE`).
