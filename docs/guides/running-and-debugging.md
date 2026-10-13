@@ -253,6 +253,28 @@ writer. Never delete the lock file to force progress: competing processes must
 coordinate on the same inode. A compatible completed run can reuse its final bundle and
 rewrite projections without new LP model calls.
 
+Every LP invocation, including a resume, starts with a full verification that reads all
+of `lp_generation_requests.jsonl` and every checkpoint file before any call. It runs
+again before LP first records completion, after the request loop, and in every read-only
+load such as finalization. While LP runs, cheaper guards compare file metadata and
+re-read a file only when its metadata changes. Leave the `kgs/` directory alone during a
+run. A tool that touches or rewrites a file without changing its bytes, such as a sync
+tool, only costs a re-read, logged as `LP checkpoint file identity changed with
+identical bytes` or `LP population artifact identity changed with identical bytes`. Any
+change to the bytes stops the run.
+
+Each save appends new rows to the stage files and rewrites the small checkpoint files
+whole. The files keep the established on-disk format byte for byte, so checkpoint
+directories written by earlier versions resume as they are. Each save is journaled in
+`lp_generation_checkpoint_transaction.json`, and the next invocation finishes a save
+that was interrupted. If a crash or power loss left a stage file in a state the journal
+cannot explain, LP stops with `LP interrupted checkpoint has unexplained material`.
+Preserve the directory and plan an authorized LP regeneration; the completed LP work
+cannot be reused. Never edit or truncate checkpoint files to make them match the
+journal. See
+[how checkpoints are checked and saved](../pipeline/learning-progressions.md#how-checkpoints-are-checked-and-saved)
+for the verification points, guards, and save journal.
+
 ## Resume after an interruption
 
 For unchanged material and supported checkpoint evidence, an authorized rerun can use
@@ -385,6 +407,8 @@ class of operational problem.
 | LC generation failure rate exceeds `lc_max_failure_rate`                            | Too many eligible SFIs failed generation after retries                            | Inspect `lc_generation_failures.json`; rerun without KG overwrite after a transient fix, or adjust the actual LC policy/model issue                              |
 | AS/AS+LC final bundle fingerprints differ                                           | Current inputs differ                                                             | Inspect the change and upstream compiler behavior; LP final reuse instead rejects stale material                                                                 |
 | LP checkpoint format is unsupported                                                 | Old/partial/unauthenticated evidence, possibly even with a successful final graph | Preserve it; use compatible read-only interpretation or a separately authorized fresh run, not forced overwrite                                                  |
+| `LP checkpoint material changed` or `LP pre-call artifact differs from current material` | A checkpoint or request file changed after LP verified it, for example an edit during the run | Preserve the directory and find what changed it; plan authorized regeneration rather than restoring files or hashes                                        |
+| `LP interrupted checkpoint has unexplained material`                                | An interrupted save left a file at neither its journaled previous nor next state, for example after a crash or power loss during an append | Preserve the directory; LP must be regenerated, and its completed work is lost                                                             |
 | Production LP retry budget is exhausted or an outcome is unknown                    | The current invocation has failed or lacks a reusable result for that stage       | Inspect durable failure/usage evidence before an authorized resume; a new invocation can call unfinished stages again. Preserve all receipts and attempt history |
 | A resumed run reports little or no LLM usage                                        | Compatible semantic artifacts were reused                                         | Expected; usage in the current run record is not cumulative lifetime usage                                                                                       |
 

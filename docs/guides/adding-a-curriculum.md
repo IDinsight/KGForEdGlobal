@@ -27,8 +27,9 @@ and only then run the full curriculum.
 
     Current examples include Ghana, Nigeria, Rwanda, India, and South Africa profiles.
     The South Africa profile (`examples/funda_wande/`) is the only one that uses the
-    page-stage instruction fields. Its `kgs` block has not yet been run through
-    `create_kgs.py`.
+    page-stage instruction fields. Its `kgs` block has been run through `create_kgs.py`
+    (AS, LC, and LP) on the CAPS English Home Language Grades R-3 document. It models a
+    five-level hierarchy: Grade, Term, Skill Area, Sub-strand, and Skill.
 
 ## What belongs in the curriculum profile?
 

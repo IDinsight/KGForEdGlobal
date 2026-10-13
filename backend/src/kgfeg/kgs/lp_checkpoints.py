@@ -1,7 +1,8 @@
 """Validated LP execution prefixes, material receipts, and separate failure evidence.
 
-Each stage is durably journaled before its files are replaced. Interrupted commits
-resume only from exact recorded old/new bytes and a fully validated next state. The
+Each save is durably journaled before any file changes: stage files grow by appends,
+and the small files and receipt are replaced whole. Interrupted commits resume only
+from exact recorded previous or next file states and a fully validated next state. The
 caller holds the exclusive generation lock for the lifetime of this store.
 """
 
