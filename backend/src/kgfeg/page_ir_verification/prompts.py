@@ -13,8 +13,61 @@ from kgfeg.utils.constants import PageContinuationKind
 from kgfeg.utils.general import PromptPair
 
 
+def _append_curriculum_instructions(
+    *,
+    agent_directive: str,
+    curriculum_instructions: str | None,
+    overridable_rules: str,
+    system_message: str,
+) -> str:
+    """Append an optional runtime curriculum instructions section to a system message.
+
+    NB: When `curriculum_instructions` is None, the system message is returned
+    unchanged so that prompts without runtime instructions stay byte-identical to
+    prompts built before this option existed.
+
+    Parameters
+    ----------
+    agent_directive
+        Agent-specific sentence describing how the agent applies the instructions.
+    curriculum_instructions
+        Optional document-specific instructions from the runtime config.
+    overridable_rules
+        Agent-specific description of the generic table continuation rules that the
+        instructions may override.
+    system_message
+        The fully built (stripped) generic system message.
+
+    Returns
+    -------
+    str
+        The system message, with the instructions section appended at the very end
+        when instructions are provided.
+    """
+
+    if curriculum_instructions is None:
+        return system_message
+
+    section = (
+        f"## RUNTIME CURRICULUM INSTRUCTIONS\n"
+        f"The instructions below are authoritative, curriculum-specific guidance for "
+        f"this document, supplied by the pipeline's runtime configuration. Where they "
+        f"conflict with any generic rule above, follow them instead. This explicitly "
+        f"includes {overridable_rules}: when these instructions say that a table "
+        f"starts a new table, or continues the previous one, their conclusion wins "
+        f"over the procedure's. The only exception is the output contract: the "
+        f"output schema and the SCHEMA INVARIANTS still apply. {agent_directive}\n"
+        f"<curriculum_instructions>\n"
+        f"{curriculum_instructions}\n"
+        f"</curriculum_instructions>"
+    )
+
+    return system_message + "\n\n" + section
+
+
 def validate_page_ir_continuity_verdict(
     *,
+    curriculum_instructions: str | None = None,
     min_confidence_to_patch: float,
     min_confidence_to_select_positive: float,
     min_confidence_to_stop_negative_search: float,
@@ -28,6 +81,12 @@ def validate_page_ir_continuity_verdict(
 
     Parameters
     ----------
+    curriculum_instructions
+        Optional document-specific instructions from the runtime config. When
+        provided, appended to the end of the system message under a section that
+        overrides the generic rules where they conflict, including the table
+        continuation decision procedure (except the output contract). When None,
+        the prompts are unchanged.
     min_confidence_to_patch
         Positive verdicts at or above this threshold may be patched into PageIR state.
     min_confidence_to_select_positive
@@ -163,13 +222,27 @@ When passed=false, you MUST provide a corrected_verdict that:
         separators=(",", ":"),
     )
 
-    return PromptPair(
-        system_message=system_message.strip(), user_message=user_message.strip()
+    system_message = _append_curriculum_instructions(
+        agent_directive=(
+            "Judge the verification agent's verdict against them: a verdict that "
+            "contradicts them has an error-severity issue, and any corrected_verdict "
+            "must follow them."
+        ),
+        curriculum_instructions=curriculum_instructions,
+        overridable_rules=(
+            "the TABLE continuation DECISION PROCEDURE in section B (Steps 1-4), "
+            "including the rule that content differences inside the grid do not "
+            "override the Step 4 conclusion"
+        ),
+        system_message=system_message.strip(),
     )
+
+    return PromptPair(system_message=system_message, user_message=user_message.strip())
 
 
 def verify_page_ir_pairs_from_extraction(
     *,
+    curriculum_instructions: str | None = None,
     min_confidence_to_patch: float,
     min_confidence_to_select_positive: float,
     min_confidence_to_stop_negative_search: float,
@@ -182,6 +255,12 @@ def verify_page_ir_pairs_from_extraction(
 
     Parameters
     ----------
+    curriculum_instructions
+        Optional document-specific instructions from the runtime config. When
+        provided, appended to the end of the system message under a section that
+        overrides the generic rules where they conflict, including the table
+        continuation decision procedure and the TABLE<->TABLE uncertainty exception
+        (except the output contract). When None, the prompts are unchanged.
     min_confidence_to_patch
         Positive verdicts at or above this threshold may be patched into PageIR state.
     min_confidence_to_select_positive
@@ -311,6 +390,16 @@ Only true if the SAME figure/diagram is clearly cut off on IMAGE A and resumes o
         separators=(",", ":"),  # Remove spaces after commas/colons
     )
 
-    return PromptPair(
-        system_message=system_message.strip(), user_message=user_message.strip()
+    system_message = _append_curriculum_instructions(
+        agent_directive="Apply them when deciding is_continuation and continuation_kind.",
+        curriculum_instructions=curriculum_instructions,
+        overridable_rules=(
+            "the TABLE continuation DECISION PROCEDURE in section B (Steps 1-4), "
+            "including the rule that content differences inside the grid do not "
+            "override the Step 4 conclusion, and the TABLE<->TABLE exception in the "
+            "UNCERTAINTY POLICY"
+        ),
+        system_message=system_message.strip(),
     )
+
+    return PromptPair(system_message=system_message, user_message=user_message.strip())

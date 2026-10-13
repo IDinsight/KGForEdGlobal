@@ -19,7 +19,9 @@ Orchestration flow
    PageIR.
 5. If the validation agent returns a failing verdict, it also provides a corrected
    PageIR that has passed the same Python quality checks (enforced by the validation
-   agent's own output validator with retries). Return the corrected PageIR.
+   agent's own output validator with retries). Return the corrected PageIR, unless
+   PDF hints are enabled and the correction guard rejects it for adding text the page
+   does not contain, in which case return the extraction agent's PageIR.
 """
 
 # Standard Library
@@ -43,7 +45,10 @@ from kgfeg.page_ir_extraction.prompts import (
     validate_page_ir_extraction,
 )
 from kgfeg.page_ir_extraction.schemas import ExtractionValidationVerdict, PageIR
-from kgfeg.page_ir_extraction.utils import extract_page_text_layer_hints
+from kgfeg.page_ir_extraction.utils import (
+    evaluate_page_ir_correction,
+    extract_page_text_layer_hints,
+)
 from kgfeg.page_ir_extraction.validators import (
     PageIRExtractionQualityCtx,
     validate_artifacts_are_true_artifacts,
@@ -131,6 +136,7 @@ def _run_validation_agent(
     page_ir: PageIR,
     png_bytes: bytes,
     usage_tracker: ExtractionUsageTracker,
+    validation_instructions: str | None = None,
 ) -> ExtractionValidationVerdict:
     """Run the validation agent to compare an extracted PageIR against the source image.
 
@@ -154,6 +160,9 @@ def _run_validation_agent(
         The raw PNG bytes of the source page image.
     usage_tracker
         Tracker to accumulate validation agent usage.
+    validation_instructions
+        Optional document-specific instructions for the validation agent's system
+        prompt. None leaves the prompt unchanged.
 
     Returns
     -------
@@ -164,6 +173,7 @@ def _run_validation_agent(
     logger.info(f"Running validation agent for page: {page_index + 1}...")
 
     prompts = validate_page_ir_extraction(
+        curriculum_instructions=validation_instructions,
         image_height=image_height,
         image_width=image_width,
         page_index=page_index,
@@ -193,6 +203,7 @@ def _run_validation_agent(
 
 def extract_page_ir(
     *,
+    extraction_instructions: str | None = None,
     image_height: int,
     image_width: int,
     languages: list[str],
@@ -201,6 +212,7 @@ def extract_page_ir(
     png_fp: Path,
     raw_page_irs_dir: Path,
     usage_tracker: ExtractionUsageTracker,
+    validation_instructions: str | None = None,
 ) -> PageIR:
     """Extract PageIR from a page image using an extraction agent with validation.
 
@@ -214,6 +226,12 @@ def extract_page_ir(
         its verdict. The corrected PageIR is also quality-checked by the validation
         agent's own output validator (same Python checks, with retries).
     4. If validation passes, the extraction agent's PageIR is returned directly.
+    5. If validation fails and `pdf_page` was provided (PDF hints enabled), the
+        correction guard compares content-word occurrence counts in the corrected
+        PageIR with the PDF text layer and the extraction. A correction with any word
+        occurring more times than in both the usable text layer and the extraction is
+        rejected with a warning, and the extraction agent's PageIR is returned
+        instead.
 
     This single-pass design avoids re-invoking the weaker extraction agent with
     feedback it cannot see its own prior output for, and leverages the stronger
@@ -221,6 +239,9 @@ def extract_page_ir(
 
     Parameters
     ----------
+    extraction_instructions
+        Optional document-specific instructions for the extraction agent's system
+        prompt. None leaves the prompt unchanged.
     image_height
         The image height in pixels.
     image_width
@@ -240,6 +261,9 @@ def extract_page_ir(
         Directory to save raw page IR extraction artifacts.
     usage_tracker
         Tracker to accumulate token usage from both extraction and validation agents.
+    validation_instructions
+        Optional document-specific instructions for the validation agent's system
+        prompt. None leaves the prompt unchanged.
 
     Returns
     -------
@@ -271,6 +295,7 @@ def extract_page_ir(
 
     # Run the extraction agent (lower reasoning effort).
     prompts = extract_page_ir_from_pdf_page(
+        curriculum_instructions=extraction_instructions,
         image_height=image_height,
         image_width=image_width,
         languages=languages,
@@ -307,6 +332,7 @@ def extract_page_ir(
         page_ir=page_ir,
         png_bytes=png_bytes,
         usage_tracker=usage_tracker,
+        validation_instructions=validation_instructions,
     )
 
     if verdict.passed:
@@ -322,6 +348,28 @@ def extract_page_ir(
     assert (
         verdict.corrected_page_ir is not None
     ), "Validation failed but no corrected PageIR provided."
+
+    # Guard against corrections that add text the page does not contain (new words, or
+    # on-page words repeated more often than the page has them). It runs only when PDF
+    # hints are enabled (`pdf_page` is provided only when `use_extracted_hints` is on).
+    if pdf_page is not None:
+        decision = evaluate_page_ir_correction(
+            corrected_page_ir=verdict.corrected_page_ir,
+            extraction_page_ir=page_ir,
+            page_index=page_index,
+            text_hint=text_layer_hint,
+        )
+
+        if not decision.accepted:
+            logger.warning(
+                f"Page {page_index + 1}: correction guard rejected the validation "
+                f"agent's corrected PageIR because {len(decision.added_words)} content "
+                f"word(s) occur more times than in both the PDF text layer and the "
+                f"extraction: {', '.join(decision.added_words)}. Keeping the "
+                f"extraction agent's PageIR."
+            )
+
+            return page_ir
 
     logger.info(f"Page {page_index + 1}: using corrected PageIR from validation agent.")
 

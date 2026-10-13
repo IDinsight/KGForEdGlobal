@@ -190,6 +190,16 @@ flow. Validators check structural properties such as bounding boxes, reading ord
 table integrity, figure plausibility, artifacts, text constraints, and continuity-state
 consistency. Structured-output failures can be retried before a Page IR is accepted.
 
+When PDF hints are enabled, a deterministic correction guard also compares each
+validation-agent correction with the page's text layer. It rejects a correction that
+adds words the page does not contain, or repeats on-page words more often than the page
+has them, and keeps the extraction agent's Page IR instead.
+
+A profile can give the extraction agent and its validator optional document-specific
+instructions (`extraction_instructions` and `validation_instructions`). They take
+precedence over the generic extraction rules, but not over the `PageIR` schema or the
+deterministic quality checks.
+
 Typical persisted artifacts include:
 
 ```text
@@ -240,6 +250,12 @@ selected pair verdict
         v
 confidence-gated compile + postprocess
 ```
+
+A profile can likewise give the continuity verifier and its validator optional
+document-specific instructions (`verification_instructions` and
+`validation_instructions`). They take precedence over the generic continuity rules,
+including the table-continuation procedure, but not over the verdict schema or its
+consistency checks.
 
 Verification configuration distinguishes several confidence concepts. In particular,
 a positive verdict may be good enough to win candidate selection without being strong

@@ -400,3 +400,151 @@ class TestVerifyPageIrPairsFromExtraction:
 
         assert "Compétences" in result.user_message
         assert "\\u" not in result.user_message
+
+
+# Generic stand-in for runtime curriculum instructions (no real curriculum named).
+_CURRICULUM_INSTRUCTIONS = (
+    "A table whose top row is a title banner always starts a new table."
+)
+_CURRICULUM_HEADING = "## RUNTIME CURRICULUM INSTRUCTIONS"
+_TABLE_PROCEDURE_OVERRIDE = (
+    "the TABLE continuation DECISION PROCEDURE in section B (Steps 1-4), including the "
+    "rule that content differences inside the grid do not override the Step 4 "
+    "conclusion"
+)
+_UNCERTAINTY_OVERRIDE = "the TABLE<->TABLE exception in the UNCERTAINTY POLICY"
+
+
+class TestContinuityPromptCurriculumInstructions:
+    """Tests for the optional runtime curriculum instructions on both continuity
+    prompts (AC-005, AC-006)."""
+
+    def test_unset_instructions_leave_both_prompts_unchanged(self) -> None:
+        """With `curriculum_instructions=None`, neither continuity prompt gains an
+        instructions section, separator, or trailing whitespace (AC-006). One check per
+        prompt builder (two scenarios)."""
+
+        verdict_json = json.dumps(
+            json.loads(_call_validate().user_message)["verification_verdict"]
+        )
+        common = {
+            "min_confidence_to_patch": _DEFAULT_THRESHOLDS["min_confidence_to_patch"],
+            "min_confidence_to_select_positive": _DEFAULT_THRESHOLDS[
+                "min_confidence_to_select_positive"
+            ],
+            "min_confidence_to_stop_negative_search": _DEFAULT_THRESHOLDS[
+                "min_confidence_to_stop_negative_search"
+            ],
+            "next_page_index": 1,
+            "prev_page_index": 0,
+        }
+        cases = [
+            (
+                _call_verify(),
+                verify_page_ir_pairs_from_extraction(
+                    curriculum_instructions=None,
+                    next_item=make_item_excerpt(),
+                    prev_item=make_item_excerpt(),
+                    **common,
+                ),
+            ),
+            (
+                _call_validate(verdict_json=verdict_json),
+                validate_page_ir_continuity_verdict(
+                    curriculum_instructions=None,
+                    next_item_excerpt=make_item_excerpt(),
+                    prev_item_excerpt=make_item_excerpt(),
+                    verdict_json=verdict_json,
+                    **common,
+                ),
+            ),
+        ]
+
+        for omitted, explicit_none in cases:
+            assert explicit_none == omitted
+            assert _CURRICULUM_HEADING not in omitted.system_message
+            assert "<curriculum_instructions>" not in omitted.system_message
+            assert omitted.system_message == omitted.system_message.strip()
+
+    def test_verifier_appends_instructions_last_and_names_table_rules_as_overridable(
+        self,
+    ) -> None:
+        """The verifier's section is last in the system message, overrides the generic
+        rules, and names both the table decision procedure and the TABLE<->TABLE
+        uncertainty exception as overridable (AC-005)."""
+
+        base = _call_verify()
+        pair = verify_page_ir_pairs_from_extraction(
+            curriculum_instructions=_CURRICULUM_INSTRUCTIONS,
+            min_confidence_to_patch=_DEFAULT_THRESHOLDS["min_confidence_to_patch"],
+            min_confidence_to_select_positive=_DEFAULT_THRESHOLDS[
+                "min_confidence_to_select_positive"
+            ],
+            min_confidence_to_stop_negative_search=_DEFAULT_THRESHOLDS[
+                "min_confidence_to_stop_negative_search"
+            ],
+            next_item=make_item_excerpt(),
+            next_page_index=1,
+            prev_item=make_item_excerpt(),
+            prev_page_index=0,
+        )
+
+        assert pair.user_message == base.user_message
+        assert pair.system_message.startswith(
+            base.system_message + "\n\n" + _CURRICULUM_HEADING
+        )
+
+        section = pair.system_message[len(base.system_message) :]
+        assert (
+            "Where they conflict with any generic rule above, follow them instead"
+            in section
+        )
+        assert _TABLE_PROCEDURE_OVERRIDE in section
+        assert _UNCERTAINTY_OVERRIDE in section
+        assert "their conclusion wins over the procedure's" in section
+        assert section.endswith(
+            f"<curriculum_instructions>\n{_CURRICULUM_INSTRUCTIONS}\n</curriculum_instructions>"
+        )
+        assert pair.system_message.count(_CURRICULUM_INSTRUCTIONS) == 1
+
+    def test_checker_appends_instructions_last_and_names_table_procedure_as_overridable(
+        self,
+    ) -> None:
+        """The checker's section is last in the system message, overrides the generic
+        rules including the table decision procedure, and tells it to correct verdicts
+        that contradict the instructions (AC-005)."""
+
+        base = _call_validate()
+        verdict_json = json.dumps(json.loads(base.user_message)["verification_verdict"])
+        pair = validate_page_ir_continuity_verdict(
+            curriculum_instructions=_CURRICULUM_INSTRUCTIONS,
+            min_confidence_to_patch=_DEFAULT_THRESHOLDS["min_confidence_to_patch"],
+            min_confidence_to_select_positive=_DEFAULT_THRESHOLDS[
+                "min_confidence_to_select_positive"
+            ],
+            min_confidence_to_stop_negative_search=_DEFAULT_THRESHOLDS[
+                "min_confidence_to_stop_negative_search"
+            ],
+            next_item_excerpt=make_item_excerpt(),
+            next_page_index=1,
+            prev_item_excerpt=make_item_excerpt(),
+            prev_page_index=0,
+            verdict_json=verdict_json,
+        )
+
+        assert pair.user_message == base.user_message
+        assert pair.system_message.startswith(
+            base.system_message + "\n\n" + _CURRICULUM_HEADING
+        )
+
+        section = pair.system_message[len(base.system_message) :]
+        assert (
+            "Where they conflict with any generic rule above, follow them instead"
+            in section
+        )
+        assert _TABLE_PROCEDURE_OVERRIDE in section
+        assert "any corrected_verdict must follow them" in section
+        assert section.endswith(
+            f"<curriculum_instructions>\n{_CURRICULUM_INSTRUCTIONS}\n</curriculum_instructions>"
+        )
+        assert pair.system_message.count(_CURRICULUM_INSTRUCTIONS) == 1

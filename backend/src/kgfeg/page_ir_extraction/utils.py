@@ -1,8 +1,12 @@
 """This module contains utility functions related to page IR **extraction**."""
 
 # Standard Library
+import re
+import unicodedata
 import uuid
 
+from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,15 +19,64 @@ from PIL import Image
 
 # Package Library
 from kgfeg.config import Settings
-from kgfeg.page_ir_extraction.schemas import PageIR
+from kgfeg.page_ir_extraction.schemas import Block, PageIR, Table
 from kgfeg.schemas import ExtractionConfig, RunCtx
+from kgfeg.utils.constants import BlockType
 from kgfeg.utils.general import make_dir, write_to_json
 from kgfeg.utils.pdf import compute_doc_key
+
+# Correction guard: maximal runs of Unicode letters and digits.
+_CONTENT_WORD_PATTERN = re.compile(r"[^\W_]+")
+
+# Correction guard: drop soft hyphens; map curly quotes and primes to straight forms.
+_GUARD_CHAR_TRANSLATION = str.maketrans(
+    {
+        "\u00ad": None,
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201a": "'",
+        "\u201b": "'",
+        "\u2032": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u201e": '"',
+        "\u201f": '"',
+        "\u2033": '"',
+    }
+)
+
+# Correction guard: a text layer that passed the quality gate is still treated as
+# unusable (e.g., a broken font encoding) when it contains fewer than this share of the
+# extraction agent's content words. The share is only checked when the extraction has
+# at least this many distinct content words.
+_GUARD_MIN_TEXT_LAYER_COVERAGE = 0.50
+_GUARD_MIN_WORDS_FOR_COVERAGE = 10
+
+# Correction guard: a word split by a hyphen at a line break in the text layer.
+_LINE_BREAK_HYPHEN_PATTERN = re.compile(r"[-\u2010\u2011][ \t]*\r?\n[ \t]*")
 
 # Quality-gate thresholds for text-layer usability.
 _MAX_REPLACEMENT_CHAR_RATIO = 0.02
 _MIN_PRINTABLE_RATIO = 0.90
 _MIN_TEXT_LENGTH = 20
+
+
+@dataclass(frozen=True)
+class PageIRCorrectionDecision:
+    """Outcome of the correction guard for a validation agent's corrected PageIR.
+
+    Attributes
+    ----------
+    accepted
+        True if the corrected PageIR may replace the extraction agent's PageIR.
+    added_words
+        Sorted, normalized content words that occur more times in the correction than
+        in both the usable text layer and the extraction agent's PageIR. Empty when
+        the correction is accepted.
+    """
+
+    accepted: bool
+    added_words: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -64,6 +117,87 @@ class PageTextLayerHints:
         """
 
         return self.text_hint is not None or self.table_hint is not None
+
+
+def _count_content_words(text: str) -> Counter[str]:
+    """Count normalized content words in a text.
+
+    A content word is a maximal run of Unicode letters and digits that is at least 2
+    characters long and contains at least one letter. Pure numbers and single
+    characters are not content words.
+
+    Parameters
+    ----------
+    text
+        The text to count content words in.
+
+    Returns
+    -------
+    Counter[str]
+        The number of occurrences of each normalized content word.
+
+    Examples
+    --------
+    >>> sorted(_count_content_words("Learner’s “Big” book, big p. 12 (A)").items())
+    [('big', 2), ('book', 1), ('learner', 1)]
+    """
+
+    return Counter(
+        word
+        for word in _CONTENT_WORD_PATTERN.findall(_normalize_guard_text(text))
+        if len(word) >= 2 and any(c.isalpha() for c in word)
+    )
+
+
+def _count_page_ir_content_words(page_ir: PageIR) -> Counter[str]:
+    """Count normalized content words in the transcribed text of a PageIR.
+
+    Parameters
+    ----------
+    page_ir
+        The PageIR to scan.
+
+    Returns
+    -------
+    Counter[str]
+        The number of occurrences of each normalized content word.
+    """
+
+    counts: Counter[str] = Counter()
+
+    for text in _iter_page_ir_transcribed_texts(page_ir):
+        counts += _count_content_words(text)
+
+    return counts
+
+
+def _count_text_layer_content_words(text_layer: str) -> Counter[str]:
+    """Count normalized content words in a PDF text layer.
+
+    The counts are the element-wise maximum of the counts from the raw text layer and
+    from the text layer with every line-break hyphen removed. A word split by a hyphen
+    at a line break therefore counts as both its joined form and its two pieces,
+    without any word being counted twice.
+
+    Parameters
+    ----------
+    text_layer
+        The raw PDF text layer.
+
+    Returns
+    -------
+    Counter[str]
+        The number of occurrences of each normalized content word.
+
+    Examples
+    --------
+    >>> sorted(_count_text_layer_content_words("phono-\\nlogical awareness").items())
+    [('awareness', 1), ('logical', 1), ('phono', 1), ('phonological', 1)]
+    """
+
+    joined = _LINE_BREAK_HYPHEN_PATTERN.sub("", text_layer)
+
+    return _count_content_words(text_layer) | _count_content_words(joined)
 
 
 def _create_page_ir_extraction_dirs(output_dir: Path) -> PageIRExtractionDirs:
@@ -207,6 +341,107 @@ def _extract_text_hint(*, page: pymupdf.Page, page_index: int) -> str | None:
     return raw_text
 
 
+def _iter_block_transcribed_texts(block: Block) -> Iterator[str]:
+    """Yield the text of a block that is transcribed from the page.
+
+    ARTIFACT blocks (running headers, footers, and page numbers) are skipped. Figure
+    alt text and embedded text, local codes, list markers, and `text_en` are not page
+    text and are skipped.
+
+    Parameters
+    ----------
+    block
+        The block to scan.
+
+    Yields
+    ------
+    str
+        Each transcribed text.
+    """
+
+    if block.block_type == BlockType.ARTIFACT:
+        return
+
+    if block.text is not None:
+        yield block.text.text
+
+    for list_item in block.list_items or []:
+        yield list_item.text.text
+
+    if block.figure is not None and block.figure.caption is not None:
+        yield block.figure.caption.text
+
+
+def _iter_page_ir_transcribed_texts(page_ir: PageIR) -> Iterator[str]:
+    """Yield every text of a PageIR that is transcribed from the page.
+
+    Parameters
+    ----------
+    page_ir
+        The PageIR to scan.
+
+    Yields
+    ------
+    str
+        Each transcribed text from blocks and table cells.
+    """
+
+    for item in page_ir.items:
+        if isinstance(item, Table):
+            yield from _iter_table_transcribed_texts(item)
+        else:
+            yield from _iter_block_transcribed_texts(item)
+
+
+def _iter_table_transcribed_texts(table: Table) -> Iterator[str]:
+    """Yield the text of every non-empty table cell.
+
+    Parameters
+    ----------
+    table
+        The table to scan.
+
+    Yields
+    ------
+    str
+        Each cell text.
+    """
+
+    for row in table.rows:
+        for cell in row.cells:
+            if cell.text is not None:
+                yield cell.text.text
+
+
+def _normalize_guard_text(text: str) -> str:
+    """Normalize text for correction-guard word comparison.
+
+    Applies Unicode NFKC (which also expands ligatures), removes soft hyphens, maps
+    curly quotes and primes to straight forms, and casefolds.
+
+    Parameters
+    ----------
+    text
+        The text to normalize.
+
+    Returns
+    -------
+    str
+        The normalized text.
+
+    Examples
+    --------
+    >>> _normalize_guard_text("“Oﬃce” Learner’s")
+    '"office" learner\\'s'
+    """
+
+    return (
+        unicodedata.normalize("NFKC", text)
+        .translate(_GUARD_CHAR_TRANSLATION)
+        .casefold()
+    )
+
+
 def _serialize_table(*, table_data: list[list[str | None]], table_index: int) -> str:
     """Serialize a single extracted table into a compact, readable text format.
 
@@ -243,6 +478,81 @@ def _serialize_table(*, table_data: list[list[str | None]], table_index: int) ->
         lines.append(f"  row {row_idx}: | {' | '.join(cells)} |")
 
     return "\n".join(lines)
+
+
+def evaluate_page_ir_correction(
+    *,
+    corrected_page_ir: PageIR,
+    extraction_page_ir: PageIR,
+    page_index: int,
+    text_hint: str | None,
+) -> PageIRCorrectionDecision:
+    """Decide whether a validation agent's corrected PageIR may replace the extraction.
+
+    The guard compares occurrence counts of normalized content words. A word counts as
+    added when it occurs more times in the correction than in the text layer and more
+    times than in the extraction agent's PageIR. This covers both words that are not
+    on the page (both counts are zero) and on-page text the correction repeats more
+    often than the page has it. Occurrences the correction merely keeps from the
+    extraction (e.g., raster-only text) never cause a rejection. Display case, curly
+    versus straight quotes, and ARTIFACT blocks (running headers, footers, page
+    numbers) do not affect the outcome.
+
+    The correction is rejected only when the page has a usable text layer and adds at
+    least one word. The text layer is usable when it passed the hint quality gate
+    (`text_hint` is not None) and, if the extraction has at least
+    `_GUARD_MIN_WORDS_FOR_COVERAGE` distinct content words, at least
+    `_GUARD_MIN_TEXT_LAYER_COVERAGE` of those distinct words appear in it.
+
+    Parameters
+    ----------
+    corrected_page_ir
+        The validation agent's corrected PageIR.
+    extraction_page_ir
+        The extraction agent's PageIR.
+    page_index
+        The 0-based page index (used for logging).
+    text_hint
+        The quality-gated PDF text layer for the page, or None if no usable text
+        layer exists.
+
+    Returns
+    -------
+    PageIRCorrectionDecision
+        Whether to accept the correction and, when rejected, the added words.
+    """
+
+    if text_hint is None:
+        logger.info(
+            f"Page {page_index + 1}: no usable PDF text layer. Correction guard skipped."
+        )
+        return PageIRCorrectionDecision(accepted=True, added_words=())
+
+    text_layer_counts = _count_text_layer_content_words(text_hint)
+    extraction_counts = _count_page_ir_content_words(extraction_page_ir)
+
+    # A text layer that covers few of the distinct extracted words is likely garbled.
+    if len(extraction_counts) >= _GUARD_MIN_WORDS_FOR_COVERAGE:
+        covered = sum(1 for word in extraction_counts if word in text_layer_counts)
+        coverage = covered / len(extraction_counts)
+
+        if coverage < _GUARD_MIN_TEXT_LAYER_COVERAGE:
+            logger.info(
+                f"Page {page_index + 1}: PDF text layer covers {coverage:.0%} of the "
+                f"extracted words. Correction guard skipped."
+            )
+            return PageIRCorrectionDecision(accepted=True, added_words=())
+
+    # Counter lookups return 0 for missing words.
+    added_words = sorted(
+        word
+        for word, count in _count_page_ir_content_words(corrected_page_ir).items()
+        if count > text_layer_counts[word] and count > extraction_counts[word]
+    )
+
+    return PageIRCorrectionDecision(
+        accepted=not added_words, added_words=tuple(added_words)
+    )
 
 
 def extract_page_text_layer_hints(

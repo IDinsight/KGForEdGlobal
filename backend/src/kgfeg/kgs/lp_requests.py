@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
@@ -19,6 +20,7 @@ from typing import Any, Literal
 from uuid import UUID, uuid5
 
 # Third Party Library
+from loguru import logger
 from pydantic import Field, JsonValue, model_validator
 from pydantic_core import to_json
 
@@ -260,17 +262,21 @@ class LPRequestPopulation:
 
 @dataclass(frozen=True, init=False, slots=True)
 class LPRequestPopulationVerifier:
-    """Retain validated digests for repeated execution-boundary material checks.
+    """Retain validated digests for full and guarded execution-boundary checks.
 
     The full reader establishes schema, identity, ordering and coverage before any
-    digest is retained. Every verification streams and hashes all actual file bytes,
-    and separately checks every live record including nested mutable material. Proofs
-    are invocation-local, never a persisted compatibility exemption or a substitute for
-    full validation on a new invocation.
+    digest is retained. A full verification streams and hashes all actual file bytes,
+    and separately checks every live record including nested mutable material. Between
+    full verifications, a guard compares each artifact's stat identity and re-hashes
+    only the requests being dispatched or published; any stat difference runs a full
+    verification. Proofs are invocation-local, never a persisted compatibility
+    exemption or a substitute for full validation on a new invocation.
     """
 
     _material_hash: str
     _artifact_hashes: tuple[tuple[str, bytes], ...]
+    _request_digests: tuple[bytes, ...]
+    _stat_identities: dict[str, tuple[int, int, int, int, int]]
 
     def __init__(self, *, population: LPRequestPopulation, root: Path) -> None:
         """Fully validate current material before retaining its immutable proof.
@@ -283,7 +289,7 @@ class LPRequestPopulationVerifier:
             Directory containing the complete canonical input artifacts.
         """
 
-        material_hash = _population_material_hash(population)
+        material_hash, request_digests = _population_material_digests(population)
 
         # Freeze the caller's claimed bytes before validation. The full reader must
         # reconcile them with actual artifacts before they can become authority.
@@ -304,10 +310,75 @@ class LPRequestPopulationVerifier:
         read_lp_request_population(expected=population, root=root)
         object.__setattr__(self, "_artifact_hashes", hashes)
         object.__setattr__(self, "_material_hash", material_hash)
+        object.__setattr__(self, "_request_digests", request_digests)
+        object.__setattr__(self, "_stat_identities", {})
         self.verify(population=population, root=root)
+
+    def guard(
+        self,
+        *,
+        population: LPRequestPopulation,
+        request_indices: Iterable[int],
+        root: Path,
+    ) -> None:
+        """Recheck population authority between full verifications.
+
+        The cost depends only on the number of artifacts and guarded requests, never
+        on the population size. A changed stat identity runs a full verification:
+        identical bytes refresh the identity, and differing bytes fail closed.
+
+        Parameters
+        ----------
+        population
+            Live candidate, request and manifest records used by execution.
+        request_indices
+            Requests being dispatched or published, re-hashed against their digests.
+        root
+            Generation directory whose artifacts must keep their verified identity.
+
+        Raises
+        ------
+        ValueError
+            If a guarded request or any artifact differs from the verified snapshot.
+        """
+
+        if len(population.requests) != len(self._request_digests):
+            raise ValueError(
+                "LP in-memory request population changed during execution."
+            )
+
+        changed = sorted(
+            name
+            for name, identity in self._stat_identities.items()
+            if file_stat_identity(root / name) != identity
+        )
+
+        if changed:
+            # Timestamps or inodes alone never establish a change; the full proof
+            # decides, so a coarse or touched timestamp can only cost a re-read.
+            self.verify(population=population, root=root)
+            logger.info(
+                "LP population artifact identity changed with identical bytes; "
+                "refreshed after full verification: {}",
+                ", ".join(changed),
+            )
+
+        for index in sorted(set(request_indices)):
+            if (
+                hashlib.sha256(
+                    _record_material_bytes(population.requests[index])
+                ).digest()
+                != self._request_digests[index]
+            ):
+                raise ValueError(
+                    "LP in-memory request population changed during execution."
+                )
 
     def verify(self, *, population: LPRequestPopulation, root: Path) -> None:
         """Reject changed in-memory material or any changed canonical artifact byte.
+
+        This full verification also refreshes each artifact's stat identity for the
+        guards that run between full verifications.
 
         Parameters
         ----------
@@ -319,22 +390,34 @@ class LPRequestPopulationVerifier:
         Raises
         ------
         ValueError
-            If any serialized input material differs from the fully validated snapshot.
+            If any serialized input material differs from the fully validated snapshot,
+            or an artifact changes while it is being verified.
         """
 
-        if _population_material_hash(population) != self._material_hash:
+        if _population_material_digests(population)[0] != self._material_hash:
             raise ValueError(
                 "LP in-memory request population changed during execution."
             )
 
         for filename, expected_hash in self._artifact_hashes:
-            with (root / filename).open("rb") as stream:
+            path = root / filename
+            identity = file_stat_identity(path)
+
+            with path.open("rb") as stream:
                 actual_hash = hashlib.file_digest(stream, "sha256").digest()
 
             if actual_hash != expected_hash:
                 raise ValueError(
                     f"LP pre-call artifact differs from current material: {filename}."
                 )
+
+            # Retain only an identity observed unchanged across the verified read.
+            if file_stat_identity(path) != identity:
+                raise ValueError(
+                    f"LP pre-call artifact changed during verification: {filename}."
+                )
+
+            self._stat_identities[filename] = identity
 
 
 class LPSourceEvidence(BaseSchema):
@@ -666,6 +749,46 @@ def _nomination_context(
     )
 
 
+def _population_material_digests(
+    population: LPRequestPopulation,
+) -> tuple[str, tuple[bytes, ...]]:
+    """Hash every live input record and retain each request's own digest.
+
+    One pass yields both the whole-population hash used by full verification and the
+    per-request digests the guards re-check between full verifications.
+
+    Parameters
+    ----------
+    population
+        Complete candidate, summary, request and manifest material.
+
+    Returns
+    -------
+    tuple[str, tuple[bytes, ...]]
+        Whole-population SHA-256 hex digest and the request digests in request order.
+    """
+
+    digest = hashlib.sha256()
+    request_digests = []
+
+    for record in chain(
+        population.candidates.candidates, (population.candidates.summary,)
+    ):
+        digest.update(_record_material_bytes(record))
+        digest.update(b"\n")
+
+    for request in population.requests:
+        material = _record_material_bytes(request)
+        digest.update(material)
+        digest.update(b"\n")
+        request_digests.append(hashlib.sha256(material).digest())
+
+    digest.update(_record_material_bytes(population.manifest))
+    digest.update(b"\n")
+
+    return digest.hexdigest(), tuple(request_digests)
+
+
 def _population_material_hash(population: LPRequestPopulation) -> str:
     """Hash every live input record without rebuilding canonical files or models.
 
@@ -685,23 +808,27 @@ def _population_material_hash(population: LPRequestPopulation) -> str:
         SHA-256 of the ordered compact JSON records, including row delimiters.
     """
 
-    digest = hashlib.sha256()
+    return _population_material_digests(population)[0]
 
-    for record in chain(
-        population.candidates.candidates,
-        (population.candidates.summary,),
-        population.requests,
-        (population.manifest,),
-    ):
-        digest.update(
-            to_json(
-                inf_nan_mode="constants",
-                value=record.model_dump(mode="json", warnings="error"),
-            )
-        )
-        digest.update(b"\n")
 
-    return digest.hexdigest()
+def _record_material_bytes(record: BaseSchema) -> bytes:
+    """Serialize one live record for invocation-local mutation checks.
+
+    Parameters
+    ----------
+    record
+        Candidate, summary, request or manifest record.
+
+    Returns
+    -------
+    bytes
+        Compact JSON that keeps non-finite numbers distinct from null.
+    """
+
+    return to_json(
+        inf_nan_mode="constants",
+        value=record.model_dump(mode="json", warnings="error"),
+    )
 
 
 def _request_pair(
@@ -1136,6 +1263,28 @@ def canonical_lp_json(value: Any) -> str:
         separators=(",", ":"),
         sort_keys=True,
     )
+
+
+def file_stat_identity(path: Path) -> tuple[int, int, int, int, int]:
+    """Return the stat fields that change when a file is replaced or edited.
+
+    `st_ctime_ns` also changes when a content edit is followed by an `os.utime`
+    restore of the modification time, so a restored timestamp cannot hide an edit.
+
+    Parameters
+    ----------
+    path
+        Existing artifact path.
+
+    Returns
+    -------
+    tuple[int, int, int, int, int]
+        Device, inode, size, modification and status-change times in nanoseconds.
+    """
+
+    stat = path.stat()
+
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
 
 def lp_material_content_hash(value: Any) -> str:

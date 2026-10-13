@@ -755,3 +755,86 @@ class TestVerifyPageIrPairs:
         )
 
         assert tracker.verification.runs >= 1
+
+
+@patch("kgfeg.page_ir_verification.llm.create_continuity_validation_agent")
+@patch("kgfeg.page_ir_verification.llm.validate_page_ir_continuity_verdict")
+@patch("kgfeg.page_ir_verification.llm.create_continuity_verification_agent")
+@patch("kgfeg.page_ir_verification.llm.verify_page_ir_pairs_from_extraction")
+def test_verify_page_ir_pairs_routes_each_instruction_field_only_to_its_own_agent_prompt(
+    mock_verify_prompts: MagicMock,
+    mock_create_verification: MagicMock,
+    mock_validate_prompts: MagicMock,
+    mock_create_validation: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """`verification_instructions` reaches only the verifier's prompt builder and
+    `validation_instructions` only the checker's (through `_run_validation_agent`)
+    (AC-005).
+
+    Parameters
+    ----------
+    mock_verify_prompts
+        Mock for the verifier prompt builder.
+    mock_create_verification
+        Mock for the verifier agent factory.
+    mock_validate_prompts
+        Mock for the checker prompt builder.
+    mock_create_validation
+        Mock for the checker agent factory.
+    tmp_path
+        Temporary directory for PNG stubs.
+    """
+
+    mock_verify_prompts.return_value = MagicMock(system_message="sys", user_message="u")
+    mock_validate_prompts.return_value = MagicMock(
+        system_message="sys", user_message="u"
+    )
+    verification_agent = MagicMock()
+    verification_agent.run_sync.return_value = make_mock_agent_result(
+        output=make_verdict()
+    )
+    mock_create_verification.return_value = verification_agent
+    validation_agent = MagicMock()
+    validation_agent.run_sync.return_value = make_mock_agent_result(
+        output=make_passing_validation_verdict()
+    )
+    mock_create_validation.return_value = validation_agent
+
+    prev_item, next_item = _stub_prev_next_items()
+    prev_png = tmp_path / "prev.png"
+    next_png = tmp_path / "next.png"
+    prev_png.write_bytes(b"fake-prev-png")
+    next_png.write_bytes(b"fake-next-png")
+
+    verify_page_ir_pairs(
+        min_confidence_to_patch=_THRESHOLDS["min_confidence_to_patch"],
+        min_confidence_to_select_positive=_THRESHOLDS[
+            "min_confidence_to_select_positive"
+        ],
+        min_confidence_to_stop_negative_search=_THRESHOLDS[
+            "min_confidence_to_stop_negative_search"
+        ],
+        next_item=next_item,
+        next_item_excerpt={"kind": "block"},
+        next_page_index=1,
+        next_png=next_png,
+        prev_item=prev_item,
+        prev_item_excerpt={"kind": "block"},
+        prev_page_index=0,
+        prev_png=prev_png,
+        usage_tracker=VerificationUsageTracker(),
+        validation_instructions="RULES FOR THE CHECKER",
+        verification_instructions="RULES FOR THE VERIFIER",
+    )
+
+    assert mock_verify_prompts.call_count == 1
+    assert mock_validate_prompts.call_count == 1
+    assert (
+        mock_verify_prompts.call_args.kwargs["curriculum_instructions"]
+        == "RULES FOR THE VERIFIER"
+    )
+    assert (
+        mock_validate_prompts.call_args.kwargs["curriculum_instructions"]
+        == "RULES FOR THE CHECKER"
+    )

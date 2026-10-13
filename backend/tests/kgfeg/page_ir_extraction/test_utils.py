@@ -13,6 +13,8 @@ from PIL import Image
 
 # Package Library
 from kgfeg.page_ir_extraction import utils
+from kgfeg.page_ir_extraction.schemas import Block, PageIR, TextUnit
+from kgfeg.utils.constants import BlockType, ItemBoundary
 from tests.constants import FIXTURES_DIR, PARAM
 from tests.types_ import InstallLoguruMock
 
@@ -793,3 +795,196 @@ def test_render_and_save_page_to_png_regular_page_is_untouched(tmp_path: Path) -
     with Image.open(output_fp) as img:
         width, height = img.size
         assert height > width
+
+
+# Correction guard (`evaluate_page_ir_correction`) test data: a generic page whose PDF
+# text layer has a running header line and one body paragraph.
+_GUARD_BODY = "The learner reads big books aloud with the teacher every day"
+_GUARD_HEADER = "CURRICULUM POLICY STATEMENT"
+_GUARD_TEXT_LAYER = f"{_GUARD_HEADER}\n{_GUARD_BODY}\n"
+
+
+def _guard_page_ir(*texts: str, artifacts: tuple[str, ...] = ()) -> PageIR:
+    """Build a PageIR with one paragraph per text and one ARTIFACT block per artifact.
+
+    Parameters
+    ----------
+    *texts
+        Paragraph texts, in reading order.
+    artifacts
+        ARTIFACT (running header/footer) texts.
+
+    Returns
+    -------
+    PageIR
+        A schema-valid PageIR.
+    """
+
+    items = []
+    y = 100.0
+
+    for block_type, text in [(BlockType.ARTIFACT, t) for t in artifacts] + [
+        (BlockType.PARAGRAPH, t) for t in texts
+    ]:
+        items.append(
+            Block(
+                bbox=(10.0, y, 500.0, y + 20.0),
+                block_type=block_type,
+                boundary=ItemBoundary.COMPLETE,
+                kind="block",
+                text=TextUnit(language="en", text=text),
+            )
+        )
+        y += 30.0
+
+    return PageIR(items=items)
+
+
+def test_evaluate_page_ir_correction_rejects_correction_adding_word_not_on_page() -> (
+    None
+):
+    """A correction with a word that is in neither the usable text layer nor the
+    extraction is rejected and names that word (AC-029)."""
+
+    decision = utils.evaluate_page_ir_correction(
+        corrected_page_ir=_guard_page_ir(_GUARD_BODY + " zebras"),
+        extraction_page_ir=_guard_page_ir(_GUARD_BODY),
+        page_index=7,
+        text_hint=_GUARD_TEXT_LAYER,
+    )
+
+    assert decision.accepted is False
+    assert decision.added_words == ("zebras",)
+
+
+def test_evaluate_page_ir_correction_rejects_on_page_text_repeated_more_often_than_page_has_it() -> (
+    None
+):
+    """A correction that repeats on-page text, adding no new vocabulary, is rejected
+    when words then occur more times than in both the text layer and the extraction;
+    the over-counted words are reported, sorted (AC-029)."""
+
+    decision = utils.evaluate_page_ir_correction(
+        corrected_page_ir=_guard_page_ir(_GUARD_BODY, _GUARD_BODY),
+        extraction_page_ir=_guard_page_ir(_GUARD_BODY),
+        page_index=7,
+        text_hint=_GUARD_TEXT_LAYER,
+    )
+
+    assert decision.accepted is False
+    assert decision.added_words == (
+        "aloud",
+        "big",
+        "books",
+        "day",
+        "every",
+        "learner",
+        "reads",
+        "teacher",
+        "the",
+        "with",
+    )
+
+
+def test_evaluate_page_ir_correction_ignores_display_case_and_quote_style() -> None:
+    """A correction that differs from the page only in display case and curly versus
+    straight quotes adds no words and is accepted (AC-008, AC-030)."""
+
+    text_layer = "\u201cBig\u201d Books for the learner\u2019s reading corner today\n"
+
+    decision = utils.evaluate_page_ir_correction(
+        corrected_page_ir=_guard_page_ir(
+            '"BIG" BOOKS FOR THE LEARNER\'S READING CORNER'
+        ),
+        extraction_page_ir=_guard_page_ir("Big Books"),
+        page_index=7,
+        text_hint=text_layer,
+    )
+
+    assert decision.accepted is True
+    assert not decision.added_words
+
+
+def test_evaluate_page_ir_correction_ignores_added_running_header_artifacts() -> None:
+    """Running headers/footers transcribed as ARTIFACT blocks never count as added
+    words, even when repeated more often than the text layer has them (AC-008)."""
+
+    decision = utils.evaluate_page_ir_correction(
+        corrected_page_ir=_guard_page_ir(
+            _GUARD_BODY, artifacts=(_GUARD_HEADER, _GUARD_HEADER, "Page 7 of the guide")
+        ),
+        extraction_page_ir=_guard_page_ir(_GUARD_BODY),
+        page_index=7,
+        text_hint=_GUARD_TEXT_LAYER,
+    )
+
+    assert decision.accepted is True
+    assert not decision.added_words
+
+
+def test_evaluate_page_ir_correction_skips_garbled_text_layer() -> None:
+    """A text layer that passed the quality gate but covers fewer than half of the
+    extraction's distinct words is treated as unusable: a correction adding a word is
+    accepted as today (AC-009). The same correction against the real layer is rejected,
+    so acceptance comes from the coverage rule."""
+
+    extraction = _guard_page_ir(_GUARD_BODY + " in class")  # 12 distinct words
+    correction = _guard_page_ir(_GUARD_BODY + " in class zebras")
+    garbled_layer = "Ŧĥę ŀęäřŋęř řęäđş ƀįğ ƀőőķş äŀőūđ ŵįŧĥ ŧĥę ŧęäčĥęř ęvęřŷ đäŷ\n"
+
+    garbled = utils.evaluate_page_ir_correction(
+        corrected_page_ir=correction,
+        extraction_page_ir=extraction,
+        page_index=7,
+        text_hint=garbled_layer,
+    )
+    usable = utils.evaluate_page_ir_correction(
+        corrected_page_ir=correction,
+        extraction_page_ir=extraction,
+        page_index=7,
+        text_hint=_GUARD_TEXT_LAYER + "in class\n",
+    )
+
+    assert garbled.accepted is True
+    assert not garbled.added_words
+    assert usable.accepted is False
+    assert usable.added_words == ("zebras",)
+
+
+def test_evaluate_page_ir_correction_accepts_correction_when_page_has_no_text_layer() -> (
+    None
+):
+    """With no usable text layer (`text_hint` is None), the guard does not block: even
+    a correction with a new word is accepted as today (AC-009)."""
+
+    # Fewer than 10 distinct extracted words, so the coverage rule cannot be what
+    # accepts the correction.
+    decision = utils.evaluate_page_ir_correction(
+        corrected_page_ir=_guard_page_ir("Big books for zebras"),
+        extraction_page_ir=_guard_page_ir("Big books"),
+        page_index=7,
+        text_hint=None,
+    )
+
+    assert decision.accepted is True
+    assert not decision.added_words
+
+
+def test_evaluate_page_ir_correction_accepts_words_kept_from_extraction_but_missing_from_text_layer() -> (
+    None
+):
+    """Words the correction keeps from the extraction (e.g., raster-only text missing
+    from the text layer) are not added words, so the correction is accepted (AC-029,
+    AC-030)."""
+
+    raster_caption = "Picture caption drawn as an image"
+
+    decision = utils.evaluate_page_ir_correction(
+        corrected_page_ir=_guard_page_ir(raster_caption, _GUARD_BODY),
+        extraction_page_ir=_guard_page_ir(_GUARD_BODY, raster_caption),
+        page_index=7,
+        text_hint=_GUARD_TEXT_LAYER,
+    )
+
+    assert decision.accepted is True
+    assert not decision.added_words

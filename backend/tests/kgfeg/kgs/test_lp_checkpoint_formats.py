@@ -442,6 +442,54 @@ def _invoke(
         functions[operation](**kwargs)
 
 
+def _journaled_states(
+    *, captured: dict[str, Any], phase: str, previous: dict[str, bytes | None]
+) -> tuple[dict[str, bytes], dict[str, str | None]]:
+    """Reconstruct a delta journal's complete next files and predecessor hashes.
+
+    Small files and the receipt carry complete next bytes; stage files carry their
+    previous length and digest and the appended bytes.
+
+    Parameters
+    ----------
+    captured
+        Parsed delta journal.
+    phase
+        All-absent initialization predecessors or complete update predecessors.
+    previous
+        Actual predecessor bytes, or None for an absent file.
+
+    Returns
+    -------
+    tuple[dict[str, bytes], dict[str, str | None]]
+        Complete next bytes and predecessor hashes of every checkpoint file.
+    """
+    assert set(captured["next_payloads"]) | set(captured["appends"]) == set(
+        _CHECKPOINTS
+    )
+    assert not set(captured["next_payloads"]) & set(captured["appends"])
+    next_payloads = {
+        name: payload.encode() for name, payload in captured["next_payloads"].items()
+    }
+    previous_hashes = dict(captured["previous_byte_hashes"])
+    for name, append in captured["appends"].items():
+        before = previous[name]
+        assert append["previous_length"] == (None if before is None else len(before))
+        next_payloads[name] = (before or b"") + append["appended"].encode()
+        assert append["next_length"] == len(next_payloads[name])
+        assert append["next_digest"] == _hash(next_payloads[name])
+        previous_hashes[name] = append["previous_digest"]
+    assert set(previous_hashes) == set(_CHECKPOINTS)
+    assert all(value is None for value in previous_hashes.values()) == (
+        phase == "initialize"
+    )
+    for name, payload in previous.items():
+        assert previous_hashes[name] == (
+            _hash(payload) if payload is not None else None
+        )
+    return next_payloads, previous_hashes
+
+
 def _json(path: Path) -> Any:
     """Read synthetic JSON evidence without normalizing its source file.
 
@@ -486,14 +534,27 @@ def _state(root: Path) -> dict[str, Any]:
     }
 
 
-@pytest.mark.parametrize(argnames="phase", argvalues=["initialize", "update"])
+@pytest.mark.parametrize(
+    argnames=("form", "phase"),
+    argvalues=[("full", "initialize"), ("full", "update"), ("delta", "update")],
+)
 def test_current_transactions_recover_every_authenticated_old_new_file_mixture(
-    _block_network: Mock, monkeypatch: pytest.MonkeyPatch, phase: str, tmp_path: Path
+    _block_network: Mock,
+    form: str,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    tmp_path: Path,
 ) -> None:
     """Validate before repair, then recover every binary mixture of seven native files.
 
+    The writer journals stage-file appends (`delta`). A full-payload journal
+    (`full`), as the pre-incremental writer left it, is rebuilt from the same
+    transition and must still recover.
+
     Parameters
     ----------
+    form
+        Journal form left by the interrupted commit.
     monkeypatch
         Deterministic proposal and atomic-write fault seams.
     phase
@@ -528,22 +589,20 @@ def test_current_transactions_recover_every_authenticated_old_new_file_mixture(
         patch.setattr(name="_atomic_write", target=lp_checkpoints, value=_write)
         with pytest.raises(_storage._Interruption):
             harness._run()
-    next_payloads = {
-        name: payload.encode() for name, payload in captured["next_payloads"].items()
-    }
-    assert set(next_payloads) == set(_CHECKPOINTS)
-    assert all(
-        value is None for value in captured["previous_byte_hashes"].values()
-    ) == (phase == "initialize")
     previous = {
         name: (source / name).read_bytes() if (source / name).exists() else None
         for name in _CHECKPOINTS
     }
-    for name in _CHECKPOINTS:
-        payload = previous[name]
-        assert captured["previous_byte_hashes"][name] == (
-            _hash(payload) if payload is not None else None
-        )
+    next_payloads, previous_hashes = _journaled_states(
+        captured=captured, phase=phase, previous=previous
+    )
+    if form == "full":
+        captured = {
+            "next_payloads": {
+                name: payload.decode() for name, payload in next_payloads.items()
+            },
+            "previous_byte_hashes": previous_hashes,
+        }
     population = build_lp_generation_requests(
         as_lc_bundle=harness.bundle, doc_key=_entry._DOC_KEY, kg_config=harness.config
     )

@@ -12,8 +12,54 @@ from kgfeg.utils.constants import BlockType, FigureKind, ItemBoundary
 from kgfeg.utils.general import PromptPair
 
 
+def _append_curriculum_instructions(
+    *, agent_directive: str, curriculum_instructions: str | None, system_message: str
+) -> str:
+    """Append an optional runtime curriculum instructions section to a system message.
+
+    NB: When `curriculum_instructions` is None, the system message is returned
+    unchanged so that prompts without runtime instructions stay byte-identical to
+    prompts built before this option existed.
+
+    Parameters
+    ----------
+    agent_directive
+        Agent-specific sentence describing how the agent applies the instructions.
+    curriculum_instructions
+        Optional document-specific instructions from the runtime config.
+    system_message
+        The fully built (stripped) generic system message.
+
+    Returns
+    -------
+    str
+        The system message, with the instructions section appended at the very end
+        when instructions are provided.
+    """
+
+    if curriculum_instructions is None:
+        return system_message
+
+    section = (
+        f"## RUNTIME CURRICULUM INSTRUCTIONS\n"
+        f"The instructions below are authoritative, curriculum-specific guidance for "
+        f"this document, supplied by the pipeline's runtime configuration. Where they "
+        f"conflict with any generic rule above, follow them instead. The only "
+        f"exception is the output contract: the PageIR JSON schema and the structural "
+        f"rules enforced by the pipeline's quality checks (for example bbox validity, "
+        f"block content rules, n_cols, and row_span/col_span rules) still apply. "
+        f"{agent_directive}\n"
+        f"<curriculum_instructions>\n"
+        f"{curriculum_instructions}\n"
+        f"</curriculum_instructions>"
+    )
+
+    return system_message + "\n\n" + section
+
+
 def extract_page_ir_from_pdf_page(
     *,
+    curriculum_instructions: str | None = None,
     image_height: int,
     image_width: int,
     languages: list[str],
@@ -25,6 +71,11 @@ def extract_page_ir_from_pdf_page(
 
     Parameters
     ----------
+    curriculum_instructions
+        Optional document-specific instructions from the runtime config. When
+        provided, appended to the end of the system message under a section that
+        overrides the generic rules where they conflict (except the output contract).
+        When None, the prompts are unchanged.
     image_height
         The height of the image in pixels.
     image_width
@@ -183,13 +234,25 @@ Return the PageIR JSON only.
     if hint_parts:
         user_message = user_message.strip() + "\n\n" + "\n\n".join(hint_parts)
 
-    return PromptPair(
-        system_message=system_message.strip(), user_message=user_message.strip()
+    system_message = _append_curriculum_instructions(
+        agent_directive=(
+            "Apply them when deciding item kinds, block classifications, table "
+            "structure, header rows, and boundaries."
+        ),
+        curriculum_instructions=curriculum_instructions,
+        system_message=system_message.strip(),
     )
+
+    return PromptPair(system_message=system_message, user_message=user_message.strip())
 
 
 def validate_page_ir_extraction(
-    *, image_height: int, image_width: int, page_index: int, page_ir_json: str
+    *,
+    curriculum_instructions: str | None = None,
+    image_height: int,
+    image_width: int,
+    page_index: int,
+    page_ir_json: str,
 ) -> PromptPair:
     """Generate the prompts for validating an extracted PageIR against a source image.
 
@@ -200,6 +263,11 @@ def validate_page_ir_extraction(
 
     Parameters
     ----------
+    curriculum_instructions
+        Optional document-specific instructions from the runtime config. When
+        provided, appended to the end of the system message under a section that
+        overrides the generic rules where they conflict (except the output contract).
+        When None, the prompts are unchanged.
     image_height
         The height of the source image in pixels.
     image_width
@@ -288,6 +356,13 @@ Compare this JSON carefully against the attached page image and return a Validat
         """
     )
 
-    return PromptPair(
-        system_message=system_message.strip(), user_message=user_message.strip()
+    system_message = _append_curriculum_instructions(
+        agent_directive=(
+            "Audit the extraction against them: an extraction that breaks them has an "
+            "error-severity issue, and any corrected_page_ir must follow them."
+        ),
+        curriculum_instructions=curriculum_instructions,
+        system_message=system_message.strip(),
     )
+
+    return PromptPair(system_message=system_message, user_message=user_message.strip())

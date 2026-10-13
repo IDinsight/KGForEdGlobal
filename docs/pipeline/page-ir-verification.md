@@ -52,10 +52,39 @@ Important settings include:
 | `min_confidence_to_patch`                | Minimum confidence required before a selected verdict can change PageIR metadata       |
 | `min_confidence_to_stop_negative_search` | Confidence required to stop alternate-candidate search after a strong primary negative |
 | `next_page_crop_padding_px`              | Extra visual context included below a selected next-page candidate                     |
+| `verification_instructions`              | Optional document-specific instructions for the continuity verifier                    |
+| `validation_instructions`                | Optional document-specific instructions for the validation agent                       |
 | `overwrite`                              | Whether to re-run page-pair verification instead of reusing existing pair reports      |
 
 By default, selection is more permissive than mutation. A candidate continuation can
 therefore be the best available explanation without automatically changing the PageIR.
+
+### Document-specific instructions
+
+`verification_instructions` and `validation_instructions` let a curriculum profile give
+the continuity agents rules that apply to one document. `verification_instructions` goes
+only to the continuity verifier, and `validation_instructions` goes only to the
+validation agent that checks the verifier's verdict.
+
+The text is added at the end of the agent's system prompt, under a heading that tells
+the agent to follow it wherever it conflicts with the generic continuity rules. That
+includes the generic table rule. Without instructions, a table at the top of page *N+1*
+that has the same columns as the previous table, no heading above it, and no new column
+header is treated as a continuation, even if the topic inside the grid changes. A
+profile can override this, for example by saying that a table whose top rows contain a
+particular banner always starts a new table. The output schema and its consistency
+checks still apply.
+
+Both fields are optional. When a field is unset or blank, the agent's prompt is exactly
+the same as it would be without the field.
+
+Give both agents the same rules. If the validation agent rejects a verdict, its
+corrected verdict replaces the verifier's, so a validation agent that does not know the
+rules can undo them. For a worked example, see
+`examples/funda_wande/config_english_curriculum.json`.
+
+Changing either field does not update existing pair reports. Re-run verification with
+`overwrite` set to true so the page pairs are judged again.
 
 ---
 

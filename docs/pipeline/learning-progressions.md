@@ -106,10 +106,10 @@ Hierarchy indexing preserves all direct parents and relevant bounded paths in a 
 Under `exclude_unresolved`, an SFI with unresolved self or ancestry is excluded from
 both relations. Under `include_unresolved_with_warnings`, otherwise eligible SFIs
 remain eligible, with warnings carried through requests, judgments, provenance, and
-reports. The six example profiles select inclusion with warnings. Framework-root
-fallback never counts as positive hierarchy or topical evidence. Trustworthy text,
-scope, LCs, source evidence, and non-fallback paths can still be used. There are no
-per-SFI exceptions.
+reports. Every example profile under `examples/` selects inclusion with warnings.
+Framework-root fallback never counts as positive hierarchy or topical evidence.
+Trustworthy text, scope, LCs, source evidence, and non-fallback paths can still be
+used. There are no per-SFI exceptions.
 
 ## From candidates to validated graph
 
@@ -171,6 +171,68 @@ calls.
 The `.lp_generation.lock` file is retained after success. Its presence alone does not
 mean a writer is active; ownership is an operating-system lock. Do not delete it to
 force reuse: retaining the same inode protects competing readers/writers.
+
+### How checkpoints are checked and saved
+
+A full verification reads everything. It reads every byte of the candidate and request
+files, hashes the whole in-memory request population, rechecks the execution identity
+(configuration, prompts, schemas, and model), validates every saved checkpoint record,
+and reads every checkpoint file back against the hashes in
+`lp_generation_checkpoint_manifest.json`. It runs:
+
+- when LP starts in each invocation, whether the run is fresh, resumed, or finishing an
+  interrupted save;
+- before the save that first marks the checkpoints `completed`;
+- after the request loop of a production invocation finishes; and
+- in every read-only load, such as finalization and the checkpoint-format check that
+  runs before LP, export, and final-bundle reuse.
+
+Between those points, cheaper guards run before each dispatch, each model call, and
+each save. They do no work that grows with the population or the saved checkpoints:
+
+- For the candidate and request files and for each checkpoint file, a guard compares
+  the file's metadata (device, inode, size, modification time, and status-change time)
+  with the values recorded at the last full read or at the store's own last write. If
+  anything differs, the bytes are read again and compared with the verified hashes.
+  Identical bytes are accepted and logged at `INFO`; different bytes stop the run.
+- For the in-memory population, a guard re-hashes only the requests being dispatched or
+  saved, plus those still in flight, and rechecks the execution identity.
+
+The status-change time catches an edit whose modification time was put back afterwards.
+On a file system with coarse timestamps, an edit that keeps a file's size and lands
+within one timestamp tick of the store's own write can leave its metadata unchanged.
+The guards then miss it, but the next full verification, which always runs before
+finalization reads the checkpoints, fails closed on it.
+
+Each save writes only what changed:
+
+- the three stage files (`lp_generation_draft_responses.jsonl`,
+  `lp_generation_validation_verdicts.jsonl`, and `lp_generation_responses.jsonl`) get
+  the new rows appended; and
+- `lp_generation_pending_completions.json`, `lp_generation_failures.json`,
+  `lp_generation_usage.json`, and the checkpoint manifest are rewritten whole.
+
+The files on disk are byte for byte what a full rewrite of every file would produce for
+the same state, so checkpoint directories written by earlier versions load and resume
+unchanged.
+
+Every save is a journaled transaction. The store first writes
+`lp_generation_checkpoint_transaction.json`, which holds each stage file's previous
+length and hash and the rows to append, plus the complete new contents of the other
+files. It then applies the changes, checks the result against the journal, and deletes
+the journal. If a run stops partway through a save, the next invocation finishes the
+save only when every file is exactly at its previous or its next state; anything else
+stops the run. Journals in the older form, which hold complete file contents, are still
+recovered. An operating-system crash or power loss during an append can leave a stage
+file in neither state. LP then fails closed, and recovery means regenerating LP, which
+discards the completed LP work.
+
+Because per-save work follows the size of the change rather than the number of saved
+requests, a long LP run is limited mainly by model time. The whole-file rewrites,
+mostly the usage file, still grow slowly as a run progresses. `max_concurrent_requests`
+is therefore the main control on run time, within provider rate limits. It is part of
+the execution identity, so changing it after LP has started means regenerating LP
+rather than resuming.
 
 ### Historical graphs versus production reuse
 

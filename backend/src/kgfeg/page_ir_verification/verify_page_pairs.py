@@ -367,6 +367,8 @@ def _execute_verification_attempts(
                 prev_page_index=page_index,
                 prev_png=next_page_image_fp.parent / f"{page_index:04}.png",
                 usage_tracker=usage_tracker,
+                validation_instructions=config.validation_instructions,
+                verification_instructions=config.verification_instructions,
             )
         except Exception as error:  # pylint: disable=broad-except
             attempt_summaries.append(

@@ -253,6 +253,28 @@ writer. Never delete the lock file to force progress: competing processes must
 coordinate on the same inode. A compatible completed run can reuse its final bundle and
 rewrite projections without new LP model calls.
 
+Every LP invocation, including a resume, starts with a full verification that reads all
+of `lp_generation_requests.jsonl` and every checkpoint file before any call. It runs
+again before LP first records completion, after the request loop, and in every read-only
+load such as finalization. While LP runs, cheaper guards compare file metadata and
+re-read a file only when its metadata changes. Leave the `kgs/` directory alone during a
+run. A tool that touches or rewrites a file without changing its bytes, such as a sync
+tool, only costs a re-read, logged as `LP checkpoint file identity changed with
+identical bytes` or `LP population artifact identity changed with identical bytes`. Any
+change to the bytes stops the run.
+
+Each save appends new rows to the stage files and rewrites the small checkpoint files
+whole. The files keep the established on-disk format byte for byte, so checkpoint
+directories written by earlier versions resume as they are. Each save is journaled in
+`lp_generation_checkpoint_transaction.json`, and the next invocation finishes a save
+that was interrupted. If a crash or power loss left a stage file in a state the journal
+cannot explain, LP stops with `LP interrupted checkpoint has unexplained material`.
+Preserve the directory and plan an authorized LP regeneration; the completed LP work
+cannot be reused. Never edit or truncate checkpoint files to make them match the
+journal. See
+[how checkpoints are checked and saved](../pipeline/learning-progressions.md#how-checkpoints-are-checked-and-saved)
+for the verification points, guards, and save journal.
+
 ## Resume after an interruption
 
 For unchanged material and supported checkpoint evidence, an authorized rerun can use
@@ -303,7 +325,7 @@ changed stage should not be trusted merely because files already exist.
 | Change                                                                                                                        | Earliest affected stage           | Recommended rerun                                                                                                        |
 |-------------------------------------------------------------------------------------------------------------------------------|-----------------------------------|--------------------------------------------------------------------------------------------------------------------------|
 | Source PDF bytes                                                                                                              | Page IR extraction                | Run all four commands; the changed PDF receives a new `doc_key`                                                          |
-| Extraction model, DPI, languages, extracted hints, extraction logic, or accepted PageIR contract                              | Page IR extraction                | Extraction with overwrite, then verification, DocumentIR, and KG from the regenerated PageIRs                            |
+| Extraction model, DPI, languages, extracted hints, extraction instructions, extraction logic, or accepted PageIR contract     | Page IR extraction                | Extraction with overwrite, then verification, DocumentIR, and KG from the regenerated PageIRs                            |
 | Verification model, candidate logic, semantic instructions, search/selection behavior, or continuity policy                   | Page IR verification              | Verification with overwrite, then DocumentIR and KG                                                                      |
 | Only verified PageIR inputs changed                                                                                           | Page IR verification / DocumentIR | Rebuild verification if necessary, then DocumentIR and KG                                                                |
 | Stitching/link/fill-down/normalization behavior                                                                               | DocumentIR                        | Stitching with overwrite, then KG                                                                                        |
@@ -322,18 +344,21 @@ Extraction and verification each have `start_page` / `end_page` settings. Verifi
 can only operate on a contiguous range that actually exists in the extraction output.
 These ranges use zero-based page indexes and an exclusive `end_page`.
 
-For an **end-to-end** run through DocumentIR, there is an additional current
-constraint: the verified PageIR set loaded by the stitcher must be contiguous and start
-at page index `0`.
+For an **end-to-end** run through DocumentIR, there is one more constraint: the
+verified PageIRs that the stitcher loads must form a range with no gaps and no
+duplicates. The range can start at any page index.
 
-Therefore:
+The stitcher loads every verified PageIR under
+`<output_dir>/<doc_key>/verification/page_irs_verified/`, not only the pages in the
+current config's range. Therefore:
 
 - a small calibration run such as `[0, 10)` can be run through all four commands;
-- a non-zero slice such as `[40, 50)` is useful for PageIR extraction/verification
-  inspection, but cannot be stitched by itself in the current pipeline; and
-- if you need an end-to-end calibration of pages from the middle of a large source,
-  create a separate cropped test PDF so that its first page is index `0`, and use a
-  separate output root.
+- a slice from the middle of the source, such as `[40, 50)`, can also be stitched on
+  its own; and
+- each slice needs its own `page_ir_extraction.output_dir`. If two slices share one,
+  the stitcher sees both. Touching slices such as `[35, 59)` and `[59, 84)` are
+  stitched together as one document, and slices with pages missing between them fail
+  the gap check.
 
 Also keep the extraction and verification ranges compatible. Requesting verification
 outside the available extracted pages fails explicitly rather than silently skipping the
@@ -382,6 +407,8 @@ class of operational problem.
 | LC generation failure rate exceeds `lc_max_failure_rate`                            | Too many eligible SFIs failed generation after retries                            | Inspect `lc_generation_failures.json`; rerun without KG overwrite after a transient fix, or adjust the actual LC policy/model issue                              |
 | AS/AS+LC final bundle fingerprints differ                                           | Current inputs differ                                                             | Inspect the change and upstream compiler behavior; LP final reuse instead rejects stale material                                                                 |
 | LP checkpoint format is unsupported                                                 | Old/partial/unauthenticated evidence, possibly even with a successful final graph | Preserve it; use compatible read-only interpretation or a separately authorized fresh run, not forced overwrite                                                  |
+| `LP checkpoint material changed` or `LP pre-call artifact differs from current material` | A checkpoint or request file changed after LP verified it, for example an edit during the run | Preserve the directory and find what changed it; plan authorized regeneration rather than restoring files or hashes                                        |
+| `LP interrupted checkpoint has unexplained material`                                | An interrupted save left a file at neither its journaled previous nor next state, for example after a crash or power loss during an append | Preserve the directory; LP must be regenerated, and its completed work is lost                                                             |
 | Production LP retry budget is exhausted or an outcome is unknown                    | The current invocation has failed or lacks a reusable result for that stage       | Inspect durable failure/usage evidence before an authorized resume; a new invocation can call unfinished stages again. Preserve all receipts and attempt history |
 | A resumed run reports little or no LLM usage                                        | Compatible semantic artifacts were reused                                         | Expected; usage in the current run record is not cumulative lifetime usage                                                                                       |
 

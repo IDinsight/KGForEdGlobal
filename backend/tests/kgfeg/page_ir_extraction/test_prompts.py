@@ -314,3 +314,135 @@ def test_validate_page_ir_extraction_user_message_includes_page_index_and_json_p
     assert "```json" in user_message
     assert '{"items": [], "page_index": null}' in user_message
     assert user_message.rstrip().endswith("all fixes applied.")
+
+
+# Generic stand-in for runtime curriculum instructions (no real curriculum named).
+_CURRICULUM_INSTRUCTIONS = (
+    "Treat every boxed grid that lacks a title row as rows of the previous table."
+)
+_CURRICULUM_HEADING = "## RUNTIME CURRICULUM INSTRUCTIONS"
+
+
+@pytest.mark.parametrize(
+    "builder_name", ["extract_page_ir_from_pdf_page", "validate_page_ir_extraction"]
+)
+def test_extraction_prompt_builders_leave_prompts_unchanged_without_curriculum_instructions(
+    builder_name: str,
+    extract_prompt_pair_base: PromptPair,
+    validate_prompt_pair_base: PromptPair,
+) -> None:
+    """With `curriculum_instructions=None`, neither prompt gains an instructions
+    section, separator, or trailing whitespace (AC-003).
+
+    Parameters
+    ----------
+    builder_name
+        Which extraction-stage prompt builder to check.
+    extract_prompt_pair_base
+        The baseline extraction PromptPair (argument omitted).
+    validate_prompt_pair_base
+        The baseline validation PromptPair (argument omitted).
+    """
+
+    if builder_name == "extract_page_ir_from_pdf_page":
+        base = extract_prompt_pair_base
+        explicit_none = extract_page_ir_from_pdf_page(
+            curriculum_instructions=None,
+            image_height=800,
+            image_width=600,
+            languages=["en", "sw"],
+            page_index=1,
+            table_layer_hint=None,
+            text_layer_hint=None,
+        )
+    else:
+        base = validate_prompt_pair_base
+        explicit_none = validate_page_ir_extraction(
+            curriculum_instructions=None,
+            image_height=800,
+            image_width=600,
+            page_index=3,
+            page_ir_json='{"items": [], "page_index": null}',
+        )
+
+    assert explicit_none == base
+    assert _CURRICULUM_HEADING not in base.system_message
+    assert "<curriculum_instructions>" not in base.system_message
+    assert base.system_message == base.system_message.strip()
+
+
+@pytest.mark.parametrize(
+    "builder_name, directive",
+    [
+        (
+            "extract_page_ir_from_pdf_page",
+            "Apply them when deciding item kinds, block classifications, table "
+            "structure, header rows, and boundaries.",
+        ),
+        (
+            "validate_page_ir_extraction",
+            "an extraction that breaks them has an error-severity issue, and any "
+            "corrected_page_ir must follow them.",
+        ),
+    ],
+)
+def test_extraction_prompt_builders_append_curriculum_instructions_last_with_override_rule(
+    builder_name: str,
+    directive: str,
+    extract_prompt_pair_base: PromptPair,
+    validate_prompt_pair_base: PromptPair,
+) -> None:
+    """A set value is appended once, at the very end of the system message, under a
+    section that says it overrides the generic rules; the user message is unchanged
+    (AC-002).
+
+    Parameters
+    ----------
+    builder_name
+        Which extraction-stage prompt builder to check.
+    directive
+        The agent-specific directive expected in that builder's section.
+    extract_prompt_pair_base
+        The baseline extraction PromptPair (no instructions).
+    validate_prompt_pair_base
+        The baseline validation PromptPair (no instructions).
+    """
+
+    if builder_name == "extract_page_ir_from_pdf_page":
+        base = extract_prompt_pair_base
+        pair = extract_page_ir_from_pdf_page(
+            curriculum_instructions=_CURRICULUM_INSTRUCTIONS,
+            image_height=800,
+            image_width=600,
+            languages=["en", "sw"],
+            page_index=1,
+            table_layer_hint=None,
+            text_layer_hint=None,
+        )
+    else:
+        base = validate_prompt_pair_base
+        pair = validate_page_ir_extraction(
+            curriculum_instructions=_CURRICULUM_INSTRUCTIONS,
+            image_height=800,
+            image_width=600,
+            page_index=3,
+            page_ir_json='{"items": [], "page_index": null}',
+        )
+
+    # The generic prompt is kept verbatim and the section follows every generic rule.
+    assert pair.user_message == base.user_message
+    assert pair.system_message.startswith(
+        base.system_message + "\n\n" + _CURRICULUM_HEADING
+    )
+
+    section = pair.system_message[len(base.system_message) :]
+    assert (
+        "Where they conflict with any generic rule above, follow them instead"
+        in section
+    )
+    assert directive in section
+    assert section.endswith(
+        f"<curriculum_instructions>\n{_CURRICULUM_INSTRUCTIONS}\n</curriculum_instructions>"
+    )
+    assert pair.system_message.count(_CURRICULUM_INSTRUCTIONS) == 1
+    assert _CURRICULUM_INSTRUCTIONS not in pair.user_message

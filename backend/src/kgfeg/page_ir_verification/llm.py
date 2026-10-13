@@ -125,6 +125,7 @@ def _run_validation_agent(
     prev_page_index: int,
     prev_png_bytes: bytes,
     usage_tracker: VerificationUsageTracker,
+    validation_instructions: str | None = None,
     verdict: PageIRContinuityVerdict,
 ) -> ContinuityValidationVerdict:
     """Run the validation agent to check a continuity verdict against the source images.
@@ -157,6 +158,9 @@ def _run_validation_agent(
         Raw PNG bytes of the previous page.
     usage_tracker
         Tracker to accumulate validation agent usage.
+    validation_instructions
+        Optional document-specific instructions for the validation agent's system
+        prompt. None leaves the prompt unchanged.
     verdict
         The verification verdict to validate.
 
@@ -167,6 +171,7 @@ def _run_validation_agent(
     """
 
     prompts = validate_page_ir_continuity_verdict(
+        curriculum_instructions=validation_instructions,
         min_confidence_to_patch=min_confidence_to_patch,
         min_confidence_to_select_positive=min_confidence_to_select_positive,
         min_confidence_to_stop_negative_search=min_confidence_to_stop_negative_search,
@@ -244,6 +249,8 @@ def verify_page_ir_pairs(
     prev_page_index: int,
     prev_png: Path,
     usage_tracker: VerificationUsageTracker,
+    validation_instructions: str | None = None,
+    verification_instructions: str | None = None,
 ) -> PageIRContinuityVerdict:
     """Verify continuity between two PageIR excerpts using LLM agents.
 
@@ -282,6 +289,12 @@ def verify_page_ir_pairs(
         The PNG file path of page N.
     usage_tracker
         Tracker to accumulate token usage from both verification and validation agents.
+    validation_instructions
+        Optional document-specific instructions for the validation agent's system
+        prompt. None leaves the prompt unchanged.
+    verification_instructions
+        Optional document-specific instructions for the verification agent's system
+        prompt. None leaves the prompt unchanged.
 
     Returns
     -------
@@ -308,6 +321,7 @@ def verify_page_ir_pairs(
 
     # Run verification agent.
     prompts = verify_page_ir_pairs_from_extraction(
+        curriculum_instructions=verification_instructions,
         min_confidence_to_patch=min_confidence_to_patch,
         min_confidence_to_select_positive=min_confidence_to_select_positive,
         min_confidence_to_stop_negative_search=min_confidence_to_stop_negative_search,
@@ -365,6 +379,7 @@ def verify_page_ir_pairs(
         prev_page_index=prev_page_index,
         prev_png_bytes=prev_png_bytes,
         usage_tracker=usage_tracker,
+        validation_instructions=validation_instructions,
         verdict=verdict,
     )
 

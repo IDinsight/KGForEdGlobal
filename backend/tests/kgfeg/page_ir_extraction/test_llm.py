@@ -23,7 +23,9 @@ from kgfeg.page_ir_extraction.schemas import (
     PageIR,
     TextUnit,
 )
+from kgfeg.page_ir_extraction.utils import PageIRCorrectionDecision
 from kgfeg.utils.constants import BlockType, ItemBoundary
+from tests.types_ import InstallLoguruMock
 
 
 @pytest.fixture(scope="function")
@@ -477,12 +479,19 @@ def test__run_validation_agent_invokes_agent_and_tracks_usage(
     prompts = SimpleNamespace(system_message="SYS", user_message="USER")
 
     def fake_validate_page_ir_extraction(
-        *, image_height: int, image_width: int, page_index: int, page_ir_json: str
+        *,
+        curriculum_instructions: str | None = None,
+        image_height: int,
+        image_width: int,
+        page_index: int,
+        page_ir_json: str,
     ) -> Any:
         """Return a minimal prompt pair and validate plumbing.
 
         Parameters
         ----------
+        curriculum_instructions
+            Optional runtime curriculum instructions (unset in this test).
         image_height
             Image height in pixels.
         image_width
@@ -498,6 +507,7 @@ def test__run_validation_agent_invokes_agent_and_tracks_usage(
             An object with `system_message` and `user_message`.
         """
 
+        assert curriculum_instructions is None
         assert image_height == 200
         assert image_width == 100
         assert page_index == 0
@@ -763,6 +773,7 @@ def test_extract_page_ir_passes_pdf_hints_into_prompt_builder(
         page_ir: PageIR,
         png_bytes: bytes,
         usage_tracker: ExtractionUsageTracker,
+        validation_instructions: str | None = None,
     ) -> ExtractionValidationVerdict:
         """Return a passing verdict.
 
@@ -780,6 +791,8 @@ def test_extract_page_ir_passes_pdf_hints_into_prompt_builder(
             PNG bytes of the page image.
         usage_tracker
             Shared usage tracker.
+        validation_instructions
+            Optional runtime curriculum instructions for the validation agent.
 
         Returns
         -------
@@ -813,6 +826,7 @@ def test_extract_page_ir_passes_pdf_hints_into_prompt_builder(
 
     def fake_extract_page_ir_from_pdf_page(
         *,
+        curriculum_instructions: str | None = None,
         image_height: int,
         image_width: int,
         languages: list[str],
@@ -824,6 +838,8 @@ def test_extract_page_ir_passes_pdf_hints_into_prompt_builder(
 
         Parameters
         ----------
+        curriculum_instructions
+            Optional runtime curriculum instructions for the extraction agent.
         image_height
             Image height in pixels.
         image_width
@@ -955,6 +971,7 @@ def test_extract_page_ir_returns_corrected_page_ir_when_validation_fails(
         page_ir: PageIR,
         png_bytes: bytes,
         usage_tracker: ExtractionUsageTracker,
+        validation_instructions: str | None = None,
     ) -> ExtractionValidationVerdict:
         """Return a failing verdict that includes a correction.
 
@@ -972,6 +989,8 @@ def test_extract_page_ir_returns_corrected_page_ir_when_validation_fails(
             PNG bytes of the page image.
         usage_tracker
             Shared usage tracker.
+        validation_instructions
+            Optional runtime curriculum instructions for the validation agent.
 
         Returns
         -------
@@ -1056,6 +1075,7 @@ def test_extract_page_ir_returns_extraction_page_ir_when_validation_passes(
         page_ir: PageIR,
         png_bytes: bytes,
         usage_tracker: ExtractionUsageTracker,
+        validation_instructions: str | None = None,
     ) -> ExtractionValidationVerdict:
         """Return a passing verdict.
 
@@ -1073,6 +1093,8 @@ def test_extract_page_ir_returns_extraction_page_ir_when_validation_passes(
             PNG bytes of the page image.
         usage_tracker
             Shared usage tracker.
+        validation_instructions
+            Optional runtime curriculum instructions for the validation agent.
 
         Returns
         -------
@@ -1470,3 +1492,368 @@ def test_verify_quality_non_artifact_items_all_included_when_no_artifacts(
     assert len(ctx.non_artifact_items) == 2
     assert ctx.non_artifact_items[0] == (0, page_ir.items[0])
     assert ctx.non_artifact_items[1] == (1, page_ir.items[1])
+
+
+def _run_extract_page_ir_with_failing_verdict(
+    *,
+    guard_decision: PageIRCorrectionDecision,
+    monkeypatch: pytest.MonkeyPatch,
+    pdf_page: Any,
+    png_fp: Path,
+    tmp_path: Path,
+) -> tuple[PageIR, PageIR, PageIR, list[dict[str, Any]]]:
+    """Run `extract_page_ir` with a checker that fails and returns a correction.
+
+    The correction guard is replaced by a recording stand-in that returns
+    `guard_decision`, so these tests check only how `extract_page_ir` gates and acts on
+    the guard (the guard's own rule is tested in `test_utils.py`).
+
+    Parameters
+    ----------
+    guard_decision
+        The decision the stand-in guard returns.
+    monkeypatch
+        Pytest monkeypatch fixture.
+    pdf_page
+        The PDF page passed to `extract_page_ir` (None means hints are off).
+    png_fp
+        PNG fixture path for the page image.
+    tmp_path
+        Temporary directory for raw extraction artifacts.
+
+    Returns
+    -------
+    tuple[PageIR, PageIR, PageIR, list[dict[str, Any]]]
+        The returned PageIR, the extraction agent's PageIR, the checker's corrected
+        PageIR, and the recorded guard calls.
+    """
+
+    extracted = PageIR(
+        items=[
+            _make_block(
+                bbox=(1.0, 1.0, 10.0, 10.0),
+                block_type=BlockType.PARAGRAPH,
+                text="Extracted",
+            )
+        ]
+    )
+    corrected = PageIR(
+        items=[
+            _make_block(
+                bbox=(2.0, 2.0, 20.0, 20.0),
+                block_type=BlockType.PARAGRAPH,
+                text="Corrected",
+            )
+        ]
+    )
+    failing_verdict = ExtractionValidationVerdict(
+        corrected_page_ir=corrected,
+        issues=[
+            ExtractionValidationIssue(
+                description="Wrong text",
+                item_index=0,
+                severity="error",
+                suggested_fix="Fix the text",
+            )
+        ],
+        passed=False,
+        rationale="Mismatch" + "x" * 70,
+    )
+    guard_calls: list[dict[str, Any]] = []
+
+    def fake_evaluate_page_ir_correction(**kwargs: Any) -> PageIRCorrectionDecision:
+        """Record the guard inputs and return the canned decision.
+
+        Parameters
+        ----------
+        **kwargs
+            Keyword arguments passed by `extract_page_ir`.
+
+        Returns
+        -------
+        PageIRCorrectionDecision
+            The canned decision.
+        """
+
+        guard_calls.append(kwargs)
+        return guard_decision
+
+    monkeypatch.setattr(
+        llm_module, "_run_validation_agent", lambda **kw: failing_verdict
+    )
+    monkeypatch.setattr(
+        llm_module,
+        "extract_page_ir_from_pdf_page",
+        lambda **kw: SimpleNamespace(system_message="SYS", user_message="USER"),
+    )
+    monkeypatch.setattr(
+        llm_module,
+        "extract_page_text_layer_hints",
+        lambda **kw: SimpleNamespace(
+            has_hints=True, table_hint=None, text_hint="PAGE TEXT LAYER"
+        ),
+    )
+    monkeypatch.setattr(
+        llm_module, "evaluate_page_ir_correction", fake_evaluate_page_ir_correction
+    )
+
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    _install_stub_extraction_agent(
+        agent=_StubAgent(
+            result=_StubRunResult(output=extracted, usage_obj=_StubUsage(requests=1))
+        ),
+        monkeypatch=monkeypatch,
+        raw_page_irs_dir=raw_dir,
+    )
+
+    out = llm_module.extract_page_ir(
+        image_height=3508,
+        image_width=2480,
+        languages=["en"],
+        page_index=4,
+        pdf_page=pdf_page,
+        png_fp=png_fp,
+        raw_page_irs_dir=raw_dir,
+        usage_tracker=ExtractionUsageTracker(),
+    )
+
+    return out, extracted, corrected, guard_calls
+
+
+def test_extract_page_ir_keeps_extraction_and_warns_when_guard_rejects_correction(
+    mock_loguru_logger: InstallLoguruMock,
+    monkeypatch: pytest.MonkeyPatch,
+    synthetic_blank_page: Path,
+    tmp_path: Path,
+) -> None:
+    """With hints on, a rejected correction is dropped: the extraction agent's PageIR
+    is returned and a terminal warning names the page and the added words (AC-029).
+
+    Parameters
+    ----------
+    mock_loguru_logger
+        Fixture that patches the module's loguru logger and captures log calls.
+    monkeypatch
+        Pytest monkeypatch fixture.
+    synthetic_blank_page
+        PNG fixture path provided by the shared conftest.
+    tmp_path
+        Temporary directory for raw extraction artifacts.
+    """
+
+    calls = mock_loguru_logger(llm_module)
+
+    out, extracted, corrected, guard_calls = _run_extract_page_ir_with_failing_verdict(
+        guard_decision=PageIRCorrectionDecision(
+            accepted=False, added_words=("phonics", "zebra")
+        ),
+        monkeypatch=monkeypatch,
+        pdf_page=SimpleNamespace(),
+        png_fp=synthetic_blank_page,
+        tmp_path=tmp_path,
+    )
+
+    assert out is extracted
+    assert guard_calls == [
+        {
+            "corrected_page_ir": corrected,
+            "extraction_page_ir": extracted,
+            "page_index": 4,
+            "text_hint": "PAGE TEXT LAYER",
+        }
+    ]
+
+    # The checker's failing verdict logs its own warning; keep only the guard's.
+    warnings = [
+        c["message"]
+        for c in calls
+        if c["level"] == "WARNING" and "correction guard" in c["message"]
+    ]
+    assert len(warnings) == 1
+    assert "Page 5:" in warnings[0]
+    assert "correction guard rejected" in warnings[0]
+    assert "2 content word(s)" in warnings[0]
+    assert "phonics, zebra" in warnings[0]
+    assert not any("using corrected PageIR" in c["message"] for c in calls)
+
+
+def test_extract_page_ir_returns_correction_when_guard_accepts_it(
+    mock_loguru_logger: InstallLoguruMock,
+    monkeypatch: pytest.MonkeyPatch,
+    synthetic_blank_page: Path,
+    tmp_path: Path,
+) -> None:
+    """With hints on, an accepted correction replaces the extraction as before, with no
+    guard warning (AC-030).
+
+    Parameters
+    ----------
+    mock_loguru_logger
+        Fixture that patches the module's loguru logger and captures log calls.
+    monkeypatch
+        Pytest monkeypatch fixture.
+    synthetic_blank_page
+        PNG fixture path provided by the shared conftest.
+    tmp_path
+        Temporary directory for raw extraction artifacts.
+    """
+
+    calls = mock_loguru_logger(llm_module)
+
+    out, _, corrected, guard_calls = _run_extract_page_ir_with_failing_verdict(
+        guard_decision=PageIRCorrectionDecision(accepted=True, added_words=()),
+        monkeypatch=monkeypatch,
+        pdf_page=SimpleNamespace(),
+        png_fp=synthetic_blank_page,
+        tmp_path=tmp_path,
+    )
+
+    assert out is corrected
+    assert len(guard_calls) == 1
+    assert not [c for c in calls if "correction guard" in c["message"]]
+    assert any("using corrected PageIR" in c["message"] for c in calls)
+
+
+def test_extract_page_ir_does_not_run_guard_when_hints_are_off(
+    monkeypatch: pytest.MonkeyPatch, synthetic_blank_page: Path, tmp_path: Path
+) -> None:
+    """With hints off (`pdf_page` is None, i.e. `use_extracted_hints` false), the guard
+    is never invoked and the correction is returned as before (AC-027).
+
+    Parameters
+    ----------
+    monkeypatch
+        Pytest monkeypatch fixture.
+    synthetic_blank_page
+        PNG fixture path provided by the shared conftest.
+    tmp_path
+        Temporary directory for raw extraction artifacts.
+    """
+
+    # The canned decision would reject the correction if the guard were consulted.
+    out, _, corrected, guard_calls = _run_extract_page_ir_with_failing_verdict(
+        guard_decision=PageIRCorrectionDecision(accepted=False, added_words=("x1",)),
+        monkeypatch=monkeypatch,
+        pdf_page=None,
+        png_fp=synthetic_blank_page,
+        tmp_path=tmp_path,
+    )
+
+    assert out is corrected
+    assert not guard_calls
+
+
+def test_extract_page_ir_routes_each_instruction_field_only_to_its_own_agent_prompt(
+    fixture_usage_tracker: ExtractionUsageTracker,
+    monkeypatch: pytest.MonkeyPatch,
+    synthetic_blank_page: Path,
+    tmp_path: Path,
+) -> None:
+    """`extraction_instructions` reaches only the extraction prompt builder and
+    `validation_instructions` only the checker prompt builder (through
+    `_run_validation_agent`) (AC-002).
+
+    Parameters
+    ----------
+    fixture_usage_tracker
+        Usage tracker used by the orchestration code.
+    monkeypatch
+        Pytest monkeypatch fixture.
+    synthetic_blank_page
+        PNG fixture path provided by the shared conftest.
+    tmp_path
+        Temporary directory for raw extraction artifacts.
+    """
+
+    extracted = PageIR(
+        items=[
+            _make_block(
+                bbox=(1.0, 1.0, 10.0, 10.0),
+                block_type=BlockType.PARAGRAPH,
+                text="Extracted",
+            )
+        ]
+    )
+    passing_verdict = ExtractionValidationVerdict(
+        passed=True, rationale="Fine" + "x" * 70
+    )
+    seen: dict[str, Any] = {}
+
+    def fake_extraction_builder(**kwargs: Any) -> Any:
+        """Record the extraction builder's curriculum instructions.
+
+        Parameters
+        ----------
+        **kwargs
+            Keyword arguments passed by `extract_page_ir`.
+
+        Returns
+        -------
+        Any
+            A minimal prompt pair.
+        """
+
+        seen["extraction"] = kwargs["curriculum_instructions"]
+        return SimpleNamespace(system_message="SYS-E", user_message="USER-E")
+
+    def fake_validation_builder(**kwargs: Any) -> Any:
+        """Record the checker builder's curriculum instructions.
+
+        Parameters
+        ----------
+        **kwargs
+            Keyword arguments passed by `_run_validation_agent`.
+
+        Returns
+        -------
+        Any
+            A minimal prompt pair.
+        """
+
+        seen["validation"] = kwargs["curriculum_instructions"]
+        return SimpleNamespace(system_message="SYS-V", user_message="USER-V")
+
+    monkeypatch.setattr(
+        llm_module, "extract_page_ir_from_pdf_page", fake_extraction_builder
+    )
+    monkeypatch.setattr(
+        llm_module, "validate_page_ir_extraction", fake_validation_builder
+    )
+
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    _install_stub_extraction_agent(
+        agent=_StubAgent(
+            result=_StubRunResult(output=extracted, usage_obj=_StubUsage(requests=1))
+        ),
+        monkeypatch=monkeypatch,
+        raw_page_irs_dir=raw_dir,
+    )
+    _install_stub_validation_agent(
+        agent=_StubAgent(
+            result=_StubRunResult(
+                output=passing_verdict, usage_obj=_StubUsage(requests=1)
+            )
+        ),
+        monkeypatch=monkeypatch,
+    )
+
+    out = llm_module.extract_page_ir(
+        extraction_instructions="RULES FOR THE EXTRACTION AGENT",
+        image_height=3508,
+        image_width=2480,
+        languages=["en"],
+        page_index=0,
+        pdf_page=None,
+        png_fp=synthetic_blank_page,
+        raw_page_irs_dir=raw_dir,
+        usage_tracker=fixture_usage_tracker,
+        validation_instructions="RULES FOR THE CHECKER",
+    )
+
+    assert out is extracted
+    assert seen == {
+        "extraction": "RULES FOR THE EXTRACTION AGENT",
+        "validation": "RULES FOR THE CHECKER",
+    }
