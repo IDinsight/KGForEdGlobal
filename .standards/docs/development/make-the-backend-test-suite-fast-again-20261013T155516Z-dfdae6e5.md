@@ -66,7 +66,7 @@ baseline sees the same settings the reworked targets will set themselves
 
 ### DEV-002 — Run the serial timing measurement and derive both rankings
 
-`Status`: `PENDING` `Depends On`: `DEV-001` `Acceptance`: `AC-001, AC-002`
+`Status`: `DONE` `Depends On`: `DEV-001` `Acceptance`: `AC-001, AC-002`
 
 **Goal**
 
@@ -100,6 +100,13 @@ Row count of `test-ranking.tsv` equals the node IDs from
 environment (4,741 expected); row count of `file-ranking.tsv` equals the
 distinct file paths in that collection; sum of file seconds equals sum of test
 seconds.
+
+Result (2026-10-13): `collection-before.txt` lists 4,741 unique node IDs (the
+user ran the collect-only command with the same environment). The derivation
+script reported `collected=4741 timed_nodes=4741 unknown=0 untimed=0`,
+`test_rows=4741 file_rows=69`, `sum_tests=1382.77 sum_files=1382.77`; 69
+equals the distinct file paths in the collection. Every collected node had a
+reported duration line.
 
 ---
 
@@ -365,6 +372,73 @@ Filled in by DEV-001, DEV-002, DEV-006, and DEV-007.
 Both runs: `-n auto` (12 workers), coverage on, random order, `kgfeg`
 coverage TOTAL 61%.
 
+### Timing measurement (`AC-001`, `AC-002`)
+
+- Date: 2026-10-13. Commit: `944fed9`, unmodified `backend/` and `.github/`.
+  Machine: as in **Baseline**. Run by the user from `backend/`, in the
+  foreground, same shell setup as the baseline.
+- Command:
+  `CHAT_ENV=testing LEARNING_COMMONS_EXPORT_SCHEMA_VERSION=2026-07-09 OPENAI_API_KEY=sk-fake PATHS_PROJECT_DIR="$(cd .. && pwd)" /usr/bin/time -p .venv/bin/python -m pytest -p no:randomly -p no:cacheprovider --run-slow --durations=0 --durations-min=0 -q tests`,
+  output tee'd to `durations.log`.
+- Conditions: serial (no `-n`), fixed order (`-p no:randomly`), no coverage, no
+  `-m`, `--run-slow`.
+- Collection: the same environment and selection with `--collect-only -q`, saved
+  as `collection-before.txt` (4,741 tests). This is also the "before"
+  collection for the `AC-005` comparison.
+- Outcome: 4,741 passed, 0 failed, 11 warnings in 1,389.89 s (`real` 1,392.29 s).
+- Files (in `make-the-backend-test-suite-fast-again-20261013T155516Z-dfdae6e5/`):
+  `durations.log`, `test-ranking.tsv`, `file-ranking.tsv`. Durations have
+  0.01 s resolution; 2,033 tests round to 0.00 s.
+
+Where the time goes (summed per-test total 1,382.77 s):
+
+- `tests/kgfeg/evals/lp_eval/` 704.3 s (50.9%); `tests/kgfeg/kgs/` 677.0 s
+  (49.0%); everything else about 1.6 s.
+- Top 10 tests: 22.1%. Top 50: 44.1%. Top 100: 56.9%. Top 250: 67.8%.
+- 52 tests take 5 s or more (44.8%); 156 take 1 s or more (62.4%).
+
+Top 10 files:
+
+| Rank | Seconds | Tests | File |
+| ---: | ---: | ---: | --- |
+| 1 | 216.07 | 41 | `tests/kgfeg/evals/lp_eval/test_automatic_recovery.py` |
+| 2 | 149.49 | 84 | `tests/kgfeg/evals/lp_eval/test_critique_citation_remediation.py` |
+| 3 | 137.32 | 52 | `tests/kgfeg/evals/lp_eval/test_presentation.py` |
+| 4 | 101.32 | 150 | `tests/kgfeg/kgs/test_lp_reuse.py` |
+| 5 | 78.01 | 172 | `tests/kgfeg/kgs/test_lp_finalization.py` |
+| 6 | 74.76 | 102 | `tests/kgfeg/kgs/test_lp_artifacts.py` |
+| 7 | 72.43 | 93 | `tests/kgfeg/kgs/test_lp_release_policy.py` |
+| 8 | 64.37 | 113 | `tests/kgfeg/kgs/test_lp_export.py` |
+| 9 | 60.79 | 285 | `tests/kgfeg/kgs/test_lp_orchestration.py` |
+| 10 | 59.31 | 169 | `tests/kgfeg/evals/lp_eval/test_independent_evaluator.py` |
+
+Top 10 tests:
+
+| Rank | Seconds | Node ID |
+| ---: | ---: | --- |
+| 1 | 36.90 | `lp_eval/test_critique_citation_remediation.py::test_incompatible_material_preserves_ledger_and_exhausted_attempts[references]` |
+| 2 | 36.28 | `...[prompt]` (same function) |
+| 3 | 36.13 | `lp_eval/test_presentation.py::test_chart_memberships_and_raw_counts[2]` |
+| 4 | 36.04 | `...test_incompatible_material_preserves_ledger_and_exhausted_attempts[prompts_source]` |
+| 5 | 35.34 | `...test_incompatible_material_preserves_ledger_and_exhausted_attempts[sampling_source]` |
+| 6 | 31.16 | `lp_eval/test_presentation.py::test_output_boundary_and_tamper_rejection[2]` |
+| 7 | 30.18 | `lp_eval/test_automatic_recovery.py::test_selection_orders_incomplete_then_creation_time_then_schedule[False]` |
+| 8 | 29.96 | `...test_selection_orders_incomplete_then_creation_time_then_schedule[True]` |
+| 9 | 18.08 | `lp_eval/test_presentation.py::test_chart_memberships_and_raw_counts[1]` |
+| 10 | 16.18 | `lp_eval/test_presentation.py::test_output_boundary_and_tamper_rejection[1]` |
+
+Fixture-attribution distortions (setup of 2 s or more, 74.4 s total, charged to
+the first test that uses the fixture):
+
+- `test_presentation.py`: the module-scoped `_saved` fixture (params `1`, `2`)
+  costs 36.13 s and 18.08 s of setup, charged to
+  `test_chart_memberships_and_raw_counts[2]` and `[1]`. Those two tests' own
+  call time is small; the cost belongs to the whole file.
+- `test_independent_evaluator.py::test_all_requests_offline_execution_reporting_and_denominators`:
+  10.08 s setup.
+- `test_critique_citation_remediation.py`: 5.47 s setup on `...[references]`
+  and 4.63 s on `test_classification_does_not_consult_critique_policy_references`.
+
 ## Deletion List
 
 Filled in by DEV-003.
@@ -395,5 +469,107 @@ Filled in by DEV-005.
   the results. Developer may still run read-only checks itself (`grep`,
   `git status`/`diff`, `make -n`, `make help`), the derivation script, and
   linters.
+- DEV-002 derivation command, run from the repository root:
+  `python3 -I rank_durations.py <cycle dir>/durations.log <cycle dir>/collection-before.txt <cycle dir>`.
+  The script lives only in the session scratchpad; its full source is below so
+  the TSVs can be regenerated from the log.
+
+  <details><summary><code>rank_durations.py</code></summary>
+
+  ```python
+  """Derive per-test and per-file timing rankings from a pytest durations log.
+
+  Usage: python rank_durations.py <durations.log> <collection.txt> <out_dir>
+
+  Per-test time is the sum of the setup, call, and teardown durations reported
+  for one node ID. Per-file time is the sum of per-test times for every node ID
+  whose path (the text before the first "::") is that file. Every collected node
+  ID appears in the test ranking, including ones with no reported duration
+  (recorded as 0). Both rankings sort by seconds descending, then by node ID or
+  path ascending.
+  """
+
+  import re
+  import sys
+  from collections import defaultdict
+  from pathlib import Path
+
+  # Matches a durations-report line such as
+  # "36.28s call     tests/a/test_x.py::test_y[param]".
+  _DURATION_LINE = re.compile(r"^(\d+(?:\.\d+)?)s (setup|call|teardown)\s+(\S.*?)\s*$")
+
+
+  def _read_collection(path: Path) -> list[str]:
+      """Return node IDs from `pytest --collect-only -q` output."""
+      return [
+          line.strip()
+          for line in path.read_text().splitlines()
+          if line.startswith("tests/") and "::" in line
+      ]
+
+
+  def _read_durations(path: Path) -> dict[str, float]:
+      """Sum setup, call, and teardown seconds per node ID in the durations section."""
+      totals: dict[str, float] = defaultdict(float)
+      in_section = False
+      for line in path.read_text().splitlines():
+          if "slowest durations" in line:
+              in_section = True
+              continue
+          if not in_section:
+              continue
+          match = _DURATION_LINE.match(line)
+          if match:
+              totals[match.group(3)] += float(match.group(1))
+      return totals
+
+
+  def main() -> None:
+      """Write test-ranking.tsv and file-ranking.tsv and print consistency checks."""
+      log_path, collection_path, out_dir = (Path(arg) for arg in sys.argv[1:4])
+      collected = _read_collection(collection_path)
+      durations = _read_durations(log_path)
+
+      unknown = sorted(set(durations) - set(collected))
+      missing = sorted(set(collected) - set(durations))
+
+      tests = sorted(
+          ((round(durations.get(node, 0.0), 2), node) for node in collected),
+          key=lambda row: (-row[0], row[1]),
+      )
+      with (out_dir / "test-ranking.tsv").open("w") as handle:
+          handle.write("rank\tseconds\tnodeid\n")
+          for rank, (seconds, node) in enumerate(tests, start=1):
+              handle.write(f"{rank}\t{seconds:.2f}\t{node}\n")
+
+      file_seconds: dict[str, float] = defaultdict(float)
+      file_counts: dict[str, int] = defaultdict(int)
+      for seconds, node in tests:
+          file_path = node.split("::", 1)[0]
+          file_seconds[file_path] += seconds
+          file_counts[file_path] += 1
+      files = sorted(
+          ((round(total, 2), path) for path, total in file_seconds.items()),
+          key=lambda row: (-row[0], row[1]),
+      )
+      with (out_dir / "file-ranking.tsv").open("w") as handle:
+          handle.write("rank\tseconds\ttests\tpath\n")
+          for rank, (seconds, path) in enumerate(files, start=1):
+              handle.write(f"{rank}\t{seconds:.2f}\t{file_counts[path]}\t{path}\n")
+
+      print(f"collected={len(collected)} unique={len(set(collected))}")
+      print(f"timed_nodes={len(durations)} unknown={len(unknown)} untimed={len(missing)}")
+      print(f"test_rows={len(tests)} file_rows={len(files)}")
+      print(f"sum_tests={sum(s for s, _ in tests):.2f} sum_files={sum(s for s, _ in files):.2f}")
+      for node in unknown[:5]:
+          print(f"unknown: {node}")
+
+
+  if __name__ == "__main__":
+      main()
+  ```
+
+  </details>
+
 - The DEV-002 serial run runs in the foreground in the user's terminal and may
   take hours. Do not interrupt it; a partial log does not satisfy `AC-001`.
