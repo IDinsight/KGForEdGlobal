@@ -811,6 +811,88 @@ at confidence 0.6. buildsTowards confidence by pair kind: cross-Grade median
 0.78 (2% at or below 0.62), cross-Term 0.74 (17%), same-term 0.66 (43%). No
 `AC-018` or `AC-032` defect.
 
+LP run 3 finished (user-run, `lp_run_3.log`): LP completed 12892 of 12892
+requests at 2026-10-13 04:34:51 local and the invocation ended with `KG
+creation completed successfully` at 05:07:32 (finalization and export, no log
+lines between); `kg_run.json` status `success`. Eight attempts failed and
+succeeded on retry, none exhausted (requests 2029 `QualityError`; 2395, 9285,
+12713 `UnexpectedModelBehavior`; 2924, 3894 `ModelHTTPError`; 6059, 12758
+`ModelAPIError`). Run 3 made 25,308 attempts: producer 12,651 calls (331.7M
+input, 20.0M output tokens), checker 12,653 (360.1M, 22.6M).
+
+Final LP checks `logs/kg_construction/dev005/lp_checks.py` (no LLM calls;
+reads the config, git, the S_AS manifest, the run log and `kgs/`, briefly
+holding the LP lock as the export's own reader does; writes into `--out-dir`
+`lp_checks_report.json`, `lp_checks_summary.txt`, `s_as_compare_final.json`
+and `lp_sample.md`, a seeded sample stratified by order class and pair kind).
+Developer trial 2026-10-13 07:12 (12.3 minutes): all ten pass. LP lock free;
+committed config with the designed LP values; `AC-012` S_AS identical;
+receipt `completed`, run 3, stage counts 12892 each, no pending completion, 8
+failures all resolved; `lp_validation_report.json` passed with no errors or
+warnings, and the merged export re-authenticated with the export's own
+read-only preparation (`_prepare_bundle`, `_read_bundle`,
+`_prepare_delivery`) equals the saved `as_lc_lp_kg_bundle.json` and both
+delivery projections byte for byte, bundle validation passed with no errors
+or warnings: 2057 nodes (1 framework, 1144 framework items, 912 LCs) and
+11935 relationships (1144 hasChild, 1204 supports, 2879 buildsTowards, 6708
+relatesTo); 12892 final claims, 3305 no_relation, 0 needs_review, 0
+unresolved failed or warning pairs; `AC-033` budgets 30 and 14000, bound
+13860, 12892 pairs (27576 dropped by the per-Skill budget, 0 by the total);
+`AC-018` 0 backward among 2879 buildsTowards (491 earlier Grade, 1622 earlier
+Term, 766 same Grade and Term); 0 cycles; `AC-013` the log ends with the
+completion line and holds no traceback, `create_kgs.py` unchanged since
+`19f44f5`, no backend or example config change since `9697ac4`. Coverage:
+all 924 Skills have an LP relationship (924 in relatesTo, 892 in
+buildsTowards). Checker outcome of published edges: buildsTowards 2878
+accepted, 1 corrected; relatesTo 5819 accepted, 889 corrected.
+
+Final run check (Developer trial on the complete log, 07:10): reuse PASS
+(25,308 attempts since the stop, none for a stage done at the stop); `AC-018`
+PASS; 0 cycles; throughput FAIL under the whole-run reading. As the faster
+same-term blocks (8000-9999) finished, the whole run's median model time fell
+to 37.96 s, so the floor rose to 265.54 an hour (70% of 379.35); 7 of 23,487
+windows, all starting 2026-10-12 01:07-01:08, completed 265.5 an hour (531 in
+two hours, one request short). Against the model-bound rate of their own
+requests those windows ran at 79%, the lowest of any window. Checkpoint
+seconds median 0.06, max 6.11; mean 3.6 calls in flight; 321.7 requests an
+hour overall.
+
+Final LP review (Developer, all 12892 judgments): the buildsTowards share
+rises with developmental distance: same Grade and Term 10% (relatesTo 62%,
+no_relation 28%), cross-Term 36% (40%, 24%), adjacent Grades 61% (28%, 11%),
+two or more Grades apart 78% (19%, 3%). All 491 cross-Grade buildsTowards go
+from the earlier Grade (R to 1: 122, 1 to 2: 200, 2 to 3: 115, 1 to 3: 33, R
+to 2: 15, R to 3: 6). Median buildsTowards confidence: same Grade and Term
+0.65, cross-Term 0.72, cross-Grade 0.78. Late cross-Grade samples follow CAPS
+lines (Grade 1 'Holds pencil and crayon correctly' to Grade 2 'Holds pencil and
+positions writing materials (book/page) correctly'; Grade 1 'Builds 3-letter
+words using all single letters' to Grade 2 'Builds sentences using phonics
+vocabulary'). `lp_sample.md` (30 edges, seed 2026) checked against the
+endpoints' source text: no edge points against CAPS's Grade or Term sequence;
+about 17 clearly sound (Grade 1 'Forms at least 20 lower case letters
+correctly' to Grade 2 'Writes in print script all capitals and lower case
+letters confidently and accurately', 0.88; Grade 3 'Recognises inverted commas
+to show direct speech' to 'Uses punctuation correctly: ... inverted commas';
+verbatim cross-Grade repeats kept as relatesTo), about 10 plausible but loose,
+and 3 weak, all at confidence 0.62 or lower (relatesTo between homonyms and
+'Uses phonics knowledge and spelling rules to write unfamiliar words', 0.5;
+buildsTowards from Grade R 'Distinguishes between the shapes of different
+letters and words' to 'Identifies the foreground and background in pictures',
+0.57). No `AC-018` or `AC-032` defect.
+
+Defect D-LP-3 (design, found in the final run check): the `AC-017` real-run
+throughput criterion ('throughput over any 2-hour window is at least 70% of
+the model-bound rate ... concurrency x 3600 / the median per-request model
+seconds') does not say whose median sets the rate. Read with one run-wide rate
+it fails by one request in 7 windows; read with each window's own requests it
+passes at 79% or more. The dip is heavier work, not checkpoint time: from
+request 4000 the cross-Term and cross-Grade pairs produced about 15% more
+output tokens and longer calls while calls in flight stayed about 3.6, and
+the run-wide median fell later as faster same-term requests finished, raising
+the floor after the fact. Which reading the criterion means is the design's
+decision, so this routes to Architect as an `ARCHITECTURE` failure. Remaining
+DEV-005 work does not depend on it except this criterion.
+
 ---
 
 ### DEV-006 — Close-out checks and results review
@@ -1451,3 +1533,9 @@ discrepancies are corrected in DEV-009 and the Readiness (blob id; slow
 no further increment is scheduled; DEV-005 and DEV-006 go to full
 verification. Next: DEV-005 (stop run 2, read-only load of its checkpoints
 with the fixed code, resume LP), on the user's go-ahead (`STEPWISE`).
+
+### Suspended Assignment 4
+
+`Recovery Frame`: `1` `Recovery Reason`: `AC-017 real-run throughput criterion: with one run-wide model-bound rate (median 37.96 s, 379.35/h), 7 of 23,487 two-hour windows complete 265.5/h, one request under the 70% floor (265.54); against their own requests' model time they ran at 79%. The design does not say whose median sets the rate; the dip comes from heavier cross-Term and cross-Grade requests, not checkpoint time.` `Purpose`: `DEVELOPMENT`
+`Target`: `NONE` `Assessed Inputs`: `DEV-001 to DEV-004 and DEV-007 to DEV-009 DONE; Increment 1 verified; LP run 3 complete on 9697ac4 code and config (lp_run_3.log; 12892 responses; KG creation completed 2026-10-13 05:07 local); Developer trials 2026-10-13: lp_checks.py all pass, lp_run_check.py throughput FAIL under the run-wide reading`
+`Next Action`: `Apply the Architect's decision on the AC-017 throughput criterion to the run-3 log (change lp_run_check.py only if the criterion's reading changes), record the user-run lp_checks.py and lp_run_check.py results, mark DEV-005 DONE, then DEV-006.`
