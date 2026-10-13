@@ -13,7 +13,7 @@
 `.standards/docs/specs/make-the-backend-test-suite-fast-again-20261013T155516Z-dfdae6e5.md` `Development`:
 `.standards/docs/development/make-the-backend-test-suite-fast-again-20261013T155516Z-dfdae6e5.md` `PromotionReason`: `NONE`
 `AuditTarget`: `NONE` `BlockedOn`:
-`DEV-005 done; continue with DEV-006 (speed up the remaining slowest tests)?` `PendingVerificationCadence`: `NONE`
+`DEV-007: user to run make test and make test-all twice each and report back.` `PendingVerificationCadence`: `NONE`
 
 `BaselineReconciliation`: `NONE`
 

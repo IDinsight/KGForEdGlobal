@@ -323,7 +323,7 @@ Partial result (2026-10-13):
 
 ### DEV-006 — Speed up the remaining slowest tests
 
-`Status`: `PENDING` `Depends On`: `DEV-004, DEV-005` `Acceptance`: `AC-007,
+`Status`: `DONE` `Depends On`: `DEV-004, DEV-005` `Acceptance`: `AC-007,
 AC-008`
 
 **Goal**
@@ -354,11 +354,91 @@ measurable gain are dropped.
 Focused pytest runs of each changed file, before and after, with random order
 and `-n auto`; `git diff --stat backend/src` is empty.
 
+Progress (2026-10-13):
+
+- Remaining serial time after the DEV-005 deletions (from `test-ranking.tsv`
+  minus `deletion-list-v2.tsv`): 949.3 s. Largest files:
+  `lp_eval/test_automatic_recovery.py` 163.6 s, `lp_eval/test_presentation.py`
+  92.2 s, `lp_eval/test_critique_citation_remediation.py` 78.1 s,
+  `kgs/test_lp_reuse.py` 68.2 s, `kgs/test_lp_artifacts.py` 55.0 s,
+  `kgs/test_lp_finalization.py` 54.4 s, `kgs/test_lp_orchestration.py` 54.4 s.
+- Order of work: (1) profile the heaviest files once to find the real hot
+  spots instead of relying on code reading; (2) test-level speed-ups in the
+  files the profile points to, each measured with a focused before/after run;
+  (3) runner levers (`--dist` mode, report flags, coverage `greenlet`)
+  measured on the whole target. Levers with no measurable gain are dropped.
+- Profile (user, 2026-10-13): `cProfile` over `lp_eval/test_automatic_recovery.py`,
+  `lp_eval/test_presentation.py`, `lp_eval/test_critique_citation_remediation.py`,
+  `kgs/test_lp_reuse.py`, `kgs/test_lp_artifacts.py`, serial, no coverage,
+  `--run-slow`: 357 passed in 872.07 s (profiler overhead included); file
+  `dev006-profile.prof`. Findings (cumulative): `sampling.prepare_evaluation_schedule`
+  389 s of 870 s (262 calls), almost all through `judge._validate_schedule` on
+  every `open_evaluation_store` / `load_evaluation_schedule` / persist; that
+  re-validation is production behavior under `src/` and stays. `build_snapshot`
+  is only 36 s (40 calls). LP harness work (`generate_learning_progressions`
+  121 s, `validate_lp_final_claims_artifact` 101 s, `_prepare_artifacts`
+  102 s) is spread across many tests. Conclusion: test-level caching has
+  limited reach; the wall-clock gap (714 s for `make test-all` against roughly
+  1,390 s of serial work on 12 workers) points first at xdist distribution
+  (module-scoped fixtures rebuilt per worker, long single tests at the tail).
+- `--dist` measurement (user, 2026-10-13, from `backend/`, one run each,
+  `/usr/bin/time -p bash -c "$(make -n test-all) --dist <mode> --durations=25"`,
+  logs `dev006-test-all-<mode>.log`), all 4,448 passed:
+
+  | `--dist` | pytest (s) | `real` (s) |
+  | --- | ---: | ---: |
+  | `load` (current) | 492.56 | 500.32 |
+  | `worksteal` | 374.66 | 381.11 |
+  | `loadscope` | 546.73 | 550.64 |
+
+  `worksteal` is chosen. Its tail is set by a few long `lp_eval` items
+  (presentation `_saved` setup 88–101 s, built on three workers;
+  `test_output_boundary_and_tamper_rejection` 93 s; the selection-order test
+  93 s / 69 s; the critique matrix about 85 s per case).
+- Not done: memoizing `prepare_evaluation_schedule` / `load_frozen_lp_inputs`
+  inside fixtures. Those are production validation steps under `src/`, not
+  test builders, so stubbing them is outside the design's permitted levers and
+  would change the code path fixtures exercise.
+- Runner-lever measurement (user, 2026-10-13, from `backend/`, one run each,
+  `make -n test-all` recipe plus `--dist worksteal`, logs
+  `dev006-test-all-worksteal-<variant>.log`), all 4,448 passed:
+
+  | Variant | pytest (s) | `real` (s) |
+  | --- | ---: | ---: |
+  | `base` (repeat of the `worksteal` run, `-rsPQ`, greenlet) | 424.78 | 431.72 |
+  | `rs` (`-rs` instead of `-rsPQ`) | 430.07 | 442.47 |
+  | `rs-nogreenlet` (`-rs`, coverage `concurrency = ["thread"]` via `dev006-cov-no-greenlet.toml`) | 245.87 | 256.65 |
+
+  The two `worksteal` runs with identical settings differ by about 50 s
+  (381.11 s and 431.72 s), so single-run differences below that are noise.
+  `-rs` shows no gain and is dropped (`-rsPQ` stays). Dropping `greenlet`
+  cuts about 175 s. Coverage output is equivalent: `TOTAL 22365 7763 8172 852
+  61%` with greenlet and `22365 7767 8172 853 61%` without; the only per-file
+  difference is four lines in `src/kgfeg/evals/lp_eval/judge.py`, and the same
+  difference appears between the `load` and `worksteal` runs that both used
+  greenlet, so it is run-to-run variation in async paths, not the setting.
+- Applied: `backend/Makefile` shared runner gains `--dist worksteal` (both
+  targets); `backend/pyproject.toml` `[tool.coverage.run] concurrency` becomes
+  `["thread"]` (`branch`, `source`, `omit`, and report settings unchanged).
+  `make -n test` / `make -n test-all` print
+  `... uv run pytest -n auto --dist worksteal -rsPQ --cov=. --cov-config=./pyproject.toml --cov-report term-missing`
+  followed by each target's selection. `pre-commit run --files backend/Makefile
+  backend/pyproject.toml` passed (end-of-file, whitespace, detect-secrets,
+  env-template-sync; the last run outside the sandbox for uv's cache).
+  `git diff --stat -- backend/src` is empty. No test file changed in DEV-006.
+- Not applied: test-level changes. The profile shows the remaining time is
+  production schedule validation and LP harness work, which the permitted
+  levers cannot reduce without stubbing `src/` behavior; `build_snapshot`
+  caching would save about 36 s of serial work spread across workers and was
+  not worth the copy-and-relocation risk. Real `asyncio.sleep` retry seams in
+  `test_independent_evaluator.py` never sleep in these tests (no retryable
+  failure is injected), so stubbing them gives no gain.
+
 ---
 
 ### DEV-007 — Make both targets pass and record after-times
 
-`Status`: `PENDING` `Depends On`: `DEV-006` `Acceptance`: `AC-007, AC-008,
+`Status`: `IN_PROGRESS` `Depends On`: `DEV-006` `Acceptance`: `AC-007, AC-008,
 AC-013`
 
 **Goal**

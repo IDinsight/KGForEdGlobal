@@ -103,7 +103,7 @@ omit = ["./src/kgfeg/__init__.py"]
 
 [tool.coverage.run]
 branch = true
-concurrency = ["greenlet", "thread"]
+concurrency = ["thread"]
 omit = ["*/tests/*", "*/__init__.py"]
 source = ["kgfeg"]
 

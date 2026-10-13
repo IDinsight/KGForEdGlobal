@@ -1,0 +1,347 @@
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+============================= test session starts ==============================
+platform darwin -- Python 3.13.9, pytest-8.2.0, pluggy-1.6.0
+Using --randomly-seed=4254669643
+rootdir: /Users/tzz/Projects/private/idi/KGForEdGlobal/backend
+configfile: pyproject.toml
+plugins: mock-3.15.1, asyncio-1.2.0, alembic-0.12.1, anyio-4.12.0, xdist-3.8.0, logfire-4.25.0, order-1.3.0, randomly-4.0.1, bdd-8.1.0, cov-7.0.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+created: 12/12 workers
+12 workers [4448 items]
+
+........................................................................ [  1%]
+......................................................................... [  3%]
+........................................................................ [  4%]
+........................................................................ [  6%]
+......................................................................... [  8%]
+........................................................................ [  9%]
+........................................................................ [ 11%]
+........................................................................ [ 12%]
+........................................................................ [ 14%]
+........................................................................ [ 16%]
+........................................................................ [ 17%]
+........................................................................ [ 19%]
+........................................................................ [ 21%]
+........................................................................ [ 22%]
+........................................................................ [ 24%]
+........................................................................ [ 25%]
+........................................................................ [ 27%]
+........................................................................ [ 29%]
+........................................................................ [ 30%]
+........................................................................ [ 32%]
+........................................................................ [ 34%]
+........................................................................ [ 35%]
+........................................................................ [ 37%]
+........................................................................ [ 38%]
+........................................................................ [ 40%]
+........................................................................ [ 42%]
+........................................................................ [ 43%]
+........................................................................ [ 45%]
+........................................................................ [ 46%]
+........................................................................ [ 48%]
+........................................................................ [ 50%]
+........................................................................ [ 51%]
+........................................................................ [ 53%]
+........................................................................ [ 55%]
+........................................................................ [ 56%]
+........................................................................ [ 58%]
+........................................................................ [ 59%]
+........................................................................ [ 61%]
+........................................................................ [ 63%]
+........................................................................ [ 64%]
+........................................................................ [ 66%]
+........................................................................ [ 68%]
+........................................................................ [ 69%]
+........................................................................ [ 71%]
+........................................................................ [ 72%]
+........................................................................ [ 74%]
+........................................................................ [ 76%]
+........................................................................ [ 77%]
+........................................................................ [ 79%]
+........................................................................ [ 80%]
+........................................................................ [ 82%]
+........................................................................ [ 84%]
+........................................................................ [ 85%]
+........................................................................ [ 87%]
+........................................................................ [ 89%]
+........................................................................ [ 90%]
+........................................................................ [ 92%]
+........................................................................ [ 93%]
+........................................................................ [ 95%]
+........................................................................ [ 97%]
+........................................................................ [ 98%]
+......................................................                   [100%]<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x114326a70>
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+
+=============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488: 26 warnings
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:488: 26 warnings
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+<frozen importlib._bootstrap>:488: 13 warnings
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+
+tests/kgfeg/document_ir/test_compute_page_break_links.py::test_process_page_pair_returns_empty_when_guardrails_fail
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/src/kgfeg/document_ir/compute_page_break_links.py:269: LogfireNotConfiguredWarning: No logs or spans will be created until `logfire.configure()` has been called. Set the environment variable LOGFIRE_IGNORE_NO_CONFIG=1 or add ignore_no_config=true in pyproject.toml to suppress this warning.
+    logger.warning(msg)
+
+tests/kgfeg/kgs/test_lp_population_verifier.py::test_guard_reads_nothing_until_an_identity_changes_then_refreshes_it
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/src/kgfeg/kgs/lp_requests.py:360: LogfireNotConfiguredWarning: No logs or spans will be created until `logfire.configure()` has been called. Set the environment variable LOGFIRE_IGNORE_NO_CONFIG=1 or add ignore_no_config=true in pyproject.toml to suppress this warning.
+    logger.info(
+
+tests/kgfeg/kgs/test_lp_producer.py::test_agent_executes_exact_configured_structured_retry_budget[False-3-False]
+tests/kgfeg/kgs/test_lp_checker.py::test_agent_retries_schema_and_request_integrity_with_exact_budget[True-3-True-partial]
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pydantic_ai/_utils.py:554: DeprecationWarning: There is no current event loop
+    event_loop = asyncio.get_event_loop()
+
+tests/kgfeg/kgs/test_lp_candidates.py::test_unresolved_warnings_survive_candidate_artifact_round_trip
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/src/kgfeg/utils/general.py:253: LogfireNotConfiguredWarning: No logs or spans will be created until `logfire.configure()` has been called. Set the environment variable LOGFIRE_IGNORE_NO_CONFIG=1 or add ignore_no_config=true in pyproject.toml to suppress this warning.
+    logger.info(f"Creating directory: {dir_}")
+
+tests/kgfeg/page_ir_verification/test_postprocess_page_irs.py::TestProcessPageTables::test_resumed_table_with_conflicting_code_logs_conflict
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/src/kgfeg/page_ir_verification/postprocess_page_irs.py:437: LogfireNotConfiguredWarning: No logs or spans will be created until `logfire.configure()` has been called. Set the environment variable LOGFIRE_IGNORE_NO_CONFIG=1 or add ignore_no_config=true in pyproject.toml to suppress this warning.
+    logger.warning(
+
+tests/kgfeg/kgs/test_lp_artifacts.py::test_incomplete_processing_cannot_write_standalone_success[transaction]
+tests/kgfeg/kgs/test_lp_orchestration.py::test_resealed_success_prefix_attacks_reach_structural_validation[gap-lp_generation_validation_verdicts.jsonl]
+tests/kgfeg/kgs/test_lp_reuse.py::test_exact_reuse_preserves_full_curriculum_content_and_only_rewrites_projections[madhi_math-reuse]
+tests/kgfeg/kgs/test_lp_concurrency.py::test_bounded_window_retains_completed_suffix_and_resumes_without_duplicate_calls[False-3-2]
+tests/kgfeg/kgs/test_lp_finalization.py::test_complete_checker_corrections_replace_all_draft_interpretations[needs_review-no_relation]
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/src/kgfeg/kgs/lp_generation.py:212: LogfireNotConfiguredWarning: No logs or spans will be created until `logfire.configure()` has been called. Set the environment variable LOGFIRE_IGNORE_NO_CONFIG=1 or add ignore_no_config=true in pyproject.toml to suppress this warning.
+    logger.info(
+
+tests/kgfeg/page_ir_verification/test_llm.py::TestVerifyPageIrPairs::test_validation_agent_receives_verification_verdict
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/src/kgfeg/page_ir_verification/llm.py:357: LogfireNotConfiguredWarning: No logs or spans will be created until `logfire.configure()` has been called. Set the environment variable LOGFIRE_IGNORE_NO_CONFIG=1 or add ignore_no_config=true in pyproject.toml to suppress this warning.
+    logger.info(
+
+tests/kgfeg/kgs/test_kg_manifest_resume.py::test_restart_uses_earliest_unfinished_stage_with_real_prep_provenance[draft-4]
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/src/kgfeg/kgs/utils.py:1674: LogfireNotConfiguredWarning: No logs or spans will be created until `logfire.configure()` has been called. Set the environment variable LOGFIRE_IGNORE_NO_CONFIG=1 or add ignore_no_config=true in pyproject.toml to suppress this warning.
+    logger.info(f"Saving KG results to: {kg_dirs.root}")
+
+tests/kgfeg/evals/lp_eval/test_current_input_contract.py::test_reconstruction_rejects_changed_request_and_provenance_material[converted-lp_relationship_provenance.json]
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/src/kgfeg/kgs/sfi_export.py:793: LogfireNotConfiguredWarning: No logs or spans will be created until `logfire.configure()` has been called. Set the environment variable LOGFIRE_IGNORE_NO_CONFIG=1 or add ignore_no_config=true in pyproject.toml to suppress this warning.
+    logger.warning(
+
+tests/kgfeg/kgs/test_lp_orchestration.py::test_invalid_model_proposals_never_enter_success_prefixes[identity-verdict]
+tests/kgfeg/kgs/test_lp_orchestration.py::test_invalid_model_proposals_never_enter_success_prefixes[endpoint-verdict]
+tests/kgfeg/kgs/test_lp_orchestration.py::test_invalid_model_proposals_never_enter_success_prefixes[missing-verdict]
+tests/kgfeg/kgs/test_lp_orchestration.py::test_invalid_model_proposals_never_enter_success_prefixes[duplicate-verdict]
+tests/kgfeg/kgs/test_lp_orchestration.py::test_invalid_model_proposals_never_enter_success_prefixes[malformed-verdict]
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pydantic/main.py:464: UserWarning: Pydantic serializer warnings:
+    PydanticSerializationUnexpectedValue(Expected `LPGenerationValidationIssue` - serialized value may not be as expected [field_name='issues', input_value={'issue_type': 'evidence_...ne, 'severity': 'error'}, input_type=dict])
+    return self.__pydantic_serializer__.to_python(
+
+tests/kgfeg/evals/lp_eval/test_independent_evaluator.py::test_admissible_pairs_independently_follow_type_rank_policy[rwanda_math]
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pydantic/main.py:464: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1126d1a80>
+    return self.__pydantic_serializer__.to_python(
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/kgfeg/evals/lp_eval/test_automatic_recovery.py::test_selection_orders_incomplete_then_creation_time_then_schedule[False]
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pydantic/_internal/_core_utils.py:65: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x113df76a0>
+    def get_type_ref(type_: Any, args_override: tuple[type[Any], ...] | None = None) -> str:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/kgfeg/evals/lp_eval/test_automatic_recovery.py::test_selection_orders_incomplete_then_creation_time_then_schedule[False]
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pydantic/_internal/_core_utils.py:65: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x113df7f10>
+    def get_type_ref(type_: Any, args_override: tuple[type[Any], ...] | None = None) -> str:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/kgfeg/evals/lp_eval/test_automatic_recovery.py::test_unfinished_start_is_closed_before_new_execution[11]
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/src/kgfeg/schemas.py:161: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1143272e0>
+    letters_numbers_marks_or_spaces = "".join(
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/kgfeg/evals/lp_eval/test_automatic_recovery.py::test_unfinished_start_is_closed_before_new_execution[3]
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/src/kgfeg/kgs/lp_index.py:272: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x113df7880>
+    key=lambda relationship: (
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/kgfeg/evals/lp_eval/test_critique_citation_remediation.py::test_invalid_citations_fail_response_and_prompt_guards[False-/operative_judgment]
+  /opt/homebrew/Cellar/python@3.13/3.13.9_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/copy.py:119: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x114fb45e0>
+    def deepcopy(x, memo=None, _nil=[]):
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/kgfeg/evals/lp_eval/test_automatic_recovery.py::test_explicit_reruns_preserve_partial_cycles_and_lifetime_usage[citation]
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pydantic/main.py:464: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105c116c0>
+    return self.__pydantic_serializer__.to_python(
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/kgfeg/evals/lp_eval/test_automatic_recovery.py::test_selection_orders_incomplete_then_creation_time_then_schedule[True]
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/typing_inspection/introspection.py:212: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10bf8f790>
+    yield from (p for p, _ in dct)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/kgfeg/evals/lp_eval/test_automatic_recovery.py::test_selection_orders_incomplete_then_creation_time_then_schedule[True]
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/typing_inspection/introspection.py:212: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x114325e40>
+    yield from (p for p, _ in dct)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================ tests coverage ================================
+_______________ coverage: platform darwin, python 3.13.9-final-0 _______________
+
+Name                                                     Stmts   Miss Branch BrPart  Cover   Missing
+----------------------------------------------------------------------------------------------------
+src/kgfeg/config.py                                         52      5     14      4    86%   94, 99, 133, 140-141
+src/kgfeg/document_ir/compute_page_break_links.py          393     84    166     27    74%   57-95, 128-150, 409-412, 445-480, 484->490, 562, 646, 707, 785-787, 946-948, 975-977, 985-986, 1031->1030, 1034, 1197->1167, 1258, 1315, 1401, 1519-1551, 1599-1606, 1749->1755, 1781->1785, 1789-1793, 1892-1894, 1901->1911, 1921->1929, 1932->1935, 1979-1982, 2106-2112
+src/kgfeg/document_ir/normalize_page_items.py              140     15     68     12    86%   153, 156->160, 163, 226, 281-292, 302-304, 398, 400->exit, 434->443, 489-495, 500->545, 532->545
+src/kgfeg/document_ir/schemas.py                           268     46    116     47    76%   58, 63, 68, 77, 108, 114, 120, 126, 132, 141, 269, 272, 280, 302, 327, 362, 440, 445, 452, 457, 556, 559, 564, 570, 579, 590, 594->600, 596, 719, 724, 730, 753, 766, 787, 811, 817, 837, 840, 845, 850, 865, 906, 909, 914, 920, 928, 1004
+src/kgfeg/document_ir/stitch_segments.py                   541     73    236     59    82%   74, 82, 161, 185-191, 196, 328, 426, 431, 439->457, 449->457, 454, 508, 591, 709->698, 822->828, 831->846, 879, 900->899, 907, 929->940, 982, 989, 1004-1005, 1009-1010, 1018-1026, 1031-1033, 1110-1118, 1137, 1204, 1208, 1214-1217, 1299->1314, 1326-1332, 1343-1348, 1359->1382, 1361-1367, 1383-1390, 1491-1492, 1496-1497, 1503-1504, 1571->1580, 1646, 1656, 1699, 1815->1817, 1818, 1820, 1825->1840, 2030->2038, 2096, 2103->2109, 2107, 2180->2184, 2235, 2239, 2267->2266, 2307, 2312, 2418-2425
+src/kgfeg/document_ir/utils.py                             188     61     66      1    64%   91-96, 213, 376-441, 630-645, 725-855
+src/kgfeg/entries/create_kgs.py                             92      1     12      1    98%   450
+src/kgfeg/entries/evaluate_lcs.py                           42     42     10      0     0%   11-224
+src/kgfeg/entries/evaluate_lps.py                          177     46     56     19    70%   161, 173, 178, 183, 186, 193, 196, 227-230, 268-270, 302, 311, 364, 372, 567, 577-613, 652, 658, 760, 776-789, 798-801, 808
+src/kgfeg/entries/extract_page_ir.py                        57     57      6      0     0%   10-215
+src/kgfeg/entries/stitch_document_ir.py                     54     54      2      0     0%   27-269
+src/kgfeg/entries/verify_page_ir_continuity.py              63     63      6      0     0%   17-280
+src/kgfeg/evals/lc_eval/judge.py                           126    126     34      0     0%   4-465
+src/kgfeg/evals/lc_eval/prompts.py                          24     24      6      0     0%   4-192
+src/kgfeg/evals/lc_eval/sampling.py                        262    262    108      0     0%   8-1186
+src/kgfeg/evals/lc_eval/schemas.py                         112    112      0      0     0%   4-363
+src/kgfeg/evals/lc_eval/scoring.py                         215    215     94      0     0%   4-836
+src/kgfeg/evals/lp_eval/compatibility.py                    63     27     26      1    51%   108, 233-304
+src/kgfeg/evals/lp_eval/judge.py                           910     95    324     70    86%   220, 226-228, 327-336, 501-508, 573, 576, 631, 708, 737->exit, 743, 844, 919, 948, 956, 976, 981, 994, 1024, 1229, 1327, 1339, 1352, 1383, 1385, 1390, 1395-1397, 1418, 1427->1430, 1437, 1443, 1484, 1498-1500, 1571-1582, 1611, 1618, 1626, 1782, 1873, 1928, 1988, 1999, 2024, 2045, 2299, 2304, 2312, 2339, 2356, 2363, 2366, 2396, 2454, 2462, 2472, 2501, 2596, 2600, 2611, 2617, 2638, 2712->2715, 2758, 2813, 2899, 2965-2970, 3010, 3018, 3082, 3154->exit, 3244, 3259-3265, 3397, 3433, 3444, 3447, 3452, 3466
+src/kgfeg/evals/lp_eval/output.py                           42      2     16      4    90%   47->50, 105, 118
+src/kgfeg/evals/lp_eval/presentation.py                    443     10    182     10    97%   869, 1448, 1493, 1507, 1516, 1892, 1976, 1987, 1992, 2400
+src/kgfeg/evals/lp_eval/prompts.py                         229     32     94     22    82%   222, 231-236, 277->311, 280-282, 285, 291-292, 298-299, 311->exit, 328-339, 356, 377->386, 386->389, 390, 392->395, 436, 443, 497, 741, 744, 750, 839, 847, 852-853, 893, 972
+src/kgfeg/evals/lp_eval/sampling.py                       1412    113    530     91    89%   283, 305, 309, 446, 454, 579, 586, 747, 752, 781, 913, 1123, 1126-1127, 1173, 1176, 1270, 1278, 1329, 1334, 1339, 1344, 1347, 1396, 1428, 1441, 1461, 1464, 1498, 1533, 1591, 1645, 1648, 1654, 1663, 1791, 1837, 1862, 2022->2021, 2164, 2169, 2171->2174, 2304, 2319, 2325, 2364, 2377, 2412, 2417, 2433, 2440, 2478, 2490, 2521, 2564, 2788, 3098, 3117, 3511, 3557-3591, 3622-3649, 3753, 3799, 3807, 3884, 4142, 4174, 4253, 4302, 4339, 4558, 4610, 4615, 4676->exit, 5168, 5333-5334, 5477, 5490, 5575, 5592, 5669, 5679, 5739, 5742-5744, 5771, 5883-5884, 5889, 6068, 6100, 6193, 6413, 6451, 6478, 6587, 6594-6595
+src/kgfeg/evals/lp_eval/schemas.py                         448     14     42     11    94%   68, 81, 83, 92, 99, 141, 181-184, 221, 897, 905, 1129, 1536
+src/kgfeg/evals/lp_eval/scoring.py                         403     27    172      9    93%   104, 360, 844, 1353, 1435, 1530-1573, 1612-1613, 1706, 1709, 1717
+src/kgfeg/evals/lp_eval/utils.py                            46      5     22      5    85%   48, 93, 103, 109, 113
+src/kgfeg/kgs/agents.py                                    166    135      0      0    19%   70-127, 168-230, 276-335, 491-547, 590-652, 693-752, 796-859, 896-955, 997-1059
+src/kgfeg/kgs/lc_dedup.py                                  259    221    104      0    10%   61-65, 78-83, 116-142, 168-210, 227-228, 254-294, 311-314, 346-377, 398-404, 432, 451-458, 477-479, 508-547, 586-613, 633, 668-698, 722-737, 766-779, 796, 826-875, 924-1008
+src/kgfeg/kgs/lc_export.py                                 116     15     40     13    82%   90, 96, 143, 148, 155, 161, 184, 188, 191, 196, 346, 445, 484-485, 573
+src/kgfeg/kgs/lc_finalization.py                           164    133     62      0    14%   73-75, 105-115, 136-137, 178-179, 254-296, 313-317, 336-337, 361-364, 395-414, 444-485, 533-605, 659-742, 804-940
+src/kgfeg/kgs/lc_generation.py                             185    160     64      0    10%   101-148, 171, 198, 240-253, 276-294, 333-387, 422-448, 472, 531-612, 659-762
+src/kgfeg/kgs/lc_selection.py                               81     68     34      0    11%   65-77, 100-119, 156-191, 238-332
+src/kgfeg/kgs/llm.py                                       167     84     18      0    47%   231-249, 275-287, 316-331, 357-369, 396-408, 435-477, 510-547, 651-688, 718-756
+src/kgfeg/kgs/lp_admissibility.py                           89      0     30      0   100%
+src/kgfeg/kgs/lp_artifacts.py                              163      4     28      5    95%   110, 193->exit, 404, 423, 638
+src/kgfeg/kgs/lp_candidates.py                             220     12     78     12    92%   200, 205, 208, 224, 232, 343, 441, 614, 675, 828, 845, 901
+src/kgfeg/kgs/lp_checkpoints.py                            810     48    322     46    92%   182, 244, 357, 492, 504, 617, 620, 642, 687, 742, 784, 789, 834, 968, 1101, 1170, 1369, 1380, 1430, 1476, 1521, 1533, 1539, 1554, 1560, 1597, 1603, 1608, 1629, 1711, 1743, 1934, 1940, 1999, 2067, 2106, 2121, 2135, 2159, 2287, 2292, 2355, 2405, 2733, 2797, 2809, 2825, 2882
+src/kgfeg/kgs/lp_coordinates.py                            121      6     50      6    93%   207, 215, 230, 269, 274, 420
+src/kgfeg/kgs/lp_dispatch.py                                96      3     14      3    95%   114, 279, 300
+src/kgfeg/kgs/lp_evidence.py                               254      9     88      2    95%   155, 472-480, 945-948
+src/kgfeg/kgs/lp_export.py                                 171      8     60      8    93%   92, 295, 317, 338, 492, 540, 591, 716
+src/kgfeg/kgs/lp_finalization.py                           327      9     84     10    95%   146, 343, 349, 520, 564, 680, 691, 727->exit, 810, 864
+src/kgfeg/kgs/lp_generation.py                             224     10     64      8    94%   280-295, 517->449, 818, 825->exit, 867, 876, 920, 997
+src/kgfeg/kgs/lp_index.py                                  228      7     98      5    96%   204, 218, 550, 559-560, 658, 796
+src/kgfeg/kgs/lp_requests.py                               373      4     92      4    98%   346, 416, 1192, 1393
+src/kgfeg/kgs/lp_selection.py                              105      1     18      1    98%   321
+src/kgfeg/kgs/lp_validation.py                             291     17    100     13    92%   98, 135, 211->exit, 226->exit, 269, 316, 327, 360-361, 492, 650, 666, 674->673, 678, 924-926, 1007-1008, 1023
+src/kgfeg/kgs/prompts.py                                   221    182     80      0    13%   48-64, 89, 112-132, 155-225, 256-286, 318-369, 386-409, 436-476, 515-540, 576-603, 630-713, 739-751, 775, 812-824, 848-865, 895-931, 958-1005, 1094-1211, 1233-1287, 1307-1405, 1437-1499, 1604-1693, 1721-1942, 1967-2015
+src/kgfeg/kgs/schemas.py                                  2264    619    594     55    63%   81-87, 111-143, 173-187, 331-337, 367, 373, 376, 407, 447, 519-523, 583-586, 689-717, 820-825, 913-945, 1009-1018, 1032-1053, 1066-1070, 1085-1099, 1121-1133, 1181, 1234-1239, 1349-1354, 1374, 1392-1396, 1419-1424, 1441-1448, 1489-1501, 1524-1529, 1546-1585, 1641-1645, 1668-1673, 1719-1724, 1741-1764, 1803, 1850, 1873-1878, 1920-1927, 2102-2106, 2124-2128, 2146, 2164, 2182, 2201-2234, 2251-2257, 2274-2286, 2431-2435, 2458-2463, 2481, 2572-2577, 2601-2605, 2630, 2648, 2666, 2684-2717, 2734-2740, 2757-2775, 2823, 2841-2886, 2914, 2953-2958, 2976, 2994-2998, 3040-3045, 3068-3073, 3122-3127, 3144-3167, 3379-3383, 3401, 3436, 3454, 3472, 3490, 3508-3521, 3533-3540, 3555-3582, 3603-3690, 3718-3728, 3746-3789, 3815-3845, 3865-3940, 3961-4009, 4031-4032, 4060-4099, 4120-4153, 4171-4196, 4219-4232, 4257-4282, 4309-4344, 4372-4398, 4803, 4806, 4809, 4829, 4853, 4881, 4891, 4929, 4962, 4974, 5001-5028, 5056-5092, 5114, 5119, 5126, 5135, 5188, 5206-5214, 5252-5261, 5329, 5398, 5415-5418, 5500-5553, 5588, 5606, 5646, 5663-5686, 5993-6009, 6141, 6181, 6394, 6695, 6728, 6738, 6773, 6779, 6788, 6813, 6816, 6838, 7453, 7482, 7485, 7492, 7497, 7499->7490, 7521, 7785, 7800, 7803, 7811, 7826, 7834, 7880, 7883, 7896-7897, 7903-7904, 7915->exit, 8037, 8046, 8053, 8060, 8065, 8101, 8106, 8111
+src/kgfeg/kgs/sfi_dedup.py                                 680    596    308      0     9%   140-218, 241-242, 269-300, 337-358, 444-511, 568-635, 904-985, 1017-1052, 1094-1186, 1212-1264, 1295-1352, 1375-1394, 1506-1520, 1540-1543, 1567-1611, 1632-1660, 1680-1686, 1710-1752, 1804-1834, 1858-1880, 1907-1942, 1964-1972, 2010-2069, 2181-2246, 2273-2309, 2330-2349, 2393-2425, 2461-2478, 2520-2620, 2658-2739, 2775-2789, 2837-2877, 2924-2965, 3017-3086, 3124-3133, 3167-3177, 3214-3246, 3266-3286, 3312-3337, 3374-3399, 3419-3469, 3605-3682, 3738-3801, 3830-3862, 3899-3919, 3946-3960, 3990-3993, 4027-4140
+src/kgfeg/kgs/sfi_export.py                                670    199    290     87    65%   383-390, 431-435, 438, 476, 492-508, 511, 550-555, 561->564, 565-571, 613, 724-789, 800-805, 824-843, 871-899, 941, 987, 1026, 1043-1045, 1071-1072, 1115, 1121, 1124, 1130, 1133, 1143, 1149, 1164, 1171, 1207, 1214, 1220, 1277, 1280, 1375-1378, 1384, 1391-1394, 1401-1408, 1514, 1520-1523, 1526, 1533, 1569-1570, 1604-1607, 1619, 1625, 1630, 1638, 1643, 1690, 1731, 1741-1746, 1751-1755, 1762, 1797, 1805, 1813-1818, 1830-1836, 1873, 1878, 1889, 1922, 1927, 1933, 1938, 1944, 2001-2005, 2050, 2062, 2094, 2125, 2135-2140, 2155-2158, 2194-2207, 2233-2234, 2257-2266, 2297, 2303, 2308, 2313, 2321, 2358, 2363, 2366, 2375, 2382, 2393, 2398->2414, 2409, 2447-2450, 2504, 2510, 2534, 2540, 2546, 2753-2757, 2911->2923, 2919-2920, 2977->2989, 3082-3101, 3130-3132
+src/kgfeg/kgs/sfi_extraction.py                             85     71     36      0    12%   41-62, 100-122, 143-146, 174-199, 256-338
+src/kgfeg/kgs/sfi_extraction_windows.py                    382    340    176      0     8%   87-89, 132-145, 205-253, 345-441, 476-535, 579-618, 637-658, 684-734, 753-764, 797-849, 888-939, 991-1013, 1040-1081, 1100-1117, 1134, 1151-1168, 1185-1203, 1234-1265, 1286, 1303, 1324-1327, 1349-1352, 1380-1392, 1422-1445, 1473-1521, 1559-1604, 1632-1680, 1701-1720, 1741-1743
+src/kgfeg/kgs/sfi_finalization.py                          472    394    220      0    11%   186-293, 315-327, 377-400, 446-461, 484-508, 539-582, 616-655, 702-862, 905-913, 956-1026, 1062-1081, 1249-1261, 1318-1372, 1404-1430, 1458-1466, 1488-1496, 1517-1518, 1556-1572, 1600-1623, 1640, 1668-1700, 1728-1752, 1769, 1786, 1814-1833, 1853-1865, 1885-1904, 1936-1949, 1971-1994, 2019-2078, 2119-2148, 2177-2179, 2202-2234, 2265-2303, 2331-2341, 2383-2426, 2471-2548
+src/kgfeg/kgs/sfi_registry.py                              427    372    192      0     9%   64-87, 114-140, 163-176, 206-276, 295-346, 393-476, 544-575, 623-659, 683-692, 711-729, 748-760, 779-795, 816-839, 881-888, 929-984, 1003-1004, 1023-1036, 1053-1069, 1095-1099, 1120-1134, 1151, 1174-1213, 1246-1253, 1301-1316, 1348-1363, 1380-1385, 1402-1407, 1426-1431, 1450-1465, 1491-1509, 1542-1584, 1606-1614, 1640-1656, 1694-1722, 1765-1786, 1824-1835, 1873-1888, 1940-2025
+src/kgfeg/kgs/sfi_relationships.py                        1027    900    480      0     8%   116-117, 189-213, 251-260, 298-342, 382-437, 472-493, 526-527, 560-568, 618-694, 726-768, 865-1014, 1034-1060, 1079, 1134-1148, 1227-1324, 1343, 1380-1426, 1459-1514, 1542-1558, 1583-1632, 1660-1696, 1730-1753, 1774-1788, 1813-1830, 1862-1882, 1899-1942, 1995-2138, 2166, 2187, 2215, 2316-2332, 2359-2364, 2391-2405, 2428-2431, 2469-2495, 2560-2692, 2714-2731, 2753-2763, 2787-2797, 2825-2857, 2889-2954, 2971-2976, 2993, 3015-3059, 3082-3109, 3137-3152, 3180-3198, 3215-3224, 3251-3271, 3319-3340, 3382-3423, 3448-3455, 3500-3543, 3563-3570, 3591-3604, 3628-3641, 3660-3678, 3695-3707, 3726-3736, 3753-3758, 3777-3786, 3809-3824, 3854-3917, 3934-3943, 3962-3991, 4015-4024, 4055-4122, 4165-4191, 4229-4259, 4286-4399, 4553-4612, 4652-4683, 4729-4755, 4792-4842, 4871-4890, 4914-4932, 4952-4955, 4982-4993, 5032-5226
+src/kgfeg/kgs/sfi_source_anchors.py                        243    198    124      0    12%   110, 149-176, 193-206, 238-260, 306-311, 349-357, 376-382, 405-425, 448-464, 486-527, 546-616, 635-707, 724-743, 788-801, 825-833, 850-853, 882-901, 929-956, 979-1050, 1077
+src/kgfeg/kgs/utils.py                                     485    343    242      4    23%   85-91, 174-175, 203-208, 241-265, 296-337, 360-369, 393-446, 500-510, 531-549, 571-602, 619-631, 648-655, 682-747, 764, 783, 805-811, 852-877, 902-939, 976-1029, 1068-1069, 1108-1118, 1143-1146, 1199, 1235-1285, 1323-1367, 1389-1397, 1431-1449, 1475-1500, 1537-1571, 1599, 1616-1621, 1638-1640, 1772, 1820-1845, 1872-1889, 1906-1921
+src/kgfeg/kgs/validators.py                                648    502    354      0    18%   124-142, 161-170, 192-220, 241-257, 277-283, 311-330, 349-371, 439, 457-460, 477, 494, 533-571, 591-601, 627-635, 661-662, 703-740, 766-797, 834-849, 890-922, 947-957, 986-1006, 1038-1098, 1127-1200, 1230-1292, 1318-1328, 1358-1415, 1447-1546, 1574-1603, 1627-1658, 1686-1732, 1765-1793, 1832-1861, 1888-1919, 1944-1957, 1996-2019, 2046-2077, 2101-2130, 2158-2181, 2208, 2237-2241, 2277-2320, 2509-2530, 2563-2589, 2623-2671, 2705-2718, 2744-2814, 2847-2872
+src/kgfeg/model_registry.py                                 75     25     24      5    58%   61, 85-88, 110-113, 142, 171, 203-210, 236-243, 314, 347-354, 376-383, 409
+src/kgfeg/page_ir_extraction/agents.py                      49     39      2      0    20%   75-159, 205-272
+src/kgfeg/page_ir_extraction/llm.py                         81      0     10      1    99%   288->297
+src/kgfeg/page_ir_extraction/prompts.py                     29      0      8      0   100%
+src/kgfeg/page_ir_extraction/schemas.py                    218      3     90      3    98%   136, 377, 915
+src/kgfeg/page_ir_extraction/utils.py                      194     39     60      5    77%   119, 217-225, 365->368, 369, 372, 391, 410-413, 582-584, 603-627, 664-689, 706-709, 753->760
+src/kgfeg/page_ir_extraction/validators.py                 278     22    158     35    87%   213, 219->exit, 283->exit, 367, 379, 400, 448, 450->446, 512->529, 529->exit, 531, 541, 565->exit, 567, 573->565, 593->exit, 595, 598, 608->593, 637, 684, 702, 749, 759, 765, 808, 853, 894->exit, 920, 957, 963, 1011->exit, 1047->exit, 1072, 1097->1109
+src/kgfeg/page_ir_verification/agents.py                    40     31      2      0    21%   65-122, 164-218
+src/kgfeg/page_ir_verification/compile_continuity.py       214     31     96     12    84%   93, 155, 260-348, 458->473, 634->637, 637->641, 652->exit, 659->662, 662->exit, 792->exit, 949->969, 974->985, 977->985, 1077-1094
+src/kgfeg/page_ir_verification/llm.py                       55      3      2      0    95%   231-235
+src/kgfeg/page_ir_verification/postprocess_page_irs.py     268     33    126      4    88%   145-166, 307-353, 758, 838-849, 1116, 1182->1198, 1247-1270
+src/kgfeg/page_ir_verification/prompts.py                   20      0      2      0   100%
+src/kgfeg/page_ir_verification/schemas.py                   48      0     16      0   100%
+src/kgfeg/page_ir_verification/utils.py                    198    100     88      8    45%   63-71, 216-274, 373-479, 527, 537, 553, 561, 567, 575, 584, 594, 627-648, 669-687, 730-774
+src/kgfeg/page_ir_verification/validators.py                36      0     24      0   100%
+src/kgfeg/page_ir_verification/verify_page_pairs.py        311      5    106      1    99%   806->811, 926-931
+src/kgfeg/regexes.py                                        13      0      0      0   100%
+src/kgfeg/schemas.py                                       926    153    344    103    77%   119, 306, 313, 344, 422, 431, 436, 472, 479, 511, 593, 616-623, 646-652, 679, 702-720, 761-768, 791-809, 827-843, 887, 1107, 1116, 1124, 1130, 1136, 1199, 1207, 1264, 1300, 1307, 1311-1312, 1317->1298, 1352, 1359, 1361->1350, 1395, 1404, 1412, 1474, 1477, 1483, 1490, 1495, 1580, 1587, 1593, 1599, 1609, 1620-1629, 1637, 1675, 1685, 1693, 1699, 1709, 1746, 1754, 1760, 1800, 1806, 1810-1811, 1838, 1845, 1847->1836, 1852, 1899, 1908, 1919, 1924, 1945, 1948, 1953, 1986, 1991, 1996, 2002, 2036, 2069, 2075, 2084, 2091, 2098, 2124, 2134, 2141, 2148, 2159, 2188, 2212, 2242->2238, 2249, 2254, 2282, 2302, 2333, 2344, 2364, 2665, 2668->2662, 2671, 2697, 3091, 3094, 3123, 3132, 3137, 3139->3130, 3144, 3382, 3434, 3574, 3599, 3604, 3635
+src/kgfeg/utils/constants.py                                60      0      0      0   100%
+src/kgfeg/utils/general.py                                 131      2     42      1    98%   131, 440
+src/kgfeg/utils/logging_.py                                 90      0     18      0   100%
+src/kgfeg/utils/pdf.py                                      15      0      2      0   100%
+----------------------------------------------------------------------------------------------------
+TOTAL                                                    22365   7767   8172    853    61%
+Appending '/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/src' to system path...
+Appending '/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/tests' to system path...
+================ 4448 passed, 93 warnings in 245.87s (0:04:05) =================
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+real 256.65
+user 1961.65
+sys 176.70

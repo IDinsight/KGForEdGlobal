@@ -30,9 +30,10 @@ REPO_ROOT := $(abspath $(CURDIR)/..)
 export-test-env = set -a && source ./tests/test.env && set +a &&
 
 # Shared pytest runner for the test targets; each target appends only its test selection.
+# worksteal rebalances the few long LP evaluation tests across idle workers.
 run-pytest = $(export-test-env) \
 	PATHS_PROJECT_DIR="$(REPO_ROOT)" \
-	$(UV) run pytest -n auto -rsPQ --cov=. --cov-config=./pyproject.toml --cov-report term-missing
+	$(UV) run pytest -n auto --dist worksteal -rsPQ --cov=. --cov-config=./pyproject.toml --cov-report term-missing
 
 ########## CLEAN UP ##########
 # Delete all compiled Python files.
