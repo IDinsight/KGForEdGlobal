@@ -155,7 +155,7 @@ recorded approval.
 
 ### DEV-004 — Replace `TEST_ARGS` with `test` and `test-all` targets
 
-`Status`: `PENDING` `Depends On`: `DEV-002` `Acceptance`: `AC-009, AC-010,
+`Status`: `IN_PROGRESS` `Depends On`: `DEV-002` `Acceptance`: `AC-009, AC-010,
 AC-011, AC-012, AC-013`
 
 **Goal**
@@ -191,6 +191,25 @@ with the same test environment as CI.
 `env -u TERM make help` prints no `tput` error; a collect-only run through each
 target's selection (with a deliberately different shell value for one of the
 `test.env` variables) shows the expected counts and that the file values win.
+
+Partial result (2026-10-13, step not done):
+
+- `backend/Makefile` edited: `TEST_ARGS` and `run-tests` removed; `REPO_ROOT`
+  and a shared `run-pytest` definition added; `test` and `test-all` targets
+  with help text; `test-all` in `.PHONY`; `tput` calls silenced with
+  `2>/dev/null`.
+- `backend/tests/test.env` edited on disk to add the three CI values, but the
+  file is ignored by `.gitignore:5` (`*.env*`) and has never been committed
+  (`git ls-files` and `git log --all` return nothing). The change cannot reach
+  CI or other clones, so this part of the design does not hold. Routed as a
+  `PROJECT_CONTEXT` failure; see **Plan Notes → Suspended Assignment 1**.
+- Checks run from `backend/`: `grep -c TEST_ARGS Makefile` → 0; `make help`
+  (colors stripped) lists `test` and `test-all` with the expected text;
+  `env -u TERM make help` prints no `tput` error; `make -n test` and
+  `make -n test-all` print
+  `set -a && source ./tests/test.env && set +a && PATHS_PROJECT_DIR="<repo root>" uv run pytest -n auto -rsPQ --cov=. --cov-config=./pyproject.toml --cov-report term-missing`
+  followed by `-m "not alembic" tests` and `--run-slow tests` respectively.
+  The user has not yet run the collect-only checks through the targets.
 
 ---
 
@@ -536,6 +555,19 @@ gains a `slow` mark in this list.
 Filled in by DEV-005.
 
 ## Plan Notes
+
+### Suspended Assignment 1
+
+`Recovery Frame`: `1` `Recovery Reason`: `backend/tests/test.env is gitignored (.gitignore:5 *.env*) and untracked, so the design's shared test env cannot reach CI or fresh clones.` `Purpose`: `DEVELOPMENT`
+`Target`: `NONE` `Assessed Inputs`: `backend/Makefile (working tree, DEV-004
+edits), backend/tests/test.env (untracked, local edit), deletion-list-approved.tsv,
+CONTEXT.md and the technical design as of commit 944fed9` `Next Action`:
+`Reconcile DEV-004 with the corrected context and design (how the test env
+values reach CI and fresh clones), finish DEV-004 and its collect-only
+self-checks, then pause before DEV-005.`
+
+DEV-001 to DEV-003 are done and unaffected. DEV-004 is in progress; its
+Makefile changes stay in the working tree.
 
 - Order follows the design's build plan: baselines (DEV-001) and the serial
   measurement (DEV-002) run before any change under `backend/` or

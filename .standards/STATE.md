@@ -1,6 +1,6 @@
 # S.T.A.N.D.A.R.D.S. Workflow State
 
-`WorkflowState`: `DEVELOPING` `CycleMode`: `STANDARD` `PendingCycleMode`:
+`WorkflowState`: `AUDITING` `CycleMode`: `STANDARD` `PendingCycleMode`:
 `UNSET` `PendingCycleRequest`: `UNSET` `PendingCycleBlockedOn`: `NONE`
 
 ## Active Work
@@ -12,8 +12,7 @@
 `Architecture`:
 `.standards/docs/specs/make-the-backend-test-suite-fast-again-20261013T155516Z-dfdae6e5.md` `Development`:
 `.standards/docs/development/make-the-backend-test-suite-fast-again-20261013T155516Z-dfdae6e5.md` `PromotionReason`: `NONE`
-`AuditTarget`: `NONE` `BlockedOn`:
-`DEV-003 done; continue with DEV-004 (Makefile test and test-all targets)?` `PendingVerificationCadence`: `NONE`
+`AuditTarget`: `NONE` `BlockedOn`: `NONE` `PendingVerificationCadence`: `NONE`
 
 `BaselineReconciliation`: `NONE`
 
@@ -25,12 +24,18 @@ Preserve existing entries; see PROTOCOL.md, Baseline Reconciliation Format.
 
 ## Handoff
 
-`Kind`: `FORWARD` `From`: `ARCHITECTING` `FailureType`: `NONE` `Reason`:
-`Technical design completed for AC-001 through AC-017 (evolution mode).`
+`Kind`: `FAILURE` `From`: `DEVELOPING` `FailureType`: `PROJECT_CONTEXT`
+`Reason`: `backend/tests/test.env is gitignored (.gitignore:5 *.env*) and untracked, so the design's shared test env cannot reach CI or fresh clones.`
 
 ## Recovery
 
-`Active`: `false`
+`Active`: `true`
+
+### Frame 1
+
+`From`: `DEVELOPING` `Owner`: `AUDITING` `FailureType`: `PROJECT_CONTEXT`
+`Reason`: `backend/tests/test.env is gitignored (.gitignore:5 *.env*) and untracked, so the design's shared test env cannot reach CI or fresh clones.`
+`ResumeAt`: `DEVELOPING` `RerunThrough`: `NONE`
 
 ## Outstanding Obligations
 
