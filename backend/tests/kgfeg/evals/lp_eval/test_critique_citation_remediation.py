@@ -8,7 +8,6 @@ import hashlib
 import json
 
 from dataclasses import replace
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
@@ -216,7 +215,7 @@ def test_classification_does_not_consult_critique_policy_references(
 
 @pytest.mark.parametrize(
     argnames="mutation",
-    argvalues=["references", "prompt", "prompts_source", "sampling_source"],
+    argvalues=["references", "prompt"],
 )
 def test_incompatible_material_preserves_ledger_and_exhausted_attempts(  # pylint: disable=too-many-statements
     _schedule: Any,
@@ -242,11 +241,7 @@ def test_incompatible_material_preserves_ledger_and_exhausted_attempts(  # pylin
         requests = [
             r for c in _schedule.curricula for r in c.requests if r.role == "critique"
         ]
-        request = requests[
-            ["references", "prompt", "prompts_source", "sampling_source"].index(
-                mutation
-            )
-        ]
+        request = requests[["references", "prompt"].index(mutation)]
         by_id = {
             r.prompt.request_id: r for c in _schedule.curricula for r in c.requests
         }
@@ -278,77 +273,35 @@ def test_incompatible_material_preserves_ledger_and_exhausted_attempts(  # pylin
                 target=sampling,
                 value=lambda payload: (),
             )
-        elif mutation == "prompt":
+        else:
             changed.setattr(
                 name="_CRITIQUE_INSTRUCTIONS",
                 target=prompts,
                 value=prompts._CRITIQUE_INSTRUCTIONS
                 + "\nChanged citation instruction.",
             )
-        else:
-            filename = "prompts.py" if mutation == "prompts_source" else "sampling.py"
-            original_read = Path.read_bytes
-
-            def _source_edit(path: Path) -> bytes:
-                """Return changed source bytes while preserving frozen inputs.
-
-                Parameters
-                ----------
-                path
-                    Requested source or artifact.
-
-                Returns
-                -------
-                bytes
-                    Harmless source edit or original artifact bytes.
-                """
-                payload = original_read(path)
-                return (
-                    payload + b"\n# Source revision\n"
-                    if path.name == filename
-                    else payload
-                )
-
-            changed.setattr(name="read_bytes", target=Path, value=_source_edit)
-        if mutation in {"prompts_source", "sampling_source"}:
-            assert (
-                sampling.prepare_evaluation_schedule(
-                    inputs=_schedule.inputs,
-                    judge=_schedule.judge,
-                    settings=_schedule.settings,
-                )
-                == _schedule
-            )
-        else:
-            fresh = sampling.prepare_evaluation_schedule(
-                inputs=_schedule.inputs,
-                judge=_schedule.judge,
-                settings=_schedule.settings,
-            )
-            old_critic = next(
-                r
-                for c in _schedule.curricula
-                for r in c.requests
-                if r.role == "critique"
-            )
-            new_critic = next(
-                r for c in fresh.curricula for r in c.requests if r.role == "critique"
-            )
-            assert fresh.material_content_hash != _schedule.material_content_hash
-            assert new_critic.material_content_hash != old_critic.material_content_hash
-            assert (
-                new_critic.prompt.material_content_hash
-                != old_critic.prompt.material_content_hash
-            )
-            if mutation != "prompt":
-                assert new_critic.prompt.request_id != old_critic.prompt.request_id
-        if mutation in {"prompts_source", "sampling_source"}:
-            with judge.open_evaluation_store(store) as unchanged:
-                assert unchanged.snapshot() == saved
-        else:
-            with pytest.raises(ValueError, match="reproduced"):
-                with judge.open_evaluation_store(store):
-                    pytest.fail("Incompatible schedule exposed the writable cache")
+        fresh = sampling.prepare_evaluation_schedule(
+            inputs=_schedule.inputs,
+            judge=_schedule.judge,
+            settings=_schedule.settings,
+        )
+        old_critic = next(
+            r for c in _schedule.curricula for r in c.requests if r.role == "critique"
+        )
+        new_critic = next(
+            r for c in fresh.curricula for r in c.requests if r.role == "critique"
+        )
+        assert fresh.material_content_hash != _schedule.material_content_hash
+        assert new_critic.material_content_hash != old_critic.material_content_hash
+        assert (
+            new_critic.prompt.material_content_hash
+            != old_critic.prompt.material_content_hash
+        )
+        if mutation != "prompt":
+            assert new_critic.prompt.request_id != old_critic.prompt.request_id
+        with pytest.raises(ValueError, match="reproduced"):
+            with judge.open_evaluation_store(store):
+                pytest.fail("Incompatible schedule exposed the writable cache")
         assert {
             p.name: p.read_bytes() for p in directory.iterdir() if p.is_file()
         } == before

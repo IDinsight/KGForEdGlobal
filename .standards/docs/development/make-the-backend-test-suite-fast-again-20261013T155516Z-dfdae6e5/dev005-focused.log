@@ -1,0 +1,118 @@
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [  5%]
+........................................................................ [ 10%]
+........................................................................ [ 15%]
+........................................................................ [ 21%]
+........................................................................ [ 26%]
+........................................................................ [ 31%]
+........................................................................ [ 36%]
+........................................................................ [ 42%]
+........................................................................ [ 47%]
+........................................................................ [ 52%]
+........................................................................ [ 57%]
+........................................................................ [ 63%]
+........................................................................ [ 68%]
+........................................................................ [ 73%]
+........................................................................ [ 78%]
+........................................................................ [ 84%]
+........................................................................ [ 89%]
+........................................................................ [ 94%]
+........................................................................ [ 99%]
+..                                                                       [100%]<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+Appending '/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/src' to system path...
+Appending '/Users/tzz/Projects/private/idi/KGForEdGlobal/backend/tests' to system path...
+
+=============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488: 26 warnings
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:488: 26 warnings
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+<frozen importlib._bootstrap>:488: 13 warnings
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+
+tests/kgfeg/kgs/test_lp_orchestration.py: 11 warnings
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/src/kgfeg/kgs/lp_generation.py:212: LogfireNotConfiguredWarning: No logs or spans will be created until `logfire.configure()` has been called. Set the environment variable LOGFIRE_IGNORE_NO_CONFIG=1 or add ignore_no_config=true in pyproject.toml to suppress this warning.
+    logger.info(
+
+tests/kgfeg/kgs/test_lp_orchestration.py::test_invalid_model_proposals_never_enter_success_prefixes[duplicate-verdict]
+tests/kgfeg/kgs/test_lp_orchestration.py::test_invalid_model_proposals_never_enter_success_prefixes[malformed-verdict]
+tests/kgfeg/kgs/test_lp_orchestration.py::test_invalid_model_proposals_never_enter_success_prefixes[endpoint-verdict]
+tests/kgfeg/kgs/test_lp_orchestration.py::test_invalid_model_proposals_never_enter_success_prefixes[missing-verdict]
+tests/kgfeg/kgs/test_lp_orchestration.py::test_invalid_model_proposals_never_enter_success_prefixes[identity-verdict]
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/.venv/lib/python3.13/site-packages/pydantic/main.py:464: UserWarning: Pydantic serializer warnings:
+    PydanticSerializationUnexpectedValue(Expected `LPGenerationValidationIssue` - serialized value may not be as expected [field_name='issues', input_value={'issue_type': 'evidence_...ne, 'severity': 'error'}, input_type=dict])
+    return self.__pydantic_serializer__.to_python(
+
+tests/kgfeg/evals/lp_eval/test_critique_citation_remediation.py::test_invalid_citations_fail_response_and_prompt_guards[False-/operative_judgment/rationale]
+  /Users/tzz/Projects/private/idi/KGForEdGlobal/backend/src/kgfeg/kgs/sfi_export.py:793: LogfireNotConfiguredWarning: No logs or spans will be created until `logfire.configure()` has been called. Set the environment variable LOGFIRE_IGNORE_NO_CONFIG=1 or add ignore_no_config=true in pyproject.toml to suppress this warning.
+    logger.warning(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1370 passed, 82 warnings in 158.54s (0:02:38)
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute

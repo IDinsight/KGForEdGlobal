@@ -117,7 +117,7 @@ def _response(*, index: int, request: Any) -> str:
     return json.dumps(result)
 
 
-@pytest.fixture(params=[1, 2], scope="module")
+@pytest.fixture(params=[2], scope="module")
 # The fixture retains separate source, invocation and derivative identities.
 # pylint: disable-next=too-many-locals
 def _saved(request: Any, tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:

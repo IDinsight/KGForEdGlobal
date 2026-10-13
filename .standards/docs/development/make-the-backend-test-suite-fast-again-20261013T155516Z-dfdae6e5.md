@@ -253,7 +253,7 @@ Resumed after the revised plan was approved (2026-10-13):
 
 ### DEV-005 — Apply the approved deletions, replacements, and helper moves
 
-`Status`: `PENDING` `Depends On`: `DEV-003` `Acceptance`: `AC-005, AC-006`
+`Status`: `DONE` `Depends On`: `DEV-003` `Acceptance`: `AC-005, AC-006`
 
 **Goal**
 
@@ -282,6 +282,42 @@ Diff of `pytest --collect-only -q --run-slow -p no:randomly tests` against the
 DEV-002 collection shows only approved node IDs removed and replacement node
 IDs added; the replacement node IDs pass in a focused pytest run; the moved
 helpers' importers collect without error.
+
+Partial result (2026-10-13):
+
+- No test file was deleted, so no helpers moved. Edits are parameter-list
+  reductions (single `parametrize` over explicit tuples where the kept cases are
+  not a cross product, ordered so node IDs are unchanged), plus removal of
+  branches that only dropped cases reached: `_attack` / `_attack_transaction`
+  branches no test uses any more (`test_lp_checkpoint_formats.py`), row
+  mutations in `_corrupt_payload` (`test_lp_projections.py`), and per-case
+  branches in A1, A5, A7, A8, A11, A16, A17. B5 is implemented in
+  `test_lp_generation.py::_integration_profiles` (its only callers are nine of
+  the matrices) and in the orchestration matrix's own parameter list.
+- Verification against `src/` (two independent read-only passes plus my own
+  checks of A1–A9): see **Deletion List → Version 2**.
+- Static checks from `backend/` on the 16 changed test files: `ruff check` and
+  `black --check` (all `tests/kgfeg/`), `isort --check-only`, `pylint` (10.00/10),
+  `mypy --explicit-package-bases --ignore-missing-imports --show-error-codes`
+  (no issues), `interrogate -v` (100%).
+- The user approved version 2 ("approve v2").
+- Collection, run by the user from `backend/` with the CI env values:
+  `.venv/bin/python -m pytest --collect-only -q -p no:randomly -p no:cacheprovider --run-slow tests`
+  → `collection-after.txt`, 4,448 tests. Compared with `collection-before.txt`
+  (4,741): 293 node IDs removed, 0 added, and the removed set equals
+  `deletion-list-v2.tsv` exactly (`comm` + `diff`, sorted). No kept node ID
+  changed.
+- Enumeration correction found by this check: the version 1/2 TSVs listed
+  `test_presentation.py::test_evidence_difference_preserves_json_scalar_types[1-True]`
+  under A2 because its own parameter ID starts with `1-`. It is not a `_saved`
+  case, A2's definition never covered it, and it was never removed. It is
+  dropped from `deletion-list-v2.tsv` and added back to
+  `collection-expected-after.txt`. Version 2 therefore deletes 293 cases
+  (A2: 17).
+- Focused run, by the user from `backend/`:
+  `bash -c 'set -a && source tests/test.env && set +a && PATHS_PROJECT_DIR="$(cd .. && pwd)" uv run pytest -n auto -q --run-slow $(git diff --name-only --relative -- tests)'`
+  over the 16 changed files → `1370 passed, 82 warnings in 158.54s`, no
+  FAILED or ERROR lines (log: `dev005-focused.log`).
 
 ---
 
@@ -568,6 +604,29 @@ rewritten.**
 Tier B total: 67 cases, 268.57 s (19.4%): 72.45 s default, 196.12 s
 full-only.
 
+### Version 2 (2026-10-13, approved): version 1 approved set minus six cases
+
+Re-checking the approved items against `src/` before deleting (DEV-005) found
+two items whose claims hold only in part. Six approved cases reach a check that
+no kept case reaches, so version 2 keeps them in the suite:
+
+- A10: `[material_capacity_string]` and `[usage_capacity_string]`. Only the
+  null/string capacity cases exercise the `not isinstance(capacity, int)` part
+  of the capacity checks (`lp_checkpoints.py` `_read_receipt` and
+  `_read_usage`); the kept bool/zero cases reject on other parts. String
+  represents null (same part).
+- A13: `[lp_generation_summary.json-corrupt]` (head-read parse error),
+  `[lp_relationship_provenance.json-corrupt]` (its own `json.loads` parser),
+  `[lp_final_claims.json-missing]` (final-claims input snapshot), and
+  `[lp_validation_report.json-missing]` (locked report read). `read_lp_artifacts`
+  has no wrapper, so these are separate rejection points.
+
+Every other approved item was confirmed (A1–A9, A11, A12, A14–A18, B5). Version
+2 deletes 293 cases (433.48 s serial) instead of 300 (436.58 s); see the
+DEV-005 result for the one-case enumeration correction. Its node IDs are in
+`deletion-list-v2.tsv`; the expected `--run-slow` collection after deletion
+(4,448 node IDs) is in `collection-expected-after.txt`.
+
 **Not proposed for deletion** (left to DEV-006 speed-ups, since every case is
 distinct or the cost is shared setup): `test_presentation.py` `_saved` setup
 cost itself, `test_all_requests_offline_execution_reporting_and_denominators`
@@ -593,10 +652,37 @@ gains a `slow` mark in this list.
   filtered from `deletion-list-v1.tsv` with
   `awk -F'\t' 'NR==1 || $1 ~ /^A/ || $1=="B5"'`. Any change to this set needs
   another recorded approval.
+- Version 2 (keeps six approved cases that reach otherwise-uncovered checks)
+  approved by the user on 2026-10-13: "approve v2". The DEV-005 collection
+  check then found one TSV row that was never part of an approved item's
+  definition; it was removed from the enumeration (recorded under DEV-005).
 
 ## Replacement Map
 
-Filled in by DEV-005.
+Deleted node IDs per item are in `deletion-list-v2.tsv`. No new tests were
+added; every replacement is a case that stays in the suite.
+
+| Item | Deleted | Replacement node IDs (kept) | Kind | Covered behavior |
+| --- | --- | --- | --- | --- |
+| A1 | `test_incompatible_material_preserves_ledger_and_exhausted_attempts[prompts_source]`, `[sampling_source]` | same test `[references]`, `[prompt]`; `test_independent_evaluator.py::test_schedule_runs_without_git_or_source_hash_gates`; `test_automatic_recovery.py::test_fresh_material_collects_no_source_digests` | existing faster test, kept cases | Incompatible material rejected with exhausted attempts kept; source edits never affect the schedule (no source read, empty fingerprints) |
+| A2 | all `[1]` / `[1-…]` cases of the 13 `_saved` tests in `test_presentation.py` | the same tests' `[2]` / `[2-…]` cases | kept representative | Presentation charts, outputs, statuses, CLI, reuse, workbook, validation, per-curriculum separation |
+| A3 | `test_projection_implementation_changes_preserve_saved_schedule[compatibility.py]`, `[lp_export.py]`, `[lp_requests.py]`, `[schemas.py]` | `[sampling.py]` | kept representative | Source edits leave the saved schedule and store unchanged |
+| A4 | `test_explicit_reruns_preserve_partial_cycles_and_lifetime_usage[rate_limit]`, `[server_error]`, `[invalid_output]`, `[transport]`, `[configuration]`, `[invalid_input]`, `[interrupted]` | `[timeout]` (retryable), `[authentication]` (non-retryable), `[http_400]`, `[citation]` | kept representatives | Rerun cycles and lifetime usage for each retry class |
+| A5 | `test_execution_boundary_tampering_fails_before_dispatch[event_count]`, `[event_head]`, `[execution_number]` | `[history_hash]`, `[delete]`, `[duplicate]` | kept representatives | Altered execution history rejected before dispatch (one hash/sequence check) |
+| A6 | `test_failed_current_preflight_cannot_close_unknown_history[configuration]` | `[authentication]`, `[changed_settings]` | kept representative | Failed current preflight leaves history intact |
+| A7 | `test_incompatible_store_is_rejected_without_evidence_writes[sdk]`, `[schema]` | `[mode]`; `test_structured_output_remediation.py::test_incompatible_output_binding_rejects_before_http[*]` | kept case, existing faster test | Output-contract change rejects the store without writes |
+| A8 | `test_all_cells_resume_rejects_material_changes_before_dispatch[source_format-journal_bearing-wire]` | `[source_bytes-journal_bearing-wire]` | kept representative | Source byte change rejected by the frozen fingerprint check |
+| A9 | every `test_checkpoint_contract_rejects_before_effects[internal-…]` and `[converted-…]` | the 30 `[wire-…]` cases | kept representatives | Corrupt checkpoint journals rejected before projections are read |
+| A10 | 18 `test_unsupported_formats_reject_across_all_entry_and_export_paths_without_effects[…]` attacks (see TSV) | 28 kept attacks, at least one per reader branch and condition | kept representatives | Unsupported checkpoint formats rejected across every entry point |
+| A11 | 35 `test_invalid_upstream_delivery_rejects_before_publication[…]` cases | 9 kept cases: both rejection sites, both files, both operations | kept representatives | Invalid upstream delivery rejected before publication |
+| A12 | every `test_corrupt_checkpoint_populations_fail_at_public_artifact_boundary[True-…]` | the 33 `[False-…]` cases | kept representatives | Corrupt stage populations rejected in the shared preflight |
+| A13 | 26 `test_missing_or_corrupt_bound_artifact_blocks_existing_release[…]` cases | 10 kept cases, one per rejection point | kept representatives | Missing or corrupt bound artifacts block release reuse |
+| A14 | `test_projection_persistence_failures_propagate_through_public_compiler[drop|duplicate|metadata|reorder-*]`, `[missing|read_error-as_lc_lp_relationships.jsonl]` | `[missing|read_error|truncate|write_error-as_lc_lp_nodes.jsonl]`, `[truncate|write_error-as_lc_lp_relationships.jsonl]` | kept representatives | Projection write/read-back failures propagate |
+| A15 | every `test_changed_current_material_rejects_before_any_reuse_write[*-compile]` except `[model-compile]` | all 12 `[*-reuse]` cases, `[model-compile]` | kept representatives | Changed current material rejected before any write |
+| A16 | 14 `test_corrupt_checkpoint_authority_blocks_compilation[…]` cases | `[lp_generation_responses.jsonl-gap]`; `test_lp_reuse.py::test_checkpoint_prefix_corruption_rejects_even_with_resealed_receipts[*]` | kept case, existing test | Corrupt checkpoint authority blocks compilation |
+| A17 | 14 `test_audit_cannot_authorize_generated_bundle_edits[…]` cases | `[combined-reuse-direction]`, `[standalone-compile-insert]` | kept representatives | Audit file cannot authorize bundle edits |
+| A18 | 18 `test_missing_malformed_and_noncanonical_standalone_artifacts_fail_closed[…]` cases | `[lp_generation_failures.json-malformed]`, `[lp_generation_summary.json-missing]`, `[lp_validation_report.json-noncanonical]`; `test_lp_artifacts.py::test_missing_malformed_or_noncanonical_files_are_rejected[*]` | kept cases, existing test | Standalone artifacts fail closed |
+| B5 | every `rwanda_math` case of the 10 profile matrices | the same tests' `ghana_english`, `ghana_math`, `madhi_math`, `nigeria_math`, `pratham_science` cases; `test_lp_generation.py::test_six_fixture_round_trips_reconcile_material_and_preserve_upstream[*]` | kept representatives, existing default test | Profile-specific DAG, warning, exclusion, and provenance behavior end to end |
 
 ## Plan Notes
 

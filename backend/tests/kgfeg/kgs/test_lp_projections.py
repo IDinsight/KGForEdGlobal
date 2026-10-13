@@ -145,29 +145,21 @@ def _block_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _corrupt_payload(*, attack: str, payload: bytes) -> bytes:
-    """Alter actual serialized rows while retaining valid JSON for population attacks.
+    """Re-serialize actual rows and truncate them for the truncation attack.
 
     Parameters
     ----------
     attack
-        Row omission, duplication, metadata corruption, reordering, or truncation.
+        Persistence attack; only truncation changes the bytes.
     payload
         Correct projection bytes before the injected persistence fault.
 
     Returns
     -------
     bytes
-        Altered bytes for the chosen attack, otherwise unchanged bytes.
+        Truncated bytes for the truncation attack, otherwise unchanged bytes.
     """
     rows = [json.loads(line) for line in payload.splitlines()]
-    if attack == "drop":
-        rows.pop()
-    elif attack == "duplicate":
-        rows.append(deepcopy(rows[0]))
-    elif attack == "metadata":
-        rows[0]["properties"]["description"] = "Corrupted delivery description"
-    elif attack == "reorder":
-        rows.reverse()
     encoded = b"".join(_export._bytes(row) for row in rows)
     return encoded[:-4] if attack == "truncate" else encoded
 
@@ -452,18 +444,17 @@ def test_projection_count_mismatch_fails_before_output_write(
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize(argnames="name", argvalues=[_NODES, _RELATIONSHIPS])
+# Row-level corruptions all fail one read-back byte comparison, so truncation
+# represents them; both files cover the write failure and the comparison.
 @pytest.mark.parametrize(
-    argnames="attack",
+    argnames="attack,name",
     argvalues=[
-        "drop",
-        "duplicate",
-        "metadata",
-        "missing",
-        "read_error",
-        "reorder",
-        "truncate",
-        "write_error",
+        ("missing", _NODES),
+        ("read_error", _NODES),
+        ("truncate", _NODES),
+        ("truncate", _RELATIONSHIPS),
+        ("write_error", _NODES),
+        ("write_error", _RELATIONSHIPS),
     ],
 )
 def test_projection_persistence_failures_propagate_through_public_compiler(

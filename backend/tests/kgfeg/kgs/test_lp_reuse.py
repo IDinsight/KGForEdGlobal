@@ -169,22 +169,29 @@ def _state(root: Path) -> dict[str, tuple[bytes, int, int]]:
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize(argnames="operation", argvalues=["compile", "reuse"])
+# Compile and reuse reject in the same preflight, so every change runs under reuse
+# and one representative change also runs under compile.
 @pytest.mark.parametrize(
-    argnames="change",
+    argnames="change,operation",
     argvalues=[
-        "batch",
-        "budget",
-        "checker_instructions",
-        "coordinate_order",
-        "model",
-        "model_settings",
-        "producer_instructions",
-        "retry",
-        "unresolved_policy",
-        "upstream_license",
-        "upstream_provenance",
-        "upstream_text",
+        ("model", "compile"),
+        *(
+            (change, "reuse")
+            for change in (
+                "batch",
+                "budget",
+                "checker_instructions",
+                "coordinate_order",
+                "model",
+                "model_settings",
+                "producer_instructions",
+                "retry",
+                "unresolved_policy",
+                "upstream_license",
+                "upstream_provenance",
+                "upstream_text",
+            )
+        ),
     ],
 )
 def test_changed_current_material_rejects_before_any_reuse_write(  # pylint: disable=R1260
@@ -855,26 +862,21 @@ def test_invalid_saved_bundle_never_repairs_itself_under_reuse(
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize(argnames="attack", argvalues=["corrupt", "missing"])
+# One case per rejection point: the wrapped checkpoint preflight, each head read
+# and parser, the final-claims snapshot and byte check, and the locked report read.
 @pytest.mark.parametrize(
-    argnames="name",
+    argnames="name,attack",
     argvalues=[
-        "lp_candidate_pairs.jsonl",
-        "lp_candidate_summary.json",
-        "lp_generation_requests.jsonl",
-        "lp_generation_requests_manifest.json",
-        _RECEIPT,
-        *_STAGES,
-        "lp_generation_failures.json",
-        "lp_generation_pending_completions.json",
-        "lp_generation_usage.json",
-        "lp_final_claims.json",
-        "lp_relationship_provenance.json",
-        "lp_generation_summary.json",
-        "lp_unresolved_items.json",
-        "lp_validation_report.json",
-        "lp_relationships_builds_towards.jsonl",
-        "lp_relationships_relates_to.jsonl",
+        (_RECEIPT, "missing"),
+        ("lp_generation_usage.json", "corrupt"),
+        ("lp_generation_pending_completions.json", "corrupt"),
+        ("lp_final_claims.json", "corrupt"),
+        ("lp_final_claims.json", "missing"),
+        ("lp_relationship_provenance.json", "corrupt"),
+        ("lp_generation_summary.json", "corrupt"),
+        ("lp_validation_report.json", "corrupt"),
+        ("lp_validation_report.json", "missing"),
+        ("lp_relationships_builds_towards.jsonl", "missing"),
     ],
 )
 def test_missing_or_corrupt_bound_artifact_blocks_existing_release(

@@ -145,11 +145,15 @@ def _json(path: Path) -> Any:
 
 
 @pytest.mark.slow
+# The audit file is never read, so each surface has one rejection path, the same
+# for both operations and every edit; one edit per surface covers it.
 @pytest.mark.parametrize(
-    argnames="action", argvalues=["delete", "direction", "insert", "relation"]
+    argnames="surface,operation,action",
+    argvalues=[
+        ("combined", "reuse", "direction"),
+        ("standalone", "compile", "insert"),
+    ],
 )
-@pytest.mark.parametrize(argnames="operation", argvalues=["compile", "reuse"])
-@pytest.mark.parametrize(argnames="surface", argvalues=["combined", "standalone"])
 def test_audit_cannot_authorize_generated_bundle_edits(
     action: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -162,7 +166,7 @@ def test_audit_cannot_authorize_generated_bundle_edits(
     Parameters
     ----------
     action
-        Requested forced exclusion, reversal, inclusion, or relation change.
+        Requested forced reversal or inclusion.
     monkeypatch
         Offline producer/checker seam.
     operation
@@ -177,26 +181,19 @@ def test_audit_cannot_authorize_generated_bundle_edits(
     _audit(action=action, harness=harness)
     path = tmp_path / _BUNDLE
     payload = _json(path)
-    builds = payload["relationships_builds_towards"]
-    if action == "delete":
-        builds.pop()
-    elif action == "direction":
-        row = builds[0]
+    if action == "direction":
+        row = payload["relationships_builds_towards"][0]
         row["source_entity_value"], row["target_entity_value"] = (
             row["target_entity_value"],
             row["source_entity_value"],
         )
-    elif action == "insert":
+    else:
         row = deepcopy(payload["relationships_relates_to"][0])
         row.update(
             identifier=str(UUID(int=999999)),
             source_entity_value=str(UUID(int=3)),
             target_entity_value=str(UUID(int=4)),
         )
-        payload["relationships_relates_to"].append(row)
-    else:
-        row = builds.pop()
-        row["relationship_type"] = "relatesTo"
         payload["relationships_relates_to"].append(row)
     if surface == "combined":
         path.write_bytes(_artifacts._bytes(payload))
