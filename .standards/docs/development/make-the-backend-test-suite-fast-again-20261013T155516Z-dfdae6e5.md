@@ -153,7 +153,7 @@ recorded approval.
 
 ---
 
-### DEV-004 — Replace `TEST_ARGS` with `test` and `test-all` targets
+### DEV-004 — Replace `TEST_ARGS` with `test` and `test-all` targets and commit `tests/test.env`
 
 `Status`: `IN_PROGRESS` `Depends On`: `DEV-002` `Acceptance`: `AC-009, AC-010,
 AC-011, AC-012, AC-013`
@@ -161,12 +161,12 @@ AC-011, AC-012, AC-013`
 **Goal**
 
 Give developers one fast default target and one complete target, both running
-with the same test environment as CI.
+with the same committed test environment as CI.
 
 **Affected Area**
 
-`backend/Makefile` (helpers, test section, `.PHONY`, color variables) and
-`backend/tests/test.env`.
+`backend/Makefile` (helpers, test section, `.PHONY`, color variables),
+`backend/tests/test.env`, and the root `.gitignore`.
 
 **Expected Outcome**
 
@@ -178,9 +178,15 @@ with the same test environment as CI.
 - `test` selects `-m "not alembic"` without `--run-slow`; `test-all` passes
   `--run-slow` and no `-m`. pytest-randomly stays on in both.
 - Both are in `.PHONY` with `##` help text naming what each selects.
-- `tests/test.env` adds `CHAT_ENV=testing`,
-  `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION=2026-07-09`, and
-  `OPENAI_API_KEY=sk-fake` with `# pragma: allowlist secret`.
+- `backend/tests/test.env` is tracked through a root `.gitignore` negation
+  `!backend/tests/test.env` placed after the `*.env*` rule (not `git add -f`).
+  It holds exactly `CHAT_ENV=testing`,
+  `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION=2026-07-09`,
+  `LOGGING_LOG_LEVEL=INFO`, and `OPENAI_API_KEY=sk-fake` with
+  `# pragma: allowlist secret`, under a header comment saying the file is
+  committed, holds only fake or non-secret test values, and must never hold
+  real credentials. `PATHS_PROJECT_DIR` stays out of it (set by the Makefile).
+  A missing file is an error, as before.
 - The color variables silence `tput` errors so the Makefile parses cleanly
   without `TERM` (for CI).
 
@@ -188,9 +194,12 @@ with the same test environment as CI.
 
 `grep TEST_ARGS backend/Makefile` finds nothing; `make help` shows both lines;
 `make -n test` and `make -n test-all` print the expected commands;
-`env -u TERM make help` prints no `tput` error; a collect-only run through each
-target's selection (with a deliberately different shell value for one of the
-`test.env` variables) shows the expected counts and that the file values win.
+`env -u TERM make help` prints no `tput` error; `git check-ignore -v
+backend/tests/test.env` reports the negation and `git status` shows the file as
+new (then `git ls-files` lists it once committed); the user runs a collect-only
+check through each target's selection, with a deliberately different shell
+value for one `test.env` variable, showing the expected counts and that the
+file values win.
 
 Partial result (2026-10-13, step not done):
 
@@ -210,6 +219,31 @@ Partial result (2026-10-13, step not done):
   `set -a && source ./tests/test.env && set +a && PATHS_PROJECT_DIR="<repo root>" uv run pytest -n auto -rsPQ --cov=. --cov-config=./pyproject.toml --cov-report term-missing`
   followed by `-m "not alembic" tests` and `--run-slow tests` respectively.
   The user has not yet run the collect-only checks through the targets.
+
+Resumed after the revised plan was approved (2026-10-13):
+
+- Root `.gitignore`: added `!backend/tests/test.env` after `!.template.env*`
+  (below the `*.env*` rule). `git check-ignore -v --no-index
+  backend/tests/test.env` → `.gitignore:8:!backend/tests/test.env`;
+  `git status` shows `?? backend/tests/test.env` (to be committed by the user).
+- `backend/tests/test.env`: header comment (committed on purpose, fake or
+  non-secret values only, never real credentials, `PATHS_PROJECT_DIR` set by
+  the Makefile) and exactly `LOGGING_LOG_LEVEL=INFO`, `CHAT_ENV=testing`,
+  `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION=2026-07-09`,
+  `OPENAI_API_KEY=sk-fake  # pragma: allowlist secret`. Sourcing it under bash
+  exports exactly those four values.
+- Env precedence probe from `backend/`: the `make -n test` recipe with pytest
+  swapped for `env`, run with `CHAT_ENV=bogus`, `OPENAI_API_KEY=bogus-key`,
+  `LEARNING_COMMONS_EXPORT_SCHEMA_VERSION=1999-01-01`,
+  `PATHS_PROJECT_DIR=/tmp/bogus` in the caller's environment, printed the file
+  values and `PATHS_PROJECT_DIR=<repo root>`; the same probe on `test-all`
+  printed `CHAT_ENV=testing`.
+- `pre-commit run --files backend/tests/test.env .gitignore backend/Makefile`
+  from the repo root: detect-secrets, end-of-file, trailing-whitespace passed;
+  `env-template-sync` first failed only because the sandbox blocked uv's cache,
+  then passed when re-run outside the sandbox.
+- Remaining: the user runs the two collect-only commands through the targets'
+  exact recipes (expected 3,855 and 4,741 tests before deletions).
 
 ---
 
@@ -322,13 +356,17 @@ Have pull-request CI run the same complete command developers use.
 
 **Affected Area**
 
-`.github/workflows/tests.yml`, job `backend-tests`, test step only.
+`.github/workflows/tests.yml`: the workflow-level `env` block and the
+`backend-tests` test step.
 
 **Expected Outcome**
 
 The test step runs `make test-all` from `backend/` after `uv sync --extra dev`,
-with no direct pytest command and no exit-code-5 special case. Triggers, path
-filters, the `changes` job, and the workflow `env` block are unchanged. A CI run
+with no direct pytest command and no exit-code-5 special case. The
+workflow-level `env` block is removed, so the workflow defines no test
+environment values of its own (they come from the committed `tests/test.env`
+and the Makefile's `PATHS_PROJECT_DIR`). Triggers, path filters, and the
+`changes` job are unchanged. A CI run
 on `tz6/fw` passes the backend test job and its log shows the `kgfeg`
 term-missing coverage table.
 
@@ -356,8 +394,8 @@ standards.
 
 **Affected Area**
 
-All files changed under `backend/tests/`, plus `backend/Makefile` and
-`.github/workflows/tests.yml`.
+All files changed under `backend/tests/` (including `tests/test.env`), plus
+`backend/Makefile`, `.github/workflows/tests.yml`, and `.gitignore`.
 
 **Expected Outcome**
 
@@ -541,6 +579,8 @@ gains a `slow` mark in this list.
 
 - Development plan approved by the user on 2026-10-13 ("i approve"), in
   `STEPWISE` mode with user style `tony` (now locked).
+- Revised plan (DEV-004 and DEV-008 after Frame 1) approved by the user on
+  2026-10-13 ("aprove").
 - Deletion-list approval: on 2026-10-13 the user approved **version 1, Tier A
   (A1–A18) plus B5**, in their words: "approve Tier A plus B5". B1–B4 and
   B6–B8 are not approved and stay in the suite. The approved node IDs (300
@@ -568,6 +608,18 @@ self-checks, then pause before DEV-005.`
 
 DEV-001 to DEV-003 are done and unaffected. DEV-004 is in progress; its
 Makefile changes stay in the working tree.
+
+Reconciliation after Frame 1 closed (2026-10-13): the Auditor recorded the
+untracked `tests/test.env` in `CONTEXT.md` (commit `da41730`) and the
+Architect revised the design at the user's direction (commit `c7588bb`): the
+file is committed through a `.gitignore` negation with exactly four values and
+a header comment, and the CI workflow drops its `env` block. This changes the
+approved outcome of DEV-004 (adds `.gitignore` and the committed file) and
+DEV-008 (removes the `env` block instead of leaving it), so the plan returned
+to `PROPOSED` for approval. The Makefile part of DEV-004 (commit `b99c29e`)
+already matches the revised design and is kept. DEV-001 to DEV-003, DEV-005 to
+DEV-007, and DEV-009's checks are otherwise unchanged. The suspended
+assignment resumes as its `Next Action` says once the plan is approved.
 
 - Order follows the design's build plan: baselines (DEV-001) and the serial
   measurement (DEV-002) run before any change under `backend/` or
