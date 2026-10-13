@@ -155,7 +155,7 @@ recorded approval.
 
 ### DEV-004 — Replace `TEST_ARGS` with `test` and `test-all` targets and commit `tests/test.env`
 
-`Status`: `IN_PROGRESS` `Depends On`: `DEV-002` `Acceptance`: `AC-009, AC-010,
+`Status`: `DONE` `Depends On`: `DEV-002` `Acceptance`: `AC-009, AC-010,
 AC-011, AC-012, AC-013`
 
 **Goal**
@@ -242,8 +242,12 @@ Resumed after the revised plan was approved (2026-10-13):
   from the repo root: detect-secrets, end-of-file, trailing-whitespace passed;
   `env-template-sync` first failed only because the sandbox blocked uv's cache,
   then passed when re-run outside the sandbox.
-- Remaining: the user runs the two collect-only commands through the targets'
-  exact recipes (expected 3,855 and 4,741 tests before deletions).
+- Collect-only through the exact recipes, run by the user from `backend/`:
+  `bash -c "$(make -n test) --collect-only -q"` → `3855/4741 tests collected
+  (886 deselected)`; `bash -c "$(make -n test-all) --collect-only -q"` →
+  `4741 tests collected`. Matches the default and full sets.
+- The user committed the changes (HEAD `7e998c2`); `git ls-files` lists
+  `backend/tests/test.env`.
 
 ---
 

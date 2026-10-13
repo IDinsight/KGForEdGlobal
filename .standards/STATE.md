@@ -13,7 +13,7 @@
 `.standards/docs/specs/make-the-backend-test-suite-fast-again-20261013T155516Z-dfdae6e5.md` `Development`:
 `.standards/docs/development/make-the-backend-test-suite-fast-again-20261013T155516Z-dfdae6e5.md` `PromotionReason`: `NONE`
 `AuditTarget`: `NONE` `BlockedOn`:
-`DEV-004: user to run the two collect-only checks through the make recipes.` `PendingVerificationCadence`: `NONE`
+`DEV-004 done; continue with DEV-005 (apply the approved deletions)?` `PendingVerificationCadence`: `NONE`
 
 `BaselineReconciliation`: `NONE`
 
