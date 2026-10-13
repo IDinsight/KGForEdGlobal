@@ -112,7 +112,7 @@ reported duration line.
 
 ### DEV-003 — Draft the deletion list and obtain the user's approval
 
-`Status`: `PENDING` `Depends On`: `DEV-002` `Acceptance`: `AC-004, AC-006`
+`Status`: `DONE` `Depends On`: `DEV-002` `Acceptance`: `AC-004, AC-006`
 
 **Goal**
 
@@ -138,6 +138,12 @@ before approval.
 
 Every item's time matches `test-ranking.tsv` / `file-ranking.tsv`; every item
 has a replacement entry; approval is recorded before DEV-005 starts.
+
+Result (2026-10-13): `deletion-list-v1.tsv` was generated from
+`test-ranking.tsv` (seconds copied per node ID), with 350 rows and no node ID in
+two items. Every item in **Deletion List → Version 1** has a replacement
+entry. Approval recorded in **Approval Record** before any test file changed
+(`git status --short backend .github` empty).
 
 **Implementation Notes**
 
@@ -441,13 +447,89 @@ the first test that uses the fixture):
 
 ## Deletion List
 
-Filled in by DEV-003.
+### Version 1 (2026-10-13, approved in part: Tier A and B5)
+
+Exact node IDs for every item are in
+`make-the-backend-test-suite-fast-again-20261013T155516Z-dfdae6e5/deletion-list-v1.tsv`
+(`item seconds nodeid`, 350 rows, no node ID in two items). Seconds and shares
+come from `test-ranking.tsv` (full serial total 1,382.77 s). "Default" items
+run in `make test`; "full" items are slow-marked and run only in
+`make test-all`. Serial seconds overstate the wall-clock gain under `-n auto`.
+
+Source of the analysis: code reading of each test and of the `src/` code path
+it reaches, with spot checks against `src/` for A1–A3, A4, A9, and the slow
+marks of B5–B6. Before deleting any item in DEV-005, Developer re-checks that
+its dropped cases reach the same check as a kept case; if a claim does not
+hold, that item is withdrawn and brought back to the user rather than deleted
+anyway.
+
+**Tier A — dropped cases hit the same code path as a kept case.** No distinct
+behavior is lost.
+
+| Item | Test (file) | Removed | Cases | Seconds | Share | Suite | Why redundant | Replacement (kind) |
+| --- | --- | --- | ---: | ---: | ---: | --- | --- | --- |
+| A1 | `test_incompatible_material_preserves_ledger_and_exhausted_attempts` (`lp_eval/test_critique_citation_remediation.py`) | `[prompts_source]`, `[sampling_source]` | 2 | 71.38 | 5.16% | default | The evaluator reads no source files (`implementation_fingerprints` is always `()`), so patching source bytes changes nothing. | Kept `[references]`, `[prompt]` (same test); `test_fresh_material_collects_no_source_digests` asserts no `.py` read (existing faster test) |
+| A2 | 13 tests using the `_saved` fixture (`lp_eval/test_presentation.py`) | every `[1]` / `[1-…]` case (fixture `params=[1, 2]` → `[2]`) | 18 | 45.10 | 3.26% | default | `presentation.py` has no branch on curriculum count; the 2-curriculum case covers everything the 1-curriculum case does, plus per-curriculum separation. | Same tests' `[2]` cases (kept representative) |
+| A3 | `test_projection_implementation_changes_preserve_saved_schedule` (`lp_eval/test_projection_compatibility.py`) | all but `[sampling.py]` | 4 | 18.04 | 1.30% | default | Same as A1: no source file is read, so every file param runs the same code. | `[sampling.py]` (kept representative) |
+| A4 | `test_explicit_reruns_preserve_partial_cycles_and_lifetime_usage` (`lp_eval/test_automatic_recovery.py`) | `[rate_limit]`, `[server_error]`, `[invalid_output]`, `[transport]`, `[configuration]`, `[invalid_input]`, `[interrupted]` | 7 | 43.07 | 3.11% | default | `judge._retryable_event` has two classes: retryable (timeout/rate_limit/server_error/invalid_output) and non-retryable; HTTP 400 and citation are the only special paths. | `[timeout]`, `[authentication]`, `[http_400]`, `[citation]` (kept representatives) |
+| A5 | `test_execution_boundary_tampering_fails_before_dispatch` (same file) | `[event_count]`, `[event_head]`, `[execution_number]` | 3 | 7.00 | 0.51% | default | These rewrite the payload without resealing its hash, so they fail on the same digest check as `[history_hash]`. | `[history_hash]` (kept) |
+| A6 | `test_failed_current_preflight_cannot_close_unknown_history` (same file) | `[configuration]` | 1 | 2.40 | 0.17% | default | Same preflight-raises path as `[authentication]`. | `[authentication]` (kept) |
+| A7 | `test_incompatible_store_is_rejected_without_evidence_writes` (`lp_eval/test_independent_evaluator.py`) | `[sdk]`, `[schema]` | 2 | 25.74 | 1.86% | default | All three hit one whole-string comparison of the output contract. | `[mode]` (kept); `test_structured_output_remediation.py::test_incompatible_output_binding_rejects_before_http[*]` covers each mutation in 0.01 s (existing faster test) |
+| A8 | `test_all_cells_resume_rejects_material_changes_before_dispatch` (`lp_eval/test_snapshot_reader_matrix.py`) | `[source_format-journal_bearing-wire]` | 1 | 2.07 | 0.15% | default | Rewriting projection bytes fails the same fingerprint check as `[source_bytes-…]`. | `[source_bytes-journal_bearing-wire]` (kept) |
+| A9 | `test_checkpoint_contract_rejects_before_effects` (`lp_eval/test_current_input_contract.py`) | every `[internal-…]` and `[converted-…]` case | 60 | 18.36 | 1.33% | default | Execution evidence is rejected (`sampling._snapshot_execution`) before projections are read (`_snapshot_graphs`), so the projection axis never matters. | The 30 `[wire-…]` cases (kept) |
+| A10 | `test_unsupported_formats_reject_across_all_entry_and_export_paths_without_effects` (`kgs/test_lp_checkpoint_formats.py`) | 20 attacks: `compatibility_*` (3), `material_capacity_{null,string}`, `usage_capacity_{null,string,missing}`, `usage_attempts_missing`, `missing_both_journals`, `prefix_{empty,partial,stale_material}`, `unauthenticated_{pending,usage}`, `upgraded_with_native_attempts`, `transaction_{next_failure_zero,next_missing_capacity,next_missing_journal,partial_predecessor}` | 20 | 11.13 | 0.80% | default | Each shares a reader branch (`_read_receipt`, `_read_usage`, the capacity check, `_read_transaction`) with a kept attack. | 26 kept attacks, one or more per branch (kept representatives) |
+| A11 | `test_invalid_upstream_delivery_rejects_before_publication` (`kgs/test_lp_delivery_contract.py`) | 35 of 44 cases | 35 | 10.20 | 0.74% | default | Two rejection sites: one read-error wrapper and one canonical-JSON equality check. | 9 kept cases covering both sites, both files, both ops |
+| A12 | `test_corrupt_checkpoint_populations_fail_at_public_artifact_boundary` (`kgs/test_lp_finalization.py`) | every `[True-…]` case | 33 | 9.35 | 0.68% | full | finalize and validate run the same preflight and claim loading before they diverge. | The 33 `[False-…]` cases (kept) |
+| A13 | `test_missing_or_corrupt_bound_artifact_blocks_existing_release` (`kgs/test_lp_reuse.py`) | 30 of 36 cases | 30 | 14.63 | 1.06% | full | Files fail either in one wrapped preflight read or in `read_lp_artifacts`. | 6 kept cases spanning both sites and both attacks |
+| A14 | `test_projection_persistence_failures_propagate_through_public_compiler` (`kgs/test_lp_projections.py`) | `drop`, `duplicate`, `metadata`, `reorder` on both files; `missing`, `read_error` on relationships | 10 | 10.41 | 0.75% | full | drop/duplicate/metadata/reorder/truncate fail one byte-equality round trip. | nodes × {write_error, missing, read_error, truncate}; relationships × {write_error, truncate} (kept) |
+| A15 | `test_changed_current_material_rejects_before_any_reuse_write` (`kgs/test_lp_reuse.py`) | every `[*-compile]` case except `[model-compile]` | 11 | 5.93 | 0.43% | full | compile and reuse reject in the same shared preflight. | All 12 `[*-reuse]` cases and `[model-compile]` (kept) |
+| A16 | `test_corrupt_checkpoint_authority_blocks_compilation` (`kgs/test_lp_export.py`) | all but `[lp_generation_responses.jsonl-gap]` | 14 | 10.58 | 0.77% | full | Its attacks are a subset of `test_lp_reuse.py::test_checkpoint_prefix_corruption_rejects_even_with_resealed_receipts[*]`, same preflight. | Kept case; that reuse test (existing faster test) |
+| A17 | `test_audit_cannot_authorize_generated_bundle_edits` (`kgs/test_lp_release_policy.py`) | 14 of 16 cases | 14 | 8.57 | 0.62% | full | The audit file is never read in `src/`; only two rejection paths exist. | `[combined-reuse-direction]`, `[standalone-compile-insert]` (kept) |
+| A18 | `test_missing_malformed_and_noncanonical_standalone_artifacts_fail_closed` (`kgs/test_lp_export.py`) | 18 of 21 cases | 18 | 8.31 | 0.60% | full | Same 7 files and attacks as `test_lp_artifacts.py::test_missing_malformed_or_noncanonical_files_are_rejected[*]`; only `lp_generation_failures.json` takes a different (preflight) path. | 3 kept cases incl. the failures file; that artifacts test (existing test) |
+
+Tier A total: 283 cases, 322.27 s (23.3% of the serial suite): 254.49 s
+default, 67.78 s full-only.
+
+**Tier B — a representative case stays; a named scenario is lost or a test is
+rewritten.**
+
+| Item | Test (file) | Removed | Cases | Seconds | Share | Suite | What is lost | Replacement (kind) |
+| --- | --- | --- | ---: | ---: | ---: | --- | --- | --- |
+| B1 | `test_unfinished_start_is_closed_before_new_execution` (`lp_eval/test_automatic_recovery.py`) | `[2]`–`[5]`, `[7]`–`[10]` | 8 | 26.01 | 1.88% | default | Intermediate prior-attempt counts. | `[1]` (no prior failures), `[6]` (middle), `[11]` (cycle boundary) (kept) |
+| B2 | `test_automatic_resume_reuses_successes_and_ignores_new_discovery` (same file) | whole test | 1 | 10.88 | 0.79% | default | The combination "automatic selection + symlinked results root + a new snapshot appearing". Each part is covered separately. | `test_snapshot_reader_matrix.py::test_all_cells_complete_lifecycle_and_cached_resume[journal_bearing-wire]` (resume and cached no-op) plus `test_discovery_all_layouts_alias_cycles_and_active_exclusion` (aliases) (existing tests) |
+| B3 | `test_schedule_runs_without_git_or_source_hash_gates` (`lp_eval/test_independent_evaluator.py`) | whole test | 1 | 5.60 | 0.40% | default | A standalone "no Git call" check on the 778-request schedule. | Git guard in the lifecycle test above; `test_fresh_material_collects_no_source_digests` (existing tests) |
+| B4 | `test_selection_orders_incomplete_then_creation_time_then_schedule` (same recovery file) | `[False]` and `[True]` replaced by one unparametrized test | 2 → 1 | 29.96 (net) | 2.17% | default | Nothing, if the merge is right: the new test runs the untied sequence, then re-ties `created_at` and asserts the schedule-hash tie-break. It is a rewrite, so it carries rewrite risk. | One merged test (new cheaper test) |
+| B5 | 10 six-curriculum profile matrices in `kgs/` (release_policy, artifacts, reuse, finalization, concurrency_boundaries, kg_manifest_resume, projections, orchestration, export, relationships) | every `rwanda_math` case | 17 | 114.31 | 8.27% | full | End-to-end runs over Rwanda's shape (flat hierarchy, 5 statement types, one shared LC, 100 pairs at the candidate budget). No assertion in these tests is specific to it. | Four small profiles keep every profile-specific assertion; `test_lp_generation.py::test_six_fixture_round_trips_reconcile_material_and_preserve_upstream[*]` still round-trips expanded Rwanda by default (kept representatives, existing test) |
+| B6 | same 10 matrices | every `ghana_english` case | 17 | 64.13 | 4.64% | full | End-to-end runs over Ghana English's cross-grade recurrence. If B5 and B6 are both taken, no large profile runs end to end. | Same as B5 |
+| B7 | `test_long_graph_traversal_exceeds_recursive_depth_without_losing_edges` (`kgs/test_lp_finalization.py`) | `[False]`, `[True]` | 2 | 11.99 | 0.87% | full | Nothing, if the replacement is right: the time is a 300-item harness run, not the traversal. | New unit test calling the `lp_finalization` component and cycle-diagnostic traversal on a synthetic 300-node path and cycle under a lowered recursion limit (new cheaper test) |
+| B8 | `test_corrupt_checkpoint_populations_fail_at_public_artifact_boundary` (`kgs/test_lp_finalization.py`) | `[False-…]` draft and verdict cases except `-prerequisite` | 20 | 5.69 | 0.41% | full | Per-stage repeats of the same attacks; `test_lp_orchestration.py::test_resealed_success_prefix_attacks_reach_structural_validation[*]` covers most of them per stage. | `[False-lp_generation_responses.jsonl-*]` (11) and both `-prerequisite` cases (kept) |
+
+Tier B total: 67 cases, 268.57 s (19.4%): 72.45 s default, 196.12 s
+full-only.
+
+**Not proposed for deletion** (left to DEV-006 speed-ups, since every case is
+distinct or the cost is shared setup): `test_presentation.py` `_saved` setup
+cost itself, `test_all_requests_offline_execution_reporting_and_denominators`
+(its 10 s is module-fixture setup that would move to the next test),
+`test_all_cells_complete_lifecycle_and_cached_resume`,
+`test_more_than_six_current_snapshots_and_capacities_remain_framework_isolated`,
+`test_fresh_material_collects_no_source_digests`,
+`test_bad_matching_store_blocks_without_fresh_discovery`, and
+`test_journaled_transactions_resume_at_every_artifact_write_boundary`. No test
+gains a `slow` mark in this list.
 
 ## Approval Record
 
 - Development plan approved by the user on 2026-10-13 ("i approve"), in
   `STEPWISE` mode with user style `tony` (now locked).
-- Deletion-list approval: filled in by DEV-003.
+- Deletion-list approval: on 2026-10-13 the user approved **version 1, Tier A
+  (A1–A18) plus B5**, in their words: "approve Tier A plus B5". B1–B4 and
+  B6–B8 are not approved and stay in the suite. The approved node IDs (300
+  cases, 436.58 s serial) are in
+  `make-the-backend-test-suite-fast-again-20261013T155516Z-dfdae6e5/deletion-list-approved.tsv`,
+  filtered from `deletion-list-v1.tsv` with
+  `awk -F'\t' 'NR==1 || $1 ~ /^A/ || $1=="B5"'`. Any change to this set needs
+  another recorded approval.
 
 ## Replacement Map
 
