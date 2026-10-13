@@ -1,0 +1,266 @@
+:root {
+  --md-primary-fg-color: #263568;
+  --md-typeset-strong-color--light: #263568;
+  --md-typeset-strong-color--dark: #9dc1e0;
+}
+
+/* Logo Sizing */
+.md-header__button.md-logo img {
+  height: 43px;
+  aspect-ratio: 1200 / 214;
+}
+
+/* Titles and Typography */
+.component-title {
+  color: #5480cb;
+  font-size: 2rem;
+  font-weight: 600;
+}
+.big-font {
+  font-size: 1.875rem;
+}
+.secondary-color {
+  color: #9dc1e0;
+}
+
+/* Strong Text (Theme-aware) */
+strong {
+  color: var(--md-typeset-strong-color--light);
+}
+[data-md-color-scheme="slate"] strong {
+  color: var(--md-typeset-strong-color--dark);
+}
+
+/* Navigation & Link Styling */
+.md-ellipsis:hover,
+.md-tabs__link:hover,
+.md-tabs__item--active,
+.md-nav__item .md-nav__link--active {
+  color: #c99300;
+}
+.link-home {
+  color: #c99300 !important;
+}
+.link-home:hover {
+  color: #5480cb !important;
+}
+.md-typeset a {
+  color: #5480cb;
+}
+.md-typeset a:hover {
+  color: #c99300;
+}
+
+/* Buttons */
+.md-typeset .md-button {
+  background-color: #9dc1e0;
+  border: none;
+  border-radius: 2rem;
+  padding: 0.25rem 0.625rem;
+  font-size: 0.75rem;
+}
+.md-typeset .md-button:hover {
+  background-color: #c99300;
+  color: #111111;
+}
+
+/* Footer */
+.footer {
+  font-size: 0.875rem;
+  color: var(--md-default-fg-color--lighter);
+}
+
+/* Blog Image Styling */
+.md-content .blog-img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 2rem auto;
+  border-radius: 12px;
+  border: 1px solid var(--md-default-fg-color--lighter);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+  object-fit: cover;
+}
+
+/* Responsive Improvements */
+@media (max-width: 768px) {
+  .component-title {
+    font-size: 1.5rem;
+  }
+  .big-font {
+    font-size: 1.25rem;
+  }
+  .md-typeset .md-button {
+    font-size: 0.65rem;
+    padding: 0.2rem 0.5rem;
+  }
+}
+
+/* Blog Author Styling */
+.blog-author-card {
+  width: 220px;
+  margin: 2rem auto;
+  text-align: center;
+  padding: 1rem;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+  background-color: var(--md-default-bg-color);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.blog-author-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.1);
+}
+
+.blog-author-avatar {
+  width: 100px;
+  height: 140px;
+  border-radius: 50%;
+  border: 3px solid #FF5722;
+  object-fit: cover;
+  margin-bottom: 0.5rem;
+}
+
+.blog-author-name {
+  margin: 0.5rem 0 0.25rem;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--md-primary-fg-color);
+}
+
+.blog-author-role {
+  margin: 0;
+  font-style: italic;
+  color: var(--md-default-fg-color--lightest);
+  font-size: 0.9rem;
+}
+
+.blog-author-email {
+  margin: 0.5rem 0 0;
+  word-break: break-word;
+  font-size: 0.85rem;
+}
+.blog-author-email a {
+  color: var(--md-typeset-a-color);
+  text-decoration: none;
+}
+.blog-author-email a:hover {
+  text-decoration: underline;
+}
+
+/* Improve dark mode contrast */
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #1e1e1e; /* slightly lighter than default */
+  --md-default-fg-color: #e0e0e0; /* brighter text */
+  --md-default-fg-color--light: #cccccc;
+  --md-default-fg-color--lighter: #aaaaaa;
+  --md-default-fg-color--lightest: #888888;
+  --md-typeset-a-color: #9dc1e0;
+}
+
+/* Headings in dark mode */
+[data-md-color-scheme="slate"] h1,
+[data-md-color-scheme="slate"] h2,
+[data-md-color-scheme="slate"] h3 {
+  color: var(--md-default-fg-color);
+}
+
+/* Author card readability in dark mode */
+[data-md-color-scheme="slate"] .blog-author-card {
+  background-color: #2a2a2a;
+  box-shadow: 0 4px 16px rgba(255, 255, 255, 0.05);
+}
+
+/* Enhance link hover in dark mode */
+[data-md-color-scheme="slate"] a:hover {
+  color: #ffcc66;
+}
+
+/* Optional: Make footer links clearer */
+[data-md-color-scheme="slate"] .footer {
+  color: var(--md-default-fg-color--lighter);
+}
+
+.mission-highlight {
+  background-color: #fff7ea;
+  border-left: 6px solid #f5a623;
+  padding: 1.25rem 1.5rem;
+  margin: 2.5rem 0;
+  font-size: 1.1rem;
+  font-weight: 500;
+  line-height: 1.7;
+  border-radius: 0.6rem;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+  color: #333333;
+  position: relative;
+}
+
+.mission-highlight::before {
+  content: "🚀 Mission";
+  position: absolute;
+  top: -0.75rem;
+  left: 1rem;
+  background: #f5a623;
+  color: white;
+  font-size: 0.75rem;
+  font-weight: bold;
+  padding: 0.15rem 0.5rem;
+  border-radius: 0.4rem;
+}
+
+.mission-highlight strong {
+  color: inherit;
+}
+
+[data-md-color-scheme="slate"] .mission-highlight {
+  background-color: #3b2e1e;
+  border-left-color: #ffb347;
+  color: #f0e6dd;
+}
+
+[data-md-color-scheme="slate"] .mission-highlight::before {
+  background: #ffb347;
+  color: #1e1e1e;
+}
+
+.video-scroller {
+  display: flex;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  gap: 1rem;
+  padding: 0 1rem;
+}
+.video-item {
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+  width: min(80vw, 720px);
+}
+.video-item iframe {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: none;
+}
+.videoscroller-controls {
+  display: flex;
+  justify-content: space-between;
+  max-width: min(80vw, 720px);
+  margin: 0.75rem auto;
+  align-items: center;
+  pointer-events: none;
+}
+.videoscroller-controls button {
+  pointer-events: auto;
+  background: rgba(0,0,0,0.6);
+  color: #fff;
+  padding: 0.5rem 0.75rem;
+  font-size: 1.5rem;
+  line-height: 1;
+  border-radius: 0.25rem;
+  border: none;
+  cursor: pointer;
+  transition: background 0.2s;
+  transform: scale(0.8);
+}
+.videoscroller-controls button:hover,
+.videoscroller-controls button:focus { background: rgba(0,0,0,0.8); }
+.videoscroller-controls button:disabled { opacity: 0.5; cursor: default; }
