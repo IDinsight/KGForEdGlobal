@@ -370,6 +370,86 @@ def test_each_new_invocation_revalidates_before_reuse(
     assert _old._snapshot(tmp_path) == before
 
 
+def test_guard_reads_nothing_until_an_identity_changes_then_refreshes_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Unchanged identities cost no reads; identical rewritten bytes refresh once.
+
+    Parameters
+    ----------
+    monkeypatch
+        Real-stream read counter.
+    tmp_path
+        Isolated validated input files.
+    """
+    population = _population(tmp_path)
+    verifier = lp_requests.LPRequestPopulationVerifier(
+        population=population, root=tmp_path
+    )
+    names = (*population.manifest.artifact_byte_hashes, lp_requests.MANIFEST_FILENAME)
+    counts: dict[str, int] = {}
+    original = Path.open
+
+    def _open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        """Count bytes streamed from population artifacts.
+
+        Parameters
+        ----------
+        self
+            File path.
+        args
+            Original positional arguments.
+        kwargs
+            Original keyword arguments.
+
+        Returns
+        -------
+        Any
+            Real stream or counting proxy.
+        """
+        stream = original(self, *args, **kwargs)  # pylint: disable=R1732
+        if self.parent == tmp_path and self.name in names:
+            return _cadence._CountedStream(counts=counts, name=self.name, stream=stream)
+        return stream
+
+    path = tmp_path / _FILES[2]
+    payload = path.read_bytes()
+    stat = path.stat()
+    monkeypatch.setattr(name="open", target=Path, value=_open)
+    every = tuple(range(len(population.requests)))
+    verifier.guard(population=population, request_indices=every, root=tmp_path)
+    assert not counts
+    path.write_bytes(payload)
+    os.utime(ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9), path=path)
+    verifier.guard(population=population, request_indices=every, root=tmp_path)
+    # The changed identity ran one full verification of every artifact byte.
+    hashed = dict(verifier._artifact_hashes)
+    assert counts == {name: (tmp_path / name).stat().st_size for name in hashed}
+    counts.clear()
+    verifier.guard(population=population, request_indices=every, root=tmp_path)
+    assert not counts
+
+
+def test_guard_rejects_same_size_edit_with_restored_mtime(tmp_path: Path) -> None:
+    """The cheap guard catches a content edit whose size and mtime are restored.
+
+    Parameters
+    ----------
+    tmp_path
+        Isolated validated input files.
+    """
+    population = _population(tmp_path)
+    verifier = lp_requests.LPRequestPopulationVerifier(
+        population=population, root=tmp_path
+    )
+    verifier.guard(population=population, request_indices=(0,), root=tmp_path)
+    _edit(kind="same_size_restored_time", path=tmp_path / _FILES[2])
+    before = _old._snapshot(tmp_path)
+    with pytest.raises(expected_exception=ValueError, match="artifact differs"):
+        verifier.guard(population=population, request_indices=(), root=tmp_path)
+    assert _old._snapshot(tmp_path) == before
+
+
 @pytest.mark.parametrize(argnames="kind", argvalues=["disk", "live"])
 def test_initial_proof_cannot_absorb_change_after_reader_validation(
     kind: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -663,83 +743,3 @@ def test_valid_alternative_population_cannot_replace_bound_authority(
         else:
             verifier.verify(population=population, root=root)
     assert _old._snapshot(root) == before
-
-
-def test_guard_rejects_same_size_edit_with_restored_mtime(tmp_path: Path) -> None:
-    """The cheap guard catches a content edit whose size and mtime are restored.
-
-    Parameters
-    ----------
-    tmp_path
-        Isolated validated input files.
-    """
-    population = _population(tmp_path)
-    verifier = lp_requests.LPRequestPopulationVerifier(
-        population=population, root=tmp_path
-    )
-    verifier.guard(population=population, request_indices=(0,), root=tmp_path)
-    _edit(kind="same_size_restored_time", path=tmp_path / _FILES[2])
-    before = _old._snapshot(tmp_path)
-    with pytest.raises(expected_exception=ValueError, match="artifact differs"):
-        verifier.guard(population=population, request_indices=(), root=tmp_path)
-    assert _old._snapshot(tmp_path) == before
-
-
-def test_guard_reads_nothing_until_an_identity_changes_then_refreshes_it(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Unchanged identities cost no reads; identical rewritten bytes refresh once.
-
-    Parameters
-    ----------
-    monkeypatch
-        Real-stream read counter.
-    tmp_path
-        Isolated validated input files.
-    """
-    population = _population(tmp_path)
-    verifier = lp_requests.LPRequestPopulationVerifier(
-        population=population, root=tmp_path
-    )
-    names = (*population.manifest.artifact_byte_hashes, lp_requests.MANIFEST_FILENAME)
-    counts: dict[str, int] = {}
-    original = Path.open
-
-    def _open(self: Path, *args: Any, **kwargs: Any) -> Any:
-        """Count bytes streamed from population artifacts.
-
-        Parameters
-        ----------
-        self
-            File path.
-        args
-            Original positional arguments.
-        kwargs
-            Original keyword arguments.
-
-        Returns
-        -------
-        Any
-            Real stream or counting proxy.
-        """
-        stream = original(self, *args, **kwargs)  # pylint: disable=R1732
-        if self.parent == tmp_path and self.name in names:
-            return _cadence._CountedStream(counts=counts, name=self.name, stream=stream)
-        return stream
-
-    path = tmp_path / _FILES[2]
-    payload = path.read_bytes()
-    stat = path.stat()
-    monkeypatch.setattr(name="open", target=Path, value=_open)
-    every = tuple(range(len(population.requests)))
-    verifier.guard(population=population, request_indices=every, root=tmp_path)
-    assert not counts
-    path.write_bytes(payload)
-    os.utime(ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9), path=path)
-    verifier.guard(population=population, request_indices=every, root=tmp_path)
-    # The changed identity ran one full verification of every artifact byte.
-    hashed = dict(verifier._artifact_hashes)
-    assert counts == {name: (tmp_path / name).stat().st_size for name in hashed}
-    counts.clear()
-    verifier.guard(population=population, request_indices=every, root=tmp_path)
-    assert not counts

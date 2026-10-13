@@ -1,6 +1,6 @@
 # S.T.A.N.D.A.R.D.S. Workflow State
 
-`WorkflowState`: `TESTING` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
+`WorkflowState`: `REVIEWING_IMPLEMENTATION` `CycleMode`: `STANDARD` `PendingCycleMode`: `UNSET`
 `PendingCycleRequest`: `UNSET` `PendingCycleBlockedOn`: `NONE`
 
 ## Active Work
@@ -25,8 +25,8 @@ Preserve existing entries; see PROTOCOL.md, Baseline Reconciliation Format.
 
 ## Handoff
 
-`Kind`: `FORWARD` `From`: `DEVELOPING` `FailureType`: `NONE` `Reason`:
-`Development complete (DEV-001 to DEV-009): CAPS AS, LC and LP built and checked; full verification of the current implementation and run outputs.`
+`Kind`: `FORWARD` `From`: `TESTING` `FailureType`: `NONE` `Reason`:
+`Full verification complete: every current AC verified except AC-024 (Documenter); ready for implementation review.`
 
 ## Recovery
 

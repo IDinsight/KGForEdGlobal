@@ -38,6 +38,40 @@ def _offline(monkeypatch: pytest.MonkeyPatch) -> None:
     cast(Any, concurrent._block_network).__wrapped__(monkeypatch)
 
 
+def _seal_attack(*, attack: str, root: Path) -> str:
+    """Write one prefix or dependency attack into the checkpoint files.
+
+    Parameters
+    ----------
+    attack
+        Altered position or prerequisite collection.
+    root
+        Completed synthetic checkpoint directory.
+
+    Returns
+    -------
+    str
+        Altered file, for the caller to reseal in the receipt.
+    """
+    if attack == "pending_overlap":
+        value = concurrent._read(root / concurrent._PENDING)
+        value["response"] = old._rows(root / old._RESPONSE)[:1]
+        (root / concurrent._PENDING).write_bytes(old._bytes(value))
+        return concurrent._PENDING
+    name = old._VERDICT if attack == "missing_verdict" else old._DRAFT
+    rows = old._rows(root / name)
+    if attack == "duplicate":
+        rows[1] = rows[0]
+    elif attack == "gap":
+        rows.pop(1)
+    elif attack == "order":
+        rows.reverse()
+    elif attack in {"missing_draft", "missing_verdict"}:
+        rows.clear()
+    (root / name).write_bytes(b"".join(old._bytes(row) for row in rows))
+    return name
+
+
 def _store(
     *, monkeypatch: pytest.MonkeyPatch, root: Path
 ) -> cp.LPGenerationCheckpoints:
@@ -271,40 +305,6 @@ def test_failed_validation_cannot_install_partial_proofs(
     with pytest.raises(expected_exception=ValueError, match="attempt"):
         store._validate()
     assert store._row_proofs == proofs
-
-
-def _seal_attack(*, attack: str, root: Path) -> str:
-    """Write one prefix or dependency attack into the checkpoint files.
-
-    Parameters
-    ----------
-    attack
-        Altered position or prerequisite collection.
-    root
-        Completed synthetic checkpoint directory.
-
-    Returns
-    -------
-    str
-        Altered file, for the caller to reseal in the receipt.
-    """
-    if attack == "pending_overlap":
-        value = concurrent._read(root / concurrent._PENDING)
-        value["response"] = old._rows(root / old._RESPONSE)[:1]
-        (root / concurrent._PENDING).write_bytes(old._bytes(value))
-        return concurrent._PENDING
-    name = old._VERDICT if attack == "missing_verdict" else old._DRAFT
-    rows = old._rows(root / name)
-    if attack == "duplicate":
-        rows[1] = rows[0]
-    elif attack == "gap":
-        rows.pop(1)
-    elif attack == "order":
-        rows.reverse()
-    elif attack in {"missing_draft", "missing_verdict"}:
-        rows.clear()
-    (root / name).write_bytes(b"".join(old._bytes(row) for row in rows))
-    return name
 
 
 @pytest.mark.parametrize(

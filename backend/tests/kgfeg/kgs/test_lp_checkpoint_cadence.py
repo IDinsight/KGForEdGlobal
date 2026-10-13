@@ -120,18 +120,6 @@ class _CountedStream:
         return cast(int, size)
 
 
-@pytest.fixture(autouse=True)
-def _offline(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Forbid external model transport with restored synthetic settings.
-
-    Parameters
-    ----------
-    monkeypatch
-        Restoring patches.
-    """
-    cast(Any, concurrent._block_network).__wrapped__(monkeypatch)
-
-
 def _count_reads(
     *, monkeypatch: pytest.MonkeyPatch, names: tuple[str, ...], root: Path
 ) -> dict[str, int]:
@@ -214,164 +202,99 @@ def _full_rewrite(root: Path) -> dict[str, bytes]:
     return files
 
 
-def _store(root: Path, harness: old._Harness) -> cp.LPGenerationCheckpoints:
-    """Load the harness's checkpoint directory with its own population and material.
-
-    Parameters
-    ----------
-    root
-        Checkpoint directory.
-    harness
-        Harness whose bundle and config produced the directory.
-
-    Returns
-    -------
-    LPGenerationCheckpoints
-        Fully verified writable store.
-    """
-    population = req.build_lp_generation_requests(
-        as_lc_bundle=harness.bundle, doc_key=fixtures._DOC_KEY, kg_config=harness.config
-    )
-    material = lp_generation.lp_execution_material(
-        kg_config=harness.config, population=population
-    )
-    return cp.LPGenerationCheckpoints(
-        material=material, population=population, root=root
-    )
-
-
-def test_every_commit_leaves_the_bytes_a_full_rewrite_would_write(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Incremental commits leave every file and the receipt as a full rewrite would.
-
-    Four invocations cover dispatch, completion, promotion, a retried call, an
-    exhausted failure resolved in a later run, checker corrections, an interrupted
-    call left unknown, and a commit interrupted after its stage append and then
-    recovered.
+def _label_full_proofs(
+    *, monkeypatch: pytest.MonkeyPatch, point: list[str], root: Path
+) -> list[tuple[str, dict[str, int]]]:
+    """Record every full population proof with the point it runs at.
 
     Parameters
     ----------
     monkeypatch
-        Offline call seam, commit observer and append fault injector.
-    tmp_path
-        Synthetic checkpoint directory.
-    """
-    harness = old._Harness(count=3, root=tmp_path)
-    harness.config.learning_progressions.retry.producer_max_retries = 1
-    harness.config.learning_progressions.retry.checker_max_retries = 1
-    harness.script[("draft", 0)] = [TimeoutError("retried")]
-    harness.script[("verdict", 1)] = [TimeoutError("first"), TimeoutError("second")]
-    old._install(harness=harness, monkeypatch=monkeypatch)
-    original = cp.LPGenerationCheckpoints._commit_delta
-    commits: list[str] = []
+        Restoring observers.
+    point
+        Current point label; the observers set `between`, `completion` and `end`.
+    root
+        Generation directory.
 
-    def _commit_delta(self: cp.LPGenerationCheckpoints, **kwargs: Any) -> None:
-        """Compare the directory with a full rewrite after each real commit.
+    Returns
+    -------
+    list[tuple[str, dict[str, int]]]
+        Each full proof's point label and the population bytes it read.
+    """
+    full: list[tuple[str, dict[str, int]]] = []
+    counts = _count_reads(monkeypatch=monkeypatch, names=old._INPUTS, root=root)
+    reads = cast(Any, req.read_lp_request_population)
+    verify = req.LPRequestPopulationVerifier.verify
+
+    def _observe(label: str, action: Any) -> Any:
+        """Record the bytes one full proof streams, under its point label.
+
+        Parameters
+        ----------
+        label
+            Full-verification point or `between`.
+        action
+            The real proof.
+
+        Returns
+        -------
+        Any
+            The proof's result.
+        """
+        counts.clear()
+        result = action()
+        full.append((label, dict(counts)))
+        counts.clear()
+        return result
+
+    def _verify(self: req.LPRequestPopulationVerifier, **kwargs: Any) -> None:
+        """Label one full population verification.
 
         Parameters
         ----------
         self
-            Writing store.
+            Retained proof.
         kwargs
-            Real commit arguments.
+            Real verification arguments.
         """
-        original(self, **kwargs)
-        expected = _full_rewrite(tmp_path)
-        assert {name: (tmp_path / name).read_bytes() for name in expected} == expected
-        # The store's own whole-store encoding agrees with the incremental files.
-        payloads = self._payloads()
-        receipt = self._receipt_bytes(
-            {
-                name: hashlib.sha256(payload).hexdigest()
-                for name, payload in payloads.items()
-            }
-        )
-        assert {**payloads, old._RECEIPT: receipt} == expected
-        commits.append(json.loads(expected[old._RECEIPT])["status"])
+        _observe(point[0], partial(verify, self, **kwargs))
 
-    monkeypatch.setattr(
-        name="_commit_delta", target=cp.LPGenerationCheckpoints, value=_commit_delta
-    )
-    with pytest.raises(expected_exception=LPGenerationFailed):
-        harness._run()
-    harness.corrects = True
-    harness.script[("draft", 2)] = [old._Interruption()]
-    with pytest.raises(expected_exception=old._Interruption):
-        harness._run()
-    append = cp._append_bytes
-
-    def _interrupted_append(*, offset: int, path: Path, payload: bytes) -> None:
-        """Interrupt the first commit that appends a stage row, after the append.
+    def _read(**kwargs: Any) -> Any:
+        """Label one full population read.
 
         Parameters
         ----------
-        offset
-            Journaled previous length.
-        path
-            Stage file.
-        payload
-            Appended rows.
+        kwargs
+            Real reader arguments.
+
+        Returns
+        -------
+        Any
+            Validated population.
         """
-        append(offset=offset, path=path, payload=payload)
-        raise old._Interruption()
+        return _observe(point[0], partial(reads, **kwargs))
 
-    with monkeypatch.context() as patch:
-        patch.setattr(name="_append_bytes", target=cp, value=_interrupted_append)
-        with pytest.raises(expected_exception=old._Interruption):
-            harness._run()
-    assert (tmp_path / old._JOURNAL).exists()
-    assert len(harness._run()) == 3
-    assert not (tmp_path / old._JOURNAL).exists()
-    assert commits[-1] == "completed" and "failed" in commits
-    attempts = concurrent._read(tmp_path / _USAGE)["attempts"]
-    assert {"failed", "succeeded", "unknown"} <= {row["status"] for row in attempts}
-    failures = concurrent._read(tmp_path / old._FAILURE)
-    assert any(row["exhausted"] and row["resolved_run_number"] for row in failures)
-    assert any(
-        row["payload"] != row_draft["payload"]
-        for row, row_draft in zip(
-            old._rows(tmp_path / old._RESPONSE), old._rows(tmp_path / old._DRAFT)
-        )
+    monkeypatch.setattr(
+        name="verify", target=req.LPRequestPopulationVerifier, value=_verify
     )
+    for module in (req, cp, lp_generation, lp_finalization):
+        monkeypatch.setattr(
+            name="read_lp_request_population", target=module, value=_read
+        )
+    _track_points(monkeypatch=monkeypatch, point=point)
+    return full
 
 
-def test_checkpoint_edit_between_saves_stops_the_next_dispatch(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A same-size checkpoint edit with its mtime restored is caught before dispatch.
+@pytest.fixture(autouse=True)
+def _offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Forbid external model transport with restored synthetic settings.
 
     Parameters
     ----------
     monkeypatch
-        Offline call seam.
-    tmp_path
-        Synthetic checkpoint directory with partial progress.
+        Restoring patches.
     """
-    harness = old._Harness(count=3, root=tmp_path)
-    harness.script[("draft", 1)] = [old._Interruption()]
-    old._install(harness=harness, monkeypatch=monkeypatch)
-    with pytest.raises(expected_exception=old._Interruption):
-        harness._run()
-    store = _store(tmp_path, harness)
-    store.begin_run()
-    path = tmp_path / old._RESPONSE
-    original = path.read_bytes()
-    # A touch that keeps the bytes only refreshes the recorded identity.
-    os.utime(path, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns + 10**9))
-    store.verify_bytes()
-    stat = path.stat()
-    offset = original.index(b"Synthetic")
-    path.write_bytes(original[:offset] + b"Z" + original[offset + 1 :])
-    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
-    assert path.stat().st_size == stat.st_size
-    assert path.stat().st_mtime_ns == stat.st_mtime_ns
-    before = old._snapshot(tmp_path)
-    attempts = len(store.attempts)
-    with pytest.raises(expected_exception=ValueError, match=old._RESPONSE):
-        store.record_dispatch(request_index=1, stage="draft")
-    assert len(store.attempts) == attempts
-    assert old._snapshot(tmp_path) == before
+    cast(Any, concurrent._block_network).__wrapped__(monkeypatch)
 
 
 def _per_save_work(
@@ -473,116 +396,47 @@ def _per_save_work(
     return proofs, reads, verifications[0]
 
 
-def test_per_save_work_does_not_grow_with_completed_requests(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Population reads and row proofs per save stay flat as completed work grows.
+def _population_artifacts(root: Path) -> list[str]:
+    """Name the population artifacts the request manifest authenticates.
 
     Parameters
     ----------
-    monkeypatch
-        Offline call seam and observers.
-    tmp_path
-        Two synthetic checkpoint directories of different sizes.
-    """
-    small = _per_save_work(count=3, monkeypatch=monkeypatch, root=tmp_path / "small")
-    large = _per_save_work(count=9, monkeypatch=monkeypatch, root=tmp_path / "large")
-    assert len(large[0]) > 8 * len(small[0])
-    # The population is read a fixed number of times per invocation, whatever its
-    # size and however many saves run; every read is a whole-file read.
-    assert large[1] == small[1]
-    assert all(value == int(value) for value in small[1].values())
-    assert large[2] == small[2] == 3
-    # Serial execution: a save rechecks at most the rows of its own request plus
-    # the one pending request, never the completed prefix.
-    capacity = 1
-    for proofs in (small[0], large[0]):
-        assert max(proofs) <= 3 * (capacity + 1)
-    late = large[0][len(large[0]) // 2 :]
-    assert statistics.mean(late) <= statistics.mean(small[0]) + 0.5
-
-
-def _label_full_proofs(
-    *, monkeypatch: pytest.MonkeyPatch, point: list[str], root: Path
-) -> list[tuple[str, dict[str, int]]]:
-    """Record every full population proof with the point it runs at.
-
-    Parameters
-    ----------
-    monkeypatch
-        Restoring observers.
-    point
-        Current point label; the observers set `between`, `completion` and `end`.
     root
         Generation directory.
 
     Returns
     -------
-    list[tuple[str, dict[str, int]]]
-        Each full proof's point label and the population bytes it read.
+    list[str]
+        Candidate, summary and request files.
     """
-    full: list[tuple[str, dict[str, int]]] = []
-    counts = _count_reads(monkeypatch=monkeypatch, names=old._INPUTS, root=root)
-    reads = cast(Any, req.read_lp_request_population)
-    verify = req.LPRequestPopulationVerifier.verify
+    manifest = json.loads((root / req.MANIFEST_FILENAME).read_bytes())
+    return sorted(manifest["artifact_byte_hashes"])
 
-    def _observe(label: str, action: Any) -> Any:
-        """Record the bytes one full proof streams, under its point label.
 
-        Parameters
-        ----------
-        label
-            Full-verification point or `between`.
-        action
-            The real proof.
+def _store(root: Path, harness: old._Harness) -> cp.LPGenerationCheckpoints:
+    """Load the harness's checkpoint directory with its own population and material.
 
-        Returns
-        -------
-        Any
-            The proof's result.
-        """
-        counts.clear()
-        result = action()
-        full.append((label, dict(counts)))
-        counts.clear()
-        return result
+    Parameters
+    ----------
+    root
+        Checkpoint directory.
+    harness
+        Harness whose bundle and config produced the directory.
 
-    def _verify(self: req.LPRequestPopulationVerifier, **kwargs: Any) -> None:
-        """Label one full population verification.
-
-        Parameters
-        ----------
-        self
-            Retained proof.
-        kwargs
-            Real verification arguments.
-        """
-        _observe(point[0], partial(verify, self, **kwargs))
-
-    def _read(**kwargs: Any) -> Any:
-        """Label one full population read.
-
-        Parameters
-        ----------
-        kwargs
-            Real reader arguments.
-
-        Returns
-        -------
-        Any
-            Validated population.
-        """
-        return _observe(point[0], partial(reads, **kwargs))
-
-    monkeypatch.setattr(
-        name="verify", target=req.LPRequestPopulationVerifier, value=_verify
+    Returns
+    -------
+    LPGenerationCheckpoints
+        Fully verified writable store.
+    """
+    population = req.build_lp_generation_requests(
+        as_lc_bundle=harness.bundle, doc_key=fixtures._DOC_KEY, kg_config=harness.config
     )
-    for module in (req, cp, lp_generation, lp_finalization):
-        monkeypatch.setattr(
-            name="read_lp_request_population", target=module, value=_read
-        )
-    _track_points(monkeypatch=monkeypatch, point=point)
-    return full
+    material = lp_generation.lp_execution_material(
+        kg_config=harness.config, population=population
+    )
+    return cp.LPGenerationCheckpoints(
+        material=material, population=population, root=root
+    )
 
 
 def _track_points(*, monkeypatch: pytest.MonkeyPatch, point: list[str]) -> None:
@@ -647,68 +501,42 @@ def _track_points(*, monkeypatch: pytest.MonkeyPatch, point: list[str]) -> None:
     monkeypatch.setattr(name="_finish_lp_requests", target=lp_generation, value=_finish)
 
 
-def test_full_verification_runs_at_construction_completion_and_read_only_loads(
+def test_checkpoint_edit_between_saves_stops_the_next_dispatch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Every population byte is streamed at each full point and nowhere between them.
+    """A same-size checkpoint edit with its mtime restored is caught before dispatch.
 
     Parameters
     ----------
     monkeypatch
-        Offline call seam and observers.
+        Offline call seam.
     tmp_path
-        Synthetic checkpoint directory.
+        Synthetic checkpoint directory with partial progress.
     """
     harness = old._Harness(count=3, root=tmp_path)
+    harness.script[("draft", 1)] = [old._Interruption()]
     old._install(harness=harness, monkeypatch=monkeypatch)
-    point = ["setup"]
-    full = _label_full_proofs(monkeypatch=monkeypatch, point=point, root=tmp_path)
-    harness._run()
-    point[0] = "read_only"
-    cp.validate_lp_checkpoint_format(tmp_path)
-    checkpoint_counts = _count_reads(
-        monkeypatch=monkeypatch, names=tuple(cp._CHECKPOINT_NAMES), root=tmp_path
-    )
-    lp_finalization.finalize_learning_progressions(
-        as_lc_bundle=harness.bundle,
-        doc_key=fixtures._DOC_KEY,
-        kg_config=harness.config,
-        kg_dirs=KGDirs(root=tmp_path),
-    )
-    labels = [label for label, _ in full]
-    assert "between" not in labels
-    assert labels.count("completion") == 1 and labels.count("end") == 1
-    assert {"setup", "read_only"} <= set(labels)
-    assert labels.index("completion") < labels.index("end")
-    artifacts = _population_artifacts(tmp_path)
-    for label, streamed in full:
-        # Each full proof reads or streams every population artifact byte.
-        assert all(
-            streamed.get(name, 0) >= (tmp_path / name).stat().st_size
-            for name in artifacts
-        ), label
-    # The read-only finalization load reads every checkpoint file whole.
-    assert all(
-        checkpoint_counts.get(name, 0) >= (tmp_path / name).stat().st_size
-        for name in cp._CHECKPOINT_NAMES
-    )
-
-
-def _population_artifacts(root: Path) -> list[str]:
-    """Name the population artifacts the request manifest authenticates.
-
-    Parameters
-    ----------
-    root
-        Generation directory.
-
-    Returns
-    -------
-    list[str]
-        Candidate, summary and request files.
-    """
-    manifest = json.loads((root / req.MANIFEST_FILENAME).read_bytes())
-    return sorted(manifest["artifact_byte_hashes"])
+    with pytest.raises(expected_exception=old._Interruption):
+        harness._run()
+    store = _store(tmp_path, harness)
+    store.begin_run()
+    path = tmp_path / old._RESPONSE
+    original = path.read_bytes()
+    # A touch that keeps the bytes only refreshes the recorded identity.
+    os.utime(path, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns + 10**9))
+    store.verify_bytes()
+    stat = path.stat()
+    offset = original.index(b"Synthetic")
+    path.write_bytes(original[:offset] + b"Z" + original[offset + 1 :])
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert path.stat().st_size == stat.st_size
+    assert path.stat().st_mtime_ns == stat.st_mtime_ns
+    before = old._snapshot(tmp_path)
+    attempts = len(store.attempts)
+    with pytest.raises(expected_exception=ValueError, match=old._RESPONSE):
+        store.record_dispatch(request_index=1, stage="draft")
+    assert len(store.attempts) == attempts
+    assert old._snapshot(tmp_path) == before
 
 
 def test_directory_left_by_the_pre_change_writer_loads_and_resumes(
@@ -787,3 +615,175 @@ def test_directory_left_by_the_pre_change_writer_loads_and_resumes(
     assert {name: (tmp_path / name).read_bytes() for name in expected} == expected
     receipt = json.loads(expected[old._RECEIPT])
     assert receipt["status"] == "completed" and receipt["run_number"] == 3
+
+
+def test_every_commit_leaves_the_bytes_a_full_rewrite_would_write(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Incremental commits leave every file and the receipt as a full rewrite would.
+
+    Four invocations cover dispatch, completion, promotion, a retried call, an
+    exhausted failure resolved in a later run, checker corrections, an interrupted
+    call left unknown, and a commit interrupted after its stage append and then
+    recovered.
+
+    Parameters
+    ----------
+    monkeypatch
+        Offline call seam, commit observer and append fault injector.
+    tmp_path
+        Synthetic checkpoint directory.
+    """
+    harness = old._Harness(count=3, root=tmp_path)
+    harness.config.learning_progressions.retry.producer_max_retries = 1
+    harness.config.learning_progressions.retry.checker_max_retries = 1
+    harness.script[("draft", 0)] = [TimeoutError("retried")]
+    harness.script[("verdict", 1)] = [TimeoutError("first"), TimeoutError("second")]
+    old._install(harness=harness, monkeypatch=monkeypatch)
+    original = cp.LPGenerationCheckpoints._commit_delta
+    commits: list[str] = []
+
+    def _commit_delta(self: cp.LPGenerationCheckpoints, **kwargs: Any) -> None:
+        """Compare the directory with a full rewrite after each real commit.
+
+        Parameters
+        ----------
+        self
+            Writing store.
+        kwargs
+            Real commit arguments.
+        """
+        original(self, **kwargs)
+        expected = _full_rewrite(tmp_path)
+        assert {name: (tmp_path / name).read_bytes() for name in expected} == expected
+        # The store's own whole-store encoding agrees with the incremental files.
+        payloads = self._payloads()
+        receipt = self._receipt_bytes(
+            {
+                name: hashlib.sha256(payload).hexdigest()
+                for name, payload in payloads.items()
+            }
+        )
+        assert {**payloads, old._RECEIPT: receipt} == expected
+        commits.append(json.loads(expected[old._RECEIPT])["status"])
+
+    monkeypatch.setattr(
+        name="_commit_delta", target=cp.LPGenerationCheckpoints, value=_commit_delta
+    )
+    with pytest.raises(expected_exception=LPGenerationFailed):
+        harness._run()
+    harness.corrects = True
+    harness.script[("draft", 2)] = [old._Interruption()]
+    with pytest.raises(expected_exception=old._Interruption):
+        harness._run()
+    append = cp._append_bytes
+
+    def _interrupted_append(*, offset: int, path: Path, payload: bytes) -> None:
+        """Interrupt the first commit that appends a stage row, after the append.
+
+        Parameters
+        ----------
+        offset
+            Journaled previous length.
+        path
+            Stage file.
+        payload
+            Appended rows.
+        """
+        append(offset=offset, path=path, payload=payload)
+        raise old._Interruption()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(name="_append_bytes", target=cp, value=_interrupted_append)
+        with pytest.raises(expected_exception=old._Interruption):
+            harness._run()
+    assert (tmp_path / old._JOURNAL).exists()
+    assert len(harness._run()) == 3
+    assert not (tmp_path / old._JOURNAL).exists()
+    assert commits[-1] == "completed" and "failed" in commits
+    attempts = concurrent._read(tmp_path / _USAGE)["attempts"]
+    assert {"failed", "succeeded", "unknown"} <= {row["status"] for row in attempts}
+    failures = concurrent._read(tmp_path / old._FAILURE)
+    assert any(row["exhausted"] and row["resolved_run_number"] for row in failures)
+    assert any(
+        row["payload"] != row_draft["payload"]
+        for row, row_draft in zip(
+            old._rows(tmp_path / old._RESPONSE), old._rows(tmp_path / old._DRAFT)
+        )
+    )
+
+
+def test_full_verification_runs_at_construction_completion_and_read_only_loads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Every population byte is streamed at each full point and nowhere between them.
+
+    Parameters
+    ----------
+    monkeypatch
+        Offline call seam and observers.
+    tmp_path
+        Synthetic checkpoint directory.
+    """
+    harness = old._Harness(count=3, root=tmp_path)
+    old._install(harness=harness, monkeypatch=monkeypatch)
+    point = ["setup"]
+    full = _label_full_proofs(monkeypatch=monkeypatch, point=point, root=tmp_path)
+    harness._run()
+    point[0] = "read_only"
+    cp.validate_lp_checkpoint_format(tmp_path)
+    checkpoint_counts = _count_reads(
+        monkeypatch=monkeypatch, names=tuple(cp._CHECKPOINT_NAMES), root=tmp_path
+    )
+    lp_finalization.finalize_learning_progressions(
+        as_lc_bundle=harness.bundle,
+        doc_key=fixtures._DOC_KEY,
+        kg_config=harness.config,
+        kg_dirs=KGDirs(root=tmp_path),
+    )
+    labels = [label for label, _ in full]
+    assert "between" not in labels
+    assert labels.count("completion") == 1 and labels.count("end") == 1
+    assert {"setup", "read_only"} <= set(labels)
+    assert labels.index("completion") < labels.index("end")
+    artifacts = _population_artifacts(tmp_path)
+    for label, streamed in full:
+        # Each full proof reads or streams every population artifact byte.
+        assert all(
+            streamed.get(name, 0) >= (tmp_path / name).stat().st_size
+            for name in artifacts
+        ), label
+    # The read-only finalization load reads every checkpoint file whole.
+    assert all(
+        checkpoint_counts.get(name, 0) >= (tmp_path / name).stat().st_size
+        for name in cp._CHECKPOINT_NAMES
+    )
+
+
+def test_per_save_work_does_not_grow_with_completed_requests(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Population reads and row proofs per save stay flat as completed work grows.
+
+    Parameters
+    ----------
+    monkeypatch
+        Offline call seam and observers.
+    tmp_path
+        Two synthetic checkpoint directories of different sizes.
+    """
+    small = _per_save_work(count=3, monkeypatch=monkeypatch, root=tmp_path / "small")
+    large = _per_save_work(count=9, monkeypatch=monkeypatch, root=tmp_path / "large")
+    assert len(large[0]) > 8 * len(small[0])
+    # The population is read a fixed number of times per invocation, whatever its
+    # size and however many saves run; every read is a whole-file read.
+    assert large[1] == small[1]
+    assert all(value == int(value) for value in small[1].values())
+    assert large[2] == small[2] == 3
+    # Serial execution: a save rechecks at most the rows of its own request plus
+    # the one pending request, never the completed prefix.
+    capacity = 1
+    for proofs in (small[0], large[0]):
+        assert max(proofs) <= 3 * (capacity + 1)
+    late = large[0][len(large[0]) // 2 :]
+    assert statistics.mean(late) <= statistics.mean(small[0]) + 0.5
